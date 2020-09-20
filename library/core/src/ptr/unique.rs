@@ -51,6 +51,9 @@ pub struct Unique<T: ?Sized> {
 #[unstable(feature = "ptr_internals", issue = "none")]
 unsafe impl<T: Send + ?Sized> Send for Unique<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe + ?Sized> FinalizerSafe for Unique<T> {}
+
 /// `Unique` pointers are `Sync` if `T` is `Sync` because the data they
 /// reference is unaliased. Note that this aliasing invariant is
 /// unenforced by the type system; the abstraction using the

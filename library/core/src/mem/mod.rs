@@ -601,6 +601,22 @@ pub const fn needs_drop<T: ?Sized>() -> bool {
     intrinsics::needs_drop::<T>()
 }
 
+/// Returns `false` if values of type `T` don't need finalizing when used within
+/// `Gc`, or `true` otherwise.
+///
+/// This is purely an optimization hint, and may be implemented conservatively:
+/// it may return `true` for types that don't actually need to be finalized.
+/// As such always returning `true` would be a valid implementation of
+/// this function. However if this function actually returns `false`, then you
+/// can be certain that omitting a finalizer for `T` has no side effect.
+#[inline]
+#[unstable(feature = "gc", issue = "none")]
+#[rustc_const_unstable(feature = "gc", issue = "none")]
+#[cfg(not(bootstrap))]
+pub const fn needs_finalizer<T>() -> bool {
+    intrinsics::needs_finalizer::<T>()
+}
+
 /// Returns the value of type `T` represented by the all-zero byte-pattern.
 ///
 /// This means that, for example, the padding byte in `(u8, u16)` is not

@@ -57,6 +57,7 @@
 use core::cmp;
 use core::cmp::Ordering;
 use core::fmt;
+use core::gc::FinalizerOptional;
 use core::hash::{Hash, Hasher};
 use core::iter;
 use core::marker::PhantomData;
@@ -3055,6 +3056,9 @@ impl<T: Ord, A: Allocator> Ord for Vec<T, A> {
         Ord::cmp(&**self, &**other)
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, A: Allocator> FinalizerOptional for Vec<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for Vec<T, A> {

@@ -211,6 +211,7 @@ language_item_table! {
 
     FnOnceOutput,            sym::fn_once_output,      fn_once_output,             Target::AssocTy,        GenericRequirement::None;
 
+    FinalizerOptional,       sym::finalizer_optional,  finalizer_optional_trait,   Target::Trait,          GenericRequirement::Exact(0);
     Future,                  sym::future_trait,        future_trait,               Target::Trait,          GenericRequirement::Exact(0);
     GeneratorState,          sym::generator_state,     gen_state,                  Target::Enum,           GenericRequirement::None;
     Generator,               sym::generator,           gen_trait,                  Target::Trait,          GenericRequirement::Minimum(1);

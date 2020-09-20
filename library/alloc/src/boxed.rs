@@ -153,6 +153,7 @@ use core::cmp::Ordering;
 use core::error::Error;
 use core::fmt;
 use core::future::Future;
+use core::gc::FinalizerOptional;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::marker::Tuple;
@@ -2445,3 +2446,6 @@ impl<T: core::error::Error> core::error::Error for Box<T> {
         core::error::Error::source(&**self)
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized, A: Allocator> FinalizerOptional for Box<T, A> {}

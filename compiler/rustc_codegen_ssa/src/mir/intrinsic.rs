@@ -126,6 +126,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
             sym::pref_align_of
             | sym::needs_drop
+            | sym::needs_finalizer
             | sym::type_id
             | sym::type_name
             | sym::variant_count => {
