@@ -999,6 +999,10 @@ impl<'tcx> Ty<'tcx> {
         self.is_trivially_freeze() || tcx.is_freeze_raw(param_env.and(self))
     }
 
+    pub fn finalizer_optional(self, tcx: TyCtxt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> bool {
+        tcx.finalizer_optional_raw(param_env.and(self))
+    }
+
     /// Fast path helper for testing if a type is `Freeze`.
     ///
     /// Returning true means the type is known to be `Freeze`. Returning
@@ -1141,6 +1145,36 @@ impl<'tcx> Ty<'tcx> {
                 // query keys used.
                 let erased = tcx.normalize_erasing_regions(param_env, query_ty);
                 tcx.has_significant_drop_raw(param_env.and(erased))
+            }
+        }
+    }
+
+    /// If `ty.needs_finalizer(...)` returns `true`, then `ty` is definitely
+    /// non-copy and *might* have a destructor attached; if it returns
+    /// `false`, then `ty` definitely has no destructor (i.e., no drop glue)
+    /// *or* `ty` implements the `NoFinalize` trait.
+    ///
+    /// (Note that this implies that if `ty` has a destructor attached,
+    /// then `needs_drop` will definitely return `true` for `ty`.)
+    ///
+    /// Note that this method is used to check eligible types in unions.
+    #[inline]
+    pub fn needs_finalizer(self, tcx: TyCtxt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> bool {
+        // Avoid querying in simple cases.
+        match needs_drop_components(tcx, self) {
+            Err(AlwaysRequiresDrop) => true,
+            Ok(components) => {
+                let query_ty = match *components {
+                    [] => return false,
+                    // If we've got a single component, call the query with that
+                    // to increase the chance that we hit the query cache.
+                    [component_ty] => component_ty,
+                    _ => self,
+                };
+                // This doesn't depend on regions, so try to minimize distinct
+                // query keys used.
+                let erased = tcx.normalize_erasing_regions(param_env, query_ty);
+                tcx.needs_finalizer_raw(param_env.and(erased))
             }
         }
     }

@@ -1407,6 +1407,15 @@ extern "rust-intrinsic" {
     #[rustc_nounwind]
     pub fn needs_drop<T: ?Sized>() -> bool;
 
+    /// Returns `true` if the actual type given as `T` requires finalization
+    /// inside GC; returns `false` if the actual type provided for `T`
+    /// implements `Copy`, has a destructor, or implements `NoFinalize`.
+    #[rustc_const_unstable(feature = "gc", issue = "none")]
+    #[rustc_safe_intrinsic]
+    #[rustc_nounwind]
+    #[cfg(not(bootstrap))]
+    pub fn needs_finalizer<T>() -> bool;
+
     /// Calculates the offset from a pointer.
     ///
     /// This is implemented as an intrinsic to avoid converting to and from an

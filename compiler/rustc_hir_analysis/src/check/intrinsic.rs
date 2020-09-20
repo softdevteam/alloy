@@ -84,6 +84,7 @@ pub fn intrinsic_operation_unsafety(tcx: TyCtxt<'_>, intrinsic_id: DefId) -> hir
         | sym::size_of
         | sym::min_align_of
         | sym::needs_drop
+        | sym::needs_finalizer
         | sym::caller_location
         | sym::add_with_overflow
         | sym::sub_with_overflow
@@ -218,6 +219,7 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
 
             sym::type_name => (1, Vec::new(), Ty::new_static_str(tcx)),
             sym::type_id => (1, Vec::new(), tcx.types.u128),
+            sym::needs_finalizer => (1, Vec::new(), tcx.types.bool),
             sym::offset => (2, vec![param(0), param(1)], param(0)),
             sym::arith_offset => (
                 1,

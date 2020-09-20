@@ -19,8 +19,9 @@ fn needs_drop_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>
     // needs drop.
     let adt_has_dtor =
         |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
-    let res =
-        drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false).next().is_some();
+    let res = drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false, false)
+        .next()
+        .is_some();
 
     debug!("needs_drop_raw({:?}) = {:?}", query, res);
     res
@@ -36,10 +37,25 @@ fn has_significant_drop_raw<'tcx>(
         query.param_env,
         adt_consider_insignificant_dtor(tcx),
         true,
+        false,
     )
     .next()
     .is_some();
     debug!("has_significant_drop_raw({:?}) = {:?}", query, res);
+    res
+}
+
+fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
+    // If we don't know a type doesn't need drop, for example if it's a type
+    // parameter without a `Copy` bound, then we conservatively return that it
+    // needs drop.
+    let adt_has_dtor =
+        |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
+    let res = drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false, true)
+        .next()
+        .is_some();
+
+    debug!("needs_finalizer_raw({:?}) = {:?}", query, res);
     res
 }
 
@@ -55,6 +71,7 @@ struct NeedsDropTypes<'tcx, F> {
     unchecked_tys: Vec<(Ty<'tcx>, usize)>,
     recursion_limit: Limit,
     adt_components: F,
+    is_finalizer: bool,
 }
 
 impl<'tcx, F> NeedsDropTypes<'tcx, F> {
@@ -63,6 +80,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
         param_env: ty::ParamEnv<'tcx>,
         ty: Ty<'tcx>,
         adt_components: F,
+        is_finalizer: bool,
     ) -> Self {
         let mut seen_tys = FxHashSet::default();
         seen_tys.insert(ty);
@@ -74,13 +92,14 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
             unchecked_tys: vec![(ty, 0)],
             recursion_limit: tcx.recursion_limit(),
             adt_components,
+            is_finalizer,
         }
     }
 }
 
 impl<'tcx, F, I> Iterator for NeedsDropTypes<'tcx, F>
 where
-    F: Fn(ty::AdtDef<'tcx>, GenericArgsRef<'tcx>) -> NeedsDropResult<I>,
+    F: Fn(ty::AdtDef<'tcx>, GenericArgsRef<'tcx>, bool) -> NeedsDropResult<I>,
     I: Iterator<Item = Ty<'tcx>>,
 {
     type Item = NeedsDropResult<Ty<'tcx>>;
@@ -114,6 +133,10 @@ where
                     // computed on MIR, while this very method is used to build MIR.
                     // To avoid cycles, we consider that generators always require drop.
                     ty::Generator(..) if tcx.sess.opts.unstable_opts.drop_tracking_mir => {
+                        return Some(Err(AlwaysRequiresDrop));
+                    }
+
+                    _ if !self.is_finalizer && component.is_gc(tcx) => {
                         return Some(Err(AlwaysRequiresDrop));
                     }
 
@@ -152,7 +175,22 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, args) => {
-                        let tys = match (self.adt_components)(adt_def, args) {
+                        let finalizer_optional =
+                            self.is_finalizer && component.finalizer_optional(tcx, self.param_env);
+                        if finalizer_optional {
+                            for arg_ty in args.types() {
+                                queue_type(self, arg_ty);
+                            }
+                        }
+
+                        if self.is_finalizer
+                            && adt_def.did()
+                                == tcx.get_diagnostic_item(sym::non_finalizable).unwrap()
+                        {
+                            continue;
+                        }
+
+                        let tys = match (self.adt_components)(adt_def, args, finalizer_optional) {
                             Err(e) => return Some(Err(e)),
                             Ok(tys) => tys,
                         };
@@ -229,16 +267,24 @@ fn drop_tys_helper<'tcx>(
     param_env: rustc_middle::ty::ParamEnv<'tcx>,
     adt_has_dtor: impl Fn(ty::AdtDef<'tcx>) -> Option<DtorType>,
     only_significant: bool,
+    is_finalizer: bool,
 ) -> impl Iterator<Item = NeedsDropResult<Ty<'tcx>>> {
     fn with_query_cache<'tcx>(
         tcx: TyCtxt<'tcx>,
         iter: impl IntoIterator<Item = Ty<'tcx>>,
+        is_finalizer: bool,
     ) -> NeedsDropResult<Vec<Ty<'tcx>>> {
         iter.into_iter().try_fold(Vec::new(), |mut vec, subty| {
             match subty.kind() {
                 ty::Adt(adt_id, subst) => {
-                    for subty in tcx.adt_drop_tys(adt_id.did())? {
-                        vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
+                    if is_finalizer {
+                        for subty in tcx.adt_finalizer_tys(adt_id.did())? {
+                            vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
+                        }
+                    } else {
+                        for subty in tcx.adt_drop_tys(adt_id.did())? {
+                            vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
+                        }
                     }
                 }
                 _ => vec.push(subty),
@@ -247,11 +293,12 @@ fn drop_tys_helper<'tcx>(
         })
     }
 
-    let adt_components = move |adt_def: ty::AdtDef<'tcx>, args: GenericArgsRef<'tcx>| {
-        if adt_def.is_manually_drop() {
+    let adt_components =
+        move |adt_def: ty::AdtDef<'tcx>, args: GenericArgsRef<'tcx>, finalizer_optional: bool| {
+            if adt_def.is_manually_drop() {
             debug!("drop_tys_helper: `{:?}` is manually drop", adt_def);
             Ok(Vec::new())
-        } else if let Some(dtor_info) = adt_has_dtor(adt_def) {
+        } else if let Some(dtor_info) = adt_has_dtor(adt_def) &&! finalizer_optional {
             match dtor_info {
                 DtorType::Significant => {
                     debug!("drop_tys_helper: `{:?}` implements `Drop`", adt_def);
@@ -283,13 +330,13 @@ fn drop_tys_helper<'tcx>(
                 // ADTs are `needs_drop` exactly if they `impl Drop` or if any of their "transitive"
                 // fields do. There can be no cycles here, because ADTs cannot contain themselves as
                 // fields.
-                with_query_cache(tcx, field_tys)
+                with_query_cache(tcx, field_tys, is_finalizer)
             }
         }
         .map(|v| v.into_iter())
-    };
+        };
 
-    NeedsDropTypes::new(tcx, param_env, ty, adt_components)
+    NeedsDropTypes::new(tcx, param_env, ty, adt_components, is_finalizer)
 }
 
 fn adt_consider_insignificant_dtor<'tcx>(
@@ -330,6 +377,7 @@ fn adt_drop_tys<'tcx>(
         tcx.param_env(def_id),
         adt_has_dtor,
         false,
+        false,
     )
     .collect::<Result<Vec<_>, _>>()
     .map(|components| tcx.mk_type_list(&components))
@@ -347,6 +395,28 @@ fn adt_significant_drop_tys(
         tcx.param_env(def_id),
         adt_consider_insignificant_dtor(tcx),
         true,
+        false,
+    )
+    .collect::<Result<Vec<_>, _>>()
+    .map(|components| tcx.mk_type_list(&components))
+}
+
+fn adt_finalizer_tys<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+) -> Result<&ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
+    // This is for the "adt_drop_tys" query, that considers all `Drop` impls, therefore all dtors are
+    // significant.
+    let adt_has_dtor =
+        |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
+    // `tcx.type_of(def_id)` identical to `tcx.make_adt(def, identity_substs)`
+    drop_tys_helper(
+        tcx,
+        tcx.type_of(def_id).instantiate_identity(),
+        tcx.param_env(def_id),
+        adt_has_dtor,
+        false,
+        true,
     )
     .collect::<Result<Vec<_>, _>>()
     .map(|components| tcx.mk_type_list(&components))
@@ -356,8 +426,10 @@ pub(crate) fn provide(providers: &mut Providers) {
     *providers = Providers {
         needs_drop_raw,
         has_significant_drop_raw,
+        needs_finalizer_raw,
         adt_drop_tys,
         adt_significant_drop_tys,
+        adt_finalizer_tys,
         ..*providers
     };
 }
