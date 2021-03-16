@@ -25,6 +25,7 @@ fn lang_start_internal(
     argc: isize,
     argv: *const *const u8,
 ) -> isize {
+    use crate::alloc::GcAllocator;
     use crate::panic;
     use crate::sys;
     use crate::sys_common;
