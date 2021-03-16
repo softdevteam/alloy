@@ -766,7 +766,7 @@ pub mod guard {
         target_os = "netbsd",
         target_os = "l4re"
     ))]
-    unsafe fn get_stack_start() -> Option<*mut libc::c_void> {
+    pub(crate) unsafe fn get_stack_start() -> Option<*mut libc::c_void> {
         let mut ret = None;
         let mut attr: libc::pthread_attr_t = crate::mem::zeroed();
         #[cfg(target_os = "freebsd")]

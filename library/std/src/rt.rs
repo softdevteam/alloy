@@ -94,6 +94,21 @@ macro_rules! rtunwrap {
 #[cfg_attr(test, allow(dead_code))]
 unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
     unsafe {
+        use crate::alloc::GcAllocator;
+
+        // Internally, this registers a SIGSEGV handler to compute the start and
+        // end bounds of the data segment. This means it *MUST* be called before
+        // rustc registers its own SIGSEGV stack overflow handler.
+        //
+        // Rust's stack overflow handler will unregister and return if there is
+        // no stack overflow, allowing the fault to "fall-through" to Boehm's
+        // handler next time. The is not true in the reverse case.
+        GcAllocator::init();
+
+        // Boehm GC prints OOM warnings which are useful for debugging, but
+        // annoying when building the compiler in release mode.
+        GcAllocator::suppress_warnings();
+
         sys::init(argc, argv, sigpipe);
 
         let main_guard = sys::thread::guard::init();
