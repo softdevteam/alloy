@@ -38,6 +38,7 @@ pub mod match_branches;
 pub mod multiple_return_terminators;
 pub mod no_landing_pads;
 pub mod nrvo;
+pub mod prevent_early_finalization;
 pub mod promote_consts;
 pub mod remove_noop_landing_pads;
 pub mod remove_unneeded_drops;
@@ -274,6 +275,7 @@ fn mir_const<'tcx>(
             &function_item_references::FunctionItemReferences,
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
+            &prevent_early_finalization::PreventEarlyFinalization,
             &rustc_peek::SanityCheck,
         ]],
     );
