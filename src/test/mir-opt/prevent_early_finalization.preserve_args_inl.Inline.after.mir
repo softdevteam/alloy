@@ -1,0 +1,154 @@
+// MIR for `preserve_args_inl` after Inline
+
+fn preserve_args_inl() -> Finalizable {
+    let mut _0: Finalizable;             // return place in scope 0 at $DIR/prevent_early_finalization.rs:38:27: 38:38
+    let _1: Finalizable;                 // in scope 0 at $DIR/prevent_early_finalization.rs:39:9: 39:12
+    let mut _2: Finalizable;             // in scope 0 at $DIR/prevent_early_finalization.rs:39:39: 39:55
+    let mut _3: Finalizable;             // in scope 0 at $DIR/prevent_early_finalization.rs:39:57: 39:73
+    let mut _5: usize;                   // in scope 0 at $DIR/prevent_early_finalization.rs:40:29: 40:34
+    let _6: ();                          // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _7: std::ops::Range<usize>;  // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _8: std::ops::Range<usize>;  // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _10: ();                     // in scope 0 at $DIR/prevent_early_finalization.rs:38:1: 45:2
+    let _12: ();                         // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _13: std::option::Option<usize>; // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _14: &mut std::ops::Range<usize>; // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _15: &mut std::ops::Range<usize>; // in scope 0 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+    let mut _16: isize;                  // in scope 0 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+    let mut _18: usize;                  // in scope 0 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+    let mut _19: !;                      // in scope 0 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+    let _21: ();                         // in scope 0 at $DIR/prevent_early_finalization.rs:41:21: 43:6
+    let mut _22: usize;                  // in scope 0 at $DIR/prevent_early_finalization.rs:42:16: 42:17
+    scope 1 {
+        debug ret => _1;                 // in scope 1 at $DIR/prevent_early_finalization.rs:39:9: 39:12
+        let mut _4: Finalizable;         // in scope 1 at $DIR/prevent_early_finalization.rs:40:9: 40:14
+        scope 2 {
+            debug x => _4;               // in scope 2 at $DIR/prevent_early_finalization.rs:40:9: 40:14
+            let mut _9: std::ops::Range<usize>; // in scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+            scope 3 {
+                debug iter => _9;        // in scope 3 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                let mut _11: usize;      // in scope 3 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                scope 4 {
+                    debug __next => _11; // in scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                    let _17: usize;      // in scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+                    let _20: usize;      // in scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+                    scope 5 {
+                        debug val => _17; // in scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+                    }
+                    scope 6 {
+                        debug i => _20;  // in scope 6 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+                    }
+                }
+            }
+            scope 8 (inlined <std::ops::Range<usize> as IntoIterator>::into_iter) { // at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                debug self => _8;        // in scope 8 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+            }
+        }
+    }
+    scope 7 (inlined preserve_args_inl_inner) { // at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        debug x => _2;                   // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        debug y => _3;                   // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        let mut _23: usize;              // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        let mut _24: usize;              // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+    }
+
+    bb0: {
+        StorageLive(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:9: 39:12
+        StorageLive(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:39: 39:55
+        (_2.0: usize) = const 123_usize; // scope 0 at $DIR/prevent_early_finalization.rs:39:39: 39:55
+        StorageLive(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:57: 39:73
+        (_3.0: usize) = const 456_usize; // scope 0 at $DIR/prevent_early_finalization.rs:39:57: 39:73
+        StorageLive(_23);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        _23 = (_2.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageLive(_24);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        _24 = (_3.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        (_1.0: usize) = Add(move _23, move _24); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_24);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_23);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#397), _2)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_2);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#400), _3)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_3);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74
+        StorageDead(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74
+        StorageLive(_4);                 // scope 1 at $DIR/prevent_early_finalization.rs:40:9: 40:14
+        StorageLive(_5);                 // scope 1 at $DIR/prevent_early_finalization.rs:40:29: 40:34
+        _5 = (_1.0: usize);              // scope 1 at $DIR/prevent_early_finalization.rs:40:29: 40:34
+        (_4.0: usize) = move _5;         // scope 1 at $DIR/prevent_early_finalization.rs:40:17: 40:35
+        StorageDead(_5);                 // scope 1 at $DIR/prevent_early_finalization.rs:40:34: 40:35
+        StorageLive(_6);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_7);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_8);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        (_8.0: usize) = const 1_usize;   // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        (_8.1: usize) = const 100_usize; // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _7 = move _8;                    // scope 8 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageDead(_8);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageLive(_9);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _9 = move _7;                    // scope 2 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        goto -> bb1;                     // scope 3 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+    }
+
+    bb1: {
+        StorageLive(_11);                // scope 3 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_12);                // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_13);                // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_14);                // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_15);                // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _15 = &mut _9;                   // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _14 = &mut (*_15);               // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _13 = <std::ops::Range<usize> as Iterator>::next(move _14) -> bb2; // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                                         // mir::Constant
+                                         // + span: $DIR/prevent_early_finalization.rs:41:14: 41:20
+                                         // + literal: Const { ty: for<'r> fn(&'r mut std::ops::Range<usize>) -> std::option::Option<<std::ops::Range<usize> as std::iter::Iterator>::Item> {<std::ops::Range<usize> as std::iter::Iterator>::next}, val: Value(Scalar(<ZST>)) }
+    }
+
+    bb2: {
+        StorageDead(_14);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        _16 = discriminant(_13);         // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        switchInt(move _16) -> [0_isize: bb3, otherwise: bb4]; // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+    }
+
+    bb3: {
+        _6 = const ();                   // scope 4 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+        StorageDead(_15);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_13);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_12);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_11);                // scope 3 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        StorageDead(_9);                 // scope 2 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        StorageDead(_7);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_6);                 // scope 2 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        _0 = _4;                         // scope 2 at $DIR/prevent_early_finalization.rs:44:5: 44:6
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        StorageDead(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _4)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        StorageDead(_4);                 // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        return;                          // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+    }
+
+    bb4: {
+        StorageLive(_17);                // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        _17 = ((_13 as Some).0: usize);  // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        StorageLive(_18);                // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        _18 = _17;                       // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        _11 = move _18;                  // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        _12 = const ();                  // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        StorageDead(_18);                // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        StorageDead(_17);                // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        StorageDead(_15);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_13);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageDead(_12);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        StorageLive(_20);                // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        _20 = _11;                       // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_21);                // scope 6 at $DIR/prevent_early_finalization.rs:41:21: 43:6
+        StorageLive(_22);                // scope 6 at $DIR/prevent_early_finalization.rs:42:16: 42:17
+        _22 = _20;                       // scope 6 at $DIR/prevent_early_finalization.rs:42:16: 42:17
+        (_4.0: usize) = Add((_4.0: usize), move _22); // scope 6 at $DIR/prevent_early_finalization.rs:42:9: 42:17
+        StorageDead(_22);                // scope 6 at $DIR/prevent_early_finalization.rs:42:16: 42:17
+        _21 = const ();                  // scope 6 at $DIR/prevent_early_finalization.rs:41:21: 43:6
+        StorageDead(_21);                // scope 6 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        _10 = const ();                  // scope 3 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+        StorageDead(_20);                // scope 4 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        StorageDead(_11);                // scope 3 at $DIR/prevent_early_finalization.rs:43:5: 43:6
+        goto -> bb1;                     // scope 3 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+    }
+}

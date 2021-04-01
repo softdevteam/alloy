@@ -208,6 +208,7 @@ language_item_table! {
 
     NoTrace,                 sym::notrace,             no_trace_trait,             Target::Trait;
     Conservative,            sym::conservative,        conservative_trait,         Target::Trait;
+    GcSmartPointer,          sym::gcsp,                gc_smart_pointer_trait,     Target::Trait;
 
     CoerceUnsized,           sym::coerce_unsized,      coerce_unsized_trait,       Target::Trait;
     DispatchFromDyn,         sym::dispatch_from_dyn,   dispatch_from_dyn_trait,    Target::Trait;

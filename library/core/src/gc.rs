@@ -26,6 +26,14 @@ pub struct Trace {
 }
 
 #[unstable(feature = "gc", issue = "none")]
+#[cfg_attr(not(bootstrap), lang = "gcsp")]
+/// An internal trait which is only implemented by the `Gc` type. This exists so
+/// that the `Gc` type -- which is defined externally -- can be used as part of
+/// static analysis in the compiler. Evenually, this won't be necessary because
+/// `Gc` will be defined in the standard library.
+pub unsafe trait GcSmartPointer {}
+
+#[unstable(feature = "gc", issue = "none")]
 impl Trace {
     #[inline]
     /// Returns true if rustgc wasn't able to create a precise descriptor for

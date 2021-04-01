@@ -1,0 +1,41 @@
+- // MIR for `preserve_args` before PreventEarlyFinalization
++ // MIR for `preserve_args` after PreventEarlyFinalization
+  
+  fn preserve_args() -> () {
+      let mut _0: ();                      // return place in scope 0 at $DIR/prevent_early_finalization.rs:28:20: 28:20
+      let _1: Finalizable;                 // in scope 0 at $DIR/prevent_early_finalization.rs:29:9: 29:12
+      let mut _2: Finalizable;             // in scope 0 at $DIR/prevent_early_finalization.rs:29:35: 29:51
+      let mut _3: Finalizable;             // in scope 0 at $DIR/prevent_early_finalization.rs:29:53: 29:69
+      scope 1 {
+          debug ret => _1;                 // in scope 1 at $DIR/prevent_early_finalization.rs:29:9: 29:12
+      }
+  
+      bb0: {
+          StorageLive(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:29:9: 29:12
+          StorageLive(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:29:35: 29:51
+          _2 = Finalizable(const 123_usize); // scope 0 at $DIR/prevent_early_finalization.rs:29:35: 29:51
+          StorageLive(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:29:53: 29:69
+          _3 = Finalizable(const 456_usize); // scope 0 at $DIR/prevent_early_finalization.rs:29:53: 29:69
+          _1 = preserve_args_inner(move _2, move _3) -> [return: bb1, unwind: bb2]; // scope 0 at $DIR/prevent_early_finalization.rs:29:15: 29:70
+                                           // mir::Constant
+                                           // + span: $DIR/prevent_early_finalization.rs:29:15: 29:34
+                                           // + literal: Const { ty: fn(Finalizable, Finalizable) -> Finalizable {preserve_args_inner}, val: Value(Scalar(<ZST>)) }
+      }
+  
+      bb1: {
+          StorageDead(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:29:69: 29:70
+          StorageDead(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:29:69: 29:70
+          FakeRead(ForLet, _1);            // scope 0 at $DIR/prevent_early_finalization.rs:29:9: 29:12
+          _0 = const ();                   // scope 0 at $DIR/prevent_early_finalization.rs:28:20: 30:2
+-         StorageDead(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:30:1: 30:2
++         nop;                             // scope 0 at $DIR/prevent_early_finalization.rs:30:1: 30:2
++         llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:30:2: 30:2
++         StorageDead(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:30:2: 30:2
+          return;                          // scope 0 at $DIR/prevent_early_finalization.rs:30:2: 30:2
+      }
+  
+      bb2 (cleanup): {
+          resume;                          // scope 0 at $DIR/prevent_early_finalization.rs:28:1: 30:2
+      }
+  }
+  

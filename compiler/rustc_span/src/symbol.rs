@@ -576,6 +576,7 @@ symbols! {
         future,
         future_trait,
         gc_layout,
+        gcsp,
         ge,
         gen_future,
         gen_kill,
