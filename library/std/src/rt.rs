@@ -35,6 +35,14 @@ fn lang_start_internal(
     sys::init();
 
     unsafe {
+        // Internally, this registers a SIGSEGV handler to compute the start and
+        // end bounds of the data segment. This means it *MUST* be called before
+        // rustc registers its own SIGSEGV stack overflow handler.
+        //
+        // Rust's stack overflow handler will unregister and return if there is
+        // no stack overflow, allowing the fault to "fall-through" to Boehm's
+        // handler next time. The is not true in the reverse case.
+        GcAllocator::init();
         let main_guard = sys::thread::guard::init();
         sys::stack_overflow::init();
 
