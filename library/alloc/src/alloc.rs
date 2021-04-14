@@ -397,11 +397,10 @@ unsafe impl Allocator for Global {
     }
 }
 #[cfg(not(test))]
-#[cfg(bootstrap)]
 #[lang = "exchange_malloc"]
 #[inline]
 #[allow(unused_variables)]
-unsafe fn old_exchange_malloc(size: usize, align: usize) -> *mut u8 {
+unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
     let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
     match Global.allocate(layout) {
         Ok(ptr) => ptr.as_mut_ptr(),
