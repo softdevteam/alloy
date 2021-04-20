@@ -50,6 +50,7 @@ fn preserve_args_inl() -> Finalizable {
         debug y => _3;                   // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         let mut _23: usize;              // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         let mut _24: usize;              // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        let mut _25: usize;              // in scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
     }
 
     bb0: {
@@ -59,15 +60,18 @@ fn preserve_args_inl() -> Finalizable {
         StorageLive(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:57: 39:73
         (_3.0: usize) = const 456_usize; // scope 0 at $DIR/prevent_early_finalization.rs:39:57: 39:73
         StorageLive(_23);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        _23 = (_2.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageLive(_24);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        _24 = (_3.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        (_1.0: usize) = Add(move _23, move _24); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        _24 = (_2.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageLive(_25);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        _25 = (_3.0: usize);             // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        _23 = Add(move _24, move _25);   // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        StorageDead(_25);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_24);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        (_1.0: usize) = move _23;        // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_23);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#397), _2)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#431), _2)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_2);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#400), _3)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#434), _3)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_3);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74
         StorageDead(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74

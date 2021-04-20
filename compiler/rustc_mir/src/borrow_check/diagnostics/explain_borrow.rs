@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_index::vec::IndexVec;
-use rustc_infer::infer::NLLRegionVariableOrigin;
+use rustc_infer::infer::NllRegionVariableOrigin;
 use rustc_middle::mir::{
     Body, CastKind, ConstraintCategory, FakeReadCause, Local, Location, Operand, Place, Rvalue,
     Statement, StatementKind, TerminatorKind,
@@ -258,7 +258,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         let (category, from_closure, span) = self.regioncx.best_blame_constraint(
             &self.body,
             borrow_region,
-            NLLRegionVariableOrigin::FreeRegion,
+            NllRegionVariableOrigin::FreeRegion,
             |r| self.regioncx.provides_universal_region(r, borrow_region, outlived_region),
         );
 
@@ -515,7 +515,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 let block = &self.body.basic_blocks()[location.block];
 
                 let kind = if let Some(&Statement {
-                    kind: StatementKind::FakeRead(FakeReadCause::ForLet, _),
+                    kind: StatementKind::FakeRead(box (FakeReadCause::ForLet(_), _)),
                     ..
                 }) = block.statements.get(location.statement_index)
                 {

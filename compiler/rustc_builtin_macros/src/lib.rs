@@ -2,13 +2,17 @@
 //! injecting code into the crate before it is lowered to HIR.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![feature(box_patterns)]
+#![feature(box_syntax)]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
+#![feature(iter_zip)]
 #![feature(nll)]
-#![feature(or_patterns)]
+#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_quote)]
+#![recursion_limit = "256"]
 
 extern crate proc_macro;
 
@@ -22,9 +26,11 @@ mod asm;
 mod assert;
 mod cfg;
 mod cfg_accessible;
+mod cfg_eval;
 mod compile_error;
 mod concat;
 mod concat_idents;
+mod derive;
 mod deriving;
 mod env;
 mod format;
@@ -86,6 +92,8 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
     register_attr! {
         bench: test::expand_bench,
         cfg_accessible: cfg_accessible::Expander,
+        cfg_eval: cfg_eval::expand,
+        derive: derive::Expander,
         global_allocator: global_allocator::expand,
         test: test::expand_test,
         test_case: test::expand_test_case,
