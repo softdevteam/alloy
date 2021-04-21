@@ -37,6 +37,10 @@ fn is_gc_smart_pointer_raw<'tcx>(
     is_item_raw(tcx, query, LangItem::GcSmartPointer)
 }
 
+fn is_unpin_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
+    is_item_raw(tcx, query, LangItem::Unpin)
+}
+
 fn is_item_raw<'tcx>(
     tcx: TyCtxt<'tcx>,
     query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>,
@@ -64,6 +68,7 @@ pub(crate) fn provide(providers: &mut ty::query::Providers) {
         is_no_trace_raw,
         is_gc_smart_pointer_raw,
         is_no_finalize_raw,
+        is_unpin_raw,
         ..*providers
     };
 }

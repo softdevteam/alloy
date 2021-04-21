@@ -1,6 +1,7 @@
 // Code for creating styled buffers
 
 use crate::snippet::{Style, StyledString};
+use std::iter;
 
 #[derive(Debug)]
 pub struct StyledBuffer {
@@ -15,16 +16,16 @@ impl StyledBuffer {
 
     pub fn render(&self) -> Vec<Vec<StyledString>> {
         // Tabs are assumed to have been replaced by spaces in calling code.
-        assert!(self.text.iter().all(|r| !r.contains(&'\t')));
+        debug_assert!(self.text.iter().all(|r| !r.contains(&'\t')));
 
         let mut output: Vec<Vec<StyledString>> = vec![];
         let mut styled_vec: Vec<StyledString> = vec![];
 
-        for (row, row_style) in self.text.iter().zip(&self.styles) {
+        for (row, row_style) in iter::zip(&self.text, &self.styles) {
             let mut current_style = Style::NoStyle;
             let mut current_text = String::new();
 
-            for (&c, &s) in row.iter().zip(row_style) {
+            for (&c, &s) in iter::zip(row, row_style) {
                 if s != current_style {
                     if !current_text.is_empty() {
                         styled_vec.push(StyledString { text: current_text, style: current_style });

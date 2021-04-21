@@ -257,13 +257,11 @@ fn predicates_reference_self(
 }
 
 fn bounds_reference_self(tcx: TyCtxt<'_>, trait_def_id: DefId) -> SmallVec<[Span; 1]> {
-    let trait_ref = ty::Binder::dummy(ty::TraitRef::identity(tcx, trait_def_id));
     tcx.associated_items(trait_def_id)
         .in_definition_order()
         .filter(|item| item.kind == ty::AssocKind::Type)
         .flat_map(|item| tcx.explicit_item_bounds(item.def_id))
-        .map(|&(predicate, sp)| (predicate.subst_supertrait(tcx, &trait_ref), sp))
-        .filter_map(|predicate| predicate_references_self(tcx, predicate))
+        .filter_map(|pred_span| predicate_references_self(tcx, *pred_span))
         .collect()
 }
 
@@ -294,11 +292,7 @@ fn predicate_references_self(
             //
             // This is ALT2 in issue #56288, see that for discussion of the
             // possible alternatives.
-            if data.projection_ty.trait_ref(tcx).substs[1..].iter().any(has_self_ty) {
-                Some(sp)
-            } else {
-                None
-            }
+            if data.projection_ty.substs[1..].iter().any(has_self_ty) { Some(sp) } else { None }
         }
         ty::PredicateKind::WellFormed(..)
         | ty::PredicateKind::ObjectSafe(..)
@@ -763,7 +757,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
     struct IllegalSelfTypeVisitor<'tcx> {
         tcx: TyCtxt<'tcx>,
         trait_def_id: DefId,
-        supertraits: Option<Vec<ty::PolyTraitRef<'tcx>>>,
+        supertraits: Option<Vec<DefId>>,
     }
 
     impl<'tcx> TypeVisitor<'tcx> for IllegalSelfTypeVisitor<'tcx> {
@@ -784,8 +778,10 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
                     // Compute supertraits of current trait lazily.
                     if self.supertraits.is_none() {
                         let trait_ref =
-                            ty::Binder::bind(ty::TraitRef::identity(self.tcx, self.trait_def_id));
-                        self.supertraits = Some(traits::supertraits(self.tcx, trait_ref).collect());
+                            ty::Binder::dummy(ty::TraitRef::identity(self.tcx, self.trait_def_id));
+                        self.supertraits = Some(
+                            traits::supertraits(self.tcx, trait_ref).map(|t| t.def_id()).collect(),
+                        );
                     }
 
                     // Determine whether the trait reference `Foo as
@@ -796,9 +792,11 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
                     // direct equality here because all of these types
                     // are part of the formal parameter listing, and
                     // hence there should be no inference variables.
-                    let projection_trait_ref = ty::Binder::bind(data.trait_ref(self.tcx));
-                    let is_supertrait_of_current_trait =
-                        self.supertraits.as_ref().unwrap().contains(&projection_trait_ref);
+                    let is_supertrait_of_current_trait = self
+                        .supertraits
+                        .as_ref()
+                        .unwrap()
+                        .contains(&data.trait_ref(self.tcx).def_id);
 
                     if is_supertrait_of_current_trait {
                         ControlFlow::CONTINUE // do not walk contained types, do not report error, do collect $200
@@ -828,7 +826,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             // constants which are not considered const evaluatable.
             use rustc_middle::mir::abstract_const::Node;
             if let Ok(Some(ct)) = AbstractConst::from_const(self.tcx, ct) {
-                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node {
+                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
                     Node::Leaf(leaf) => {
                         let leaf = leaf.subst(self.tcx, ct.substs);
                         self.visit_const(leaf)
@@ -849,7 +847,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
                 // take a `ty::Const` instead.
                 use rustc_middle::mir::abstract_const::Node;
                 if let Ok(Some(ct)) = AbstractConst::new(self.tcx, def, substs) {
-                    const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node {
+                    const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
                         Node::Leaf(leaf) => {
                             let leaf = leaf.subst(self.tcx, ct.substs);
                             self.visit_const(leaf)

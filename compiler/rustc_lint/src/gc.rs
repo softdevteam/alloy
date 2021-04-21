@@ -32,10 +32,10 @@ declare_lint_pass!(MisalignedGcPointers => [MISALIGNED_GC_POINTERS]);
 
 impl<'tcx> LateLintPass<'tcx> for MisalignedGcPointers {
     fn check_item(&mut self, cx: &LateContext<'_>, item: &hir::Item<'_>) {
-        for attr in item.attrs {
+        for attr in cx.tcx.hir().attrs(item.hir_id()) {
             for r in attr::find_repr_attrs(&cx.tcx.sess, attr) {
                 if let attr::ReprPacked(_) = r {
-                    let def_id = cx.tcx.hir().local_def_id(item.hir_id).to_def_id();
+                    let def_id = cx.tcx.hir().local_def_id(item.hir_id()).to_def_id();
                     let ty = cx.tcx.type_of(def_id);
                     let param_env = ty::ParamEnv::empty();
 

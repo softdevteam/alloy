@@ -3,7 +3,7 @@
 // can't split that into multiple files.
 
 use crate::cmp::{self, Ordering};
-use crate::ops::{Add, ControlFlow, Try};
+use crate::ops::{ControlFlow, Try};
 
 use super::super::TrustedRandomAccess;
 use super::super::{Chain, Cloned, Copied, Cycle, Enumerate, Filter, FilterMap, Fuse};
@@ -81,8 +81,8 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
     ),
     on(
         _Self = "[]",
-        label = "borrow the array with `&` or call `.iter()` on it to iterate over it",
-        note = "arrays are not iterators, but slices like the following are: `&[1, 2, 3]`"
+        label = "arrays do not yet implement `IntoIterator`; try using `std::array::IntoIter::new(arr)`",
+        note = "see <https://github.com/rust-lang/rust/pull/65819> for more details"
     ),
     on(
         _Self = "{integral}",
@@ -92,7 +92,9 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
     label = "`{Self}` is not an iterator",
     message = "`{Self}` is not an iterator"
 )]
-#[doc(spotlight)]
+#[cfg_attr(bootstrap, doc(spotlight))]
+#[cfg_attr(not(bootstrap), doc(notable_trait))]
+#[rustc_diagnostic_item = "Iterator"]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub trait Iterator {
     /// The type of the elements being iterated over.
@@ -242,13 +244,11 @@ pub trait Iterator {
     where
         Self: Sized,
     {
-        #[inline]
-        fn add1<T>(count: usize, _: T) -> usize {
-            // Might overflow.
-            Add::add(count, 1)
-        }
-
-        self.fold(0, add1)
+        self.fold(
+            0,
+            #[rustc_inherit_overflow_checks]
+            |count, _| count + 1,
+        )
     }
 
     /// Consumes the iterator, returning the last element.
@@ -937,20 +937,16 @@ pub trait Iterator {
         Enumerate::new(self)
     }
 
-    /// Creates an iterator which can use [`peek`] to look at the next element of
-    /// the iterator without consuming it.
+    /// Creates an iterator which can use the [`peek`] and [`peek_mut`] methods
+    /// to look at the next element of the iterator without consuming it. See
+    /// their documentation for more information.
     ///
-    /// Adds a [`peek`] method to an iterator. See its documentation for
-    /// more information.
+    /// Note that the underlying iterator is still advanced when [`peek`] or
+    /// [`peek_mut`] are called for the first time: In order to retrieve the
+    /// next element, [`next`] is called on the underlying iterator, hence any
+    /// side effects (i.e. anything other than fetching the next value) of
+    /// the [`next`] method will occur.
     ///
-    /// Note that the underlying iterator is still advanced when [`peek`] is
-    /// called for the first time: In order to retrieve the next element,
-    /// [`next`] is called on the underlying iterator, hence any side effects (i.e.
-    /// anything other than fetching the next value) of the [`next`] method
-    /// will occur.
-    ///
-    /// [`peek`]: Peekable::peek
-    /// [`next`]: Iterator::next
     ///
     /// # Examples
     ///
@@ -977,6 +973,32 @@ pub trait Iterator {
     /// assert_eq!(iter.peek(), None);
     /// assert_eq!(iter.next(), None);
     /// ```
+    ///
+    /// Using [`peek_mut`] to mutate the next item without advancing the
+    /// iterator:
+    ///
+    /// ```
+    /// let xs = [1, 2, 3];
+    ///
+    /// let mut iter = xs.iter().peekable();
+    ///
+    /// // `peek_mut()` lets us see into the future
+    /// assert_eq!(iter.peek_mut(), Some(&mut &1));
+    /// assert_eq!(iter.peek_mut(), Some(&mut &1));
+    /// assert_eq!(iter.next(), Some(&1));
+    ///
+    /// if let Some(mut p) = iter.peek_mut() {
+    ///     assert_eq!(*p, &2);
+    ///     // put a value into the iterator
+    ///     *p = &1000;
+    /// }
+    ///
+    /// // The value reappears as the iterator continues
+    /// assert_eq!(iter.collect::<Vec<_>>(), vec![&1000, &3]);
+    /// ```
+    /// [`peek`]: Peekable::peek
+    /// [`peek_mut`]: Peekable::peek_mut
+    /// [`next`]: Iterator::next
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn peekable(self) -> Peekable<Self>
@@ -1013,7 +1035,7 @@ pub trait Iterator {
     ///
     /// Because the closure passed to `skip_while()` takes a reference, and many
     /// iterators iterate over references, this leads to a possibly confusing
-    /// situation, where the type of the closure is a double reference:
+    /// situation, where the type of the closure argument is a double reference:
     ///
     /// ```
     /// let a = [-1, 0, 1];
@@ -1213,7 +1235,7 @@ pub trait Iterator {
     /// the iteration should stop, but wasn't placed back into the iterator.
     ///
     /// Note that unlike [`take_while`] this iterator is **not** fused.
-    /// It is also not specified what this iterator returns after the first` None` is returned.
+    /// It is also not specified what this iterator returns after the first [`None`] is returned.
     /// If you need fused iterator, use [`fuse`].
     ///
     /// [`fuse`]: Iterator::fuse
@@ -1229,7 +1251,11 @@ pub trait Iterator {
 
     /// Creates an iterator that skips the first `n` elements.
     ///
-    /// After they have been consumed, the rest of the elements are yielded.
+    /// `skip(n)` skips elements until `n` elements are skipped or the end of the
+    /// iterator is reached (whichever happens first). After that, all the remaining
+    /// elements are yielded. In particular, if the original iterator is too short,
+    /// then the returned iterator is empty.
+    ///
     /// Rather than overriding this method directly, instead override the `nth` method.
     ///
     /// # Examples
@@ -1253,7 +1279,14 @@ pub trait Iterator {
         Skip::new(self, n)
     }
 
-    /// Creates an iterator that yields its first `n` elements.
+    /// Creates an iterator that yields the first `n` elements, or fewer
+    /// if the underlying iterator ends sooner.
+    ///
+    /// `take(n)` yields elements until `n` elements are yielded or the end of
+    /// the iterator is reached (whichever happens first).
+    /// The returned iterator is a prefix of length `n` if the original iterator
+    /// contains at least `n` elements, otherwise it contains all of the
+    /// (fewer than `n`) elements of the original iterator.
     ///
     /// # Examples
     ///
@@ -2028,7 +2061,8 @@ pub trait Iterator {
         self.try_fold((), call(f))
     }
 
-    /// An iterator method that applies a function, producing a single, final value.
+    /// Folds every element into an accumulator by applying an operation,
+    /// returning the final result.
     ///
     /// `fold()` takes two arguments: an initial value, and a closure with two
     /// arguments: an 'accumulator', and an element. The closure returns the value that
@@ -2048,6 +2082,9 @@ pub trait Iterator {
     /// Note: `fold()`, and similar methods that traverse the entire iterator,
     /// may not terminate for infinite iterators, even on traits for which a
     /// result is determinable in finite time.
+    ///
+    /// Note: [`reduce()`] can be used to use the first element as the initial
+    /// value, if the accumulator type and item type is the same.
     ///
     /// # Note to Implementors
     ///
@@ -2104,6 +2141,8 @@ pub trait Iterator {
     /// // they're the same
     /// assert_eq!(result, result2);
     /// ```
+    ///
+    /// [`reduce()`]: Iterator::reduce
     #[doc(alias = "reduce")]
     #[doc(alias = "inject")]
     #[inline]
@@ -2120,10 +2159,15 @@ pub trait Iterator {
         accum
     }
 
-    /// The same as [`fold()`], but uses the first element in the
-    /// iterator as the initial value, folding every subsequent element into it.
-    /// If the iterator is empty, return [`None`]; otherwise, return the result
-    /// of the fold.
+    /// Reduces the elements to a single one, by repeatedly applying a reducing
+    /// operation.
+    ///
+    /// If the iterator is empty, returns [`None`]; otherwise, returns the
+    /// result of the reduction.
+    ///
+    /// For iterators with at least one element, this is the same as [`fold()`]
+    /// with the first element of the iterator as the initial value, folding
+    /// every subsequent element into it.
     ///
     /// [`fold()`]: Iterator::fold
     ///
@@ -2132,13 +2176,11 @@ pub trait Iterator {
     /// Find the maximum value:
     ///
     /// ```
-    /// #![feature(iterator_fold_self)]
-    ///
     /// fn find_max<I>(iter: I) -> Option<I::Item>
     ///     where I: Iterator,
     ///           I::Item: Ord,
     /// {
-    ///     iter.fold_first(|a, b| {
+    ///     iter.reduce(|a, b| {
     ///         if a >= b { a } else { b }
     ///     })
     /// }
@@ -2149,8 +2191,8 @@ pub trait Iterator {
     /// assert_eq!(find_max(b.iter()), None);
     /// ```
     #[inline]
-    #[unstable(feature = "iterator_fold_self", issue = "68125")]
-    fn fold_first<F>(mut self, f: F) -> Option<Self::Item>
+    #[stable(feature = "iterator_fold_self", since = "1.51.0")]
+    fn reduce<F>(mut self, f: F) -> Option<Self::Item>
     where
         Self: Sized,
         F: FnMut(Self::Item, Self::Item) -> Self::Item,
@@ -2196,6 +2238,7 @@ pub trait Iterator {
     /// // we can still use `iter`, as there are more elements.
     /// assert_eq!(iter.next(), Some(&3));
     /// ```
+    #[doc(alias = "every")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn all<F>(&mut self, f: F) -> bool
@@ -2465,13 +2508,9 @@ pub trait Iterator {
         fn check<T>(
             mut predicate: impl FnMut(T) -> bool,
         ) -> impl FnMut(usize, T) -> ControlFlow<usize, usize> {
-            // The addition might panic on overflow
+            #[rustc_inherit_overflow_checks]
             move |i, x| {
-                if predicate(x) {
-                    ControlFlow::Break(i)
-                } else {
-                    ControlFlow::Continue(Add::add(i, 1))
-                }
+                if predicate(x) { ControlFlow::Break(i) } else { ControlFlow::Continue(i + 1) }
             }
         }
 
@@ -2647,7 +2686,7 @@ pub trait Iterator {
             move |x, y| cmp::max_by(x, y, &mut compare)
         }
 
-        self.fold_first(fold(compare))
+        self.reduce(fold(compare))
     }
 
     /// Returns the element that gives the minimum value from the
@@ -2707,7 +2746,7 @@ pub trait Iterator {
             move |x, y| cmp::min_by(x, y, &mut compare)
         }
 
-        self.fold_first(fold(compare))
+        self.reduce(fold(compare))
     }
 
     /// Reverses an iterator's direction.
@@ -2732,6 +2771,7 @@ pub trait Iterator {
     /// assert_eq!(iter.next(), None);
     /// ```
     #[inline]
+    #[doc(alias = "reverse")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn rev(self) -> Rev<Self>
     where
@@ -3317,24 +3357,31 @@ pub trait Iterator {
     ///
     /// [`is_sorted`]: Iterator::is_sorted
     #[unstable(feature = "is_sorted", reason = "new API", issue = "53485")]
-    fn is_sorted_by<F>(mut self, mut compare: F) -> bool
+    fn is_sorted_by<F>(mut self, compare: F) -> bool
     where
         Self: Sized,
         F: FnMut(&Self::Item, &Self::Item) -> Option<Ordering>,
     {
+        #[inline]
+        fn check<'a, T>(
+            last: &'a mut T,
+            mut compare: impl FnMut(&T, &T) -> Option<Ordering> + 'a,
+        ) -> impl FnMut(T) -> bool + 'a {
+            move |curr| {
+                if let Some(Ordering::Greater) | None = compare(&last, &curr) {
+                    return false;
+                }
+                *last = curr;
+                true
+            }
+        }
+
         let mut last = match self.next() {
             Some(e) => e,
             None => return true,
         };
 
-        while let Some(curr) = self.next() {
-            if let Some(Ordering::Greater) | None = compare(&last, &curr) {
-                return false;
-            }
-            last = curr;
-        }
-
-        true
+        self.all(check(&mut last, compare))
     }
 
     /// Checks if the elements of this iterator are sorted using the given key extraction

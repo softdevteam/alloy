@@ -5,10 +5,10 @@
 #![feature(crate_visibility_modifier)]
 #![feature(const_fn)] // For the unsizing cast on `&[]`
 #![feature(const_panic)]
+#![feature(extended_key_value_attributes)]
 #![feature(in_band_lifetimes)]
-#![feature(iterator_fold_self)]
 #![feature(once_cell)]
-#![feature(or_patterns)]
+#![cfg_attr(bootstrap, feature(or_patterns))]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -30,6 +30,9 @@ pub mod pat_util;
 mod stable_hash_impls;
 mod target;
 pub mod weak_lang_items;
+
+#[cfg(test)]
+mod tests;
 
 pub use hir::*;
 pub use hir_id::*;

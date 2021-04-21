@@ -203,6 +203,10 @@ function betterLookingDiff(entry, data) {
         if (!entry.hasOwnProperty(key)) {
             continue;
         }
+        if (!data || !data.hasOwnProperty(key)) {
+            output += '-' + spaces + contentToDiffLine(key, entry[key]) + '\n';
+            continue;
+        }
         let value = data[key];
         if (value !== entry[key]) {
             output += '-' + spaces + contentToDiffLine(key, entry[key]) + '\n';
@@ -242,7 +246,7 @@ function lookForEntry(entry, data) {
     return null;
 }
 
-function loadMainJsAndIndex(mainJs, searchIndex, storageJs, crate) {
+function loadSearchJsAndIndex(searchJs, searchIndex, storageJs, crate) {
     if (searchIndex[searchIndex.length - 1].length === 0) {
         searchIndex.pop();
     }
@@ -260,14 +264,15 @@ function loadMainJsAndIndex(mainJs, searchIndex, storageJs, crate) {
     // execQuery last parameter is built in buildIndex.
     // buildIndex requires the hashmap from search-index.
     var functionsToLoad = ["buildHrefAndPath", "pathSplitter", "levenshtein", "validateResult",
-                           "handleAliases", "getQuery", "buildIndex", "execQuery", "execSearch"];
+                           "handleAliases", "getQuery", "buildIndex", "execQuery", "execSearch",
+                           "removeEmptyStringsFromArray"];
 
     ALIASES = {};
     finalJS += 'window = { "currentCrate": "' + crate + '", rootPath: "../" };\n';
     finalJS += loadThings(["hasOwnProperty", "onEach"], 'function', extractFunction, storageJs);
-    finalJS += loadThings(arraysToLoad, 'array', extractArrayVariable, mainJs);
-    finalJS += loadThings(variablesToLoad, 'variable', extractVariable, mainJs);
-    finalJS += loadThings(functionsToLoad, 'function', extractFunction, mainJs);
+    finalJS += loadThings(arraysToLoad, 'array', extractArrayVariable, searchJs);
+    finalJS += loadThings(variablesToLoad, 'variable', extractVariable, searchJs);
+    finalJS += loadThings(functionsToLoad, 'function', extractFunction, searchJs);
 
     var loaded = loadContent(finalJS);
     var index = loaded.buildIndex(searchIndex.rawSearchIndex);
@@ -377,12 +382,12 @@ function runChecks(testFile, loaded, index) {
 }
 
 function load_files(doc_folder, resource_suffix, crate) {
-    var mainJs = readFile(path.join(doc_folder, "main" + resource_suffix + ".js"));
+    var searchJs = readFile(path.join(doc_folder, "search" + resource_suffix + ".js"));
     var storageJs = readFile(path.join(doc_folder, "storage" + resource_suffix + ".js"));
     var searchIndex = readFile(
         path.join(doc_folder, "search-index" + resource_suffix + ".js")).split("\n");
 
-    return loadMainJsAndIndex(mainJs, searchIndex, storageJs, crate);
+    return loadSearchJsAndIndex(searchJs, searchIndex, storageJs, crate);
 }
 
 function showHelp() {

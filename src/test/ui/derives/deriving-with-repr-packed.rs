@@ -1,5 +1,5 @@
 #![allow(misaligned_gc_pointers)]
-#![deny(safe_packed_borrows)]
+#![deny(unaligned_references)]
 
 // check that derive on a packed struct with non-Copy fields
 // correctly. This can't be made to work perfectly because
