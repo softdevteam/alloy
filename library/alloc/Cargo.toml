@@ -10,9 +10,9 @@ autobenches = false
 edition = "2018"
 
 [dependencies]
+boehm = { path = "../boehm"}
 core = { path = "../core" }
 compiler_builtins = { version = "0.1.39", features = ['rustc-dep-of-std'] }
-allocator = { git = "https://github.com/softdevteam/libgc", features = ['rustgc'] }
 
 [dev-dependencies]
 rand = "0.7"
