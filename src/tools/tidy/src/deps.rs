@@ -61,7 +61,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "addr2line",
     "adler",
     "aho-corasick",
-    "allocator",
     "annotate-snippets",
     "ansi_term",
     "arrayvec",

@@ -1,22 +1,23 @@
-use std::{
-    alloc::{Allocator, Layout},
+#![allow(missing_docs)]
+use crate::alloc::{Allocator, Layout};
+
+use core::{
     any::Any,
     fmt,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unsize},
     mem::{forget, ManuallyDrop, MaybeUninit},
     ops::{CoerceUnsized, Deref, DispatchFromDyn},
-    ptr::NonNull,
+    ptr::{null_mut, NonNull},
 };
 
-use crate::ALLOCATOR;
+use boehm::GcAllocator;
 
-/// This is usually a no-op, but if `gc_stats` is enabled it will setup the GC
-/// for profiliing.
-pub fn gc_init() {
-    #[cfg(all(feature = "gc_stats", feature = "boehm"))]
-    boehm::init();
-}
+#[cfg(test)]
+mod tests;
+
+#[unstable(feature = "gc", issue = "none")]
+static ALLOCATOR: GcAllocator = GcAllocator;
 
 /// A garbage collected pointer.
 ///
@@ -42,6 +43,7 @@ pub fn gc_init() {
 /// `Gc<T>` will implement `Sync` as long as `T` implements `Sync`. `Gc<T>`
 /// will always implement `Send` because it requires `T` to implement `Send`.
 /// This is because if `T` has a finalizer, it will be run on a seperate thread.
+#[unstable(feature = "gc", issue = "none")]
 #[derive(PartialEq, Eq)]
 pub struct Gc<T: ?Sized + Send> {
     ptr: GcPointer<T>,
@@ -57,10 +59,14 @@ struct GcPointer<T: ?Sized>(NonNull<GcBox<T>>);
 unsafe impl<T> Send for GcPointer<T> {}
 unsafe impl<T> Sync for GcPointer<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc<T> {}
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<Gc<U>> for Gc<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<GcPointer<U>> for GcPointer<T> {}
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<GcPointer<U>>
     for GcPointer<T>
 {
@@ -68,6 +74,7 @@ impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<GcPointer<U
 
 impl<T: Send> Gc<T> {
     /// Constructs a new `Gc<T>`.
+    #[unstable(feature = "gc", issue = "none")]
     pub fn new(v: T) -> Self {
         Gc {
             ptr: unsafe { GcPointer(NonNull::new_unchecked(GcBox::new(v))) },
@@ -85,6 +92,7 @@ impl<T: Send> Gc<T> {
     ///
     /// If `layout` is smaller than that required by `T` and/or has an alignment
     /// which is smaller than that required by `T`.
+    #[unstable(feature = "gc", issue = "none")]
     pub fn new_from_layout(layout: Layout) -> Gc<MaybeUninit<T>> {
         let tl = Layout::new::<T>();
         if layout.size() < tl.size() || layout.align() < tl.align() {
@@ -108,10 +116,12 @@ impl<T: Send> Gc<T> {
     ///
     /// The caller is responsible for ensuring that both `layout`'s size and
     /// alignment must match or exceed that required to store `T`.
+    #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn new_from_layout_unchecked(layout: Layout) -> Gc<MaybeUninit<T>> {
         Gc::from_inner(GcBox::new_from_layout(layout))
     }
 
+    #[unstable(feature = "gc", issue = "none")]
     pub fn unregister_finalizer(&mut self) {
         let ptr = self.ptr.0.as_ptr() as *mut GcBox<T>;
         unsafe {
@@ -121,6 +131,7 @@ impl<T: Send> Gc<T> {
 }
 
 impl Gc<dyn Any + Send> {
+    #[unstable(feature = "gc", issue = "none")]
     pub fn downcast<T: Any + Send>(&self) -> Result<Gc<T>, Gc<dyn Any + Send>> {
         if (*self).is::<T>() {
             let ptr = self.ptr.0.cast::<GcBox<T>>();
@@ -131,22 +142,14 @@ impl Gc<dyn Any + Send> {
     }
 }
 
-#[cfg(feature = "standalone")]
-pub fn needs_finalizer<T>() -> bool {
-    std::mem::needs_drop::<T>()
-}
-
-#[cfg(not(feature = "standalone"))]
-pub fn needs_finalizer<T>() -> bool {
-    std::mem::needs_finalizer::<T>()
-}
-
 impl<T: ?Sized + Send> Gc<T> {
     /// Get a raw pointer to the underlying value `T`.
+    #[unstable(feature = "gc", issue = "none")]
     pub fn into_raw(this: Self) -> *const T {
         this.ptr.0.as_ptr() as *const T
     }
 
+    #[unstable(feature = "gc", issue = "none")]
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
         this.ptr.0.as_ptr() == other.ptr.0.as_ptr()
     }
@@ -160,6 +163,7 @@ impl<T: ?Sized + Send> Gc<T> {
     ///
     /// It is legal for `raw` to be an interior pointer if `T` is valid for the
     /// size and alignment of the originally allocated block.
+    #[unstable(feature = "gc", issue = "none")]
     pub fn from_raw(raw: *const T) -> Gc<T> {
         Gc {
             ptr: unsafe { GcPointer(NonNull::new_unchecked(raw as *mut GcBox<T>)) },
@@ -168,10 +172,7 @@ impl<T: ?Sized + Send> Gc<T> {
     }
 
     fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
-        Self {
-            ptr: GcPointer(ptr),
-            _phantom: PhantomData,
-        }
+        Self { ptr: GcPointer(ptr), _phantom: PhantomData }
     }
 }
 
@@ -180,24 +181,28 @@ impl<T: Send> Gc<MaybeUninit<T>> {
     /// that the inner value really is in an initialized state. Calling this
     /// when the content is not yet fully initialized causes immediate undefined
     /// behaviour.
+    #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn assume_init(self) -> Gc<T> {
         let ptr = self.ptr.0.as_ptr() as *mut GcBox<MaybeUninit<T>>;
-        Gc::from_inner((&mut *ptr).assume_init())
+        unsafe { Gc::from_inner((&mut *ptr).assume_init()) }
     }
 }
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + fmt::Display + Send> fmt::Display for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + fmt::Debug + Send> fmt::Debug for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Send> fmt::Pointer for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
@@ -236,21 +241,22 @@ impl<T> GcBox<T> {
         #[cfg(feature = "gc_stats")]
         crate::stats::NUM_REGISTERED_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        if !needs_finalizer::<T>() {
+        #[cfg(not(bootstrap))]
+        if !core::mem::needs_finalizer::<T>() {
             return;
         }
 
         unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
-            ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>));
+            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
         }
 
         unsafe {
             ALLOCATOR.register_finalizer(
                 self as *mut _ as *mut u8,
                 Some(fshim::<T>),
-                ::std::ptr::null_mut(),
-                ::std::ptr::null_mut(),
-                ::std::ptr::null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
             )
         }
     }
@@ -265,11 +271,14 @@ impl<T> GcBox<MaybeUninit<T>> {
         // Now that T is initialized, we must make sure that it's dropped when
         // `GcBox<T>` is freed.
         let init = self as *mut _ as *mut GcBox<T>;
-        GcBox::register_finalizer(&mut *init);
-        NonNull::new_unchecked(init)
+        unsafe {
+            GcBox::register_finalizer(&mut *init);
+            NonNull::new_unchecked(init)
+        }
     }
 }
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Send> Deref for Gc<T> {
     type Target = T;
 
@@ -281,8 +290,10 @@ impl<T: ?Sized + Send> Deref for Gc<T> {
 /// `Copy` and `Clone` are implemented manually because a reference to `Gc<T>`
 /// should be copyable regardless of `T`. It differs subtly from `#[derive(Copy,
 /// Clone)]` in that the latter only makes `Gc<T>` copyable if `T` is.
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Send> Copy for Gc<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Send> Clone for Gc<T> {
     fn clone(&self) -> Self {
         *self
@@ -296,73 +307,10 @@ impl<T: ?Sized> Clone for GcPointer<T> {
         *self
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Hash + Send> Hash for Gc<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::mem::size_of;
-
-    #[test]
-    #[should_panic]
-    fn test_too_small() {
-        Gc::<[u8; 256]>::new_from_layout(Layout::from_size_align(1, 1).unwrap());
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_unaligned() {
-        #[repr(align(1024))]
-        struct S {
-            _x: usize,
-        }
-        Gc::<S>::new_from_layout(Layout::from_size_align(size_of::<S>(), 1).unwrap());
-    }
-
-    #[test]
-    fn test_dispatchable() {
-        struct S1 {
-            x: u64,
-        }
-        struct S2 {
-            y: u64,
-        }
-        trait T: Send {
-            fn f(self: Gc<Self>) -> u64
-            where
-                Self: Send;
-        }
-        impl T for S1 {
-            fn f(self: Gc<Self>) -> u64
-            where
-                Self: Send,
-            {
-                self.x
-            }
-        }
-        impl T for S2 {
-            fn f(self: Gc<Self>) -> u64
-            where
-                Self: Send,
-            {
-                self.y
-            }
-        }
-
-        let s1 = S1 { x: 1 };
-        let s2 = S2 { y: 2 };
-        let s1gc: Gc<S1> = Gc::new(s1);
-        let s2gc: Gc<S2> = Gc::new(s2);
-        assert_eq!(s1gc.f(), 1);
-        assert_eq!(s2gc.f(), 2);
-
-        let s1gcd: Gc<dyn T> = s1gc;
-        let s2gcd: Gc<dyn T> = s2gc;
-        assert_eq!(s1gcd.f(), 1);
-        assert_eq!(s2gcd.f(), 2);
     }
 }

@@ -37,20 +37,11 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
- "allocator",
+ "boehm",
  "compiler_builtins",
  "core",
  "rand 0.7.3",
  "rand_xorshift",
-]
-
-[[package]]
-name = "allocator"
-version = "0.1.0"
-source = "git+https://github.com/softdevteam/libgc#3809a5716b2e16d16c8a91653a057dd6dd103671"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-core",
 ]
 
 [[package]]
@@ -202,6 +193,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa79dedbb091f449f1f39e53edf88d5dbe95f895dae6135a8d7b881fb5af73f5"
 dependencies = [
  "byte-tools",
+]
+
+[[package]]
+name = "boehm"
+version = "0.1.0"
+dependencies = [
+ "compiler_builtins",
+ "core",
 ]
 
 [[package]]
@@ -5029,7 +5028,7 @@ version = "0.0.0"
 dependencies = [
  "addr2line",
  "alloc",
- "allocator",
+ "boehm",
  "cfg-if 0.1.10",
  "compiler_builtins",
  "core",

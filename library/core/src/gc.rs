@@ -45,7 +45,7 @@ impl Trace {
 
 #[unstable(feature = "gc", issue = "none")]
 #[cfg(not(bootstrap))]
-pub fn needs_tracing<T>() -> bool {
+pub const fn needs_tracing<T>() -> bool {
     crate::intrinsics::needs_tracing::<T>()
 }
 

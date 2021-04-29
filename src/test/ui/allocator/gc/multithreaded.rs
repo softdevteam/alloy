@@ -1,13 +1,11 @@
-// Run-time:
-//  status: success
+// run-pass
+#![feature(gc)]
 #![feature(rustc_private)]
 
-extern crate libgc;
-
+use std::gc::Gc;
 use std::alloc::GcAllocator;
-use std::{thread, time};
 use std::sync::atomic::{AtomicBool, Ordering};
-use libgc::Gc;
+use std::{thread, time};
 
 #[global_allocator]
 static ALLOCATOR: GcAllocator = GcAllocator;
@@ -21,14 +19,14 @@ impl Drop for PanicOnDrop {
 
 }
 
-static mut NO_CHILD_EXISTS: AtomicBool = AtomicBool::new(true);
+static NO_CHILD_EXISTS: AtomicBool = AtomicBool::new(true);
 
 fn main() {
     for _ in 1..10 {
         thread::spawn(child);
     }
 
-    while(unsafe { NO_CHILD_EXISTS.load(Ordering::SeqCst) }) {};
+    while NO_CHILD_EXISTS.load(Ordering::SeqCst) {}
 
     // This should collect no garbage, because the call stacks of each child
     // thread should be scanned for roots.
@@ -40,11 +38,10 @@ fn main() {
 }
 
 fn child() {
-    unsafe { NO_CHILD_EXISTS.store(false, Ordering::SeqCst)};
-    let gc = Gc::new(String::from("Hello world!"));
+    NO_CHILD_EXISTS.store(false, Ordering::SeqCst);
+    let _gc = Gc::new(String::from("Hello world!"));
 
     // Wait a bit before dying, ensuring that the thread stays alive long enough
     // cross the force_gc call.
     thread::sleep(time::Duration::from_millis(10));
 }
-

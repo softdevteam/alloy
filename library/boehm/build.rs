@@ -30,24 +30,17 @@ fn main() {
     boehm_src.push(BOEHM_DIR);
 
     if !boehm_src.exists() {
-        run("git", |cmd| {
-            cmd.arg("clone").arg(BOEHM_REPO).arg(&boehm_src)
-        });
+        run("git", |cmd| cmd.arg("clone").arg(BOEHM_REPO).arg(&boehm_src));
 
-        run("git", |cmd| {
-            cmd.arg("clone")
-                .arg(BOEHM_ATOMICS_REPO)
-                .current_dir(&boehm_src)
-        });
+        run("git", |cmd| cmd.arg("clone").arg(BOEHM_ATOMICS_REPO).current_dir(&boehm_src));
 
         env::set_current_dir(&boehm_src).unwrap();
 
         run("./autogen.sh", |cmd| cmd);
         run("./configure", |cmd| {
-            cmd.arg("--enable-static").arg("--disable-shared").env(
-                "CFLAGS",
-                format!("{} {} {}", POINTER_MASK, FPIC, MULTITHREADED),
-            )
+            cmd.arg("--enable-static")
+                .arg("--disable-shared")
+                .env("CFLAGS", format!("{} {} {}", POINTER_MASK, FPIC, MULTITHREADED))
         });
 
         run("make", |cmd| cmd.arg("-j"));
@@ -56,9 +49,6 @@ fn main() {
     let mut libpath = PathBuf::from(&boehm_src);
     libpath.push(BUILD_DIR);
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        &libpath.as_path().to_str().unwrap()
-    );
+    println!("cargo:rustc-link-search=native={}", &libpath.as_path().to_str().unwrap());
     println!("cargo:rustc-link-lib=static=gc");
 }

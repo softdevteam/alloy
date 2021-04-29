@@ -12,31 +12,36 @@ mod boehm;
 pub struct GcAllocator;
 
 unsafe impl GlobalAlloc for GcAllocator {
+    #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         return boehm::GC_malloc_uncollectable(layout.size()) as *mut u8;
     }
 
+    #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
         boehm::GC_free(ptr);
     }
 
+    #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
         boehm::GC_realloc(ptr, new_size) as *mut u8
     }
 
-    #[cfg(feature = "rustgc")]
     #[inline]
-    unsafe fn alloc_precise(&self, layout: Layout, bitmap: usize, bitmap_size: usize) -> *mut u8 {
+    unsafe fn alloc_precise(
+        &self,
+        _layout: Layout,
+        _bitmap: usize,
+        _bitmap_size: usize,
+    ) -> *mut u8 {
         unimplemented!("Boehm does not provide an uncollectable version of this call")
     }
 
-    #[cfg(feature = "rustgc")]
     #[inline]
     fn alloc_conservative(&self, layout: Layout) -> *mut u8 {
         unsafe { boehm::GC_malloc_uncollectable(layout.size()) as *mut u8 }
     }
 
-    #[cfg(feature = "rustgc")]
     #[inline]
     unsafe fn alloc_untraceable(&self, layout: Layout) -> *mut u8 {
         boehm::GC_malloc_atomic_uncollectable(layout.size()) as *mut u8
@@ -44,6 +49,7 @@ unsafe impl GlobalAlloc for GcAllocator {
 }
 
 unsafe impl Allocator for GcAllocator {
+    #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             let ptr = boehm::GC_malloc(layout.size()) as *mut u8;
@@ -54,7 +60,6 @@ unsafe impl Allocator for GcAllocator {
 
     unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
 
-    #[cfg(feature = "rustgc")]
     #[inline]
     fn alloc_untraceable(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
@@ -64,7 +69,6 @@ unsafe impl Allocator for GcAllocator {
         }
     }
 
-    #[cfg(feature = "rustgc")]
     #[inline]
     fn alloc_conservative(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
@@ -74,7 +78,6 @@ unsafe impl Allocator for GcAllocator {
         }
     }
 
-    #[cfg(feature = "rustgc")]
     #[inline]
     fn alloc_precise(
         &self,

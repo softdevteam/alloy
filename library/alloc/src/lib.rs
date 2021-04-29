@@ -155,10 +155,9 @@ extern crate std;
 #[cfg(test)]
 extern crate test;
 
-extern crate allocator as gc_alloc;
-
+#[allow(unused_extern_crates)]
 #[unstable(feature = "gc", issue = "none")]
-pub use gc_alloc::GcAllocator;
+pub extern crate boehm;
 
 // Module with internal macros used by other modules (needs to be included before other modules).
 #[macro_use]
@@ -182,6 +181,8 @@ mod boxed {
 pub mod borrow;
 pub mod collections;
 pub mod fmt;
+#[unstable(feature = "gc", issue = "none")]
+pub mod gc;
 pub mod prelude;
 pub mod raw_vec;
 pub mod rc;
