@@ -180,7 +180,7 @@ pub unsafe fn alloc_untraceable(layout: Layout) -> *mut u8 {
 #[allow(missing_docs)]
 #[inline]
 pub unsafe fn alloc_conservative(layout: Layout) -> *mut u8 {
-    unsafe { __rust_alloc_conservative(layout.size(), layout.align()) }
+    unsafe { __rust_alloc(layout.size(), layout.align()) }
 }
 
 #[stable(feature = "global_alloc", since = "1.28.0")]
@@ -188,14 +188,6 @@ pub unsafe fn alloc_conservative(layout: Layout) -> *mut u8 {
 #[inline]
 pub unsafe fn alloc_precise(layout: Layout, bitmap: usize, bitmap_size: usize) -> *mut u8 {
     unsafe { __rust_alloc_precise(layout.size(), layout.align(), bitmap, bitmap_size) }
-}
-
-#[cfg(not(bootstrap))]
-#[cfg(not(test))]
-enum AllocType {
-    Untraceable,
-    Conservative,
-    Precise(usize, usize),
 }
 
 #[cfg(not(test))]
@@ -213,25 +205,38 @@ impl Global {
         }
     }
 
-    #[cfg(not(bootstrap))]
     #[inline]
-    fn alloc_impl_typed(
+    #[cfg(not(bootstrap))]
+    fn alloc_untraceable_impl(
         &self,
         layout: Layout,
         _zeroed: bool,
-        aty: AllocType,
     ) -> Result<NonNull<[u8]>, AllocError> {
         match layout.size() {
             0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
             // SAFETY: `layout` is non-zero in size,
             size => unsafe {
-                let raw_ptr = match aty {
-                    AllocType::Untraceable => alloc_untraceable(layout),
-                    AllocType::Conservative => alloc_conservative(layout),
-                    AllocType::Precise(bitmap, bitmap_size) => {
-                        alloc_precise(layout, bitmap, bitmap_size)
-                    }
-                };
+                let raw_ptr = alloc_untraceable(layout);
+                let ptr = NonNull::new(raw_ptr).ok_or(AllocError)?;
+                Ok(NonNull::slice_from_raw_parts(ptr, size))
+            },
+        }
+    }
+
+    #[inline]
+    #[cfg(not(bootstrap))]
+    fn alloc_precise_impl(
+        &self,
+        layout: Layout,
+        bitmap: usize,
+        bitmap_size: usize,
+        _zeroed: bool,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        match layout.size() {
+            0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
+            // SAFETY: `layout` is non-zero in size,
+            size => unsafe {
+                let raw_ptr = alloc_precise(layout, bitmap, bitmap_size);
                 let ptr = NonNull::new(raw_ptr).ok_or(AllocError)?;
                 Ok(NonNull::slice_from_raw_parts(ptr, size))
             },
@@ -376,13 +381,13 @@ unsafe impl Allocator for Global {
     #[cfg(not(bootstrap))]
     #[inline]
     fn alloc_untraceable(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.alloc_impl_typed(layout, false, AllocType::Untraceable)
+        self.alloc_untraceable_impl(layout, false)
     }
 
     #[cfg(not(bootstrap))]
     #[inline]
     fn alloc_conservative(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.alloc_impl_typed(layout, false, AllocType::Conservative)
+        self.alloc_impl(layout, false)
     }
 
     #[cfg(not(bootstrap))]
@@ -393,7 +398,7 @@ unsafe impl Allocator for Global {
         bitmap: usize,
         bitmap_size: usize,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        self.alloc_impl_typed(layout, false, AllocType::Precise(bitmap, bitmap_size))
+        self.alloc_precise_impl(layout, bitmap, bitmap_size, false)
     }
 }
 #[cfg(not(test))]
@@ -432,12 +437,7 @@ unsafe fn exchange_malloc_precise(
 #[cfg_attr(not(bootstrap), lang = "exchange_malloc_untraceable")]
 #[allow(dead_code)]
 #[inline]
-unsafe fn exchange_malloc_untraceable(
-    size: usize,
-    align: usize,
-    _bitmap: usize,
-    _bitmap_size: usize,
-) -> *mut u8 {
+unsafe fn exchange_malloc_untraceable(size: usize, align: usize) -> *mut u8 {
     let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
     match Global.alloc_untraceable(layout) {
         Ok(ptr) => ptr.as_mut_ptr(),
@@ -449,12 +449,7 @@ unsafe fn exchange_malloc_untraceable(
 #[cfg_attr(not(bootstrap), lang = "exchange_malloc_conservative")]
 #[allow(dead_code)]
 #[inline]
-unsafe fn exchange_malloc_conservative(
-    size: usize,
-    align: usize,
-    _bitmap: usize,
-    _bitmap_size: usize,
-) -> *mut u8 {
+unsafe fn exchange_malloc_conservative(size: usize, align: usize) -> *mut u8 {
     let layout = unsafe { Layout::from_size_align_unchecked(size, align) };
     match Global.alloc_conservative(layout) {
         Ok(ptr) => ptr.as_mut_ptr(),
