@@ -524,25 +524,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
                 let llty_ptr = bx.cx().backend_type(box_layout);
 
-                let (bitmap, bitmap_size) =
-                    content_ty.gc_layout(bx.tcx(), ty::ParamEnv::reveal_all());
-                let llbitmap = bx.cx().const_usize(bitmap);
-                let llbitmap_size = bx.cx().const_usize(bitmap_size);
-
                 // Allocate space:
                 let mut alloc_kind = LangItem::ExchangeMalloc;
                 if bx.tcx().sess.opts.cg.gc_precise_marking {
-                    alloc_kind = if content_ty.is_conservative(
-                        bx.cx().tcx().at(rustc_span::DUMMY_SP),
-                        ty::ParamEnv::reveal_all(),
-                    ) {
-                        LangItem::ExchangeMallocConservative
-                    } else if content_ty
+                    alloc_kind = if content_ty
                         .is_no_trace(bx.tcx().at(rustc_span::DUMMY_SP), ty::ParamEnv::reveal_all())
                     {
                         LangItem::ExchangeMallocUntraceable
                     } else {
-                        LangItem::ExchangeMallocPrecise
+                        LangItem::ExchangeMallocConservative
                     };
                 }
                 let def_id = match bx.tcx().lang_items().require(alloc_kind) {
@@ -554,11 +544,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let instance = ty::Instance::mono(bx.tcx(), def_id);
                 let r = bx.cx().get_fn_addr(instance);
 
-                let mut call = bx.call(r, &[llsize, llalign], None);
-                if bx.tcx().sess.opts.cg.gc_precise_marking {
-                    call = bx.call(r, &[llsize, llalign, llbitmap, llbitmap_size], None);
-                }
-
+                let call = bx.call(r, &[llsize, llalign], None);
                 let val = bx.pointercast(call, llty_ptr);
 
                 let operand = OperandRef { val: OperandValue::Immediate(val), layout: box_layout };
