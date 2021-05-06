@@ -11,6 +11,8 @@ use core::{
     ptr::{null_mut, NonNull},
 };
 
+use core::gc::NoTrace;
+
 use boehm::GcAllocator;
 
 #[cfg(test)]
@@ -58,6 +60,8 @@ struct GcPointer<T: ?Sized>(NonNull<GcBox<T>>);
 
 unsafe impl<T> Send for GcPointer<T> {}
 unsafe impl<T> Sync for GcPointer<T> {}
+
+impl<T: ?Sized> !NoTrace for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc<T> {}

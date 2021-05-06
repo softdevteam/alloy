@@ -4,6 +4,8 @@ use crate::marker::{PhantomData, Unsize};
 use crate::mem;
 use crate::ops::{CoerceUnsized, DispatchFromDyn};
 
+use crate::gc::NoTrace;
+
 /// A wrapper around a raw non-null `*mut T` that indicates that the possessor
 /// of this wrapper owns the referent. Useful for building abstractions like
 /// `Box<T>`, `Vec<T>`, `String`, and `HashMap<K, V>`.
@@ -56,6 +58,9 @@ unsafe impl<T: Send + ?Sized> Send for Unique<T> {}
 /// `Unique` must enforce it.
 #[unstable(feature = "ptr_internals", issue = "none")]
 unsafe impl<T: Sync + ?Sized> Sync for Unique<T> {}
+
+#[unstable(feature = "ptr_internals", issue = "none")]
+impl<T: NoTrace> NoTrace for Unique<T> {}
 
 #[unstable(feature = "ptr_internals", issue = "none")]
 impl<T: Sized> Unique<T> {
