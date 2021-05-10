@@ -2,14 +2,21 @@
 // ignore-tidy-linelength
 
 #![feature(gc)]
+#![feature(negative_impls)]
 
 #![allow(dead_code)]
 #![allow(unused_attributes)]
 #![allow(unused_imports)]
 
-use std::gc::{gc_layout, Trace};
+use std::gc::{gc_layout, NoTrace, Trace};
 use std::mem::size_of;
 use std::mem::align_of;
+
+struct TraceUsize(usize);
+struct TraceU64(usize);
+
+impl !NoTrace for TraceUsize {}
+impl !NoTrace for TraceU64 {}
 
 struct SmallAlign {
     a: u8,
@@ -19,21 +26,21 @@ struct SmallAlign {
 
 struct ShuffledFields {
     a: u8,
-    b: u64,
+    b: TraceU64,
     c: u8
 }
 
 struct ShuffledFieldsNoTrace {
     a: u8,
     #[no_trace]
-    b: u64,
+    b: TraceU64,
     c: u8
 }
 
 #[repr(C)]
 struct FixedFields {
     a: u8,
-    b: u64,
+    b: TraceU64,
     c: u8
 }
 
@@ -41,29 +48,29 @@ struct FixedFields {
 struct FixedFieldsNoTrace {
     a: u8,
     #[no_trace]
-    b: u64,
+    b: TraceU64,
     c: u8
 }
 
 struct MultiFields {
     a: u8,
     b: u16,
-    e: usize,
+    e: TraceUsize,
     c: u32,
     d: u8,
     #[no_trace]
-    f: usize
+    f: TraceUsize
 }
 
 struct BigAlign {
     a: MultiFields,
-    b: usize,
-    c: usize,
+    b: TraceUsize,
+    c: TraceUsize,
 }
 
 struct BigAlignNoTrace {
-    b: usize,
-    c: usize,
+    b: TraceUsize,
+    c: TraceUsize,
     #[no_trace]
     a: MultiFields,
 }
@@ -77,7 +84,7 @@ struct NoTraceInner {
 
 struct NoTraceOuter {
     a: NoTraceInner,
-    b: usize,
+    b: TraceUsize,
     c: NoTraceInner
 }
 

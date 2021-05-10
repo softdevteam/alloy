@@ -11,6 +11,8 @@ use core::{
     ptr::{null_mut, NonNull},
 };
 
+use core::gc::NoTrace;
+
 use boehm::GcAllocator;
 
 #[cfg(test)]
@@ -58,6 +60,8 @@ struct GcPointer<T: ?Sized>(NonNull<GcBox<T>>);
 
 unsafe impl<T> Send for GcPointer<T> {}
 unsafe impl<T> Sync for GcPointer<T> {}
+
+impl<T: ?Sized> !NoTrace for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc<T> {}
@@ -218,7 +222,17 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 impl<T> GcBox<T> {
     fn new(value: T) -> *mut GcBox<T> {
         let layout = Layout::new::<T>();
+
+        #[cfg(bootstrap)]
         let ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut GcBox<T>;
+
+        #[cfg(not(bootstrap))]
+        let ptr = if core::gc::needs_tracing::<T>() {
+            ALLOCATOR.allocate(layout).unwrap().as_ptr()
+        } else {
+            ALLOCATOR.alloc_untraceable(layout).unwrap().as_ptr()
+        } as *mut GcBox<T>;
+
         let gcbox = GcBox(ManuallyDrop::new(value));
 
         unsafe {

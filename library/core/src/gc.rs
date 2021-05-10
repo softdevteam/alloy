@@ -68,13 +68,5 @@ pub unsafe fn gc_layout<T>() -> Trace {
     Trace { bitmap: layout[0], size: layout[1] }
 }
 
-impl !NoTrace for usize {}
-
-#[cfg(target_pointer_width = "64")]
-impl !NoTrace for u64 {}
-
-#[cfg(target_pointer_width = "32")]
-impl !NoTrace for u32 {}
-
 impl<T: ?Sized> !NoTrace for *mut T {}
 impl<T: ?Sized> !NoTrace for *const T {}

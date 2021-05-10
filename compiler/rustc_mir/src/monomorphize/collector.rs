@@ -624,15 +624,12 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
                 let source_ty = self.monomorphize(ty);
                 let mut alloc_kind = LangItem::ExchangeMalloc;
                 if tcx.sess.opts.cg.gc_precise_marking {
-                    alloc_kind = if source_ty
-                        .is_conservative(tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all())
-                    {
-                        LangItem::ExchangeMallocConservative
-                    } else if source_ty.is_no_trace(tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
-                        LangItem::ExchangeMallocUntraceable
-                    } else {
-                        LangItem::ExchangeMallocPrecise
-                    };
+                    alloc_kind =
+                        if source_ty.is_no_trace(tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
+                            LangItem::ExchangeMallocUntraceable
+                        } else {
+                            LangItem::ExchangeMallocConservative
+                        };
                 }
                 let exchange_malloc_fn_def_id = tcx.require_lang_item(alloc_kind, None);
                 let instance = Instance::mono(tcx, exchange_malloc_fn_def_id);
