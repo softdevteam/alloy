@@ -48,18 +48,12 @@ static ALLOCATOR: GcAllocator = GcAllocator;
 #[unstable(feature = "gc", issue = "none")]
 #[derive(PartialEq, Eq)]
 pub struct Gc<T: ?Sized + Send> {
-    ptr: GcPointer<T>,
+    ptr: NonNull<GcBox<T>>,
     _phantom: PhantomData<T>,
 }
 
-/// This zero-sized wrapper struct is needed to allow `Gc<T>` to have the same
-/// `Send` + `Sync` semantics as `T`. Without it, the inner `NonNull` type would
-/// mean that a `Gc` never implements `Send` or `Sync`.
-#[derive(PartialEq, Eq)]
-struct GcPointer<T: ?Sized>(NonNull<GcBox<T>>);
-
-unsafe impl<T> Send for GcPointer<T> {}
-unsafe impl<T> Sync for GcPointer<T> {}
+unsafe impl<T: Send> Send for Gc<T> {}
+unsafe impl<T: Sync + Send> Sync for Gc<T> {}
 
 impl<T: ?Sized> !NoTrace for Gc<T> {}
 
@@ -68,22 +62,11 @@ impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<Gc<U>> for Gc<T> {}
 
-#[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<GcPointer<U>> for GcPointer<T> {}
-#[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<GcPointer<U>>
-    for GcPointer<T>
-{
-}
-
 impl<T: Send> Gc<T> {
     /// Constructs a new `Gc<T>`.
     #[unstable(feature = "gc", issue = "none")]
     pub fn new(v: T) -> Self {
-        Gc {
-            ptr: unsafe { GcPointer(NonNull::new_unchecked(GcBox::new(v))) },
-            _phantom: PhantomData,
-        }
+        Gc { ptr: unsafe { NonNull::new_unchecked(GcBox::new(v)) }, _phantom: PhantomData }
     }
 
     /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
@@ -127,7 +110,7 @@ impl<T: Send> Gc<T> {
 
     #[unstable(feature = "gc", issue = "none")]
     pub fn unregister_finalizer(&mut self) {
-        let ptr = self.ptr.0.as_ptr() as *mut GcBox<T>;
+        let ptr = self.ptr.as_ptr() as *mut GcBox<T>;
         unsafe {
             GcBox::unregister_finalizer(&mut *ptr);
         }
@@ -138,10 +121,10 @@ impl Gc<dyn Any + Send> {
     #[unstable(feature = "gc", issue = "none")]
     pub fn downcast<T: Any + Send>(&self) -> Result<Gc<T>, Gc<dyn Any + Send>> {
         if (*self).is::<T>() {
-            let ptr = self.ptr.0.cast::<GcBox<T>>();
+            let ptr = self.ptr.cast::<GcBox<T>>();
             Ok(Gc::from_inner(ptr))
         } else {
-            Err(Gc::from_inner(self.ptr.0))
+            Err(Gc::from_inner(self.ptr))
         }
     }
 }
@@ -150,12 +133,12 @@ impl<T: ?Sized + Send> Gc<T> {
     /// Get a raw pointer to the underlying value `T`.
     #[unstable(feature = "gc", issue = "none")]
     pub fn into_raw(this: Self) -> *const T {
-        this.ptr.0.as_ptr() as *const T
+        this.ptr.as_ptr() as *const T
     }
 
     #[unstable(feature = "gc", issue = "none")]
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
-        this.ptr.0.as_ptr() == other.ptr.0.as_ptr()
+        this.ptr.as_ptr() == other.ptr.as_ptr()
     }
 
     /// Get a `Gc<T>` from a raw pointer.
@@ -169,14 +152,11 @@ impl<T: ?Sized + Send> Gc<T> {
     /// size and alignment of the originally allocated block.
     #[unstable(feature = "gc", issue = "none")]
     pub fn from_raw(raw: *const T) -> Gc<T> {
-        Gc {
-            ptr: unsafe { GcPointer(NonNull::new_unchecked(raw as *mut GcBox<T>)) },
-            _phantom: PhantomData,
-        }
+        Gc { ptr: unsafe { NonNull::new_unchecked(raw as *mut GcBox<T>) }, _phantom: PhantomData }
     }
 
     fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
-        Self { ptr: GcPointer(ptr), _phantom: PhantomData }
+        Self { ptr, _phantom: PhantomData }
     }
 }
 
@@ -187,7 +167,7 @@ impl<T: Send> Gc<MaybeUninit<T>> {
     /// behaviour.
     #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn assume_init(self) -> Gc<T> {
-        let ptr = self.ptr.0.as_ptr() as *mut GcBox<MaybeUninit<T>>;
+        let ptr = self.ptr.as_ptr() as *mut GcBox<MaybeUninit<T>>;
         unsafe { Gc::from_inner((&mut *ptr).assume_init()) }
     }
 }
@@ -297,7 +277,7 @@ impl<T: ?Sized + Send> Deref for Gc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.ptr.0.as_ptr() as *const T) }
+        unsafe { &*(self.ptr.as_ptr() as *const T) }
     }
 }
 
@@ -309,14 +289,6 @@ impl<T: ?Sized + Send> Copy for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Send> Clone for Gc<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T: ?Sized> Copy for GcPointer<T> {}
-
-impl<T: ?Sized> Clone for GcPointer<T> {
     fn clone(&self) -> Self {
         *self
     }
