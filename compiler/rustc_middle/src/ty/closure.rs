@@ -1,7 +1,7 @@
 use crate::hir::place::{
     Place as HirPlace, PlaceBase as HirPlaceBase, ProjectionKind as HirProjectionKind,
 };
-use crate::ty;
+use crate::{mir, ty};
 
 use rustc_data_structures::fx::{FxHashMap, FxIndexMap};
 use rustc_hir as hir;
@@ -11,6 +11,10 @@ use rustc_span::Span;
 use super::{Ty, TyCtxt};
 
 use self::BorrowKind::*;
+
+// Captures are represented using fields inside a structure.
+// This represents accessing self in the closure structure
+pub const CAPTURE_STRUCT_LOCAL: mir::Local = mir::Local::from_u32(1);
 
 #[derive(
     Clone,
@@ -151,6 +155,10 @@ pub struct CapturedPlace<'tcx> {
 }
 
 impl CapturedPlace<'tcx> {
+    pub fn to_string(&self, tcx: TyCtxt<'tcx>) -> String {
+        place_to_string_for_capture(tcx, &self.place)
+    }
+
     /// Returns the hir-id of the root variable for the captured place.
     /// e.g., if `a.b.c` was captured, would return the hir-id for `a`.
     pub fn get_root_variable(&self) -> hir::HirId {
@@ -165,6 +173,22 @@ impl CapturedPlace<'tcx> {
         match self.place.base {
             HirPlaceBase::Upvar(upvar_id) => upvar_id.closure_expr_id,
             base => bug!("expected upvar, found={:?}", base),
+        }
+    }
+
+    /// Return span pointing to use that resulted in selecting the captured path
+    pub fn get_path_span(&self, tcx: TyCtxt<'tcx>) -> Span {
+        if let Some(path_expr_id) = self.info.path_expr_id {
+            tcx.hir().span(path_expr_id)
+        } else if let Some(capture_kind_expr_id) = self.info.capture_kind_expr_id {
+            tcx.hir().span(capture_kind_expr_id)
+        } else {
+            // Fallback on upvars mentioned if neither path or capture expr id is captured
+
+            // Safe to unwrap since we know this place is captured by the closure, therefore the closure must have upvars.
+            tcx.upvars_mentioned(self.get_closure_local_def_id()).unwrap()
+                [&self.get_root_variable()]
+                .span
         }
     }
 

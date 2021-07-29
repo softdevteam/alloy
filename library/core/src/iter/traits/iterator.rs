@@ -80,11 +80,6 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
         label = "`{Self}` is not an iterator; try calling `.chars()` or `.bytes()`"
     ),
     on(
-        _Self = "[]",
-        label = "arrays do not yet implement `IntoIterator`; try using `std::array::IntoIter::new(arr)`",
-        note = "see <https://github.com/rust-lang/rust/pull/65819> for more details"
-    ),
-    on(
         _Self = "{integral}",
         note = "if you want to iterate between `start` until a value `end`, use the exclusive range \
               syntax `start..end` or the inclusive range syntax `start..=end`"
@@ -92,8 +87,7 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
     label = "`{Self}` is not an iterator",
     message = "`{Self}` is not an iterator"
 )]
-#[cfg_attr(bootstrap, doc(spotlight))]
-#[cfg_attr(not(bootstrap), doc(notable_trait))]
+#[doc(notable_trait)]
 #[rustc_diagnostic_item = "Iterator"]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub trait Iterator {
@@ -1495,7 +1489,12 @@ pub trait Iterator {
     /// [`Some(T)`] again. `fuse()` adapts an iterator, ensuring that after a
     /// [`None`] is given, it will always return [`None`] forever.
     ///
+    /// Note that the [`Fuse`] wrapper is a no-op on iterators that implement
+    /// the [`FusedIterator`] trait. `fuse()` may therefore behave incorrectly
+    /// if the [`FusedIterator`] trait is improperly implemented.
+    ///
     /// [`Some(T)`]: Some
+    /// [`FusedIterator`]: crate::iter::FusedIterator
     ///
     /// # Examples
     ///
@@ -1646,31 +1645,16 @@ pub trait Iterator {
     /// Basic usage:
     ///
     /// ```
-    /// let a = [1, 2, 3];
+    /// let mut words = vec!["hello", "world", "of", "Rust"].into_iter();
     ///
-    /// let iter = a.iter();
+    /// // Take the first two words.
+    /// let hello_world: Vec<_> = words.by_ref().take(2).collect();
+    /// assert_eq!(hello_world, vec!["hello", "world"]);
     ///
-    /// let sum: i32 = iter.take(5).fold(0, |acc, i| acc + i);
-    ///
-    /// assert_eq!(sum, 6);
-    ///
-    /// // if we try to use iter again, it won't work. The following line
-    /// // gives "error: use of moved value: `iter`
-    /// // assert_eq!(iter.next(), None);
-    ///
-    /// // let's try that again
-    /// let a = [1, 2, 3];
-    ///
-    /// let mut iter = a.iter();
-    ///
-    /// // instead, we add in a .by_ref()
-    /// let sum: i32 = iter.by_ref().take(2).fold(0, |acc, i| acc + i);
-    ///
-    /// assert_eq!(sum, 3);
-    ///
-    /// // now this is just fine:
-    /// assert_eq!(iter.next(), Some(&3));
-    /// assert_eq!(iter.next(), None);
+    /// // Collect the rest of the words.
+    /// // We can only do this because we used `by_ref` earlier.
+    /// let of_rust: Vec<_> = words.collect();
+    /// assert_eq!(of_rust, vec!["of", "Rust"]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn by_ref(&mut self) -> &mut Self
@@ -1859,6 +1843,12 @@ pub trait Iterator {
     ///
     /// The relative order of partitioned items is not maintained.
     ///
+    /// # Current implementation
+    /// Current algorithms tries finding the first element for which the predicate evaluates
+    /// to false, and the last element for which it evaluates to true and repeatedly swaps them.
+    ///
+    /// Time Complexity: *O*(*N*)
+    ///
     /// See also [`is_partitioned()`] and [`partition()`].
     ///
     /// [`is_partitioned()`]: Iterator::is_partitioned
@@ -2009,7 +1999,7 @@ pub trait Iterator {
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         let mut accum = init;
         while let Some(x) = self.next() {
@@ -2051,7 +2041,7 @@ pub trait Iterator {
     where
         Self: Sized,
         F: FnMut(Self::Item) -> R,
-        R: Try<Ok = ()>,
+        R: Try<Output = ()>,
     {
         #[inline]
         fn call<T, R>(mut f: impl FnMut(T) -> R) -> impl FnMut((), T) -> R {
@@ -2143,7 +2133,6 @@ pub trait Iterator {
     /// ```
     ///
     /// [`reduce()`]: Iterator::reduce
-    #[doc(alias = "reduce")]
     #[doc(alias = "inject")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -2423,17 +2412,48 @@ pub trait Iterator {
     /// ```
     #[inline]
     #[unstable(feature = "try_find", reason = "new API", issue = "63178")]
+    #[cfg(not(bootstrap))]
+    fn try_find<F, R, E>(&mut self, f: F) -> Result<Option<Self::Item>, E>
+    where
+        Self: Sized,
+        F: FnMut(&Self::Item) -> R,
+        R: Try<Output = bool>,
+        // FIXME: This bound is rather strange, but means minimal breakage on nightly.
+        // See #85115 for the issue tracking a holistic solution for this and try_map.
+        R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
+    {
+        #[inline]
+        fn check<F, T, R, E>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, E>>
+        where
+            F: FnMut(&T) -> R,
+            R: Try<Output = bool>,
+            R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
+        {
+            move |(), x| match f(&x).branch() {
+                ControlFlow::Continue(false) => ControlFlow::CONTINUE,
+                ControlFlow::Continue(true) => ControlFlow::Break(Ok(x)),
+                ControlFlow::Break(Err(x)) => ControlFlow::Break(Err(x)),
+            }
+        }
+
+        self.try_fold((), check(f)).break_value().transpose()
+    }
+
+    /// We're bootstrapping.
+    #[inline]
+    #[unstable(feature = "try_find", reason = "new API", issue = "63178")]
+    #[cfg(bootstrap)]
     fn try_find<F, R>(&mut self, f: F) -> Result<Option<Self::Item>, R::Error>
     where
         Self: Sized,
         F: FnMut(&Self::Item) -> R,
-        R: Try<Ok = bool>,
+        R: Try<Output = bool>,
     {
         #[inline]
         fn check<F, T, R>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, R::Error>>
         where
             F: FnMut(&T) -> R,
-            R: Try<Ok = bool>,
+            R: Try<Output = bool>,
         {
             move |(), x| match f(&x).into_result() {
                 Ok(false) => ControlFlow::CONTINUE,

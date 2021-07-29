@@ -33,6 +33,8 @@ crate static FILES_UNVERSIONED: Lazy<FxHashMap<&str, &[u8]>> = Lazy::new(|| {
         "SourceCodePro-Semibold.ttf.woff" => static_files::source_code_pro::SEMIBOLD,
         "SourceCodePro-It.ttf.woff" => static_files::source_code_pro::ITALIC,
         "SourceCodePro-LICENSE.txt" => static_files::source_code_pro::LICENSE,
+        "noto-sans-kr-v13-korean-regular.woff" => static_files::noto_sans_kr::REGULAR,
+        "noto-sans-kr-v13-korean-regular-LICENSE.txt" => static_files::noto_sans_kr::LICENSE,
         "LICENSE-MIT.txt" => static_files::LICENSE_MIT,
         "LICENSE-APACHE.txt" => static_files::LICENSE_APACHE,
         "COPYRIGHT.txt" => static_files::COPYRIGHT,
@@ -207,6 +209,7 @@ pub(super) fn write_shared(
     }
     write_toolchain("brush.svg", static_files::BRUSH_SVG)?;
     write_toolchain("wheel.svg", static_files::WHEEL_SVG)?;
+    write_toolchain("clipboard.svg", static_files::CLIPBOARD_SVG)?;
     write_toolchain("down-arrow.svg", static_files::DOWN_ARROW_SVG)?;
 
     let mut themes: Vec<&String> = themes.iter().collect();
@@ -224,6 +227,8 @@ pub(super) fn write_shared(
     )?;
     write_minify("search.js", static_files::SEARCH_JS)?;
     write_minify("settings.js", static_files::SETTINGS_JS)?;
+    write_minify("sidebar-items.js", static_files::sidebar::ITEMS)?;
+
     if cx.shared.include_sources {
         write_minify("source-script.js", static_files::sidebar::SOURCE_SCRIPT)?;
     }
@@ -425,7 +430,7 @@ pub(super) fn write_shared(
             md_opts.output = cx.dst.clone();
             md_opts.external_html = (*cx.shared).layout.external_html.clone();
 
-            crate::markdown::render(&index_page, md_opts, cx.shared.edition)
+            crate::markdown::render(&index_page, md_opts, cx.shared.edition())
                 .map_err(|e| Error::new(e, &index_page))?;
         } else {
             let dst = cx.dst.join("index.html");
@@ -496,7 +501,7 @@ pub(super) fn write_shared(
                 //
                 // If the implementation is from another crate then that crate
                 // should add it.
-                if imp.impl_item.def_id.krate == did.krate || !imp.impl_item.def_id.is_local() {
+                if imp.impl_item.def_id.krate() == did.krate || !imp.impl_item.def_id.is_local() {
                     None
                 } else {
                     Some(Implementor {

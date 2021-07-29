@@ -22,7 +22,7 @@ const CONVENTIONS: [(&[Convention], &[SelfKind]); 9] = [
     // Conversion using `to_` can use borrowed (non-Copy types) or owned (Copy types).
     // Source: https://rust-lang.github.io/api-guidelines/naming.html#ad-hoc-conversions-follow-as_-to_-into_-conventions-c-conv
     (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(false), 
-    Convention::IsTraitItem(false)], &[SelfKind::Ref]),
+    Convention::IsTraitItem(false), Convention::ImplementsTrait(false)], &[SelfKind::Ref]),
     (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(true), 
     Convention::IsTraitItem(false), Convention::ImplementsTrait(false)], &[SelfKind::Value]),
 ];
@@ -102,6 +102,14 @@ pub(super) fn check<'tcx>(
             .iter()
             .all(|conv| conv.check(cx, self_ty, item_name, implements_trait, is_trait_item))
     }) {
+        // don't lint if it implements a trait but not willing to check `Copy` types conventions (see #7032)
+        if implements_trait
+            && !conventions
+                .iter()
+                .any(|conv| matches!(conv, Convention::IsSelfTypeCopy(_)))
+        {
+            return;
+        }
         if !self_kinds.iter().any(|k| k.matches(cx, self_ty, first_arg_ty)) {
             let suggestion = {
                 if conventions.len() > 1 {

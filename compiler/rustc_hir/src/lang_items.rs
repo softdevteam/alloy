@@ -316,12 +316,12 @@ language_item_table! {
 
     Termination,             sym::termination,         termination,                Target::Trait;
 
-    Try,                     kw::Try,                  try_trait,                  Target::Trait;
+    Try,                     sym::Try,                 try_trait,                  Target::Trait;
 
     // Language items from AST lowering
-    TryFromError,            sym::from_error,          from_error_fn,              Target::Method(MethodKind::Trait { body: false });
-    TryFromOk,               sym::from_ok,             from_ok_fn,                 Target::Method(MethodKind::Trait { body: false });
-    TryIntoResult,           sym::into_result,         into_result_fn,             Target::Method(MethodKind::Trait { body: false });
+    TryTraitFromResidual,    sym::from_residual,       from_residual_fn,           Target::Method(MethodKind::Trait { body: false });
+    TryTraitFromOutput,      sym::from_output,         from_output_fn,             Target::Method(MethodKind::Trait { body: false });
+    TryTraitBranch,          sym::branch,              branch_fn,                  Target::Method(MethodKind::Trait { body: false });
 
     PollReady,               sym::Ready,               poll_ready_variant,         Target::Variant;
     PollPending,             sym::Pending,             poll_pending_variant,       Target::Variant;
@@ -339,6 +339,9 @@ language_item_table! {
     ResultOk,                sym::Ok,                  result_ok_variant,          Target::Variant;
     ResultErr,               sym::Err,                 result_err_variant,         Target::Variant;
 
+    ControlFlowContinue,     sym::Continue,            cf_continue_variant,        Target::Variant;
+    ControlFlowBreak,        sym::Break,               cf_break_variant,           Target::Variant;
+
     IntoIterIntoIter,        sym::into_iter,           into_iter_fn,               Target::Method(MethodKind::Trait { body: false });
     IteratorNext,            sym::next,                next_fn,                    Target::Method(MethodKind::Trait { body: false});
 
@@ -355,4 +358,7 @@ language_item_table! {
     ManageableContents,      sym::manageable_contents, manageable_contents_trait,  Target::Trait;
     VecWithCapacityGCFnLangItem,      sym::vec_with_capacity_gc, vec_with_capacity_fn,  Target::Fn;
     VecPushGc,               sym::vec_push_gc,         vec_push_gc_fn,             Target::Fn;
+    Send,                    sym::send,                send_trait,                 Target::Trait;
+    UnwindSafe,              sym::unwind_safe,         unwind_safe_trait,          Target::Trait;
+    RefUnwindSafe,           sym::ref_unwind_safe,     ref_unwind_safe_trait,      Target::Trait;
 }

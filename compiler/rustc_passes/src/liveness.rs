@@ -132,9 +132,9 @@ enum LiveNodeKind {
 fn live_node_kind_to_string(lnk: LiveNodeKind, tcx: TyCtxt<'_>) -> String {
     let sm = tcx.sess.source_map();
     match lnk {
-        UpvarNode(s) => format!("Upvar node [{}]", sm.span_to_string(s)),
-        ExprNode(s) => format!("Expr node [{}]", sm.span_to_string(s)),
-        VarDefNode(s) => format!("Var def node [{}]", sm.span_to_string(s)),
+        UpvarNode(s) => format!("Upvar node [{}]", sm.span_to_diagnostic_string(s)),
+        ExprNode(s) => format!("Expr node [{}]", sm.span_to_diagnostic_string(s)),
+        VarDefNode(s) => format!("Var def node [{}]", sm.span_to_diagnostic_string(s)),
         ClosureNode => "Closure node".to_owned(),
         ExitNode => "Exit node".to_owned(),
     }
@@ -1476,7 +1476,7 @@ impl<'tcx> Liveness<'_, 'tcx> {
         for p in body.params {
             self.check_unused_vars_in_pat(&p.pat, Some(entry_ln), |spans, hir_id, ln, var| {
                 if !self.live_on_entry(ln, var) {
-                    self.report_unsed_assign(hir_id, spans, var, |name| {
+                    self.report_unused_assign(hir_id, spans, var, |name| {
                         format!("value passed to `{}` is never read", name)
                     });
                 }
@@ -1615,13 +1615,13 @@ impl<'tcx> Liveness<'_, 'tcx> {
 
     fn warn_about_dead_assign(&self, spans: Vec<Span>, hir_id: HirId, ln: LiveNode, var: Variable) {
         if !self.live_on_exit(ln, var) {
-            self.report_unsed_assign(hir_id, spans, var, |name| {
+            self.report_unused_assign(hir_id, spans, var, |name| {
                 format!("value assigned to `{}` is never read", name)
             });
         }
     }
 
-    fn report_unsed_assign(
+    fn report_unused_assign(
         &self,
         hir_id: HirId,
         spans: Vec<Span>,

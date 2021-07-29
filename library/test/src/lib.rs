@@ -24,6 +24,7 @@
 #![feature(rustc_private)]
 #![feature(nll)]
 #![feature(available_concurrency)]
+#![feature(bench_black_box)]
 #![feature(internal_output_capture)]
 #![feature(panic_unwind)]
 #![feature(staged_api)]
@@ -48,7 +49,7 @@ pub mod test {
         cli::{parse_opts, TestOpts},
         filter_tests,
         helpers::metrics::{Metric, MetricMap},
-        options::{Options, RunIgnored, RunStrategy, ShouldPanic},
+        options::{Concurrent, Options, RunIgnored, RunStrategy, ShouldPanic},
         run_test, test_main, test_main_static,
         test_result::{TestResult, TrFailed, TrFailedMsg, TrIgnored, TrOk},
         time::{TestExecTime, TestTimeOptions},

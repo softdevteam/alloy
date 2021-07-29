@@ -254,7 +254,7 @@ macro_rules! int_impl {
         #[doc = concat!("assert_eq!(0, 0", stringify!($SelfT), ".reverse_bits());")]
         /// ```
         #[stable(feature = "reverse_bits", since = "1.37.0")]
-        #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
+        #[rustc_const_stable(feature = "const_int_methods", since = "1.37.0")]
         #[inline(always)]
         #[must_use]
         pub const fn reverse_bits(self) -> Self {
@@ -412,12 +412,13 @@ macro_rules! int_impl {
         #[unstable(
             feature = "unchecked_math",
             reason = "niche optimization path",
-            issue = "none",
+            issue = "85122",
         )]
         #[must_use = "this returns the result of the operation, \
                       without modifying the original"]
+        #[rustc_const_unstable(feature = "const_inherent_unchecked_arith", issue = "85122")]
         #[inline(always)]
-        pub unsafe fn unchecked_add(self, rhs: Self) -> Self {
+        pub const unsafe fn unchecked_add(self, rhs: Self) -> Self {
             // SAFETY: the caller must uphold the safety contract for
             // `unchecked_add`.
             unsafe { intrinsics::unchecked_add(self, rhs) }
@@ -450,12 +451,13 @@ macro_rules! int_impl {
         #[unstable(
             feature = "unchecked_math",
             reason = "niche optimization path",
-            issue = "none",
+            issue = "85122",
         )]
         #[must_use = "this returns the result of the operation, \
                       without modifying the original"]
+        #[rustc_const_unstable(feature = "const_inherent_unchecked_arith", issue = "85122")]
         #[inline(always)]
-        pub unsafe fn unchecked_sub(self, rhs: Self) -> Self {
+        pub const unsafe fn unchecked_sub(self, rhs: Self) -> Self {
             // SAFETY: the caller must uphold the safety contract for
             // `unchecked_sub`.
             unsafe { intrinsics::unchecked_sub(self, rhs) }
@@ -488,12 +490,13 @@ macro_rules! int_impl {
         #[unstable(
             feature = "unchecked_math",
             reason = "niche optimization path",
-            issue = "none",
+            issue = "85122",
         )]
         #[must_use = "this returns the result of the operation, \
                       without modifying the original"]
+        #[rustc_const_unstable(feature = "const_inherent_unchecked_arith", issue = "85122")]
         #[inline(always)]
-        pub unsafe fn unchecked_mul(self, rhs: Self) -> Self {
+        pub const unsafe fn unchecked_mul(self, rhs: Self) -> Self {
             // SAFETY: the caller must uphold the safety contract for
             // `unchecked_mul`.
             unsafe { intrinsics::unchecked_mul(self, rhs) }
@@ -1837,36 +1840,6 @@ macro_rules! int_impl {
             // SAFETY: integers are plain old datatypes so we can always transmute them to
             // arrays of bytes
             unsafe { mem::transmute(self) }
-        }
-
-        /// Return the memory representation of this integer as a byte array in
-        /// native byte order.
-        ///
-        /// [`to_ne_bytes`] should be preferred over this whenever possible.
-        ///
-        /// [`to_ne_bytes`]: Self::to_ne_bytes
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// #![feature(num_as_ne_bytes)]
-        #[doc = concat!("let num = ", $swap_op, stringify!($SelfT), ";")]
-        /// let bytes = num.as_ne_bytes();
-        /// assert_eq!(
-        ///     bytes,
-        ///     if cfg!(target_endian = "big") {
-        #[doc = concat!("        &", $be_bytes)]
-        ///     } else {
-        #[doc = concat!("        &", $le_bytes)]
-        ///     }
-        /// );
-        /// ```
-        #[unstable(feature = "num_as_ne_bytes", issue = "76976")]
-        #[inline]
-        pub fn as_ne_bytes(&self) -> &[u8; mem::size_of::<Self>()] {
-            // SAFETY: integers are plain old datatypes so we can always transmute them to
-            // arrays of bytes
-            unsafe { &*(self as *const Self as *const _) }
         }
 
         /// Create an integer value from its representation as a byte array in

@@ -6,7 +6,6 @@
 #![feature(try_blocks)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(associated_type_bounds)]
 #![feature(iter_zip)]
 #![recursion_limit = "256"]
@@ -114,11 +113,12 @@ pub struct NativeLib {
     pub kind: NativeLibKind,
     pub name: Option<Symbol>,
     pub cfg: Option<ast::MetaItem>,
+    pub verbatim: Option<bool>,
 }
 
 impl From<&cstore::NativeLib> for NativeLib {
     fn from(lib: &cstore::NativeLib) -> Self {
-        NativeLib { kind: lib.kind, name: lib.name, cfg: lib.cfg.clone() }
+        NativeLib { kind: lib.kind, name: lib.name, cfg: lib.cfg.clone(), verbatim: lib.verbatim }
     }
 }
 

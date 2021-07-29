@@ -120,6 +120,7 @@ pub enum SizedByDefault {
 
 #[derive(Debug)]
 struct ConvertedBinding<'a, 'tcx> {
+    hir_id: hir::HirId,
     item_name: Ident,
     kind: ConvertedBindingKind<'a, 'tcx>,
     gen_args: &'a GenericArgs<'a>,
@@ -431,6 +432,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                                 param.def_id,
                                 Some(arg.id()),
                                 arg.span(),
+                                None,
                                 |_, _| {
                                     // Default generic parameters may not be marked
                                     // with stability attributes, i.e. when the
@@ -513,7 +515,9 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     GenericParamDefKind::Const { has_default } => {
                         let ty = tcx.at(self.span).type_of(param.def_id);
                         if !infer_args && has_default {
-                            tcx.const_param_default(param.def_id).into()
+                            tcx.const_param_default(param.def_id)
+                                .subst_spanned(tcx, substs.unwrap(), Some(self.span))
+                                .into()
                         } else {
                             if infer_args {
                                 self.astconv.ct_infer(ty, Some(param), self.span).into()
@@ -588,6 +592,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     }
                 };
                 ConvertedBinding {
+                    hir_id: binding.hir_id,
                     item_name: binding.ident,
                     kind,
                     gen_args: binding.gen_args,
@@ -607,6 +612,10 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         item_segment: &hir::PathSegment<'_>,
         parent_substs: SubstsRef<'tcx>,
     ) -> SubstsRef<'tcx> {
+        debug!(
+            "create_substs_for_associated_item(span: {:?}, item_def_id: {:?}, item_segment: {:?}",
+            span, item_def_id, item_segment
+        );
         if tcx.generics_of(item_def_id).params.is_empty() {
             self.prohibit_generics(slice::from_ref(item_segment));
 
@@ -1051,7 +1060,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 .span_label(binding.span, "private associated type")
                 .emit();
         }
-        tcx.check_stability(assoc_ty.def_id, Some(hir_ref_id), binding.span);
+        tcx.check_stability(assoc_ty.def_id, Some(hir_ref_id), binding.span, None);
 
         if !speculative {
             dup_bindings
@@ -1069,9 +1078,10 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
         // Include substitutions for generic parameters of associated types
         let projection_ty = candidate.map_bound(|trait_ref| {
+            let ident = Ident::new(assoc_ty.ident.name, binding.item_name.span);
             let item_segment = hir::PathSegment {
-                ident: assoc_ty.ident,
-                hir_id: None,
+                ident,
+                hir_id: Some(binding.hir_id),
                 res: None,
                 args: Some(binding.gen_args),
                 infer_args: false,
@@ -1384,11 +1394,13 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         let auto_trait_predicates = auto_traits.into_iter().map(|trait_ref| {
             ty::Binder::dummy(ty::ExistentialPredicate::AutoTrait(trait_ref.trait_ref().def_id()))
         });
+        // N.b. principal, projections, auto traits
+        // FIXME: This is actually wrong with multiple principals in regards to symbol mangling
         let mut v = regular_trait_predicates
-            .chain(auto_trait_predicates)
             .chain(
                 existential_projections.map(|x| x.map_bound(ty::ExistentialPredicate::Projection)),
             )
+            .chain(auto_trait_predicates)
             .collect::<SmallVec<[_; 8]>>();
         v.sort_by(|a, b| a.skip_binder().stable_cmp(tcx, &b.skip_binder()));
         v.dedup();
@@ -1657,7 +1669,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     .find(|vd| tcx.hygienic_eq(assoc_ident, vd.ident, adt_def.did));
                 if let Some(variant_def) = variant_def {
                     if permit_variants {
-                        tcx.check_stability(variant_def.def_id, Some(hir_ref_id), span);
+                        tcx.check_stability(variant_def.def_id, Some(hir_ref_id), span, None);
                         self.prohibit_generics(slice::from_ref(assoc_segment));
                         return Ok((qself_ty, DefKind::Variant, variant_def.def_id));
                     } else {
@@ -1777,7 +1789,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 .span_label(span, &format!("private {}", kind))
                 .emit();
         }
-        tcx.check_stability(item.def_id, Some(hir_ref_id), span);
+        tcx.check_stability(item.def_id, Some(hir_ref_id), span, None);
 
         if let Some(variant_def_id) = variant_resolution {
             tcx.struct_span_lint_hir(AMBIGUOUS_ASSOCIATED_ITEMS, hir_ref_id, span, |lint| {
@@ -2277,9 +2289,9 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 let array_ty = tcx.mk_ty(ty::Array(self.ast_ty_to_ty(&ty), length));
                 self.normalize_ty(ast_ty.span, array_ty)
             }
-            hir::TyKind::Typeof(ref _e) => {
+            hir::TyKind::Typeof(ref e) => {
                 tcx.sess.emit_err(TypeofReservedKeywordUsed { span: ast_ty.span });
-                tcx.ty_error()
+                tcx.type_of(tcx.hir().local_def_id(e.hir_id))
             }
             hir::TyKind::Infer => {
                 // Infer also appears as the type of arguments or return

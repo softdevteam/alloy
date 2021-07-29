@@ -16,7 +16,6 @@
 #![feature(format_args_capture)]
 #![feature(iter_zip)]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![recursion_limit = "256"]
 #![allow(rustdoc::private_intra_doc_links)]
 
@@ -50,7 +49,7 @@ use rustc_middle::hir::exports::ExportMap;
 use rustc_middle::middle::cstore::{CrateStore, MetadataLoaderDyn};
 use rustc_middle::span_bug;
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, DefIdTree, ResolverOutputs};
+use rustc_middle::ty::{self, DefIdTree, MainDefinition, ResolverOutputs};
 use rustc_session::lint;
 use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::Session;
@@ -234,13 +233,18 @@ enum ResolutionError<'a> {
         /* current */ &'static str,
     ),
     /// Error E0530: `X` bindings cannot shadow `Y`s.
-    BindingShadowsSomethingUnacceptable(&'static str, Symbol, &'a NameBinding<'a>),
+    BindingShadowsSomethingUnacceptable {
+        shadowing_binding_descr: &'static str,
+        name: Symbol,
+        participle: &'static str,
+        article: &'static str,
+        shadowed_binding_descr: &'static str,
+        shadowed_binding_span: Span,
+    },
     /// Error E0128: generic parameters with a default cannot use forward-declared identifiers.
     ForwardDeclaredTyParam, // FIXME(const_generics_defaults)
     /// ERROR E0770: the type of const parameters must not depend on other generic parameters.
     ParamInTyOfConstParam(Symbol),
-    /// constant values inside of type parameter defaults must not depend on generic parameters.
-    ParamInAnonConstInTyDefault(Symbol),
     /// generic parameters must not be used inside const evaluations.
     ///
     /// This error is only emitted when using `min_const_generics`.
@@ -1023,6 +1027,8 @@ pub struct Resolver<'a> {
     trait_impl_items: FxHashSet<LocalDefId>,
 
     legacy_const_generic_args: FxHashMap<DefId, Option<Vec<usize>>>,
+
+    main_def: Option<MainDefinition>,
 }
 
 /// Nothing really interesting here; it just provides memory for the rest of the crate.
@@ -1350,6 +1356,7 @@ impl<'a> Resolver<'a> {
             next_disambiguator: Default::default(),
             trait_impl_items: Default::default(),
             legacy_const_generic_args: Default::default(),
+            main_def: Default::default(),
         };
 
         let root_parent_scope = ParentScope::module(graph_root, &resolver);
@@ -1384,6 +1391,7 @@ impl<'a> Resolver<'a> {
         let maybe_unused_trait_imports = self.maybe_unused_trait_imports;
         let maybe_unused_extern_crates = self.maybe_unused_extern_crates;
         let glob_map = self.glob_map;
+        let main_def = self.main_def;
         ResolverOutputs {
             definitions,
             cstore: Box::new(self.crate_loader.into_cstore()),
@@ -1398,6 +1406,7 @@ impl<'a> Resolver<'a> {
                 .iter()
                 .map(|(ident, entry)| (ident.name, entry.introduced_by_item))
                 .collect(),
+            main_def,
         }
     }
 
@@ -1416,6 +1425,7 @@ impl<'a> Resolver<'a> {
                 .iter()
                 .map(|(ident, entry)| (ident.name, entry.introduced_by_item))
                 .collect(),
+            main_def: self.main_def.clone(),
         }
     }
 
@@ -1461,6 +1471,7 @@ impl<'a> Resolver<'a> {
             self.session.time("finalize_imports", || ImportResolver { r: self }.finalize_imports());
             self.session.time("finalize_macro_resolutions", || self.finalize_macro_resolutions());
             self.session.time("late_resolve_crate", || self.late_resolve_crate(krate));
+            self.session.time("resolve_main", || self.resolve_main());
             self.session.time("resolve_check_unused", || self.check_unused(krate));
             self.session.time("resolve_report_errors", || self.report_errors(krate));
             self.session.time("resolve_postprocess", || self.crate_loader.postprocess(krate));
@@ -1765,9 +1776,11 @@ impl<'a> Resolver<'a> {
                     let expn_data = expn_id.expn_data();
                     match expn_data.kind {
                         ExpnKind::Root
-                        | ExpnKind::Macro(MacroKind::Bang | MacroKind::Derive, _) => {
-                            Scope::DeriveHelpersCompat
-                        }
+                        | ExpnKind::Macro {
+                            kind: MacroKind::Bang | MacroKind::Derive,
+                            name: _,
+                            proc_macro: _,
+                        } => Scope::DeriveHelpersCompat,
                         _ => Scope::DeriveHelpers(expn_data.parent),
                     }
                 }
@@ -2672,26 +2685,18 @@ impl<'a> Resolver<'a> {
                 }
             }
             Res::Def(DefKind::TyParam, _) | Res::SelfTy(..) => {
-                let mut in_ty_param_default = false;
                 for rib in ribs {
-                    let has_generic_params = match rib.kind {
+                    let has_generic_params: HasGenericParams = match rib.kind {
                         NormalRibKind
                         | ClosureOrAsyncRibKind
                         | AssocItemRibKind
                         | ModuleRibKind(..)
-                        | MacroDefinition(..) => {
+                        | MacroDefinition(..)
+                        | ForwardGenericParamBanRibKind => {
                             // Nothing to do. Continue.
                             continue;
                         }
 
-                        // We only forbid constant items if we are inside of type defaults,
-                        // for example `struct Foo<T, U = [u8; std::mem::size_of::<T>()]>`
-                        ForwardGenericParamBanRibKind => {
-                            // FIXME(const_generic_defaults): we may need to distinguish between
-                            // being in type parameter defaults and const parameter defaults
-                            in_ty_param_default = true;
-                            continue;
-                        }
                         ConstantItemRibKind(trivial, _) => {
                             let features = self.session.features_untracked();
                             // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
@@ -2720,19 +2725,7 @@ impl<'a> Resolver<'a> {
                                 }
                             }
 
-                            if in_ty_param_default {
-                                if record_used {
-                                    self.report_error(
-                                        span,
-                                        ResolutionError::ParamInAnonConstInTyDefault(
-                                            rib_ident.name,
-                                        ),
-                                    );
-                                }
-                                return Res::Err;
-                            } else {
-                                continue;
-                            }
+                            continue;
                         }
 
                         // This was an attempt to use a type parameter outside its scope.
@@ -2770,23 +2763,15 @@ impl<'a> Resolver<'a> {
                     ribs.next();
                 }
 
-                let mut in_ty_param_default = false;
                 for rib in ribs {
                     let has_generic_params = match rib.kind {
                         NormalRibKind
                         | ClosureOrAsyncRibKind
                         | AssocItemRibKind
                         | ModuleRibKind(..)
-                        | MacroDefinition(..) => continue,
+                        | MacroDefinition(..)
+                        | ForwardGenericParamBanRibKind => continue,
 
-                        // We only forbid constant items if we are inside of type defaults,
-                        // for example `struct Foo<T, U = [u8; std::mem::size_of::<T>()]>`
-                        ForwardGenericParamBanRibKind => {
-                            // FIXME(const_generic_defaults): we may need to distinguish between
-                            // being in type parameter defaults and const parameter defaults
-                            in_ty_param_default = true;
-                            continue;
-                        }
                         ConstantItemRibKind(trivial, _) => {
                             let features = self.session.features_untracked();
                             // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
@@ -2808,19 +2793,7 @@ impl<'a> Resolver<'a> {
                                 return Res::Err;
                             }
 
-                            if in_ty_param_default {
-                                if record_used {
-                                    self.report_error(
-                                        span,
-                                        ResolutionError::ParamInAnonConstInTyDefault(
-                                            rib_ident.name,
-                                        ),
-                                    );
-                                }
-                                return Res::Err;
-                            } else {
-                                continue;
-                            }
+                            continue;
                         }
 
                         ItemRibKind(has_generic_params) => has_generic_params,
@@ -3391,6 +3364,32 @@ impl<'a> Resolver<'a> {
             }
         }
         None
+    }
+
+    fn resolve_main(&mut self) {
+        let module = self.graph_root;
+        let ident = Ident::with_dummy_span(sym::main);
+        let parent_scope = &ParentScope::module(module, self);
+
+        let name_binding = match self.resolve_ident_in_module(
+            ModuleOrUniformRoot::Module(module),
+            ident,
+            ValueNS,
+            parent_scope,
+            false,
+            DUMMY_SP,
+        ) {
+            Ok(name_binding) => name_binding,
+            _ => return,
+        };
+
+        let res = name_binding.res();
+        let is_import = name_binding.is_import();
+        let span = name_binding.span;
+        if let Res::Def(DefKind::Fn, _) = res {
+            self.record_use(ident, ValueNS, name_binding, false);
+        }
+        self.main_def = Some(MainDefinition { res, is_import, span });
     }
 }
 

@@ -1618,7 +1618,11 @@ declare_lint! {
     /// [`impl Trait`]: https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
     pub BARE_TRAIT_OBJECTS,
     Warn,
-    "suggest using `dyn Trait` for trait objects"
+    "suggest using `dyn Trait` for trait objects",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #80165 <https://github.com/rust-lang/rust/issues/80165>",
+        edition: Some(Edition::Edition2021),
+    };
 }
 
 declare_lint! {
@@ -2877,6 +2881,39 @@ declare_lint! {
     };
 }
 
+declare_lint! {
+    /// The `large_assignments` lint detects when objects of large
+    /// types are being moved around.
+    ///
+    /// ### Example
+    ///
+    /// ```rust,ignore (can crash on some platforms)
+    /// let x = [0; 50000];
+    /// let y = x;
+    /// ```
+    ///
+    /// produces:
+    ///
+    /// ```text
+    /// warning: moving a large value
+    ///   --> $DIR/move-large.rs:1:3
+    ///   let y = x;
+    ///           - Copied large value here
+    /// ```
+    ///
+    /// ### Explanation
+    ///
+    /// When using a large type in a plain assignment or in a function
+    /// argument, idiomatic code can be inefficient.
+    /// Ideally appropriate optimizations would resolve this, but such
+    /// optimizations are only done in a best-effort manner.
+    /// This lint will trigger on all sites of large moves and thus allow the
+    /// user to resolve them in code.
+    pub LARGE_ASSIGNMENTS,
+    Warn,
+    "detects large moves or copies",
+}
+
 declare_lint_pass! {
     /// Does nothing as a lint pass, but registers some `Lint`s
     /// that are used by other parts of the compiler.
@@ -2958,10 +2995,11 @@ declare_lint_pass! {
         UNSUPPORTED_NAKED_FUNCTIONS,
         MISSING_ABI,
         SEMICOLON_IN_EXPRESSIONS_FROM_MACROS,
-        DISJOINT_CAPTURE_DROP_REORDER,
+        DISJOINT_CAPTURE_MIGRATION,
         LEGACY_DERIVE_HELPERS,
         PROC_MACRO_BACK_COMPAT,
         OR_PATTERNS_BACK_COMPAT,
+        LARGE_ASSIGNMENTS,
     ]
 }
 
@@ -2989,14 +3027,17 @@ declare_lint! {
 }
 
 declare_lint! {
-    /// The `disjoint_capture_drop_reorder` lint detects variables that aren't completely
+    /// The `disjoint_capture_migration` lint detects variables that aren't completely
     /// captured when the feature `capture_disjoint_fields` is enabled and it affects the Drop
     /// order of at least one path starting at this variable.
+    /// It can also detect when a variable implements a trait, but one of its field does not and
+    /// the field is captured by a closure and used with the assumption that said field implements
+    /// the same trait as the root variable.
     ///
-    /// ### Example
+    /// ### Example of drop reorder
     ///
     /// ```rust,compile_fail
-    /// # #![deny(disjoint_capture_drop_reorder)]
+    /// # #![deny(disjoint_capture_migration)]
     /// # #![allow(unused)]
     /// struct FancyInteger(i32);
     ///
@@ -3027,10 +3068,35 @@ declare_lint! {
     ///
     /// In the above example `p.y` will be dropped at the end of `f` instead of with `c` if
     /// the feature `capture_disjoint_fields` is enabled.
-    pub DISJOINT_CAPTURE_DROP_REORDER,
+    ///
+    /// ### Example of auto-trait
+    ///
+    /// ```rust,compile_fail
+    /// #![deny(disjoint_capture_migration)]
+    /// use std::thread;
+    ///
+    /// struct Pointer (*mut i32);
+    /// unsafe impl Send for Pointer {}
+    ///
+    /// fn main() {
+    ///     let mut f = 10;
+    ///     let fptr = Pointer(&mut f as *mut i32);
+    ///     thread::spawn(move || unsafe {
+    ///         *fptr.0 = 20;
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// In the above example `fptr.0` is captured when feature `capture_disjoint_fields` is enabled.
+    /// The field is of type *mut i32 which doesn't implement Send, making the code invalid as the
+    /// field cannot be sent between thread safely.
+    pub DISJOINT_CAPTURE_MIGRATION,
     Allow,
-    "Drop reorder because of `capture_disjoint_fields`"
-
+    "Drop reorder and auto traits error because of `capture_disjoint_fields`"
 }
 
 declare_lint_pass!(UnusedDocComment => [UNUSED_DOC_COMMENTS]);

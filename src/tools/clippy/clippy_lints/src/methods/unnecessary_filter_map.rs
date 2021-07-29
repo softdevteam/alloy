@@ -1,10 +1,12 @@
 use clippy_utils::diagnostics::span_lint;
 use clippy_utils::usage::mutated_variables;
-use clippy_utils::{is_trait_method, match_qpath, path_to_local_id, paths};
+use clippy_utils::{is_lang_ctor, is_trait_method, path_to_local_id};
 use rustc_hir as hir;
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_hir::LangItem::{OptionNone, OptionSome};
 use rustc_lint::LateContext;
 use rustc_middle::hir::map::Map;
+use rustc_middle::ty::{self, TyS};
 use rustc_span::sym;
 
 use super::UNNECESSARY_FILTER_MAP;
@@ -27,25 +29,28 @@ pub(super) fn check(cx: &LateContext<'_>, expr: &hir::Expr<'_>, arg: &hir::Expr<
         found_mapping |= return_visitor.found_mapping;
         found_filtering |= return_visitor.found_filtering;
 
-        if !found_filtering {
-            span_lint(
-                cx,
-                UNNECESSARY_FILTER_MAP,
-                expr.span,
-                "this `.filter_map` can be written more simply using `.map`",
-            );
+        let sugg = if !found_filtering {
+            "map"
+        } else if !found_mapping && !mutates_arg {
+            let in_ty = cx.typeck_results().node_type(body.params[0].hir_id);
+            match cx.typeck_results().expr_ty(&body.value).kind() {
+                ty::Adt(adt, subst)
+                    if cx.tcx.is_diagnostic_item(sym::option_type, adt.did)
+                        && TyS::same_type(in_ty, subst.type_at(0)) =>
+                {
+                    "filter"
+                },
+                _ => return,
+            }
+        } else {
             return;
-        }
-
-        if !found_mapping && !mutates_arg {
-            span_lint(
-                cx,
-                UNNECESSARY_FILTER_MAP,
-                expr.span,
-                "this `.filter_map` can be written more simply using `.filter`",
-            );
-            return;
-        }
+        };
+        span_lint(
+            cx,
+            UNNECESSARY_FILTER_MAP,
+            expr.span,
+            &format!("this `.filter_map` can be written more simply using `.{}`", sugg),
+        );
     }
 }
 
@@ -54,14 +59,12 @@ fn check_expression<'tcx>(cx: &LateContext<'tcx>, arg_id: hir::HirId, expr: &'tc
     match &expr.kind {
         hir::ExprKind::Call(func, args) => {
             if let hir::ExprKind::Path(ref path) = func.kind {
-                if match_qpath(path, &paths::OPTION_SOME) {
+                if is_lang_ctor(cx, path, OptionSome) {
                     if path_to_local_id(&args[0], arg_id) {
                         return (false, false);
                     }
                     return (true, false);
                 }
-                // We don't know. It might do anything.
-                return (true, true);
             }
             (true, true)
         },
@@ -85,7 +88,7 @@ fn check_expression<'tcx>(cx: &LateContext<'tcx>, arg_id: hir::HirId, expr: &'tc
             let else_check = check_expression(cx, arg_id, else_arm);
             (if_check.0 | else_check.0, if_check.1 | else_check.1)
         },
-        hir::ExprKind::Path(path) if match_qpath(path, &paths::OPTION_NONE) => (false, true),
+        hir::ExprKind::Path(path) if is_lang_ctor(cx, path, OptionNone) => (false, true),
         _ => (true, true),
     }
 }

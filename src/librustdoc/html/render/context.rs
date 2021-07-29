@@ -11,14 +11,15 @@ use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
 use rustc_span::edition::Edition;
 use rustc_span::source_map::FileName;
-use rustc_span::{symbol::sym, Symbol};
+use rustc_span::symbol::sym;
 
 use super::cache::{build_index, ExternalLocation};
 use super::print_item::{full_path, item_path, print_item};
 use super::write_shared::write_shared;
 use super::{print_sidebar, settings, AllTypes, NameDoc, StylePath, BASIC_KEYWORDS};
 
-use crate::clean::{self, AttributesExt};
+use crate::clean;
+use crate::clean::ExternalCrate;
 use crate::config::RenderOptions;
 use crate::docfs::{DocFS, PathError};
 use crate::error::Error;
@@ -90,6 +91,8 @@ crate struct SharedContext<'tcx> {
     crate include_sources: bool,
     /// The local file sources we've emitted and their respective url-paths.
     crate local_sources: FxHashMap<PathBuf, String>,
+    /// Show the memory layout of types in the docs.
+    pub(super) show_type_layout: bool,
     /// Whether the collapsed pass ran
     collapsed: bool,
     /// The base-URL of the issue tracker for when an item has been tagged with
@@ -111,8 +114,6 @@ crate struct SharedContext<'tcx> {
     crate static_root_path: Option<String>,
     /// The fs handle we are working with.
     crate fs: DocFS,
-    /// The default edition used to parse doctests.
-    crate edition: Edition,
     pub(super) codes: ErrorCodes,
     pub(super) playground: Option<markdown::Playground>,
     all: RefCell<AllTypes>,
@@ -136,10 +137,14 @@ impl SharedContext<'_> {
         Ok(())
     }
 
-    /// Based on whether the `collapse-docs` pass was run, return either the `doc_value` or the
-    /// `collapsed_doc_value` of the given item.
+    /// Returns the `collapsed_doc_value` of the given item if this is the main crate, otherwise
+    /// returns the `doc_value`.
     crate fn maybe_collapsed_doc_value<'a>(&self, item: &'a clean::Item) -> Option<String> {
         if self.collapsed { item.collapsed_doc_value() } else { item.doc_value() }
+    }
+
+    crate fn edition(&self) -> Edition {
+        self.tcx.sess.edition()
     }
 }
 
@@ -152,7 +157,7 @@ impl<'tcx> Context<'tcx> {
         &self.cache
     }
 
-    fn sess(&self) -> &'tcx Session {
+    pub(super) fn sess(&self) -> &'tcx Session {
         &self.shared.tcx.sess
     }
 
@@ -167,19 +172,18 @@ impl<'tcx> Context<'tcx> {
         "../".repeat(self.current.len())
     }
 
-    fn render_item(&self, it: &clean::Item, pushname: bool) -> String {
-        let mut title = if it.is_primitive() || it.is_keyword() {
-            // No need to include the namespace for primitive types and keywords
-            String::new()
-        } else {
-            self.current.join("::")
-        };
-        if pushname {
-            if !title.is_empty() {
-                title.push_str("::");
-            }
+    fn render_item(&self, it: &clean::Item, is_module: bool) -> String {
+        let mut title = String::new();
+        if !is_module {
             title.push_str(&it.name.unwrap().as_str());
         }
+        if !it.is_primitive() && !it.is_keyword() {
+            if !is_module {
+                title.push_str(" in ");
+            }
+            // No need to include the namespace for primitive types and keywords
+            title.push_str(&self.current.join("::"));
+        };
         title.push_str(" - Rust");
         let tyname = it.type_();
         let desc = it.doc_value().as_ref().map(|doc| plain_text_summary(&doc));
@@ -213,11 +217,11 @@ impl<'tcx> Context<'tcx> {
                 &self.shared.layout,
                 &page,
                 |buf: &mut _| print_sidebar(self, it, buf),
-                |buf: &mut _| print_item(self, it, buf),
+                |buf: &mut _| print_item(self, it, buf, &page),
                 &self.shared.style_files,
             )
         } else {
-            if let Some(&(ref names, ty)) = self.cache.paths.get(&it.def_id) {
+            if let Some(&(ref names, ty)) = self.cache.paths.get(&it.def_id.expect_real()) {
                 let mut path = String::new();
                 for name in &names[..names.len() - 1] {
                     path.push_str(name);
@@ -280,16 +284,16 @@ impl<'tcx> Context<'tcx> {
     /// may happen, for example, with externally inlined items where the source
     /// of their crate documentation isn't known.
     pub(super) fn src_href(&self, item: &clean::Item) -> Option<String> {
-        if item.span.is_dummy() {
+        if item.span(self.tcx()).is_dummy() {
             return None;
         }
         let mut root = self.root_path();
         let mut path = String::new();
-        let cnum = item.span.cnum(self.sess());
+        let cnum = item.span(self.tcx()).cnum(self.sess());
 
         // We can safely ignore synthetic `SourceFile`s.
-        let file = match item.span.filename(self.sess()) {
-            FileName::Real(ref path) => path.local_path().to_path_buf(),
+        let file = match item.span(self.tcx()).filename(self.sess()) {
+            FileName::Real(ref path) => path.local_path_if_available().to_path_buf(),
             _ => return None,
         };
         let file = &file;
@@ -303,12 +307,16 @@ impl<'tcx> Context<'tcx> {
             }
         } else {
             let (krate, src_root) = match *self.cache.extern_locations.get(&cnum)? {
-                (name, ref src, ExternalLocation::Local) => (name, src),
-                (name, ref src, ExternalLocation::Remote(ref s)) => {
-                    root = s.to_string();
-                    (name, src)
+                ExternalLocation::Local => {
+                    let e = ExternalCrate { crate_num: cnum };
+                    (e.name(self.tcx()), e.src_root(self.tcx()))
                 }
-                (_, _, ExternalLocation::Unknown) => return None,
+                ExternalLocation::Remote(ref s) => {
+                    root = s.to_string();
+                    let e = ExternalCrate { crate_num: cnum };
+                    (e.name(self.tcx()), e.src_root(self.tcx()))
+                }
+                ExternalLocation::Unknown => return None,
             };
 
             sources::clean_path(&src_root, file, false, |component| {
@@ -322,8 +330,8 @@ impl<'tcx> Context<'tcx> {
             (&*symbol, &path)
         };
 
-        let loline = item.span.lo(self.sess()).line;
-        let hiline = item.span.hi(self.sess()).line;
+        let loline = item.span(self.tcx()).lo(self.sess()).line;
+        let hiline = item.span(self.tcx()).hi(self.sess()).line;
         let lines =
             if loline == hiline { loline.to_string() } else { format!("{}-{}", loline, hiline) };
         Some(format!(
@@ -347,7 +355,6 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
     fn init(
         mut krate: clean::Crate,
         options: RenderOptions,
-        edition: Edition,
         mut cache: Cache,
         tcx: TyCtxt<'tcx>,
     ) -> Result<(Self, clean::Crate), Error> {
@@ -368,11 +375,12 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             generate_search_filter,
             unstable_features,
             generate_redirect_map,
+            show_type_layout,
             ..
         } = options;
 
         let src_root = match krate.src {
-            FileName::Real(ref p) => match p.local_path().parent() {
+            FileName::Real(ref p) => match p.local_path_if_available().parent() {
                 Some(p) => p.to_path_buf(),
                 None => PathBuf::new(),
             },
@@ -436,12 +444,12 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             resource_suffix,
             static_root_path,
             fs: DocFS::new(sender),
-            edition,
             codes: ErrorCodes::from(unstable_features.is_nightly_build()),
             playground,
             all: RefCell::new(AllTypes::new()),
             errors: receiver,
             redirections: if generate_redirect_map { Some(Default::default()) } else { None },
+            show_type_layout,
         };
 
         // Add the default themes to the `Vec` of stylepaths
@@ -495,11 +503,8 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
         }
     }
 
-    fn after_krate(
-        &mut self,
-        crate_name: Symbol,
-        diag: &rustc_errors::Handler,
-    ) -> Result<(), Error> {
+    fn after_krate(&mut self) -> Result<(), Error> {
+        let crate_name = self.tcx().crate_name(LOCAL_CRATE);
         let final_file = self.dst.join(&*crate_name.as_str()).join("all.html");
         let settings_file = self.dst.join("settings.html");
 
@@ -573,7 +578,8 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
 
         // Flush pending errors.
         Rc::get_mut(&mut self.shared).unwrap().fs.close();
-        let nb_errors = self.shared.errors.iter().map(|err| diag.struct_err(&err).emit()).count();
+        let nb_errors =
+            self.shared.errors.iter().map(|err| self.tcx().sess.struct_err(&err).emit()).count();
         if nb_errors > 0 {
             Err(Error::new(io::Error::new(io::ErrorKind::Other, "I/O error"), ""))
         } else {
@@ -581,7 +587,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
         }
     }
 
-    fn mod_item_in(&mut self, item: &clean::Item, item_name: &str) -> Result<(), Error> {
+    fn mod_item_in(&mut self, item: &clean::Item) -> Result<(), Error> {
         // Stripped modules survive the rustdoc passes (i.e., `strip-private`)
         // if they contain impls for public types. These modules can also
         // contain items such as publicly re-exported structures.
@@ -593,12 +599,13 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             self.render_redirect_pages = item.is_stripped();
         }
         let scx = &self.shared;
-        self.dst.push(item_name);
-        self.current.push(item_name.to_owned());
+        let item_name = item.name.as_ref().unwrap().to_string();
+        self.dst.push(&item_name);
+        self.current.push(item_name);
 
         info!("Recursing into {}", self.dst.display());
 
-        let buf = self.render_item(item, false);
+        let buf = self.render_item(item, true);
         // buf will be empty if the module is stripped and there is no redirect for it
         if !buf.is_empty() {
             self.shared.ensure_dir(&self.dst)?;
@@ -620,7 +627,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
         Ok(())
     }
 
-    fn mod_item_out(&mut self, _item_name: &str) -> Result<(), Error> {
+    fn mod_item_out(&mut self) -> Result<(), Error> {
         info!("Recursed; leaving {}", self.dst.display());
 
         // Go back to where we were at
@@ -641,7 +648,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             self.render_redirect_pages = item.is_stripped();
         }
 
-        let buf = self.render_item(&item, true);
+        let buf = self.render_item(&item, false);
         // buf will be empty if the item is stripped and there is no redirect for it
         if !buf.is_empty() {
             let name = item.name.as_ref().unwrap();

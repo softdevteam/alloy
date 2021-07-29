@@ -41,6 +41,9 @@ crate static BRUSH_SVG: &[u8] = include_bytes!("static/brush.svg");
 /// The file contents of `wheel.svg`, the icon used for the settings button.
 crate static WHEEL_SVG: &[u8] = include_bytes!("static/wheel.svg");
 
+/// The file contents of `clipboard.svg`, the icon used for the "copy path" button.
+crate static CLIPBOARD_SVG: &[u8] = include_bytes!("static/clipboard.svg");
+
 /// The file contents of `down-arrow.svg`, the icon used for the crate choice combobox.
 crate static DOWN_ARROW_SVG: &[u8] = include_bytes!("static/down-arrow.svg");
 
@@ -123,8 +126,22 @@ crate mod source_code_pro {
     crate static LICENSE: &[u8] = include_bytes!("static/SourceCodePro-LICENSE.txt");
 }
 
+crate mod noto_sans_kr {
+    /// The file `noto-sans-kr-v13-korean-regular.woff`, the Regular variant of the Noto Sans KR
+    /// font.
+    crate static REGULAR: &[u8] = include_bytes!("static/noto-sans-kr-v13-korean-regular.woff");
+
+    /// The file `noto-sans-kr-v13-korean-regular-LICENSE.txt`, the license text of the Noto Sans KR
+    /// font.
+    crate static LICENSE: &[u8] =
+        include_bytes!("static/noto-sans-kr-v13-korean-regular-LICENSE.txt");
+}
+
 /// Files related to the sidebar in rustdoc sources.
 crate mod sidebar {
     /// File script to handle sidebar.
     crate static SOURCE_SCRIPT: &str = include_str!("static/source-script.js");
+
+    /// Top Level sidebar items script which will load a sidebar without items.
+    crate static ITEMS: &str = include_str!("static/sidebar-items.js");
 }

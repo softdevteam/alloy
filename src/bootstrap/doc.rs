@@ -434,6 +434,7 @@ impl Step for Std {
             cargo
                 .arg("-p")
                 .arg(package)
+                .arg("-Zskip-rustdoc-fingerprint")
                 .arg("--")
                 .arg("--markdown-css")
                 .arg("rust.css")
@@ -451,6 +452,22 @@ impl Step for Std {
 
             builder.run(&mut cargo.into());
         };
+
+        let paths = builder
+            .paths
+            .iter()
+            .map(components_simplified)
+            .filter_map(|path| {
+                if path.get(0) == Some(&"library") {
+                    Some(path[1].to_owned())
+                } else if !path.is_empty() {
+                    Some(path[0].to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
         // Only build the following crates. While we could just iterate over the
         // folder structure, that would also build internal crates that we do
         // not want to show in documentation. These crates will later be visited
@@ -461,30 +478,22 @@ impl Step for Std {
         // create correct links between crates because rustdoc depends on the
         // existence of the output directories to know if it should be a local
         // or remote link.
-        //
-        // There's also a mild hack here where we build the first crate in this
-        // list, core, twice. This is currently necessary to make sure that
-        // cargo's cached rustc/rustdoc versions are up to date which means
-        // cargo won't delete the out_dir we create for the stampfile.
-        // Essentially any crate could go into the first slot here as it's
-        // output directory will be deleted by us (as cargo will purge the stamp
-        // file during the first slot's run), and core is relatively fast to
-        // build so works OK to fill this 'dummy' slot.
         let krates = ["core", "alloc", "std", "proc_macro", "test"];
         for krate in &krates {
             run_cargo_rustdoc_for(krate);
+            if paths.iter().any(|p| p == krate) {
+                // No need to document more of the libraries if we have the one we want.
+                break;
+            }
         }
         builder.cp_r(&out_dir, &out);
 
         // Look for library/std, library/core etc in the `x.py doc` arguments and
         // open the corresponding rendered docs.
-        for path in builder.paths.iter().map(components_simplified) {
-            if path.get(0) == Some(&"library") {
-                let requested_crate = &path[1];
-                if krates.contains(&requested_crate) {
-                    let index = out.join(requested_crate).join("index.html");
-                    open(builder, &index);
-                }
+        for requested_crate in paths {
+            if krates.iter().any(|k| *k == requested_crate.as_str()) {
+                let index = out.join(requested_crate).join("index.html");
+                open(builder, &index);
             }
         }
     }
@@ -554,7 +563,9 @@ impl Step for Rustc {
         cargo.rustdocflag("--enable-index-page");
         cargo.rustdocflag("-Zunstable-options");
         cargo.rustdocflag("-Znormalize-docs");
+        cargo.rustdocflag("--show-type-layout");
         compile::rustc_cargo(builder, &mut cargo, target);
+        cargo.arg("-Zskip-rustdoc-fingerprint");
 
         // Only include compiler crates, no dependencies of those, such as `libc`.
         cargo.arg("--no-deps");
@@ -646,6 +657,7 @@ impl Step for Rustdoc {
             &[],
         );
 
+        cargo.arg("-Zskip-rustdoc-fingerprint");
         // Only include compiler crates, no dependencies of those, such as `libc`.
         cargo.arg("--no-deps");
         cargo.arg("-p").arg("rustdoc");
@@ -653,6 +665,7 @@ impl Step for Rustdoc {
 
         cargo.rustdocflag("--document-private-items");
         cargo.rustdocflag("--enable-index-page");
+        cargo.rustdocflag("--show-type-layout");
         cargo.rustdocflag("-Zunstable-options");
         builder.run(&mut cargo.into());
     }

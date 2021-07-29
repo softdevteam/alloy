@@ -4,10 +4,9 @@ use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::{AsyncGeneratorKind, GeneratorKind};
-use rustc_index::vec::Idx;
 use rustc_middle::mir::{
     self, AggregateKind, BindingForm, BorrowKind, ClearCrossCrate, ConstraintCategory,
-    FakeReadCause, Local, LocalDecl, LocalInfo, LocalKind, Location, Operand, Place, PlaceRef,
+    FakeReadCause, LocalDecl, LocalInfo, LocalKind, Location, Operand, Place, PlaceRef,
     ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, VarBindingForm,
 };
 use rustc_middle::ty::{self, suggest_constraining_type_param, Ty, TypeFoldable};
@@ -99,7 +98,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             );
             err.span_label(span, format!("use of possibly-uninitialized {}", item_msg));
 
-            use_spans.var_span_label(
+            use_spans.var_span_label_path_only(
                 &mut err,
                 format!("{} occurs due to use{}", desired_action.as_noun(), use_spans.describe()),
             );
@@ -197,7 +196,11 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                                 );
                             }
                         }
-                        FnSelfUseKind::Normal { self_arg, implicit_into_iter } => {
+                        FnSelfUseKind::Normal {
+                            self_arg,
+                            implicit_into_iter,
+                            is_option_or_result,
+                        } => {
                             if implicit_into_iter {
                                 err.span_label(
                                     fn_call_span,
@@ -213,6 +216,14 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                                         "{} {}moved due to this method call{}",
                                         place_name, partially_str, loop_message
                                     ),
+                                );
+                            }
+                            if is_option_or_result {
+                                err.span_suggestion_verbose(
+                                    fn_call_span.shrink_to_lo(),
+                                    "consider calling `.as_ref()` to borrow the type's contents",
+                                    "as_ref().".to_string(),
+                                    Applicability::MachineApplicable,
                                 );
                             }
                             // Avoid pointing to the same function in multiple different
@@ -243,6 +254,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                                 partially_str,
                                 move_spans.describe()
                             ),
+                            "moved",
                         );
                     }
                 }
@@ -292,7 +304,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 }
             }
 
-            use_spans.var_span_label(
+            use_spans.var_span_label_path_only(
                 &mut err,
                 format!("{} occurs due to use{}", desired_action.as_noun(), use_spans.describe()),
             );
@@ -422,13 +434,16 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         err.span_label(borrow_span, format!("borrow of {} occurs here", borrow_msg));
         err.span_label(span, format!("move out of {} occurs here", value_msg));
 
-        borrow_spans.var_span_label(
+        borrow_spans.var_span_label_path_only(
             &mut err,
             format!("borrow occurs due to use{}", borrow_spans.describe()),
         );
 
-        move_spans
-            .var_span_label(&mut err, format!("move occurs due to use{}", move_spans.describe()));
+        move_spans.var_span_label(
+            &mut err,
+            format!("move occurs due to use{}", move_spans.describe()),
+            "moved",
+        );
 
         self.explain_why_borrow_contains_point(location, borrow, None)
             .add_explanation_to_diagnostic(
@@ -456,6 +471,8 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         let use_spans = self.move_spans(place.as_ref(), location);
         let span = use_spans.var_or_use();
 
+        // If the attempted use is in a closure then we do not care about the path span of the place we are currently trying to use
+        // we call `var_span_label` on `borrow_spans` to annotate if the existing borrow was in a closure
         let mut err = self.cannot_use_when_mutably_borrowed(
             span,
             &self.describe_any_place(place.as_ref()),
@@ -463,11 +480,15 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             &self.describe_any_place(borrow.borrowed_place.as_ref()),
         );
 
-        borrow_spans.var_span_label(&mut err, {
-            let place = &borrow.borrowed_place;
-            let desc_place = self.describe_any_place(place.as_ref());
-            format!("borrow occurs due to use of {}{}", desc_place, borrow_spans.describe())
-        });
+        borrow_spans.var_span_label(
+            &mut err,
+            {
+                let place = &borrow.borrowed_place;
+                let desc_place = self.describe_any_place(place.as_ref());
+                format!("borrow occurs due to use of {}{}", desc_place, borrow_spans.describe())
+            },
+            "mutable",
+        );
 
         self.explain_why_borrow_contains_point(location, borrow, None)
             .add_explanation_to_diagnostic(
@@ -579,6 +600,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                             desc_place,
                             borrow_spans.describe(),
                         ),
+                        "immutable",
                     );
 
                     return err;
@@ -655,7 +677,8 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         if issued_spans == borrow_spans {
             borrow_spans.var_span_label(
                 &mut err,
-                format!("borrows occur due to use of {}{}", desc_place, borrow_spans.describe()),
+                format!("borrows occur due to use of {}{}", desc_place, borrow_spans.describe(),),
+                gen_borrow_kind.describe_mutability(),
             );
         } else {
             let borrow_place = &issued_borrow.borrowed_place;
@@ -667,6 +690,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                     borrow_place_desc,
                     issued_spans.describe(),
                 ),
+                issued_borrow.kind.describe_mutability(),
             );
 
             borrow_spans.var_span_label(
@@ -676,6 +700,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                     desc_place,
                     borrow_spans.describe(),
                 ),
+                gen_borrow_kind.describe_mutability(),
             );
         }
 
@@ -835,7 +860,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             self.prefixes(borrow.borrowed_place.as_ref(), PrefixSet::All).last().unwrap();
 
         let borrow_spans = self.retrieve_borrow_spans(borrow);
-        let borrow_span = borrow_spans.var_or_use();
+        let borrow_span = borrow_spans.var_or_use_path_span();
 
         assert!(root_place.projection.is_empty());
         let proper_span = self.body.local_decls[root_place.local].source_info.span;
@@ -975,7 +1000,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             location, name, borrow, drop_span, borrow_spans
         );
 
-        let borrow_span = borrow_spans.var_or_use();
+        let borrow_span = borrow_spans.var_or_use_path_span();
         if let BorrowExplanation::MustBeValidFor {
             category,
             span,
@@ -1248,7 +1273,9 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         bug!("temporary or return pointer with a name")
                     }
                     LocalKind::Var => "local variable ",
-                    LocalKind::Arg if !self.upvars.is_empty() && local == Local::new(1) => {
+                    LocalKind::Arg
+                        if !self.upvars.is_empty() && local == ty::CAPTURE_STRUCT_LOCAL =>
+                    {
                         "variable captured by `move` "
                     }
                     LocalKind::Arg => "function parameter ",
@@ -1563,6 +1590,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 loan_spans.var_span_label(
                     &mut err,
                     format!("borrow occurs due to use{}", loan_spans.describe()),
+                    loan.kind.describe_mutability(),
                 );
 
                 err.buffer(&mut self.errors_buffer);
@@ -1573,8 +1601,11 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
 
         let mut err = self.cannot_assign_to_borrowed(span, loan_span, &descr_place);
 
-        loan_spans
-            .var_span_label(&mut err, format!("borrow occurs due to use{}", loan_spans.describe()));
+        loan_spans.var_span_label(
+            &mut err,
+            format!("borrow occurs due to use{}", loan_spans.describe()),
+            loan.kind.describe_mutability(),
+        );
 
         self.explain_why_borrow_contains_point(location, loan, None).add_explanation_to_diagnostic(
             self.infcx.tcx,

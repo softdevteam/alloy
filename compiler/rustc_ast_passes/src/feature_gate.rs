@@ -326,6 +326,45 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 );
             }
         }
+
+        // Check for unstable modifiers on `#[link(..)]` attribute
+        if self.sess.check_name(attr, sym::link) {
+            for nested_meta in attr.meta_item_list().unwrap_or_default() {
+                if nested_meta.has_name(sym::modifiers) {
+                    gate_feature_post!(
+                        self,
+                        native_link_modifiers,
+                        nested_meta.span(),
+                        "native link modifiers are experimental"
+                    );
+
+                    if let Some(modifiers) = nested_meta.value_str() {
+                        for modifier in modifiers.as_str().split(',') {
+                            if let Some(modifier) = modifier.strip_prefix(&['+', '-'][..]) {
+                                macro_rules! gate_modifier { ($($name:literal => $feature:ident)*) => {
+                                    $(if modifier == $name {
+                                        let msg = concat!("`#[link(modifiers=\"", $name, "\")]` is unstable");
+                                        gate_feature_post!(
+                                            self,
+                                            $feature,
+                                            nested_meta.name_value_literal_span().unwrap(),
+                                            msg
+                                        );
+                                    })*
+                                }}
+
+                                gate_modifier!(
+                                    "bundle" => native_link_modifiers_bundle
+                                    "verbatim" => native_link_modifiers_verbatim
+                                    "whole-archive" => native_link_modifiers_whole_archive
+                                    "as-needed" => native_link_modifiers_as_needed
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn visit_item(&mut self, i: &'a ast::Item) {
@@ -586,12 +625,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
 
     fn visit_assoc_item(&mut self, i: &'a ast::AssocItem, ctxt: AssocCtxt) {
         let is_fn = match i.kind {
-            ast::AssocItemKind::Fn(box ast::FnKind(_, ref sig, _, _)) => {
-                if let (ast::Const::Yes(_), AssocCtxt::Trait) = (sig.header.constness, ctxt) {
-                    gate_feature_post!(&self, const_fn, i.span, "const fn is unstable");
-                }
-                true
-            }
+            ast::AssocItemKind::Fn(_) => true,
             ast::AssocItemKind::TyAlias(box ast::TyAliasKind(_, ref generics, _, ref ty)) => {
                 if let (Some(_), AssocCtxt::Trait) = (ty, ctxt) {
                     gate_feature_post!(
@@ -679,10 +713,6 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session) {
     gate_all!(half_open_range_patterns, "half-open range patterns are unstable");
     gate_all!(inline_const, "inline-const is experimental");
     gate_all!(
-        extended_key_value_attributes,
-        "arbitrary expressions in key-value attributes are unstable"
-    );
-    gate_all!(
         const_generics_defaults,
         "default values for const generic parameters are experimental"
     );
@@ -691,7 +721,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session) {
         // involved, so we only emit errors where there are no other parsing errors.
         gate_all!(destructuring_assignment, "destructuring assignments are unstable");
     }
-    gate_all!(pub_macro_rules, "`pub` on `macro_rules` items is unstable");
+    gate_all!(unnamed_fields, "unnamed fields are not yet fully implemented");
 
     // All uses of `gate_all!` below this point were added in #65742,
     // and subsequently disabled (with the non-early gating readded).
@@ -727,16 +757,46 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session) {
 }
 
 fn maybe_stage_features(sess: &Session, krate: &ast::Crate) {
+    use rustc_errors::Applicability;
+
     if !sess.opts.unstable_features.is_nightly_build() {
+        let lang_features = &sess.features_untracked().declared_lang_features;
         for attr in krate.attrs.iter().filter(|attr| sess.check_name(attr, sym::feature)) {
-            struct_span_err!(
+            let mut err = struct_span_err!(
                 sess.parse_sess.span_diagnostic,
                 attr.span,
                 E0554,
                 "`#![feature]` may not be used on the {} release channel",
                 option_env!("CFG_RELEASE_CHANNEL").unwrap_or("(unknown)")
-            )
-            .emit();
+            );
+            let mut all_stable = true;
+            for ident in
+                attr.meta_item_list().into_iter().flatten().map(|nested| nested.ident()).flatten()
+            {
+                let name = ident.name;
+                let stable_since = lang_features
+                    .iter()
+                    .flat_map(|&(feature, _, since)| if feature == name { since } else { None })
+                    .next();
+                if let Some(since) = stable_since {
+                    err.help(&format!(
+                        "the feature `{}` has been stable since {} and no longer requires \
+                                  an attribute to enable",
+                        name, since
+                    ));
+                } else {
+                    all_stable = false;
+                }
+            }
+            if all_stable {
+                err.span_suggestion(
+                    attr.span,
+                    "remove the attribute",
+                    String::new(),
+                    Applicability::MachineApplicable,
+                );
+            }
+            err.emit();
         }
     }
 }

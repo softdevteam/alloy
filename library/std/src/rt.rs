@@ -27,12 +27,10 @@ fn lang_start_internal(
 ) -> isize {
     use crate::alloc::GcAllocator;
     use crate::panic;
-    use crate::sys;
     use crate::sys_common;
-    use crate::sys_common::thread_info;
-    use crate::thread::Thread;
 
-    sys::init();
+    // SAFETY: Only called once during runtime initialization.
+    unsafe { sys_common::rt::init(argc, argv) };
 
     unsafe {
         // Internally, this registers a SIGSEGV handler to compute the start and
@@ -45,23 +43,12 @@ fn lang_start_internal(
         GcAllocator::init();
         let main_guard = sys::thread::guard::init();
         sys::stack_overflow::init();
-
-        // Next, set up the current Thread with the guard information we just
-        // created. Note that this isn't necessary in general for new threads,
-        // but we just do this to name the main thread and to give it correct
-        // info about the stack bounds.
-        let thread = Thread::new(Some("main".to_owned()));
-        thread_info::set(main_guard, thread);
-
-        // Store our args if necessary in a squirreled away location
-        sys::args::init(argc, argv);
-
-        // Let's run some code!
-        let exit_code = panic::catch_unwind(main);
-
-        sys_common::cleanup();
-        exit_code.unwrap_or(101) as isize
     }
+    let exit_code = panic::catch_unwind(main);
+
+    sys_common::rt::cleanup();
+
+    exit_code.unwrap_or(101) as isize
 }
 
 #[cfg(not(test))]

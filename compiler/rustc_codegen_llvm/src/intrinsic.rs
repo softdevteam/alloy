@@ -677,7 +677,8 @@ fn gen_fn<'ll, 'tcx>(
     cx.apply_target_cpu_attr(llfn);
     // FIXME(eddyb) find a nicer way to do this.
     unsafe { llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::InternalLinkage) };
-    let bx = Builder::new_block(cx, llfn, "entry-block");
+    let llbb = Builder::append_block(cx, llfn, "entry-block");
+    let bx = Builder::build(cx, llbb);
     codegen(bx);
     llfn
 }

@@ -110,7 +110,7 @@ impl<'a> iter::Iterator for EscapeAscii<'a> {
     fn try_fold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
     where
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: ops::Try<Ok = Acc>,
+        R: ops::Try<Output = Acc>,
     {
         self.inner.try_fold(init, fold)
     }
@@ -146,7 +146,7 @@ impl<'a> fmt::Display for EscapeAscii<'a> {
 #[unstable(feature = "inherent_ascii_escape", issue = "77174")]
 impl<'a> fmt::Debug for EscapeAscii<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("EscapeAscii { .. }")
+        f.debug_struct("EscapeAscii").finish_non_exhaustive()
     }
 }
 

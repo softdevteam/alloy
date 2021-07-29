@@ -414,10 +414,13 @@ class RustBuild(object):
             filename = "rustc-{}-{}{}".format(rustc_channel, self.build,
                                               tarball_suffix)
             self._download_component_helper(filename, "rustc", tarball_suffix, stage0)
-            filename = "cargo-{}-{}{}".format(rustc_channel, self.build,
-                                              tarball_suffix)
-            self._download_component_helper(filename, "cargo", tarball_suffix)
-            if not stage0:
+            # download-rustc doesn't need its own cargo, it can just use beta's.
+            if stage0:
+                filename = "cargo-{}-{}{}".format(rustc_channel, self.build,
+                                                tarball_suffix)
+                self._download_component_helper(filename, "cargo", tarball_suffix)
+                self.fix_bin_or_dylib("{}/bin/cargo".format(bin_root))
+            else:
                 filename = "rustc-dev-{}-{}{}".format(rustc_channel, self.build, tarball_suffix)
                 self._download_component_helper(
                     filename, "rustc-dev", tarball_suffix, stage0
@@ -425,7 +428,6 @@ class RustBuild(object):
 
             self.fix_bin_or_dylib("{}/bin/rustc".format(bin_root))
             self.fix_bin_or_dylib("{}/bin/rustdoc".format(bin_root))
-            self.fix_bin_or_dylib("{}/bin/cargo".format(bin_root))
             lib_dir = "{}/lib".format(bin_root)
             for lib in os.listdir(lib_dir):
                 if lib.endswith(".so"):
@@ -898,8 +900,8 @@ class RustBuild(object):
         target_linker = self.get_toml("linker", build_section)
         if target_linker is not None:
             env["RUSTFLAGS"] += " -C linker=" + target_linker
-        # cfg(bootstrap): Add `-Wsemicolon_in_expressions_from_macros` after the next beta bump
         env["RUSTFLAGS"] += " -Wrust_2018_idioms -Wunused_lifetimes"
+        env["RUSTFLAGS"] += " -Wsemicolon_in_expressions_from_macros"
         if self.get_toml("deny-warnings", "rust") != "false":
             env["RUSTFLAGS"] += " -Dwarnings"
 
