@@ -260,7 +260,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             PassMode::Direct(_) | PassMode::Pair(..) => {
                 let op = self.codegen_consume(&mut bx, mir::Place::return_place().as_ref());
                 if let Ref(llval, _, align) = op.val {
-                    bx.load(llval, align)
+                    bx.load(bx.backend_type(op.layout), llval, align)
                 } else {
                     op.immediate_or_packed_pair(&mut bx)
                 }
@@ -287,8 +287,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         llval
                     }
                 };
-                let addr = bx.pointercast(llslot, bx.type_ptr_to(bx.cast_backend_type(&cast_ty)));
-                bx.load(addr, self.fn_abi.ret.layout.align.abi)
+                let ty = bx.cast_backend_type(&cast_ty);
+                let addr = bx.pointercast(llslot, bx.type_ptr_to(ty));
+                bx.load(ty, addr, self.fn_abi.ret.layout.align.abi)
             }
         };
         bx.ret(llval);
@@ -332,7 +333,11 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let fn_abi = FnAbi::of_instance(&bx, virtual_drop, &[]);
                 let vtable = args[1];
                 args = &args[..1];
-                (meth::DESTRUCTOR.get_fn(&mut bx, vtable, &fn_abi), fn_abi)
+                (
+                    meth::VirtualIndex::from_index(ty::COMMON_VTABLE_ENTRIES_DROPINPLACE)
+                        .get_fn(&mut bx, vtable, &fn_abi),
+                    fn_abi,
+                )
             }
             _ => (bx.get_fn_addr(drop_fn), FnAbi::of_instance(&bx, drop_fn, &[])),
         };
@@ -1082,15 +1087,16 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         if by_ref && !arg.is_indirect() {
             // Have to load the argument, maybe while casting it.
             if let PassMode::Cast(ty) = arg.mode {
-                let addr = bx.pointercast(llval, bx.type_ptr_to(bx.cast_backend_type(&ty)));
-                llval = bx.load(addr, align.min(arg.layout.align.abi));
+                let llty = bx.cast_backend_type(&ty);
+                let addr = bx.pointercast(llval, bx.type_ptr_to(llty));
+                llval = bx.load(llty, addr, align.min(arg.layout.align.abi));
             } else {
                 // We can't use `PlaceRef::load` here because the argument
                 // may have a type we don't treat as immediate, but the ABI
                 // used for this call is passing it by-value. In that case,
                 // the load would just produce `OperandValue::Ref` instead
                 // of the `OperandValue::Immediate` we need for the call.
-                llval = bx.load(llval, align);
+                llval = bx.load(bx.backend_type(arg.layout), llval, align);
                 if let abi::Abi::Scalar(ref scalar) = arg.layout.abi {
                     if scalar.is_bool() {
                         bx.range_metadata(llval, 0..2);

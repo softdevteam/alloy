@@ -112,17 +112,15 @@ use rustc_hir::{HirIdMap, ImplicitSelfKind, Node};
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::Idx;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
-use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::subst::GenericArgKind;
 use rustc_middle::ty::subst::{InternalSubsts, Subst, SubstsRef};
-use rustc_middle::ty::{self, RegionKind, Ty, TyCtxt, UserType};
+use rustc_middle::ty::{self, Ty, TyCtxt, UserType};
 use rustc_session::config;
 use rustc_session::parse::feature_err;
 use rustc_session::Session;
+use rustc_span::source_map::DUMMY_SP;
 use rustc_span::symbol::{kw, Ident};
 use rustc_span::{self, BytePos, MultiSpan, Span};
-use rustc_span::{source_map::DUMMY_SP, sym};
 use rustc_target::abi::VariantIdx;
 use rustc_target::spec::abi::Abi;
 use rustc_trait_selection::traits;
@@ -174,13 +172,12 @@ impl Needs {
 pub struct UnsafetyState {
     pub def: hir::HirId,
     pub unsafety: hir::Unsafety,
-    pub unsafe_push_count: u32,
     from_fn: bool,
 }
 
 impl UnsafetyState {
     pub fn function(unsafety: hir::Unsafety, def: hir::HirId) -> UnsafetyState {
-        UnsafetyState { def, unsafety, unsafe_push_count: 0, from_fn: true }
+        UnsafetyState { def, unsafety, from_fn: true }
     }
 
     pub fn recurse(self, blk: &hir::Block<'_>) -> UnsafetyState {
@@ -193,19 +190,11 @@ impl UnsafetyState {
             hir::Unsafety::Unsafe if self.from_fn => self,
 
             unsafety => {
-                let (unsafety, def, count) = match blk.rules {
-                    BlockCheckMode::PushUnsafeBlock(..) => {
-                        (unsafety, blk.hir_id, self.unsafe_push_count.checked_add(1).unwrap())
-                    }
-                    BlockCheckMode::PopUnsafeBlock(..) => {
-                        (unsafety, blk.hir_id, self.unsafe_push_count.checked_sub(1).unwrap())
-                    }
-                    BlockCheckMode::UnsafeBlock(..) => {
-                        (hir::Unsafety::Unsafe, blk.hir_id, self.unsafe_push_count)
-                    }
-                    BlockCheckMode::DefaultBlock => (unsafety, self.def, self.unsafe_push_count),
+                let (unsafety, def) = match blk.rules {
+                    BlockCheckMode::UnsafeBlock(..) => (hir::Unsafety::Unsafe, blk.hir_id),
+                    BlockCheckMode::DefaultBlock => (unsafety, self.def),
                 };
-                UnsafetyState { def, unsafety, unsafe_push_count: count, from_fn: false }
+                UnsafetyState { def, unsafety, from_fn: false }
             }
         }
     }
@@ -330,117 +319,6 @@ fn used_trait_imports(tcx: TyCtxt<'_>, def_id: LocalDefId) -> &FxHashSet<LocalDe
     &*tcx.typeck(def_id).used_trait_imports
 }
 
-/// Inspects the substs of opaque types, replacing any inference variables
-/// with proper generic parameter from the identity substs.
-///
-/// This is run after we normalize the function signature, to fix any inference
-/// variables introduced by the projection of associated types. This ensures that
-/// any opaque types used in the signature continue to refer to generic parameters,
-/// allowing them to be considered for defining uses in the function body
-///
-/// For example, consider this code.
-///
-/// ```rust
-/// trait MyTrait {
-///     type MyItem;
-///     fn use_it(self) -> Self::MyItem
-/// }
-/// impl<T, I> MyTrait for T where T: Iterator<Item = I> {
-///     type MyItem = impl Iterator<Item = I>;
-///     fn use_it(self) -> Self::MyItem {
-///         self
-///     }
-/// }
-/// ```
-///
-/// When we normalize the signature of `use_it` from the impl block,
-/// we will normalize `Self::MyItem` to the opaque type `impl Iterator<Item = I>`
-/// However, this projection result may contain inference variables, due
-/// to the way that projection works. We didn't have any inference variables
-/// in the signature to begin with - leaving them in will cause us to incorrectly
-/// conclude that we don't have a defining use of `MyItem`. By mapping inference
-/// variables back to the actual generic parameters, we will correctly see that
-/// we have a defining use of `MyItem`
-fn fixup_opaque_types<'tcx, T>(tcx: TyCtxt<'tcx>, val: T) -> T
-where
-    T: TypeFoldable<'tcx>,
-{
-    struct FixupFolder<'tcx> {
-        tcx: TyCtxt<'tcx>,
-    }
-
-    impl<'tcx> TypeFolder<'tcx> for FixupFolder<'tcx> {
-        fn tcx<'a>(&'a self) -> TyCtxt<'tcx> {
-            self.tcx
-        }
-
-        fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-            match *ty.kind() {
-                ty::Opaque(def_id, substs) => {
-                    debug!("fixup_opaque_types: found type {:?}", ty);
-                    // Here, we replace any inference variables that occur within
-                    // the substs of an opaque type. By definition, any type occurring
-                    // in the substs has a corresponding generic parameter, which is what
-                    // we replace it with.
-                    // This replacement is only run on the function signature, so any
-                    // inference variables that we come across must be the rust of projection
-                    // (there's no other way for a user to get inference variables into
-                    // a function signature).
-                    if ty.needs_infer() {
-                        let new_substs = InternalSubsts::for_item(self.tcx, def_id, |param, _| {
-                            let old_param = substs[param.index as usize];
-                            match old_param.unpack() {
-                                GenericArgKind::Type(old_ty) => {
-                                    if let ty::Infer(_) = old_ty.kind() {
-                                        // Replace inference type with a generic parameter
-                                        self.tcx.mk_param_from_def(param)
-                                    } else {
-                                        old_param.fold_with(self)
-                                    }
-                                }
-                                GenericArgKind::Const(old_const) => {
-                                    if let ty::ConstKind::Infer(_) = old_const.val {
-                                        // This should never happen - we currently do not support
-                                        // 'const projections', e.g.:
-                                        // `impl<T: SomeTrait> MyTrait for T where <T as SomeTrait>::MyConst == 25`
-                                        // which should be the only way for us to end up with a const inference
-                                        // variable after projection. If Rust ever gains support for this kind
-                                        // of projection, this should *probably* be changed to
-                                        // `self.tcx.mk_param_from_def(param)`
-                                        bug!(
-                                            "Found infer const: `{:?}` in opaque type: {:?}",
-                                            old_const,
-                                            ty
-                                        );
-                                    } else {
-                                        old_param.fold_with(self)
-                                    }
-                                }
-                                GenericArgKind::Lifetime(old_region) => {
-                                    if let RegionKind::ReVar(_) = old_region {
-                                        self.tcx.mk_param_from_def(param)
-                                    } else {
-                                        old_param.fold_with(self)
-                                    }
-                                }
-                            }
-                        });
-                        let new_ty = self.tcx.mk_opaque(def_id, new_substs);
-                        debug!("fixup_opaque_types: new type: {:?}", new_ty);
-                        new_ty
-                    } else {
-                        ty
-                    }
-                }
-                _ => ty.super_fold_with(self),
-            }
-        }
-    }
-
-    debug!("fixup_opaque_types({:?})", val);
-    val.fold_with(&mut FixupFolder { tcx })
-}
-
 fn typeck_const_arg<'tcx>(
     tcx: TyCtxt<'tcx>,
     (did, param_did): (LocalDefId, DefId),
@@ -508,7 +386,7 @@ fn typeck_with_fallback<'tcx>(
                 tcx.fn_sig(def_id)
             };
 
-            check_abi(tcx, span, fn_sig.abi());
+            check_abi(tcx, id, span, fn_sig.abi());
 
             // Compute the fty from point of view of inside the fn.
             let fn_sig = tcx.liberate_late_bound_regions(def_id.to_def_id(), fn_sig);
@@ -518,8 +396,6 @@ fn typeck_with_fallback<'tcx>(
                 param_env,
                 fn_sig,
             );
-
-            let fn_sig = fixup_opaque_types(tcx, fn_sig);
 
             let fcx = check_fn(&inh, param_env, fn_sig, decl, id, body, None).0;
             fcx
@@ -565,19 +441,12 @@ fn typeck_with_fallback<'tcx>(
             let expected_type = fcx.normalize_associated_types_in(body.value.span, expected_type);
             fcx.require_type_is_sized(expected_type, body.value.span, traits::ConstSized);
 
-            let revealed_ty = fcx.instantiate_opaque_types_from_value(
-                id,
-                expected_type,
-                body.value.span,
-                Some(sym::impl_trait_in_bindings),
-            );
-
             // Gather locals in statics (because of block expressions).
-            GatherLocalsVisitor::new(&fcx, id).visit_body(body);
+            GatherLocalsVisitor::new(&fcx).visit_body(body);
 
-            fcx.check_expr_coercable_to_type(&body.value, revealed_ty, None);
+            fcx.check_expr_coercable_to_type(&body.value, expected_type, None);
 
-            fcx.write_ty(id, revealed_ty);
+            fcx.write_ty(id, expected_type);
 
             fcx
         };
@@ -697,66 +566,6 @@ fn get_owner_return_paths(
         })
 }
 
-/// Emit an error for recursive opaque types in a `let` binding.
-fn binding_opaque_type_cycle_error(
-    tcx: TyCtxt<'tcx>,
-    def_id: LocalDefId,
-    span: Span,
-    partially_expanded_type: Ty<'tcx>,
-) {
-    let mut err = struct_span_err!(tcx.sess, span, E0720, "cannot resolve opaque type");
-    err.span_label(span, "cannot resolve opaque type");
-    // Find the owner that declared this `impl Trait` type.
-    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
-    let mut prev_hir_id = hir_id;
-    let mut hir_id = tcx.hir().get_parent_node(hir_id);
-    while let Some(node) = tcx.hir().find(hir_id) {
-        match node {
-            hir::Node::Local(hir::Local {
-                pat,
-                init: None,
-                ty: Some(ty),
-                source: hir::LocalSource::Normal,
-                ..
-            }) => {
-                err.span_label(pat.span, "this binding might not have a concrete type");
-                err.span_suggestion_verbose(
-                    ty.span.shrink_to_hi(),
-                    "set the binding to a value for a concrete type to be resolved",
-                    " = /* value */".to_string(),
-                    Applicability::HasPlaceholders,
-                );
-            }
-            hir::Node::Local(hir::Local {
-                init: Some(expr),
-                source: hir::LocalSource::Normal,
-                ..
-            }) => {
-                let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
-                let typeck_results =
-                    tcx.typeck(tcx.hir().local_def_id(tcx.hir().get_parent_item(hir_id)));
-                if let Some(ty) = typeck_results.node_type_opt(expr.hir_id) {
-                    err.span_label(
-                        expr.span,
-                        &format!(
-                            "this is of type `{}`, which doesn't constrain \
-                             `{}` enough to arrive to a concrete type",
-                            ty, partially_expanded_type
-                        ),
-                    );
-                }
-            }
-            _ => {}
-        }
-        if prev_hir_id == hir_id {
-            break;
-        }
-        prev_hir_id = hir_id;
-        hir_id = tcx.hir().get_parent_node(hir_id);
-    }
-    err.emit();
-}
-
 // Forbid defining intrinsics in Rust code,
 // as they must always be defined by the compiler.
 fn fn_maybe_err(tcx: TyCtxt<'_>, sp: Span, abi: Abi) {
@@ -858,7 +667,7 @@ fn missing_items_err(
     // Obtain the level of indentation ending in `sugg_sp`.
     let indentation = tcx.sess.source_map().span_to_margin(sugg_sp).unwrap_or(0);
     // Make the whitespace that will make the suggestion have the right indentation.
-    let padding: String = std::iter::repeat(" ").take(indentation).collect();
+    let padding: String = " ".repeat(indentation);
 
     for trait_item in missing_items {
         let snippet = suggestion_signature(&trait_item, tcx);
@@ -1029,7 +838,7 @@ fn suggestion_signature(assoc: &ty::AssocItem, tcx: TyCtxt<'_>) -> String {
     }
 }
 
-/// Emit an error when encountering more or less than one variant in a transparent enum.
+/// Emit an error when encountering two or more variants in a transparent enum.
 fn bad_variant_count<'tcx>(tcx: TyCtxt<'tcx>, adt: &'tcx ty::AdtDef, sp: Span, did: DefId) {
     let variant_spans: Vec<_> = adt
         .variants
@@ -1048,7 +857,7 @@ fn bad_variant_count<'tcx>(tcx: TyCtxt<'tcx>, adt: &'tcx ty::AdtDef, sp: Span, d
     err.emit();
 }
 
-/// Emit an error when encountering more or less than one non-zero-sized field in a transparent
+/// Emit an error when encountering two or more non-zero-sized fields in a transparent
 /// enum.
 fn bad_non_zero_sized_fields<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -1057,7 +866,7 @@ fn bad_non_zero_sized_fields<'tcx>(
     field_spans: impl Iterator<Item = Span>,
     sp: Span,
 ) {
-    let msg = format!("needs exactly one non-zero-sized field, but has {}", field_count);
+    let msg = format!("needs at most one non-zero-sized field, but has {}", field_count);
     let mut err = struct_span_err!(
         tcx.sess,
         sp,

@@ -205,7 +205,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         opt_arg_exprs: Option<&'tcx [hir::Expr<'tcx>]>,
     ) -> Option<(Option<Adjustment<'tcx>>, MethodCallee<'tcx>)> {
         // Try the options that are least restrictive on the caller first.
-        for &(opt_trait_def_id, method_name, borrow) in &[
+        for (opt_trait_def_id, method_name, borrow) in [
             (self.tcx.lang_items().fn_trait(), Ident::with_dummy_span(sym::call), true),
             (self.tcx.lang_items().fn_mut_trait(), Ident::with_dummy_span(sym::call_mut), true),
             (self.tcx.lang_items().fn_once_trait(), Ident::with_dummy_span(sym::call_once), false),
@@ -588,10 +588,17 @@ impl<'a, 'tcx> DeferredCallResolution<'tcx> {
                 fcx.write_method_call(self.call_expr.hir_id, method_callee);
             }
             None => {
-                span_bug!(
+                // This can happen if `#![no_core]` is used and the `fn/fn_mut/fn_once`
+                // lang items are not defined (issue #86238).
+                let mut err = fcx.inh.tcx.sess.struct_span_err(
                     self.call_expr.span,
-                    "failed to find an overloaded call trait for closure call"
+                    "failed to find an overloaded call trait for closure call",
                 );
+                err.help(
+                    "make sure the `fn`/`fn_mut`/`fn_once` lang items are defined \
+                     and have associated `call`/`call_mut`/`call_once` functions",
+                );
+                err.emit();
             }
         }
     }

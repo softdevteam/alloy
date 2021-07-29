@@ -17,7 +17,7 @@ use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::{ExpnKind, Span};
 use rustc_span::symbol::sym;
 
-use crate::consts::{constant, Constant};
+use clippy_utils::consts::{constant, Constant};
 use clippy_utils::sugg::Sugg;
 use clippy_utils::{
     expr_path_res, get_item_name, get_parent_expr, higher, in_constant, is_diag_trait_item, is_integer_const,
@@ -355,8 +355,10 @@ impl<'tcx> LateLintPass<'tcx> for MiscLints {
             if binop.node == BinOpKind::And || binop.node == BinOpKind::Or;
             if let Some(sugg) = Sugg::hir_opt(cx, a);
             then {
-                span_lint_and_then(cx,
+                span_lint_hir_and_then(
+                    cx,
                     SHORT_CIRCUIT_STATEMENT,
+                    expr.hir_id,
                     stmt.span,
                     "boolean short circuit operator in statement may be clearer using an explicit test",
                     |diag| {
@@ -660,14 +662,7 @@ fn in_attributes_expansion(expr: &Expr<'_>) -> bool {
     use rustc_span::hygiene::MacroKind;
     if expr.span.from_expansion() {
         let data = expr.span.ctxt().outer_expn_data();
-        matches!(
-            data.kind,
-            ExpnKind::Macro {
-                kind: MacroKind::Attr,
-                name: _,
-                proc_macro: _
-            }
-        )
+        matches!(data.kind, ExpnKind::Macro(MacroKind::Attr, _))
     } else {
         false
     }

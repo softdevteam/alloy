@@ -14,7 +14,7 @@ use crate::lexer::UnmatchedBrace;
 pub use attr_wrapper::AttrWrapper;
 pub use diagnostics::AttemptLocalParseRecovery;
 use diagnostics::Error;
-pub use pat::RecoverComma;
+pub use pat::{RecoverColon, RecoverComma};
 pub use path::PathStyle;
 
 use rustc_ast::ptr::P;
@@ -63,6 +63,7 @@ enum BlockMode {
 
 /// Whether or not we should force collection of tokens for an AST node,
 /// regardless of whether or not it has attributes
+#[derive(Clone, Copy, PartialEq)]
 pub enum ForceCollect {
     Yes,
     No,

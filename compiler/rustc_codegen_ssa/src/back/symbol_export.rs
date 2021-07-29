@@ -180,7 +180,7 @@ fn exported_symbols_provider_local(
         symbols.push((exported_symbol, SymbolExportLevel::C));
     }
 
-    if tcx.allocator_kind().is_some() {
+    if tcx.allocator_kind(()).is_some() {
         for method in ALLOCATOR_METHODS {
             let symbol_name = format!("__rust_{}", method.name);
             let exported_symbol = ExportedSymbol::NoDefId(SymbolName::new(tcx, &symbol_name));
@@ -277,7 +277,7 @@ fn upstream_monomorphizations_provider(
     tcx: TyCtxt<'_>,
     (): (),
 ) -> DefIdMap<FxHashMap<SubstsRef<'_>, CrateNum>> {
-    let cnums = tcx.all_crate_nums(());
+    let cnums = tcx.crates(());
 
     let mut instances: DefIdMap<FxHashMap<_, _>> = Default::default();
 
@@ -370,7 +370,6 @@ pub fn provide(providers: &mut Providers) {
 pub fn provide_extern(providers: &mut Providers) {
     providers.is_reachable_non_generic = is_reachable_non_generic_provider_extern;
     providers.upstream_monomorphizations_for = upstream_monomorphizations_for_provider;
-    providers.wasm_import_module_map = wasm_import_module_map;
 }
 
 fn symbol_export_level(tcx: TyCtxt<'_>, sym_def_id: DefId) -> SymbolExportLevel {

@@ -1,25 +1,29 @@
 // run-rustfix
-#![deny(disjoint_capture_migration)]
+#![deny(rust_2021_incompatible_closure_captures)]
+//~^ NOTE: the lint level is defined here
 
 use std::thread;
 
 /* Test Send Trait Migration */
-struct SendPointer (*mut i32);
+struct SendPointer(*mut i32);
 unsafe impl Send for SendPointer {}
 
 fn test_send_trait() {
     let mut f = 10;
     let fptr = SendPointer(&mut f as *mut i32);
     thread::spawn(move || unsafe {
-        //~^ ERROR: `Send` trait implementation affected for closure because of `capture_disjoint_fields`
+        //~^ ERROR: `Send` trait implementation for closure
+        //~| NOTE: in Rust 2018, this closure would implement `Send` as `fptr` implements `Send`, but in Rust 2021, this closure would no longer implement `Send` as `fptr.0` does not implement `Send`
+        //~| NOTE: for more information, see
         //~| HELP: add a dummy let to cause `fptr` to be fully captured
         *fptr.0 = 20;
+        //~^ NOTE: in Rust 2018, closure captures all of `fptr`, but in Rust 2021, it only captures `fptr.0`
     });
 }
 
 /* Test Sync Trait Migration */
-struct CustomInt (*mut i32);
-struct SyncPointer (CustomInt);
+struct CustomInt(*mut i32);
+struct SyncPointer(CustomInt);
 unsafe impl Sync for SyncPointer {}
 unsafe impl Send for CustomInt {}
 
@@ -28,9 +32,12 @@ fn test_sync_trait() {
     let f = CustomInt(&mut f as *mut i32);
     let fptr = SyncPointer(f);
     thread::spawn(move || unsafe {
-        //~^ ERROR: `Sync`, `Send` trait implementation affected for closure because of `capture_disjoint_fields`
+        //~^ ERROR: `Sync`, `Send` trait implementation for closure
+        //~| NOTE: in Rust 2018, this closure would implement `Sync`, `Send` as `fptr` implements `Sync`, `Send`, but in Rust 2021, this closure would no longer implement `Sync`, `Send` as `fptr.0.0` does not implement `Sync`, `Send`
+        //~| NOTE: for more information, see
         //~| HELP: add a dummy let to cause `fptr` to be fully captured
         *fptr.0.0 = 20;
+        //~^ NOTE: in Rust 2018, closure captures all of `fptr`, but in Rust 2021, it only captures `fptr.0.0`
     });
 }
 
@@ -38,7 +45,7 @@ fn test_sync_trait() {
 struct S(String);
 struct T(i32);
 
-struct U(S,T);
+struct U(S, T);
 
 impl Clone for U {
     fn clone(&self) -> Self {
@@ -49,9 +56,12 @@ impl Clone for U {
 fn test_clone_trait() {
     let f = U(S(String::from("Hello World")), T(0));
     let c = || {
-        //~^ ERROR: `Clone` trait implementation, and drop order affected for closure because of `capture_disjoint_fields`
+        //~^ ERROR: `Clone` trait implementation for closure and drop order
+        //~| NOTE: in Rust 2018, this closure would implement `Clone` as `f` implements `Clone`, but in Rust 2021, this closure would no longer implement `Clone` as `f.1` does not implement `Clone`
+        //~| NOTE: for more information, see
         //~| HELP: add a dummy let to cause `f` to be fully captured
         let f_1 = f.1;
+        //~^ NOTE: in Rust 2018, closure captures all of `f`, but in Rust 2021, it only captures `f.1`
         println!("{:?}", f_1.0);
     };
 
@@ -59,6 +69,7 @@ fn test_clone_trait() {
 
     c_clone();
 }
+//~^ NOTE: in Rust 2018, `f` would be dropped here, but in Rust 2021, only `f.1` would be dropped here alongside the closure
 
 fn main() {
     test_send_trait();

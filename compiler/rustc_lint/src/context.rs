@@ -16,7 +16,7 @@
 
 use self::TargetLint::*;
 
-use crate::levels::LintLevelsBuilder;
+use crate::levels::{is_known_lint_tool, LintLevelsBuilder};
 use crate::passes::{EarlyLintPassObject, LateLintPassObject};
 use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
@@ -129,6 +129,8 @@ pub enum CheckLintNameResult<'a> {
     Ok(&'a [LintId]),
     /// Lint doesn't exist. Potentially contains a suggestion for a correct lint name.
     NoLint(Option<Symbol>),
+    /// The lint refers to a tool that has not been registered.
+    NoTool,
     /// The lint is either renamed or removed. This is the warning
     /// message, and an optional new name (`None` if removed).
     Warning(String, Option<String>),
@@ -209,8 +211,8 @@ impl LintStore {
                 bug!("duplicate specification of lint {}", lint.name_lower())
             }
 
-            if let Some(FutureIncompatibleInfo { edition, .. }) = lint.future_incompatible {
-                if let Some(edition) = edition {
+            if let Some(FutureIncompatibleInfo { reason, .. }) = lint.future_incompatible {
+                if let Some(edition) = reason.edition() {
                     self.lint_groups
                         .entry(edition.lint_name())
                         .or_insert(LintGroup {
@@ -220,17 +222,20 @@ impl LintStore {
                         })
                         .lint_ids
                         .push(id);
+                } else {
+                    // Lints belonging to the `future_incompatible` lint group are lints where a
+                    // future version of rustc will cause existing code to stop compiling.
+                    // Lints tied to an edition don't count because they are opt-in.
+                    self.lint_groups
+                        .entry("future_incompatible")
+                        .or_insert(LintGroup {
+                            lint_ids: vec![],
+                            from_plugin: lint.is_plugin,
+                            depr: None,
+                        })
+                        .lint_ids
+                        .push(id);
                 }
-
-                self.lint_groups
-                    .entry("future_incompatible")
-                    .or_insert(LintGroup {
-                        lint_ids: vec![],
-                        from_plugin: lint.is_plugin,
-                        depr: None,
-                    })
-                    .lint_ids
-                    .push(id);
             }
         }
     }
@@ -270,22 +275,6 @@ impl LintStore {
 
         if !new {
             bug!("duplicate specification of lint group {}", name);
-        }
-    }
-
-    /// This lint should be available with either the old or the new name.
-    ///
-    /// Using the old name will not give a warning.
-    /// You must register a lint with the new name before calling this function.
-    #[track_caller]
-    pub fn register_alias(&mut self, old_name: &str, new_name: &str) {
-        let target = match self.by_name.get(new_name) {
-            Some(&Id(lint_id)) => lint_id,
-            _ => bug!("cannot add alias {} for lint {} that does not exist", old_name, new_name),
-        };
-        match self.by_name.insert(old_name.to_string(), Id(target)) {
-            None | Some(Ignored) => {}
-            Some(x) => bug!("duplicate specification of lint {} (was {:?})", old_name, x),
         }
     }
 
@@ -334,9 +323,17 @@ impl LintStore {
         }
     }
 
-    /// Checks the validity of lint names derived from the command line
-    pub fn check_lint_name_cmdline(&self, sess: &Session, lint_name: &str, level: Level) {
-        let db = match self.check_lint_name(lint_name, None) {
+    /// Checks the validity of lint names derived from the command line.
+    pub fn check_lint_name_cmdline(
+        &self,
+        sess: &Session,
+        lint_name: &str,
+        level: Level,
+        crate_attrs: &[ast::Attribute],
+    ) {
+        let (tool_name, lint_name_only) = parse_lint_and_tool_name(lint_name);
+
+        let db = match self.check_lint_name(sess, lint_name_only, tool_name, crate_attrs) {
             CheckLintNameResult::Ok(_) => None,
             CheckLintNameResult::Warning(ref msg, _) => Some(sess.struct_warn(msg)),
             CheckLintNameResult::NoLint(suggestion) => {
@@ -358,6 +355,13 @@ impl LintStore {
                 ))),
                 _ => None,
             },
+            CheckLintNameResult::NoTool => Some(struct_span_err!(
+                sess,
+                DUMMY_SP,
+                E0602,
+                "unknown lint tool: `{}`",
+                tool_name.unwrap()
+            )),
         };
 
         if let Some(mut db) = db {
@@ -366,6 +370,7 @@ impl LintStore {
                 match level {
                     Level::Allow => "-A",
                     Level::Warn => "-W",
+                    Level::ForceWarn => "--force-warn",
                     Level::Deny => "-D",
                     Level::Forbid => "-F",
                 },
@@ -399,9 +404,17 @@ impl LintStore {
     /// printing duplicate warnings.
     pub fn check_lint_name(
         &self,
+        sess: &Session,
         lint_name: &str,
         tool_name: Option<Symbol>,
+        crate_attrs: &[ast::Attribute],
     ) -> CheckLintNameResult<'_> {
+        if let Some(tool_name) = tool_name {
+            if !is_known_lint_tool(tool_name, sess, crate_attrs) {
+                return CheckLintNameResult::NoTool;
+            }
+        }
+
         let complete_name = if let Some(tool_name) = tool_name {
             format!("{}::{}", tool_name, lint_name)
         } else {
@@ -468,17 +481,17 @@ impl LintStore {
 
     fn no_lint_suggestion(&self, lint_name: &str) -> CheckLintNameResult<'_> {
         let name_lower = lint_name.to_lowercase();
-        let symbols =
-            self.get_lints().iter().map(|l| Symbol::intern(&l.name_lower())).collect::<Vec<_>>();
 
         if lint_name.chars().any(char::is_uppercase) && self.find_lints(&name_lower).is_ok() {
             // First check if the lint name is (partly) in upper case instead of lower case...
-            CheckLintNameResult::NoLint(Some(Symbol::intern(&name_lower)))
-        } else {
-            // ...if not, search for lints with a similar name
-            let suggestion = find_best_match_for_name(&symbols, Symbol::intern(&name_lower), None);
-            CheckLintNameResult::NoLint(suggestion)
+            return CheckLintNameResult::NoLint(Some(Symbol::intern(&name_lower)));
         }
+        // ...if not, search for lints with a similar name
+        let groups = self.lint_groups.keys().copied().map(Symbol::intern);
+        let lints = self.lints.iter().map(|l| Symbol::intern(&l.name_lower()));
+        let names: Vec<Symbol> = groups.chain(lints).collect();
+        let suggestion = find_best_match_for_name(&names, Symbol::intern(&name_lower), None);
+        CheckLintNameResult::NoLint(suggestion)
     }
 
     fn check_tool_name_for_backwards_compat(
@@ -712,6 +725,15 @@ pub trait LintContext: Sized {
                 BuiltinLintDiagnostics::OrPatternsBackCompat(span,suggestion) => {
                     db.span_suggestion(span, "use pat_param to preserve semantics", suggestion, Applicability::MachineApplicable);
                 }
+                BuiltinLintDiagnostics::ReservedPrefix(span) => {
+                    db.span_label(span, "unknown prefix");
+                    db.span_suggestion_verbose(
+                        span.shrink_to_hi(),
+                        "insert whitespace here to avoid this being parsed as a prefix in Rust 2021",
+                        " ".into(),
+                        Applicability::MachineApplicable,
+                    );
+                }
             }
             // Rewrap `db`, and pass control to the user.
             decorate(LintDiagnosticBuilder::new(db));
@@ -922,7 +944,7 @@ impl<'tcx> LateContext<'tcx> {
             }
 
             fn path_crate(self, cnum: CrateNum) -> Result<Self::Path, Self::Error> {
-                Ok(vec![self.tcx.original_crate_name(cnum)])
+                Ok(vec![self.tcx.crate_name(cnum)])
             }
 
             fn path_qualified(
@@ -1006,5 +1028,16 @@ impl<'tcx> LayoutOf for LateContext<'tcx> {
 
     fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyAndLayout {
         self.tcx.layout_of(self.param_env.and(ty))
+    }
+}
+
+pub fn parse_lint_and_tool_name(lint_name: &str) -> (Option<Symbol>, &str) {
+    match lint_name.split_once("::") {
+        Some((tool_name, lint_name)) => {
+            let tool_name = Symbol::intern(tool_name);
+
+            (Some(tool_name), lint_name)
+        }
+        None => (None, lint_name),
     }
 }

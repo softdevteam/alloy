@@ -1,6 +1,5 @@
 // run-pass
 
-#![allow(incomplete_features)]
 #![feature(const_trait_impl)]
 
 struct Int(i32);
@@ -16,6 +15,9 @@ impl const std::ops::Add for Int {
 impl const PartialEq for Int {
     fn eq(&self, rhs: &Self) -> bool {
         self.0 == rhs.0
+    }
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
     }
 }
 

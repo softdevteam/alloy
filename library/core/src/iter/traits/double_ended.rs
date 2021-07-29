@@ -36,6 +36,7 @@ use crate::ops::{ControlFlow, Try};
 /// assert_eq!(None, iter.next_back());
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "DoubleEndedIterator")]
 pub trait DoubleEndedIterator: Iterator {
     /// Removes and returns an element from the end of the iterator.
     ///
@@ -248,6 +249,11 @@ pub trait DoubleEndedIterator: Iterator {
     /// Folding is useful whenever you have a collection of something, and want
     /// to produce a single value from it.
     ///
+    /// Note: `rfold()` combines elements in a *right-associative* fashion. For associative
+    /// operators like `+`, the order the elements are combined in is not important, but for non-associative
+    /// operators like `-` the order will affect the final result.
+    /// For a *left-associative* version of `rfold()`, see [`Iterator::fold()`].
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -262,7 +268,8 @@ pub trait DoubleEndedIterator: Iterator {
     /// assert_eq!(sum, 6);
     /// ```
     ///
-    /// This example builds a string, starting with an initial value
+    /// This example demonstrates the right-associative nature of `rfold()`:
+    /// it builds a string, starting with an initial value
     /// and continuing with each element from the back until the front:
     ///
     /// ```
@@ -276,6 +283,7 @@ pub trait DoubleEndedIterator: Iterator {
     ///
     /// assert_eq!(result, "(1 + (2 + (3 + (4 + (5 + 0)))))");
     /// ```
+    #[doc(alias = "foldr")]
     #[inline]
     #[stable(feature = "iter_rfold", since = "1.27.0")]
     fn rfold<B, F>(mut self, init: B, mut f: F) -> B

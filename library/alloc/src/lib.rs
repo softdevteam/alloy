@@ -59,7 +59,6 @@
 #![allow(unused_attributes)]
 #![stable(feature = "alloc", since = "1.36.0")]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(allow(unused_variables), deny(warnings)))
@@ -111,7 +110,6 @@
 #![feature(iter_zip)]
 #![feature(lang_items)]
 #![feature(layout_for_ptr)]
-#![feature(maybe_uninit_ref)]
 #![feature(negative_impls)]
 #![feature(never_type)]
 #![feature(nll)]
@@ -140,12 +138,12 @@
 #![feature(maybe_uninit_extra, maybe_uninit_slice, maybe_uninit_uninit_array)]
 #![feature(alloc_layout_extra)]
 #![feature(trusted_random_access)]
-#![cfg_attr(bootstrap, feature(try_trait))]
-#![cfg_attr(not(bootstrap), feature(try_trait_v2))]
+#![feature(try_trait_v2)]
 #![feature(min_type_alias_impl_trait)]
 #![feature(associated_type_bounds)]
 #![feature(slice_group_by)]
 #![feature(decl_macro)]
+#![feature(bindings_after_at)]
 // Allow testing this library
 
 #[cfg(test)]

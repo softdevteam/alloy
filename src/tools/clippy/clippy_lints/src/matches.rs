@@ -1,4 +1,4 @@
-use crate::consts::{constant, miri_to_const, Constant};
+use clippy_utils::consts::{constant, miri_to_const, Constant};
 use clippy_utils::diagnostics::{
     multispan_sugg, span_lint_and_help, span_lint_and_note, span_lint_and_sugg, span_lint_and_then,
 };
@@ -7,7 +7,7 @@ use clippy_utils::sugg::Sugg;
 use clippy_utils::ty::{implements_trait, is_type_diagnostic_item, match_type, peel_mid_ty_refs};
 use clippy_utils::visitors::LocalUsedVisitor;
 use clippy_utils::{
-    get_parent_expr, in_macro, is_allowed, is_expn_of, is_lang_ctor, is_refutable, is_wild, meets_msrv, msrvs,
+    get_parent_expr, in_macro, is_expn_of, is_lang_ctor, is_lint_allowed, is_refutable, is_wild, meets_msrv, msrvs,
     path_to_local, path_to_local_id, peel_hir_pat_refs, peel_n_hir_expr_refs, recurse_or_patterns, remove_blocks,
     strip_pat_refs,
 };
@@ -625,7 +625,7 @@ impl<'tcx> LateLintPass<'tcx> for Matches {
             if let PatKind::TupleStruct(
                 QPath::Resolved(None, variant_name), args, _) = arms[0].pat.kind;
             if args.len() == 1;
-            if let PatKind::Binding(_, arg, ..) = strip_pat_refs(args[0]).kind;
+            if let PatKind::Binding(_, arg, ..) = strip_pat_refs(&args[0]).kind;
             let body = remove_blocks(arms[0].body);
             if path_to_local_id(body, arg);
 
@@ -707,7 +707,7 @@ fn check_single_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], exp
         };
 
         let ty = cx.typeck_results().expr_ty(ex);
-        if *ty.kind() != ty::Bool || is_allowed(cx, MATCH_BOOL, ex.hir_id) {
+        if *ty.kind() != ty::Bool || is_lint_allowed(cx, MATCH_BOOL, ex.hir_id) {
             check_single_match_single_pattern(cx, ex, arms, expr, els);
             check_single_match_opt_like(cx, ex, arms, expr, ty, els);
         }
@@ -721,7 +721,7 @@ fn check_single_match_single_pattern(
     expr: &Expr<'_>,
     els: Option<&Expr<'_>>,
 ) {
-    if is_wild(&arms[1].pat) {
+    if is_wild(arms[1].pat) {
         report_single_match_single_pattern(cx, ex, arms, expr, els);
     }
 }
@@ -992,9 +992,9 @@ impl CommonPrefixSearcher<'a> {
     }
 }
 
-fn is_doc_hidden(cx: &LateContext<'_>, variant_def: &VariantDef) -> bool {
+fn is_hidden(cx: &LateContext<'_>, variant_def: &VariantDef) -> bool {
     let attrs = cx.tcx.get_attrs(variant_def.def_id);
-    clippy_utils::attrs::is_doc_hidden(attrs)
+    clippy_utils::attrs::is_doc_hidden(attrs) || clippy_utils::attrs::is_unstable(attrs)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1033,7 +1033,8 @@ fn check_wild_enum_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) 
 
     // Accumulate the variants which should be put in place of the wildcard because they're not
     // already covered.
-    let mut missing_variants: Vec<_> = adt_def.variants.iter().collect();
+    let has_hidden = adt_def.variants.iter().any(|x| is_hidden(cx, x));
+    let mut missing_variants: Vec<_> = adt_def.variants.iter().filter(|x| !is_hidden(cx, x)).collect();
 
     let mut path_prefix = CommonPrefixSearcher::None;
     for arm in arms {
@@ -1118,7 +1119,7 @@ fn check_wild_enum_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) 
 
     match missing_variants.as_slice() {
         [] => (),
-        [x] if !adt_def.is_variant_list_non_exhaustive() && !is_doc_hidden(cx, x) => span_lint_and_sugg(
+        [x] if !adt_def.is_variant_list_non_exhaustive() && !has_hidden => span_lint_and_sugg(
             cx,
             MATCH_WILDCARD_FOR_SINGLE_VARIANTS,
             wildcard_span,
@@ -1129,7 +1130,7 @@ fn check_wild_enum_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) 
         ),
         variants => {
             let mut suggestions: Vec<_> = variants.iter().copied().map(format_suggestion).collect();
-            let message = if adt_def.is_variant_list_non_exhaustive() {
+            let message = if adt_def.is_variant_list_non_exhaustive() || has_hidden {
                 suggestions.push("_".into());
                 "wildcard matches known variants and will also match future added variants"
             } else {
@@ -1144,7 +1145,7 @@ fn check_wild_enum_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) 
                 "try this",
                 suggestions.join(" | "),
                 Applicability::MaybeIncorrect,
-            )
+            );
         },
     };
 }
@@ -1242,7 +1243,7 @@ fn check_match_as_ref(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], exp
                     cast,
                 ),
                 applicability,
-            )
+            );
         }
     }
 }
@@ -1286,7 +1287,7 @@ fn find_matches_sugg(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr
         if let Some((b1_arm, b0_arms)) = arms.split_last();
         if let Some(b0) = find_bool_lit(&b0_arms[0].body.kind, desugared);
         if let Some(b1) = find_bool_lit(&b1_arm.body.kind, desugared);
-        if is_wild(&b1_arm.pat);
+        if is_wild(b1_arm.pat);
         if b0 != b1;
         let if_guard = &b0_arms[0].guard;
         if if_guard.is_none() || b0_arms.len() == 1;
@@ -1494,7 +1495,7 @@ fn check_match_single_binding<'a>(cx: &LateContext<'a>, ex: &Expr<'a>, arms: &[A
                     "consider using the scrutinee and body instead",
                     sugg,
                     applicability,
-                )
+                );
             } else {
                 span_lint_and_sugg(
                     cx,
@@ -1747,7 +1748,7 @@ mod redundant_pattern_match {
             match match_source {
                 MatchSource::Normal => find_sugg_for_match(cx, expr, op, arms),
                 MatchSource::IfLetDesugar { contains_else_clause } => {
-                    find_sugg_for_if_let(cx, expr, op, &arms[0], "if", *contains_else_clause)
+                    find_sugg_for_if_let(cx, expr, op, &arms[0], "if", *contains_else_clause);
                 },
                 MatchSource::WhileLetDesugar => find_sugg_for_if_let(cx, expr, op, &arms[0], "while", false),
                 _ => {},
@@ -1876,7 +1877,7 @@ mod redundant_pattern_match {
                             {
                                 self.res = true;
                             } else {
-                                self.visit_expr(self_arg)
+                                self.visit_expr(self_arg);
                             }
                         }
                         args.iter().for_each(|arg| self.visit_expr(arg));
@@ -2266,7 +2267,8 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>) {
                             ),
                         );
                     } else {
-                        diag.span_help(i.pat.span, &format!("consider refactoring into `{} | {}`", lhs, rhs));
+                        diag.span_help(i.pat.span, &format!("consider refactoring into `{} | {}`", lhs, rhs,))
+                            .help("...or consider changing the match arm bodies");
                     }
                 },
             );

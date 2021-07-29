@@ -67,6 +67,7 @@ impl Formatter for HTMLFormatter {
 <title>Rust Compiler Error Index</title>
 <meta charset="utf-8">
 <!-- Include rust.css after light.css so its rules take priority. -->
+<link rel="stylesheet" type="text/css" href="rustdoc{suffix}.css"/>
 <link rel="stylesheet" type="text/css" href="light{suffix}.css"/>
 <link rel="stylesheet" type="text/css" href="rust.css"/>
 <style>
@@ -283,7 +284,8 @@ fn parse_args() -> (OutputFormat, PathBuf) {
 fn main() {
     rustc_driver::init_env_logger("RUST_LOG");
     let (format, dst) = parse_args();
-    let result = rustc_span::with_default_session_globals(move || main_with_result(format, &dst));
+    let result =
+        rustc_span::create_default_session_globals_then(move || main_with_result(format, &dst));
     if let Err(e) = result {
         panic!("{}", e.to_string());
     }

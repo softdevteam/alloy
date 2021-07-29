@@ -347,7 +347,7 @@ impl Checker {
                 } else {
                     report.errors += 1;
                     print!("{}:{}: broken link fragment ", pretty_path, i + 1);
-                    println!("`#{}` pointing to `{}`", fragment, pretty_path);
+                    println!("`#{}` pointing to `{}`", fragment, target_pretty_path);
                 };
             }
         });
@@ -463,7 +463,7 @@ fn maybe_redirect(source: &str) -> Option<String> {
     const REDIRECT: &str = "<p>Redirecting to <a href=";
 
     let mut lines = source.lines();
-    let redirect_line = lines.nth(6)?;
+    let redirect_line = lines.nth(7)?;
 
     redirect_line.find(REDIRECT).map(|i| {
         let rest = &redirect_line[(i + REDIRECT.len() + 1)..];

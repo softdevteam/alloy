@@ -28,6 +28,7 @@ use crate::traits::error_reporting::InferCtxtExt;
 use crate::traits::project::ProjectionCacheKeyExt;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::stack::ensure_sufficient_stack;
+use rustc_data_structures::sync::Lrc;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -48,7 +49,6 @@ use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::fmt::{self, Display};
 use std::iter;
-use std::rc::Rc;
 
 pub use rustc_middle::traits::select::*;
 
@@ -216,7 +216,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     pub fn new(infcx: &'cx InferCtxt<'cx, 'tcx>) -> SelectionContext<'cx, 'tcx> {
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -227,7 +227,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     pub fn intercrate(infcx: &'cx InferCtxt<'cx, 'tcx>) -> SelectionContext<'cx, 'tcx> {
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: true,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -242,7 +242,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         debug!(?allow_negative_impls, "with_negative");
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls,
@@ -257,7 +257,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         debug!(?query_mode, "with_query_mode");
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -492,7 +492,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     None => Ok(EvaluatedToAmbig),
                 },
 
-                ty::PredicateKind::TypeOutlives(..) | ty::PredicateKind::RegionOutlives(..) => {
+                ty::PredicateKind::TypeOutlives(pred) => {
+                    if pred.0.is_global() {
+                        Ok(EvaluatedToOk)
+                    } else {
+                        Ok(EvaluatedToOkModuloRegions)
+                    }
+                }
+
+                ty::PredicateKind::RegionOutlives(..) => {
                     // We do not consider region relationships when evaluating trait matches.
                     Ok(EvaluatedToOkModuloRegions)
                 }
@@ -985,7 +993,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         obligation: &Obligation<'tcx, T>,
         error_obligation: &Obligation<'tcx, V>,
     ) -> Result<(), OverflowError> {
-        if !self.infcx.tcx.sess.recursion_limit().value_within_limit(obligation.recursion_depth) {
+        if !self.infcx.tcx.recursion_limit().value_within_limit(obligation.recursion_depth) {
             match self.query_mode {
                 TraitQueryMode::Standard => {
                     self.infcx().report_overflow_error(error_obligation, true);
@@ -1857,12 +1865,12 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn match_impl(
         &mut self,
         impl_def_id: DefId,
         obligation: &TraitObligation<'tcx>,
     ) -> Result<Normalized<'tcx, SubstsRef<'tcx>>, ()> {
-        debug!(?impl_def_id, ?obligation, "match_impl");
         let impl_trait_ref = self.tcx().impl_trait_ref(impl_def_id).unwrap();
 
         // Before we create the substitutions and everything, first
@@ -1880,6 +1888,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let impl_trait_ref = impl_trait_ref.subst(self.tcx(), impl_substs);
 
+        debug!(?impl_trait_ref);
+
         let Normalized { value: impl_trait_ref, obligations: mut nested_obligations } =
             ensure_sufficient_stack(|| {
                 project::normalize_with_depth(
@@ -1893,9 +1903,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         debug!(?impl_trait_ref, ?placeholder_obligation_trait_ref);
 
+        let cause = ObligationCause::new(
+            obligation.cause.span,
+            obligation.cause.body_id,
+            ObligationCauseCode::MatchImpl(Lrc::new(obligation.cause.code.clone()), impl_def_id),
+        );
+
         let InferOk { obligations, .. } = self
             .infcx
-            .at(&obligation.cause, obligation.param_env)
+            .at(&cause, obligation.param_env)
             .eq(placeholder_obligation_trait_ref, impl_trait_ref)
             .map_err(|e| debug!("match_impl: failed eq_trait_refs due to `{}`", e))?;
         nested_obligations.extend(obligations);
@@ -1907,7 +1923,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             return Err(());
         }
 
-        debug!(?impl_substs, "match_impl: success");
+        debug!(?impl_substs, ?nested_obligations, "match_impl: success");
         Ok(Normalized { value: impl_substs, obligations: nested_obligations })
     }
 
@@ -2060,6 +2076,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     /// impl or trait. The obligations are substituted and fully
     /// normalized. This is used when confirming an impl or default
     /// impl.
+    #[tracing::instrument(level = "debug", skip(self, cause, param_env))]
     fn impl_or_trait_obligations(
         &mut self,
         cause: ObligationCause<'tcx>,
@@ -2068,7 +2085,6 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         def_id: DefId,           // of impl or trait
         substs: SubstsRef<'tcx>, // for impl or trait
     ) -> Vec<PredicateObligation<'tcx>> {
-        debug!(?def_id, "impl_or_trait_obligations");
         let tcx = self.tcx();
 
         // To allow for one-pass evaluation of the nested obligation,
@@ -2086,9 +2102,11 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         // `$1: Copy`, so we must ensure the obligations are emitted in
         // that order.
         let predicates = tcx.predicates_of(def_id);
+        debug!(?predicates);
         assert_eq!(predicates.parent, None);
         let mut obligations = Vec::with_capacity(predicates.predicates.len());
         for (predicate, _) in predicates.predicates {
+            debug!(?predicate);
             let predicate = normalize_with_depth_to(
                 self,
                 param_env,
@@ -2160,7 +2178,7 @@ impl<'tcx> TraitObligationExt<'tcx> for TraitObligation<'tcx> {
         // by using -Z verbose or just a CLI argument.
         let derived_cause = DerivedObligationCause {
             parent_trait_ref: obligation.predicate.to_poly_trait_ref(),
-            parent_code: Rc::new(obligation.cause.code.clone()),
+            parent_code: Lrc::new(obligation.cause.code.clone()),
         };
         let derived_code = variant(derived_cause);
         ObligationCause::new(obligation.cause.span, obligation.cause.body_id, derived_code)

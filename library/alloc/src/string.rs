@@ -49,7 +49,7 @@ use core::gc::NoFinalize;
 use core::hash;
 #[cfg(not(no_global_oom_handling))]
 use core::iter::FromIterator;
-use core::iter::FusedIterator;
+use core::iter::{from_fn, FusedIterator};
 #[cfg(not(no_global_oom_handling))]
 use core::ops::Add;
 #[cfg(not(no_global_oom_handling))]
@@ -420,8 +420,6 @@ impl String {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline]
-    #[doc(alias = "alloc")]
-    #[doc(alias = "malloc")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize) -> String {
         String { vec: Vec::with_capacity(capacity) }
@@ -844,6 +842,42 @@ impl String {
         self.vec.extend_from_slice(string.as_bytes())
     }
 
+    /// Copies elements from `src` range to the end of the string.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the starting point or end point do not lie on a [`char`]
+    /// boundary, or if they're out of bounds.
+    ///
+    /// ## Examples
+    ///
+    /// ```
+    /// #![feature(string_extend_from_within)]
+    /// let mut string = String::from("abcde");
+    ///
+    /// string.extend_from_within(2..);
+    /// assert_eq!(string, "abcdecde");
+    ///
+    /// string.extend_from_within(..2);
+    /// assert_eq!(string, "abcdecdeab");
+    ///
+    /// string.extend_from_within(4..8);
+    /// assert_eq!(string, "abcdecdeabecde");
+    /// ```
+    #[cfg(not(no_global_oom_handling))]
+    #[unstable(feature = "string_extend_from_within", issue = "none")]
+    pub fn extend_from_within<R>(&mut self, src: R)
+    where
+        R: RangeBounds<usize>,
+    {
+        let src @ Range { start, end } = slice::range(src, ..self.len());
+
+        assert!(self.is_char_boundary(start));
+        assert!(self.is_char_boundary(end));
+
+        self.vec.extend_from_within(src);
+    }
+
     /// Returns this `String`'s capacity, in bytes.
     ///
     /// # Examples
@@ -1255,32 +1289,49 @@ impl String {
     {
         use core::str::pattern::Searcher;
 
-        let matches = {
+        let rejections = {
             let mut searcher = pat.into_searcher(self);
-            let mut matches = Vec::new();
-
-            while let Some(m) = searcher.next_match() {
-                matches.push(m);
-            }
-
-            matches
+            // Per Searcher::next:
+            //
+            // A Match result needs to contain the whole matched pattern,
+            // however Reject results may be split up into arbitrary many
+            // adjacent fragments. Both ranges may have zero length.
+            //
+            // In practice the implementation of Searcher::next_match tends to
+            // be more efficient, so we use it here and do some work to invert
+            // matches into rejections since that's what we want to copy below.
+            let mut front = 0;
+            let rejections: Vec<_> = from_fn(|| {
+                let (start, end) = searcher.next_match()?;
+                let prev_front = front;
+                front = end;
+                Some((prev_front, start))
+            })
+            .collect();
+            rejections.into_iter().chain(core::iter::once((front, self.len())))
         };
 
-        let len = self.len();
-        let mut shrunk_by = 0;
+        let mut len = 0;
+        let ptr = self.vec.as_mut_ptr();
 
-        // SAFETY: start and end will be on utf8 byte boundaries per
-        // the Searcher docs
-        unsafe {
-            for (start, end) in matches {
-                ptr::copy(
-                    self.vec.as_mut_ptr().add(end - shrunk_by),
-                    self.vec.as_mut_ptr().add(start - shrunk_by),
-                    len - end,
-                );
-                shrunk_by += end - start;
+        for (start, end) in rejections {
+            let count = end - start;
+            if start != len {
+                // SAFETY: per Searcher::next:
+                //
+                // The stream of Match and Reject values up to a Done will
+                // contain index ranges that are adjacent, non-overlapping,
+                // covering the whole haystack, and laying on utf8
+                // boundaries.
+                unsafe {
+                    ptr::copy(ptr.add(start), ptr.add(len), count);
+                }
             }
-            self.vec.set_len(len - shrunk_by);
+            len += count;
+        }
+
+        unsafe {
+            self.vec.set_len(len);
         }
     }
 
@@ -1399,7 +1450,7 @@ impl String {
 
         unsafe {
             ptr::copy(self.vec.as_ptr().add(idx), self.vec.as_mut_ptr().add(idx + amt), len - idx);
-            ptr::copy(bytes.as_ptr(), self.vec.as_mut_ptr().add(idx), amt);
+            ptr::copy_nonoverlapping(bytes.as_ptr(), self.vec.as_mut_ptr().add(idx), amt);
             self.vec.set_len(len + amt);
         }
     }
@@ -1482,7 +1533,6 @@ impl String {
     /// assert_eq!(fancy_f.len(), 4);
     /// assert_eq!(fancy_f.chars().count(), 3);
     /// ```
-    #[doc(alias = "length")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
@@ -2439,6 +2489,9 @@ impl AsRef<[u8]> for String {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 impl From<&str> for String {
+    /// Converts a `&str` into a [`String`].
+    ///
+    /// The result is allocated on the heap.
     #[inline]
     fn from(s: &str) -> String {
         s.to_owned()
@@ -2448,7 +2501,7 @@ impl From<&str> for String {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "from_mut_str_for_string", since = "1.44.0")]
 impl From<&mut str> for String {
-    /// Converts a `&mut str` into a `String`.
+    /// Converts a `&mut str` into a [`String`].
     ///
     /// The result is allocated on the heap.
     #[inline]
@@ -2460,6 +2513,9 @@ impl From<&mut str> for String {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "from_ref_string", since = "1.35.0")]
 impl From<&String> for String {
+    /// Converts a `&String` into a [`String`].
+    ///
+    /// This clones `s` and returns the clone.
     #[inline]
     fn from(s: &String) -> String {
         s.clone()
@@ -2470,7 +2526,7 @@ impl From<&String> for String {
 #[cfg(not(test))]
 #[stable(feature = "string_from_box", since = "1.18.0")]
 impl From<Box<str>> for String {
-    /// Converts the given boxed `str` slice to a `String`.
+    /// Converts the given boxed `str` slice to a [`String`].
     /// It is notable that the `str` slice is owned.
     ///
     /// # Examples
@@ -2492,7 +2548,7 @@ impl From<Box<str>> for String {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "box_from_str", since = "1.20.0")]
 impl From<String> for Box<str> {
-    /// Converts the given `String` to a boxed `str` slice that is owned.
+    /// Converts the given [`String`] to a boxed `str` slice that is owned.
     ///
     /// # Examples
     ///
@@ -2513,6 +2569,22 @@ impl From<String> for Box<str> {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "string_from_cow_str", since = "1.14.0")]
 impl<'a> From<Cow<'a, str>> for String {
+    /// Converts a clone-on-write string to an owned
+    /// instance of [`String`].
+    ///
+    /// This extracts the owned string,
+    /// clones the string if it is not already owned.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::borrow::Cow;
+    /// // If the string is not owned...
+    /// let cow: Cow<str> = Cow::Borrowed("eggplant");
+    /// // It will allocate on the heap and copy the string.
+    /// let owned: String = String::from(cow);
+    /// assert_eq!(&owned[..], "eggplant");
+    /// ```
     fn from(s: Cow<'a, str>) -> String {
         s.into_owned()
     }
@@ -2521,7 +2593,7 @@ impl<'a> From<Cow<'a, str>> for String {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> From<&'a str> for Cow<'a, str> {
-    /// Converts a string slice into a Borrowed variant.
+    /// Converts a string slice into a [`Borrowed`] variant.
     /// No heap allocation is performed, and the string
     /// is not copied.
     ///
@@ -2531,6 +2603,8 @@ impl<'a> From<&'a str> for Cow<'a, str> {
     /// # use std::borrow::Cow;
     /// assert_eq!(Cow::from("eggplant"), Cow::Borrowed("eggplant"));
     /// ```
+    ///
+    /// [`Borrowed`]: crate::borrow::Cow::Borrowed
     #[inline]
     fn from(s: &'a str) -> Cow<'a, str> {
         Cow::Borrowed(s)
@@ -2540,7 +2614,7 @@ impl<'a> From<&'a str> for Cow<'a, str> {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> From<String> for Cow<'a, str> {
-    /// Converts a String into an Owned variant.
+    /// Converts a [`String`] into an [`Owned`] variant.
     /// No heap allocation is performed, and the string
     /// is not copied.
     ///
@@ -2552,6 +2626,8 @@ impl<'a> From<String> for Cow<'a, str> {
     /// let s2 = "eggplant".to_string();
     /// assert_eq!(Cow::from(s), Cow::<'static, str>::Owned(s2));
     /// ```
+    ///
+    /// [`Owned`]: crate::borrow::Cow::Owned
     #[inline]
     fn from(s: String) -> Cow<'a, str> {
         Cow::Owned(s)
@@ -2561,7 +2637,7 @@ impl<'a> From<String> for Cow<'a, str> {
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "cow_from_string_ref", since = "1.28.0")]
 impl<'a> From<&'a String> for Cow<'a, str> {
-    /// Converts a String reference into a Borrowed variant.
+    /// Converts a [`String`] reference into a [`Borrowed`] variant.
     /// No heap allocation is performed, and the string
     /// is not copied.
     ///
@@ -2572,6 +2648,8 @@ impl<'a> From<&'a String> for Cow<'a, str> {
     /// let s = "eggplant".to_string();
     /// assert_eq!(Cow::from(&s), Cow::Borrowed("eggplant"));
     /// ```
+    ///
+    /// [`Borrowed`]: crate::borrow::Cow::Borrowed
     #[inline]
     fn from(s: &'a String) -> Cow<'a, str> {
         Cow::Borrowed(s.as_str())
@@ -2604,7 +2682,7 @@ impl<'a> FromIterator<String> for Cow<'a, str> {
 
 #[stable(feature = "from_string_for_vec_u8", since = "1.14.0")]
 impl From<String> for Vec<u8> {
-    /// Converts the given `String` to a vector `Vec` that holds values of type `u8`.
+    /// Converts the given [`String`] to a vector [`Vec`] that holds values of type [`u8`].
     ///
     /// # Examples
     ///
@@ -2689,33 +2767,31 @@ impl<'a> Drain<'a> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(string_drain_as_str)]
     /// let mut s = String::from("abc");
     /// let mut drain = s.drain(..);
     /// assert_eq!(drain.as_str(), "abc");
     /// let _ = drain.next().unwrap();
     /// assert_eq!(drain.as_str(), "bc");
     /// ```
-    #[unstable(feature = "string_drain_as_str", issue = "76905")] // Note: uncomment AsRef impls below when stabilizing.
+    #[stable(feature = "string_drain_as_str", since = "1.55.0")]
     pub fn as_str(&self) -> &str {
         self.iter.as_str()
     }
 }
 
-// Uncomment when stabilizing `string_drain_as_str`.
-// #[unstable(feature = "string_drain_as_str", issue = "76905")]
-// impl<'a> AsRef<str> for Drain<'a> {
-//     fn as_ref(&self) -> &str {
-//         self.as_str()
-//     }
-// }
-//
-// #[unstable(feature = "string_drain_as_str", issue = "76905")]
-// impl<'a> AsRef<[u8]> for Drain<'a> {
-//     fn as_ref(&self) -> &[u8] {
-//         self.as_str().as_bytes()
-//     }
-// }
+#[stable(feature = "string_drain_as_str", since = "1.55.0")]
+impl<'a> AsRef<str> for Drain<'a> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[stable(feature = "string_drain_as_str", since = "1.55.0")]
+impl<'a> AsRef<[u8]> for Drain<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_str().as_bytes()
+    }
+}
 
 #[stable(feature = "drain", since = "1.6.0")]
 impl Iterator for Drain<'_> {
@@ -2750,6 +2826,14 @@ impl FusedIterator for Drain<'_> {}
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "from_char_for_string", since = "1.46.0")]
 impl From<char> for String {
+    /// Allocates an owned [`String`] from a single character.
+    ///
+    /// # Example
+    /// ```rust
+    /// let c: char = 'a';
+    /// let s: String = String::from(c);
+    /// assert_eq!("a", &s[..]);
+    /// ```
     #[inline]
     fn from(c: char) -> Self {
         c.to_string()

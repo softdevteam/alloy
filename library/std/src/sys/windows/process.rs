@@ -4,6 +4,7 @@
 mod tests;
 
 use crate::borrow::Borrow;
+use crate::cmp;
 use crate::collections::BTreeMap;
 use crate::convert::{TryFrom, TryInto};
 use crate::env;
@@ -34,32 +35,95 @@ use libc::{c_void, EXIT_FAILURE, EXIT_SUCCESS};
 // Command
 ////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq)]
 #[doc(hidden)]
-pub struct EnvKey(OsString);
+pub struct EnvKey {
+    os_string: OsString,
+    // This stores a UTF-16 encoded string to workaround the mismatch between
+    // Rust's OsString (WTF-8) and the Windows API string type (UTF-16).
+    // Normally converting on every API call is acceptable but here
+    // `c::CompareStringOrdinal` will be called for every use of `==`.
+    utf16: Vec<u16>,
+}
 
+// Comparing Windows environment variable keys[1] are behaviourally the
+// composition of two operations[2]:
+//
+// 1. Case-fold both strings. This is done using a language-independent
+// uppercase mapping that's unique to Windows (albeit based on data from an
+// older Unicode spec). It only operates on individual UTF-16 code units so
+// surrogates are left unchanged. This uppercase mapping can potentially change
+// between Windows versions.
+//
+// 2. Perform an ordinal comparison of the strings. A comparison using ordinal
+// is just a comparison based on the numerical value of each UTF-16 code unit[3].
+//
+// Because the case-folding mapping is unique to Windows and not guaranteed to
+// be stable, we ask the OS to compare the strings for us. This is done by
+// calling `CompareStringOrdinal`[4] with `bIgnoreCase` set to `TRUE`.
+//
+// [1] https://docs.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings#choosing-a-stringcomparison-member-for-your-method-call
+// [2] https://docs.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings#stringtoupper-and-stringtolower
+// [3] https://docs.microsoft.com/en-us/dotnet/api/system.stringcomparison?view=net-5.0#System_StringComparison_Ordinal
+// [4] https://docs.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal
+impl Ord for EnvKey {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        unsafe {
+            let result = c::CompareStringOrdinal(
+                self.utf16.as_ptr(),
+                self.utf16.len() as _,
+                other.utf16.as_ptr(),
+                other.utf16.len() as _,
+                c::TRUE,
+            );
+            match result {
+                c::CSTR_LESS_THAN => cmp::Ordering::Less,
+                c::CSTR_EQUAL => cmp::Ordering::Equal,
+                c::CSTR_GREATER_THAN => cmp::Ordering::Greater,
+                // `CompareStringOrdinal` should never fail so long as the parameters are correct.
+                _ => panic!("comparing environment keys failed: {}", Error::last_os_error()),
+            }
+        }
+    }
+}
+impl PartialOrd for EnvKey {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for EnvKey {
+    fn eq(&self, other: &Self) -> bool {
+        if self.utf16.len() != other.utf16.len() {
+            false
+        } else {
+            self.cmp(other) == cmp::Ordering::Equal
+        }
+    }
+}
+
+// Environment variable keys should preserve their original case even though
+// they are compared using a caseless string mapping.
 impl From<OsString> for EnvKey {
-    fn from(mut k: OsString) -> Self {
-        k.make_ascii_uppercase();
-        EnvKey(k)
+    fn from(k: OsString) -> Self {
+        EnvKey { utf16: k.encode_wide().collect(), os_string: k }
     }
 }
 
 impl From<EnvKey> for OsString {
     fn from(k: EnvKey) -> Self {
-        k.0
+        k.os_string
     }
 }
 
 impl Borrow<OsStr> for EnvKey {
     fn borrow(&self) -> &OsStr {
-        &self.0
+        &self.os_string
     }
 }
 
 impl AsRef<OsStr> for EnvKey {
     fn as_ref(&self) -> &OsStr {
-        &self.0
+        &self.os_string
     }
 }
 
@@ -73,7 +137,7 @@ fn ensure_no_nuls<T: AsRef<OsStr>>(str: T) -> io::Result<T> {
 
 pub struct Command {
     program: OsString,
-    args: Vec<OsString>,
+    args: Vec<Arg>,
     env: CommandEnv,
     cwd: Option<OsString>,
     flags: u32,
@@ -97,6 +161,14 @@ pub struct StdioPipes {
     pub stderr: Option<AnonPipe>,
 }
 
+#[derive(Debug)]
+enum Arg {
+    /// Add quotes (if needed)
+    Regular(OsString),
+    /// Append raw string without quoting
+    Raw(OsString),
+}
+
 impl Command {
     pub fn new(program: &OsStr) -> Command {
         Command {
@@ -114,7 +186,7 @@ impl Command {
     }
 
     pub fn arg(&mut self, arg: &OsStr) {
-        self.args.push(arg.to_os_string())
+        self.args.push(Arg::Regular(arg.to_os_string()))
     }
     pub fn env_mut(&mut self) -> &mut CommandEnv {
         &mut self.env
@@ -137,6 +209,10 @@ impl Command {
 
     pub fn force_quotes(&mut self, enabled: bool) {
         self.force_quotes_enabled = enabled;
+    }
+
+    pub fn raw_arg(&mut self, command_str_to_append: &OsStr) {
+        self.args.push(Arg::Raw(command_str_to_append.to_os_string()))
     }
 
     pub fn get_program(&self) -> &OsStr {
@@ -207,7 +283,7 @@ impl Command {
         // the remaining portion of this spawn in a mutex.
         //
         // For more information, msdn also has an article about this race:
-        // http://support.microsoft.com/kb/315939
+        // https://support.microsoft.com/kb/315939
         static CREATE_PROCESS_LOCK: StaticMutex = StaticMutex::new();
 
         let _guard = unsafe { CREATE_PROCESS_LOCK.lock() };
@@ -251,9 +327,13 @@ impl Command {
 
 impl fmt::Debug for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.program)?;
+        self.program.fmt(f)?;
         for arg in &self.args {
-            write!(f, " {:?}", arg)?;
+            f.write_str(" ")?;
+            match arg {
+                Arg::Regular(s) => s.fmt(f),
+                Arg::Raw(s) => f.write_str(&s.to_string_lossy()),
+            }?;
         }
         Ok(())
     }
@@ -472,44 +552,63 @@ fn zeroed_process_information() -> c::PROCESS_INFORMATION {
     }
 }
 
+enum Quote {
+    // Every arg is quoted
+    Always,
+    // Whitespace and empty args are quoted
+    Auto,
+    // Arg appended without any changes (#29494)
+    Never,
+}
+
 // Produces a wide string *without terminating null*; returns an error if
 // `prog` or any of the `args` contain a nul.
-fn make_command_line(prog: &OsStr, args: &[OsString], force_quotes: bool) -> io::Result<Vec<u16>> {
+fn make_command_line(prog: &OsStr, args: &[Arg], force_quotes: bool) -> io::Result<Vec<u16>> {
     // Encode the command and arguments in a command line string such
     // that the spawned process may recover them using CommandLineToArgvW.
     let mut cmd: Vec<u16> = Vec::new();
     // Always quote the program name so CreateProcess doesn't interpret args as
     // part of the name if the binary wasn't found first time.
-    append_arg(&mut cmd, prog, true)?;
+    append_arg(&mut cmd, prog, Quote::Always)?;
     for arg in args {
         cmd.push(' ' as u16);
-        append_arg(&mut cmd, arg, force_quotes)?;
+        let (arg, quote) = match arg {
+            Arg::Regular(arg) => (arg, if force_quotes { Quote::Always } else { Quote::Auto }),
+            Arg::Raw(arg) => (arg, Quote::Never),
+        };
+        append_arg(&mut cmd, arg, quote)?;
     }
     return Ok(cmd);
 
-    fn append_arg(cmd: &mut Vec<u16>, arg: &OsStr, force_quotes: bool) -> io::Result<()> {
+    fn append_arg(cmd: &mut Vec<u16>, arg: &OsStr, quote: Quote) -> io::Result<()> {
         // If an argument has 0 characters then we need to quote it to ensure
         // that it actually gets passed through on the command line or otherwise
         // it will be dropped entirely when parsed on the other end.
         ensure_no_nuls(arg)?;
         let arg_bytes = &arg.as_inner().inner.as_inner();
-        let quote = force_quotes
-            || arg_bytes.iter().any(|c| *c == b' ' || *c == b'\t')
-            || arg_bytes.is_empty();
+        let (quote, escape) = match quote {
+            Quote::Always => (true, true),
+            Quote::Auto => {
+                (arg_bytes.iter().any(|c| *c == b' ' || *c == b'\t') || arg_bytes.is_empty(), true)
+            }
+            Quote::Never => (false, false),
+        };
         if quote {
             cmd.push('"' as u16);
         }
 
         let mut backslashes: usize = 0;
         for x in arg.encode_wide() {
-            if x == '\\' as u16 {
-                backslashes += 1;
-            } else {
-                if x == '"' as u16 {
-                    // Add n+1 backslashes to total 2n+1 before internal '"'.
-                    cmd.extend((0..=backslashes).map(|_| '\\' as u16));
+            if escape {
+                if x == '\\' as u16 {
+                    backslashes += 1;
+                } else {
+                    if x == '"' as u16 {
+                        // Add n+1 backslashes to total 2n+1 before internal '"'.
+                        cmd.extend((0..=backslashes).map(|_| '\\' as u16));
+                    }
+                    backslashes = 0;
                 }
-                backslashes = 0;
             }
             cmd.push(x);
         }
@@ -530,8 +629,15 @@ fn make_envp(maybe_env: Option<BTreeMap<EnvKey, OsString>>) -> io::Result<(*mut 
     if let Some(env) = maybe_env {
         let mut blk = Vec::new();
 
+        // If there are no environment variables to set then signal this by
+        // pushing a null.
+        if env.is_empty() {
+            blk.push(0);
+        }
+
         for (k, v) in env {
-            blk.extend(ensure_no_nuls(k.0)?.encode_wide());
+            ensure_no_nuls(k.os_string)?;
+            blk.extend(k.utf16);
             blk.push('=' as u16);
             blk.extend(ensure_no_nuls(v)?.encode_wide());
             blk.push(0);
@@ -555,13 +661,15 @@ fn make_dirp(d: Option<&OsString>) -> io::Result<(*const u16, Vec<u16>)> {
 }
 
 pub struct CommandArgs<'a> {
-    iter: crate::slice::Iter<'a, OsString>,
+    iter: crate::slice::Iter<'a, Arg>,
 }
 
 impl<'a> Iterator for CommandArgs<'a> {
     type Item = &'a OsStr;
     fn next(&mut self) -> Option<&'a OsStr> {
-        self.iter.next().map(|s| s.as_ref())
+        self.iter.next().map(|arg| match arg {
+            Arg::Regular(s) | Arg::Raw(s) => s.as_ref(),
+        })
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()

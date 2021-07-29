@@ -3,7 +3,7 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/mir/index.html
 
 use crate::mir::coverage::{CodeRegion, CoverageKind};
-use crate::mir::interpret::{Allocation, GlobalAlloc, Scalar};
+use crate::mir::interpret::{Allocation, ConstValue, GlobalAlloc, Scalar};
 use crate::mir::visit::MirVisitable;
 use crate::ty::adjustment::PointerCast;
 use crate::ty::codec::{TyDecoder, TyEncoder};
@@ -494,7 +494,7 @@ impl<'tcx> Body<'tcx> {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, TyEncodable, TyDecodable, HashStable)]
 pub enum Safety {
     Safe,
-    /// Unsafe because of a PushUnsafeBlock
+    /// Unsafe because of compiler-generated unsafe code, like `await` desugaring
     BuiltinUnsafe,
     /// Unsafe because of an unsafe fn
     FnUnsafe,
@@ -651,7 +651,7 @@ pub enum BorrowKind {
     /// in an aliasable location. To solve, you'd have to translate with
     /// an `&mut` borrow:
     ///
-    ///     struct Env { x: & &mut isize }
+    ///     struct Env { x: &mut &mut isize }
     ///     let x: &mut isize = ...;
     ///     let y = (&mut Env { &mut x }, fn_ptr); // changed from &x to &mut x
     ///     fn fn_ptr(env: &mut Env) { **env.x += 5; }
@@ -1249,10 +1249,12 @@ impl<'tcx> BasicBlockData<'tcx> {
     ///
     /// Terminator may not be None after construction of the basic block is complete. This accessor
     /// provides a convenience way to reach the terminator.
+    #[inline]
     pub fn terminator(&self) -> &Terminator<'tcx> {
         self.terminator.as_ref().expect("invalid terminator state")
     }
 
+    #[inline]
     pub fn terminator_mut(&mut self) -> &mut Terminator<'tcx> {
         self.terminator.as_mut().expect("invalid terminator state")
     }
@@ -1870,6 +1872,7 @@ impl<'tcx> PlaceRef<'tcx> {
 
     /// If this place represents a local variable like `_X` with no
     /// projections, return `Some(_X)`.
+    #[inline]
     pub fn as_local(&self) -> Option<Local> {
         match *self {
             PlaceRef { local, projection: [] } => Some(local),
@@ -1877,6 +1880,7 @@ impl<'tcx> PlaceRef<'tcx> {
         }
     }
 
+    #[inline]
     pub fn last_projection(&self) -> Option<(PlaceRef<'tcx>, PlaceElem<'tcx>)> {
         if let &[ref proj_base @ .., elem] = self.projection {
             Some((PlaceRef { local: self.local, projection: proj_base }, elem))
@@ -2091,7 +2095,7 @@ impl<'tcx> Operand<'tcx> {
         Operand::Constant(box Constant {
             span,
             user_ty: None,
-            literal: ConstantKind::Val(val.into(), ty),
+            literal: ConstantKind::Val(ConstValue::Scalar(val), ty),
         })
     }
 
@@ -2454,7 +2458,7 @@ pub enum ConstantKind<'tcx> {
 impl Constant<'tcx> {
     pub fn check_static_ptr(&self, tcx: TyCtxt<'_>) -> Option<DefId> {
         match self.literal.const_for_ty()?.val.try_to_scalar() {
-            Some(Scalar::Ptr(ptr)) => match tcx.global_alloc(ptr.alloc_id) {
+            Some(Scalar::Ptr(ptr, _size)) => match tcx.global_alloc(ptr.provenance) {
                 GlobalAlloc::Static(def_id) => {
                     assert!(!tcx.is_thread_local_static(def_id));
                     Some(def_id)
@@ -2464,12 +2468,14 @@ impl Constant<'tcx> {
             _ => None,
         }
     }
+    #[inline]
     pub fn ty(&self) -> Ty<'tcx> {
         self.literal.ty()
     }
 }
 
 impl From<&'tcx ty::Const<'tcx>> for ConstantKind<'tcx> {
+    #[inline]
     fn from(ct: &'tcx ty::Const<'tcx>) -> Self {
         Self::Ty(ct)
     }

@@ -20,9 +20,9 @@
           StorageDead(_4);                 // scope 0 at $DIR/prevent_early_finalization.rs:34:25: 34:26
           _0 = Finalizable(move _3);       // scope 0 at $DIR/prevent_early_finalization.rs:34:5: 34:27
           StorageDead(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:34:26: 34:27
-+         llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
++         llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [(no-location (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
 +         StorageDead(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
-+         llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _2)]); // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
++         llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [(no-location (#0), _2)]); // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
 +         StorageDead(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
           return;                          // scope 0 at $DIR/prevent_early_finalization.rs:35:2: 35:2
 +     }

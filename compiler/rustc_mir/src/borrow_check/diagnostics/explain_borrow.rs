@@ -15,6 +15,7 @@ use rustc_middle::ty::{self, RegionVid, TyCtxt};
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
+use crate::borrow_check::region_infer::BlameConstraint;
 use crate::borrow_check::{
     borrow_set::BorrowData, nll::ConstraintDescription, region_infer::Cause, MirBorrowckCtxt,
     WriteKind,
@@ -65,6 +66,7 @@ impl BorrowExplanation {
         err: &mut DiagnosticBuilder<'_>,
         borrow_desc: &str,
         borrow_span: Option<Span>,
+        multiple_borrow_span: Option<(Span, Span)>,
     ) {
         match *self {
             BorrowExplanation::UsedLater(later_use_kind, var_or_use_span, path_span) => {
@@ -191,14 +193,23 @@ impl BorrowExplanation {
 
                         if let Some(info) = &local_decl.is_block_tail {
                             if info.tail_result_is_ignored {
-                                err.span_suggestion_verbose(
-                                    info.span.shrink_to_hi(),
-                                    "consider adding semicolon after the expression so its \
-                                     temporaries are dropped sooner, before the local variables \
-                                     declared by the block are dropped",
-                                    ";".to_string(),
-                                    Applicability::MaybeIncorrect,
-                                );
+                                // #85581: If the first mutable borrow's scope contains
+                                // the second borrow, this suggestion isn't helpful.
+                                if !multiple_borrow_span
+                                    .map(|(old, new)| {
+                                        old.to(info.span.shrink_to_hi()).contains(new)
+                                    })
+                                    .unwrap_or(false)
+                                {
+                                    err.span_suggestion_verbose(
+                                        info.span.shrink_to_hi(),
+                                        "consider adding semicolon after the expression so its \
+                                        temporaries are dropped sooner, before the local variables \
+                                        declared by the block are dropped",
+                                        ";".to_string(),
+                                        Applicability::MaybeIncorrect,
+                                    );
+                                }
                             } else {
                                 err.note(
                                     "the temporary is part of an expression at the end of a \
@@ -289,12 +300,13 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         borrow_region: RegionVid,
         outlived_region: RegionVid,
     ) -> (ConstraintCategory, bool, Span, Option<RegionName>) {
-        let (category, from_closure, span) = self.regioncx.best_blame_constraint(
-            &self.body,
-            borrow_region,
-            NllRegionVariableOrigin::FreeRegion,
-            |r| self.regioncx.provides_universal_region(r, borrow_region, outlived_region),
-        );
+        let BlameConstraint { category, from_closure, span, variance_info: _ } =
+            self.regioncx.best_blame_constraint(
+                &self.body,
+                borrow_region,
+                NllRegionVariableOrigin::FreeRegion,
+                |r| self.regioncx.provides_universal_region(r, borrow_region, outlived_region),
+            );
 
         let outlived_fr_name = self.give_region_a_name(outlived_region);
 

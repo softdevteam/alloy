@@ -56,7 +56,6 @@ const EXCEPTION_PATHS: &[&str] = &[
     "library/std/src/f32.rs",
     "library/std/src/f64.rs",
     "library/std/src/path.rs",
-    "library/std/src/thread/available_concurrency.rs",
     "library/std/src/sys_common", // Should only contain abstractions over platforms
     "library/std/src/net/test.rs", // Utility helpers for tests
 ];
@@ -123,6 +122,7 @@ fn check_cfgs(
 
         let contains_platform_specific_cfg = cfg.contains("target_os")
             || cfg.contains("target_env")
+            || cfg.contains("target_abi")
             || cfg.contains("target_vendor")
             || cfg.contains("unix")
             || cfg.contains("windows");

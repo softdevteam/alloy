@@ -102,7 +102,7 @@ pub fn SetFunctionCallConv(fn_: &'a Value, cc: CallConv) {
 // example happen for generics when using multiple codegen units. This function simply uses the
 // value's name as the comdat value to make sure that it is in a 1-to-1 relationship to the
 // function.
-// For more details on COMDAT sections see e.g., http://www.airs.com/blog/archives/52
+// For more details on COMDAT sections see e.g., https://www.airs.com/blog/archives/52
 pub fn SetUniqueComdat(llmod: &Module, val: &'a Value) {
     unsafe {
         let name = get_value_name(val);
@@ -148,50 +148,6 @@ impl Attribute {
             self.unapply_llfn(idx, llfn);
         }
     }
-}
-
-// Memory-managed interface to object files.
-
-pub struct ObjectFile {
-    pub llof: &'static mut ffi::ObjectFile,
-}
-
-unsafe impl Send for ObjectFile {}
-
-impl ObjectFile {
-    // This will take ownership of llmb
-    pub fn new(llmb: &'static mut MemoryBuffer) -> Option<ObjectFile> {
-        unsafe {
-            let llof = LLVMCreateObjectFile(llmb)?;
-            Some(ObjectFile { llof })
-        }
-    }
-}
-
-impl Drop for ObjectFile {
-    fn drop(&mut self) {
-        unsafe {
-            LLVMDisposeObjectFile(&mut *(self.llof as *mut _));
-        }
-    }
-}
-
-// Memory-managed interface to section iterators.
-
-pub struct SectionIter<'a> {
-    pub llsi: &'a mut SectionIterator<'a>,
-}
-
-impl Drop for SectionIter<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            LLVMDisposeSectionIterator(&mut *(self.llsi as *mut _));
-        }
-    }
-}
-
-pub fn mk_section_iter(llof: &ffi::ObjectFile) -> SectionIter<'_> {
-    unsafe { SectionIter { llsi: LLVMGetSections(llof) } }
 }
 
 pub fn set_section(llglobal: &Value, section_name: &str) {

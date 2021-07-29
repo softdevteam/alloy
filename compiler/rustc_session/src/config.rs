@@ -12,7 +12,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::impl_stable_hash_via_hash;
 
 use rustc_target::abi::{Align, TargetDataLayout};
-use rustc_target::spec::{SplitDebuginfo, Target, TargetTriple};
+use rustc_target::spec::{SplitDebuginfo, Target, TargetTriple, TargetWarnings};
 
 use rustc_serialize::json;
 
@@ -31,6 +31,7 @@ use std::collections::btree_map::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::hash::Hash;
 use std::iter::{self, FromIterator};
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
@@ -325,11 +326,10 @@ impl Default for TrimmedDefPaths {
 
 /// Use tree-based collections to cheaply get a deterministic `Hash` implementation.
 /// *Do not* switch `BTreeMap` out for an unsorted container type! That would break
-/// dependency tracking for command-line arguments.
-#[derive(Clone, Hash, Debug)]
+/// dependency tracking for command-line arguments. Also only hash keys, since tracking
+/// should only depend on the output types, not the paths they're written to.
+#[derive(Clone, Debug, Hash)]
 pub struct OutputTypes(BTreeMap<OutputType, Option<PathBuf>>);
-
-impl_stable_hash_via_hash!(OutputTypes);
 
 impl OutputTypes {
     pub fn new(entries: &[(OutputType, Option<PathBuf>)]) -> OutputTypes {
@@ -804,6 +804,7 @@ fn default_configuration(sess: &Session) -> CrateConfig {
     let wordsz = sess.target.pointer_width.to_string();
     let os = &sess.target.os;
     let env = &sess.target.env;
+    let abi = &sess.target.abi;
     let vendor = &sess.target.vendor;
     let min_atomic_width = sess.target.min_atomic_width();
     let max_atomic_width = sess.target.max_atomic_width();
@@ -813,7 +814,7 @@ fn default_configuration(sess: &Session) -> CrateConfig {
     });
 
     let mut ret = FxHashSet::default();
-    ret.reserve(6); // the minimum number of insertions
+    ret.reserve(7); // the minimum number of insertions
     // Target bindings.
     ret.insert((sym::target_os, Some(Symbol::intern(os))));
     for fam in &sess.target.families {
@@ -828,11 +829,12 @@ fn default_configuration(sess: &Session) -> CrateConfig {
     ret.insert((sym::target_endian, Some(Symbol::intern(end.as_str()))));
     ret.insert((sym::target_pointer_width, Some(Symbol::intern(&wordsz))));
     ret.insert((sym::target_env, Some(Symbol::intern(env))));
+    ret.insert((sym::target_abi, Some(Symbol::intern(abi))));
     ret.insert((sym::target_vendor, Some(Symbol::intern(vendor))));
     if sess.target.has_elf_tls {
         ret.insert((sym::target_thread_local, None));
     }
-    for &(i, align) in &[
+    for (i, align) in [
         (8, layout.i8_align.abi),
         (16, layout.i16_align.abi),
         (32, layout.i32_align.abi),
@@ -898,9 +900,11 @@ pub(super) fn build_target_config(
     target_override: Option<Target>,
     sysroot: &PathBuf,
 ) -> Target {
-    let target_result =
-        target_override.map_or_else(|| Target::search(&opts.target_triple, sysroot), Ok);
-    let target = target_result.unwrap_or_else(|e| {
+    let target_result = target_override.map_or_else(
+        || Target::search(&opts.target_triple, sysroot),
+        |t| Ok((t, TargetWarnings::empty())),
+    );
+    let (target, target_warnings) = target_result.unwrap_or_else(|e| {
         early_error(
             opts.error_format,
             &format!(
@@ -910,6 +914,9 @@ pub(super) fn build_target_config(
             ),
         )
     });
+    for warning in target_warnings.warning_messages() {
+        early_warn(opts.error_format, &warning)
+    }
 
     if !matches!(target.pointer_width, 16 | 32 | 64) {
         early_error(
@@ -1092,6 +1099,13 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
              level",
             "LEVEL",
         ),
+        opt::multi_s(
+            "",
+            "force-warn",
+            "Specifiy lints that should warn even if \
+             they are allowed somewhere else",
+            "LINT",
+        ),
         opt::multi_s("C", "codegen", "Set a codegen option", "OPT[=VALUE]"),
         opt::flag_s("V", "version", "Print version info and exit"),
         opt::flag_s("v", "verbose", "Use verbose output"),
@@ -1156,20 +1170,21 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
 pub fn get_cmd_lint_options(
     matches: &getopts::Matches,
     error_format: ErrorOutputType,
+    debugging_opts: &DebuggingOptions,
 ) -> (Vec<(String, lint::Level)>, bool, Option<lint::Level>) {
     let mut lint_opts_with_position = vec![];
     let mut describe_lints = false;
 
-    for &level in &[lint::Allow, lint::Warn, lint::Deny, lint::Forbid] {
-        for (passed_arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
-            let arg_pos = if let lint::Forbid = level {
-                // HACK: forbid is always specified last, so it can't be overridden.
-                // FIXME: remove this once <https://github.com/rust-lang/rust/issues/70819> is
-                // fixed and `forbid` works as expected.
-                usize::MAX
-            } else {
-                passed_arg_pos
-            };
+    if !debugging_opts.unstable_options && matches.opt_present("force-warn") {
+        early_error(
+            error_format,
+            "the `-Z unstable-options` flag must also be passed to enable \
+            the flag `--force-warn=lints`",
+        );
+    }
+
+    for level in [lint::Allow, lint::Warn, lint::ForceWarn, lint::Deny, lint::Forbid] {
+        for (arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
             if lint_name == "help" {
                 describe_lints = true;
             } else {
@@ -1189,6 +1204,7 @@ pub fn get_cmd_lint_options(
         lint::Level::from_str(&cap)
             .unwrap_or_else(|| early_error(error_format, &format!("unknown lint level: `{}`", cap)))
     });
+
     (lint_opts, describe_lints, lint_cap)
 }
 
@@ -1926,9 +1942,10 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     let crate_types = parse_crate_types_from_list(unparsed_crate_types)
         .unwrap_or_else(|e| early_error(error_format, &e[..]));
 
-    let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
-
     let mut debugging_opts = DebuggingOptions::build(matches, error_format);
+    let (lint_opts, describe_lints, lint_cap) =
+        get_cmd_lint_options(matches, error_format, &debugging_opts);
+
     check_debug_option_stability(&debugging_opts, error_format, json_rendered);
 
     if !debugging_opts.unstable_options && json_unused_externs {
@@ -2395,10 +2412,11 @@ impl PpMode {
 /// we have an opt-in scheme here, so one is hopefully forced to think about
 /// how the hash should be calculated when adding a new command-line argument.
 crate mod dep_tracking {
+    use super::LdImpl;
     use super::{
         CFGuard, CrateType, DebugInfo, ErrorOutputType, InstrumentCoverage, LinkerPluginLto,
-        LtoCli, OptLevel, OutputTypes, Passes, SourceFileHashAlgorithm, SwitchWithOptPath,
-        SymbolManglingVersion, TrimmedDefPaths,
+        LtoCli, OptLevel, OutputType, OutputTypes, Passes, SourceFileHashAlgorithm,
+        SwitchWithOptPath, SymbolManglingVersion, TrimmedDefPaths,
     };
     use crate::lint;
     use crate::options::WasiExecModel;
@@ -2414,59 +2432,55 @@ crate mod dep_tracking {
     use std::path::PathBuf;
 
     pub trait DepTrackingHash {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType);
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        );
     }
 
     macro_rules! impl_dep_tracking_hash_via_hash {
         ($($t:ty),+ $(,)?) => {$(
             impl DepTrackingHash for $t {
-                fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType) {
+                fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType, _for_crate_hash: bool) {
                     Hash::hash(self, hasher);
                 }
             }
         )+};
     }
 
-    macro_rules! impl_dep_tracking_hash_for_sortable_vec_of {
-        ($($t:ty),+ $(,)?) => {$(
-            impl DepTrackingHash for Vec<$t> {
-                fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
-                    let mut elems: Vec<&$t> = self.iter().collect();
-                    elems.sort();
-                    Hash::hash(&elems.len(), hasher);
-                    for (index, elem) in elems.iter().enumerate() {
-                        Hash::hash(&index, hasher);
-                        DepTrackingHash::hash(*elem, hasher, error_format);
-                    }
+    impl<T: DepTrackingHash> DepTrackingHash for Option<T> {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            match self {
+                Some(x) => {
+                    Hash::hash(&1, hasher);
+                    DepTrackingHash::hash(x, hasher, error_format, for_crate_hash);
                 }
+                None => Hash::hash(&0, hasher),
             }
-        )+};
+        }
     }
 
     impl_dep_tracking_hash_via_hash!(
         bool,
         usize,
+        NonZeroUsize,
         u64,
         String,
         PathBuf,
         lint::Level,
-        Option<bool>,
-        Option<u32>,
-        Option<usize>,
-        Option<NonZeroUsize>,
-        Option<String>,
-        Option<(String, u64)>,
-        Option<Vec<String>>,
-        Option<MergeFunctions>,
-        Option<RelocModel>,
-        Option<CodeModel>,
-        Option<TlsModel>,
-        Option<WasiExecModel>,
-        Option<PanicStrategy>,
-        Option<RelroLevel>,
-        Option<InstrumentCoverage>,
-        Option<lint::Level>,
-        Option<PathBuf>,
+        WasiExecModel,
+        u32,
+        RelocModel,
+        CodeModel,
+        TlsModel,
+        InstrumentCoverage,
         CrateType,
         MergeFunctions,
         PanicStrategy,
@@ -2476,7 +2490,6 @@ crate mod dep_tracking {
         LtoCli,
         DebugInfo,
         UnstableFeatures,
-        OutputTypes,
         NativeLib,
         NativeLibKind,
         SanitizerSet,
@@ -2484,21 +2497,13 @@ crate mod dep_tracking {
         TargetTriple,
         Edition,
         LinkerPluginLto,
-        Option<SplitDebuginfo>,
+        SplitDebuginfo,
         SwitchWithOptPath,
-        Option<SymbolManglingVersion>,
-        Option<SourceFileHashAlgorithm>,
+        SymbolManglingVersion,
+        SourceFileHashAlgorithm,
         TrimmedDefPaths,
-    );
-
-    impl_dep_tracking_hash_for_sortable_vec_of!(
-        String,
-        PathBuf,
-        (PathBuf, PathBuf),
-        CrateType,
-        NativeLib,
-        (String, lint::Level),
-        (String, u64)
+        Option<LdImpl>,
+        OutputType,
     );
 
     impl<T1, T2> DepTrackingHash for (T1, T2)
@@ -2506,11 +2511,16 @@ crate mod dep_tracking {
         T1: DepTrackingHash,
         T2: DepTrackingHash,
     {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
             Hash::hash(&0, hasher);
-            DepTrackingHash::hash(&self.0, hasher, error_format);
+            DepTrackingHash::hash(&self.0, hasher, error_format, for_crate_hash);
             Hash::hash(&1, hasher);
-            DepTrackingHash::hash(&self.1, hasher, error_format);
+            DepTrackingHash::hash(&self.1, hasher, error_format, for_crate_hash);
         }
     }
 
@@ -2520,13 +2530,50 @@ crate mod dep_tracking {
         T2: DepTrackingHash,
         T3: DepTrackingHash,
     {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
             Hash::hash(&0, hasher);
-            DepTrackingHash::hash(&self.0, hasher, error_format);
+            DepTrackingHash::hash(&self.0, hasher, error_format, for_crate_hash);
             Hash::hash(&1, hasher);
-            DepTrackingHash::hash(&self.1, hasher, error_format);
+            DepTrackingHash::hash(&self.1, hasher, error_format, for_crate_hash);
             Hash::hash(&2, hasher);
-            DepTrackingHash::hash(&self.2, hasher, error_format);
+            DepTrackingHash::hash(&self.2, hasher, error_format, for_crate_hash);
+        }
+    }
+
+    impl<T: DepTrackingHash> DepTrackingHash for Vec<T> {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            Hash::hash(&self.len(), hasher);
+            for (index, elem) in self.iter().enumerate() {
+                Hash::hash(&index, hasher);
+                DepTrackingHash::hash(elem, hasher, error_format, for_crate_hash);
+            }
+        }
+    }
+
+    impl DepTrackingHash for OutputTypes {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            Hash::hash(&self.0.len(), hasher);
+            for (key, val) in &self.0 {
+                DepTrackingHash::hash(key, hasher, error_format, for_crate_hash);
+                if !for_crate_hash {
+                    DepTrackingHash::hash(val, hasher, error_format, for_crate_hash);
+                }
+            }
         }
     }
 
@@ -2535,13 +2582,14 @@ crate mod dep_tracking {
         sub_hashes: BTreeMap<&'static str, &dyn DepTrackingHash>,
         hasher: &mut DefaultHasher,
         error_format: ErrorOutputType,
+        for_crate_hash: bool,
     ) {
         for (key, sub_hash) in sub_hashes {
             // Using Hash::hash() instead of DepTrackingHash::hash() is fine for
             // the keys, as they are just plain strings
             Hash::hash(&key.len(), hasher);
             Hash::hash(key, hasher);
-            sub_hash.hash(hasher, error_format);
+            sub_hash.hash(hasher, error_format, for_crate_hash);
         }
     }
 }

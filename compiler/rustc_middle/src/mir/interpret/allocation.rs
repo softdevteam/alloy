@@ -3,17 +3,20 @@
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::iter;
-use std::ops::{Deref, DerefMut, Range};
+use std::ops::{Deref, Range};
 use std::ptr;
 
 use rustc_ast::Mutability;
 use rustc_data_structures::sorted_map::SortedMap;
+use rustc_span::DUMMY_SP;
 use rustc_target::abi::{Align, HasDataLayout, Size};
 
 use super::{
-    read_target_uint, write_target_uint, AllocId, InterpError, Pointer, Scalar, ScalarMaybeUninit,
-    UndefinedBehaviorInfo, UninitBytesAccess, UnsupportedOpInfo,
+    read_target_uint, write_target_uint, AllocId, InterpError, InterpResult, Pointer,
+    ResourceExhaustionInfo, Scalar, ScalarMaybeUninit, UndefinedBehaviorInfo, UninitBytesAccess,
+    UnsupportedOpInfo,
 };
+use crate::ty;
 
 /// This type represents an Allocation in the Miri/CTFE core engine.
 ///
@@ -22,7 +25,7 @@ use super::{
 /// module provides higher-level access.
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
-pub struct Allocation<Tag = (), Extra = ()> {
+pub struct Allocation<Tag = AllocId, Extra = ()> {
     /// The actual bytes of the allocation.
     /// Note that the bytes of a pointer represent the offset of the pointer.
     bytes: Vec<u8>,
@@ -121,38 +124,62 @@ impl<Tag> Allocation<Tag> {
         Allocation::from_bytes(slice, Align::ONE, Mutability::Not)
     }
 
-    pub fn uninit(size: Size, align: Align) -> Self {
-        Allocation {
-            bytes: vec![0; size.bytes_usize()],
+    /// Try to create an Allocation of `size` bytes, failing if there is not enough memory
+    /// available to the compiler to do so.
+    pub fn uninit(size: Size, align: Align, panic_on_fail: bool) -> InterpResult<'static, Self> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve(size.bytes_usize()).map_err(|_| {
+            // This results in an error that can happen non-deterministically, since the memory
+            // available to the compiler can change between runs. Normally queries are always
+            // deterministic. However, we can be non-determinstic here because all uses of const
+            // evaluation (including ConstProp!) will make compilation fail (via hard error
+            // or ICE) upon encountering a `MemoryExhausted` error.
+            if panic_on_fail {
+                panic!("Allocation::uninit called with panic_on_fail had allocation failure")
+            }
+            ty::tls::with(|tcx| {
+                tcx.sess.delay_span_bug(DUMMY_SP, "exhausted memory during interpreation")
+            });
+            InterpError::ResourceExhaustion(ResourceExhaustionInfo::MemoryExhausted)
+        })?;
+        bytes.resize(size.bytes_usize(), 0);
+        Ok(Allocation {
+            bytes,
             relocations: Relocations::new(),
             init_mask: InitMask::new(size, false),
             align,
             mutability: Mutability::Mut,
             extra: (),
-        }
+        })
     }
 }
 
-impl Allocation<()> {
-    /// Add Tag and Extra fields
-    pub fn with_tags_and_extra<T, E>(
+impl Allocation {
+    /// Convert Tag and add Extra fields
+    pub fn convert_tag_add_extra<Tag, Extra>(
         self,
-        mut tagger: impl FnMut(AllocId) -> T,
-        extra: E,
-    ) -> Allocation<T, E> {
+        cx: &impl HasDataLayout,
+        extra: Extra,
+        mut tagger: impl FnMut(Pointer<AllocId>) -> Pointer<Tag>,
+    ) -> Allocation<Tag, Extra> {
+        // Compute new pointer tags, which also adjusts the bytes.
+        let mut bytes = self.bytes;
+        let mut new_relocations = Vec::with_capacity(self.relocations.0.len());
+        let ptr_size = cx.data_layout().pointer_size.bytes_usize();
+        let endian = cx.data_layout().endian;
+        for &(offset, alloc_id) in self.relocations.iter() {
+            let idx = offset.bytes_usize();
+            let ptr_bytes = &mut bytes[idx..idx + ptr_size];
+            let bits = read_target_uint(endian, ptr_bytes).unwrap();
+            let (ptr_tag, ptr_offset) =
+                tagger(Pointer::new(alloc_id, Size::from_bytes(bits))).into_parts();
+            write_target_uint(endian, ptr_bytes, ptr_offset.bytes().into()).unwrap();
+            new_relocations.push((offset, ptr_tag));
+        }
+        // Create allocation.
         Allocation {
-            bytes: self.bytes,
-            relocations: Relocations::from_presorted(
-                self.relocations
-                    .iter()
-                    // The allocations in the relocations (pointers stored *inside* this allocation)
-                    // all get the base pointer tag.
-                    .map(|&(offset, ((), alloc))| {
-                        let tag = tagger(alloc);
-                        (offset, (tag, alloc))
-                    })
-                    .collect(),
-            ),
+            bytes,
+            relocations: Relocations::from_presorted(new_relocations),
             init_mask: self.init_mask,
             align: self.align,
             mutability: self.mutability,
@@ -258,6 +285,9 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// A raw pointer variant of `get_bytes_mut` that avoids invalidating existing aliases into this memory.
     pub fn get_bytes_mut_ptr(&mut self, cx: &impl HasDataLayout, range: AllocRange) -> *mut [u8] {
         self.mark_init(range, true);
+        // This also clears relocations that just overlap with the written range. So writing to some
+        // byte can de-initialize its neighbors! See
+        // <https://github.com/rust-lang/rust/issues/87184> for details.
         self.clear_relocations(cx, range);
 
         assert!(range.end().bytes_usize() <= self.bytes.len()); // need to do our own bounds-check
@@ -300,7 +330,11 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         cx: &impl HasDataLayout,
         range: AllocRange,
     ) -> AllocResult<ScalarMaybeUninit<Tag>> {
-        // `get_bytes_unchecked` tests relocation edges.
+        // `get_bytes_with_uninit_and_ptr` tests relocation edges.
+        // We deliberately error when loading data that partially has provenance, or partially
+        // initialized data (that's the check below), into a scalar. The LLVM semantics of this are
+        // unclear so we are conservative. See <https://github.com/rust-lang/rust/issues/69488> for
+        // further discussion.
         let bytes = self.get_bytes_with_uninit_and_ptr(cx, range)?;
         // Uninit check happens *after* we established that the alignment is correct.
         // We must not return `Ok()` for unaligned pointers!
@@ -318,9 +352,9 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
             self.check_relocations(cx, range)?;
         } else {
             // Maybe a pointer.
-            if let Some(&(tag, alloc_id)) = self.relocations.get(&range.start) {
-                let ptr = Pointer::new_with_tag(alloc_id, Size::from_bytes(bits), tag);
-                return Ok(ScalarMaybeUninit::Scalar(ptr.into()));
+            if let Some(&prov) = self.relocations.get(&range.start) {
+                let ptr = Pointer::new(prov, Size::from_bytes(bits));
+                return Ok(ScalarMaybeUninit::from_pointer(ptr, cx));
             }
         }
         // We don't. Just return the bits.
@@ -340,6 +374,8 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         range: AllocRange,
         val: ScalarMaybeUninit<Tag>,
     ) -> AllocResult {
+        assert!(self.mutability == Mutability::Mut);
+
         let val = match val {
             ScalarMaybeUninit::Scalar(scalar) => scalar,
             ScalarMaybeUninit::Uninit => {
@@ -348,9 +384,14 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
             }
         };
 
-        let bytes = match val.to_bits_or_ptr(range.size, cx) {
-            Err(val) => u128::from(val.offset.bytes()),
-            Ok(data) => data,
+        // `to_bits_or_ptr_internal` is the right method because we just want to store this data
+        // as-is into memory.
+        let (bytes, provenance) = match val.to_bits_or_ptr_internal(range.size) {
+            Err(val) => {
+                let (provenance, offset) = val.into_parts();
+                (u128::from(offset.bytes()), Some(provenance))
+            }
+            Ok(data) => (data, None),
         };
 
         let endian = cx.data_layout().endian;
@@ -358,8 +399,8 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         write_target_uint(endian, dst, bytes).unwrap();
 
         // See if we have to also write a relocation.
-        if let Scalar::Ptr(val) = val {
-            self.relocations.insert(range.start, (val.tag, val.alloc_id));
+        if let Some(provenance) = provenance {
+            self.relocations.0.insert(range.start, provenance);
         }
 
         Ok(())
@@ -369,11 +410,7 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
 /// Relocations.
 impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// Returns all relocations overlapping with the given pointer-offset pair.
-    pub fn get_relocations(
-        &self,
-        cx: &impl HasDataLayout,
-        range: AllocRange,
-    ) -> &[(Size, (Tag, AllocId))] {
+    pub fn get_relocations(&self, cx: &impl HasDataLayout, range: AllocRange) -> &[(Size, Tag)] {
         // We have to go back `pointer_size - 1` bytes, as that one would still overlap with
         // the beginning of this range.
         let start = range.start.bytes().saturating_sub(cx.data_layout().pointer_size.bytes() - 1);
@@ -423,7 +460,7 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         }
 
         // Forget all the relocations.
-        self.relocations.remove_range(first..last);
+        self.relocations.0.remove_range(first..last);
     }
 
     /// Errors if there are relocations overlapping with the edges of the
@@ -463,6 +500,7 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         if range.size.bytes() == 0 {
             return;
         }
+        assert!(self.mutability == Mutability::Mut);
         self.init_mask.set_range(range.start, range.end(), is_init);
     }
 }
@@ -488,7 +526,7 @@ impl InitMaskCompressed {
 /// Transferring the initialization mask to other allocations.
 impl<Tag, Extra> Allocation<Tag, Extra> {
     /// Creates a run-length encoding of the initialization mask.
-    pub fn compress_uninit_range(&self, src: Pointer<Tag>, size: Size) -> InitMaskCompressed {
+    pub fn compress_uninit_range(&self, range: AllocRange) -> InitMaskCompressed {
         // Since we are copying `size` bytes from `src` to `dest + i * size` (`for i in 0..repeat`),
         // a naive initialization mask copying algorithm would repeatedly have to read the initialization mask from
         // the source and write it to the destination. Even if we optimized the memory accesses,
@@ -502,13 +540,13 @@ impl<Tag, Extra> Allocation<Tag, Extra> {
         // where each element toggles the state.
 
         let mut ranges = smallvec::SmallVec::<[u64; 1]>::new();
-        let initial = self.init_mask.get(src.offset);
+        let initial = self.init_mask.get(range.start);
         let mut cur_len = 1;
         let mut cur = initial;
 
-        for i in 1..size.bytes() {
+        for i in 1..range.size.bytes() {
             // FIXME: optimize to bitshift the current uninitialized block's bits and read the top bit.
-            if self.init_mask.get(src.offset + Size::from_bytes(i)) == cur {
+            if self.init_mask.get(range.start + Size::from_bytes(i)) == cur {
                 cur_len += 1;
             } else {
                 ranges.push(cur_len);
@@ -526,24 +564,23 @@ impl<Tag, Extra> Allocation<Tag, Extra> {
     pub fn mark_compressed_init_range(
         &mut self,
         defined: &InitMaskCompressed,
-        dest: Pointer<Tag>,
-        size: Size,
+        range: AllocRange,
         repeat: u64,
     ) {
         // An optimization where we can just overwrite an entire range of initialization
         // bits if they are going to be uniformly `1` or `0`.
         if defined.ranges.len() <= 1 {
             self.init_mask.set_range_inbounds(
-                dest.offset,
-                dest.offset + size * repeat, // `Size` operations
+                range.start,
+                range.start + range.size * repeat, // `Size` operations
                 defined.initial,
             );
             return;
         }
 
         for mut j in 0..repeat {
-            j *= size.bytes();
-            j += dest.offset.bytes();
+            j *= range.size.bytes();
+            j += range.start.bytes();
             let mut cur = defined.initial;
             for range in &defined.ranges {
                 let old_j = j;
@@ -559,39 +596,33 @@ impl<Tag, Extra> Allocation<Tag, Extra> {
     }
 }
 
-/// Relocations.
+/// "Relocations" stores the provenance information of pointers stored in memory.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
-pub struct Relocations<Tag = (), Id = AllocId>(SortedMap<Size, (Tag, Id)>);
+pub struct Relocations<Tag = AllocId>(SortedMap<Size, Tag>);
 
-impl<Tag, Id> Relocations<Tag, Id> {
+impl<Tag> Relocations<Tag> {
     pub fn new() -> Self {
         Relocations(SortedMap::new())
     }
 
     // The caller must guarantee that the given relocations are already sorted
     // by address and contain no duplicates.
-    pub fn from_presorted(r: Vec<(Size, (Tag, Id))>) -> Self {
+    pub fn from_presorted(r: Vec<(Size, Tag)>) -> Self {
         Relocations(SortedMap::from_presorted_elements(r))
     }
 }
 
 impl<Tag> Deref for Relocations<Tag> {
-    type Target = SortedMap<Size, (Tag, AllocId)>;
+    type Target = SortedMap<Size, Tag>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<Tag> DerefMut for Relocations<Tag> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 /// A partial, owned list of relocations to transfer into another allocation.
 pub struct AllocationRelocations<Tag> {
-    relative_relocations: Vec<(Size, (Tag, AllocId))>,
+    relative_relocations: Vec<(Size, Tag)>,
 }
 
 impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
@@ -629,7 +660,7 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// The affected range, as defined in the parameters to `prepare_relocation_copy` is expected
     /// to be clear of relocations.
     pub fn mark_relocation_range(&mut self, relocations: AllocationRelocations<Tag>) {
-        self.relocations.insert_presorted(relocations.relative_relocations);
+        self.relocations.0.insert_presorted(relocations.relative_relocations);
     }
 }
 

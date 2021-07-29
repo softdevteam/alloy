@@ -16,7 +16,7 @@ use crate::registry::Registry;
 use crate::DiagnosticId;
 use crate::ToolMetadata;
 use crate::{CodeSuggestion, SubDiagnostic};
-use rustc_lint_defs::{Applicability, FutureBreakage};
+use rustc_lint_defs::Applicability;
 
 use rustc_data_structures::sync::Lrc;
 use rustc_span::hygiene::ExpnData;
@@ -134,17 +134,14 @@ impl Emitter for JsonEmitter {
         }
     }
 
-    fn emit_future_breakage_report(&mut self, diags: Vec<(FutureBreakage, crate::Diagnostic)>) {
+    fn emit_future_breakage_report(&mut self, diags: Vec<crate::Diagnostic>) {
         let data: Vec<FutureBreakageItem> = diags
             .into_iter()
-            .map(|(breakage, mut diag)| {
+            .map(|mut diag| {
                 if diag.level == crate::Level::Allow {
                     diag.level = crate::Level::Warning;
                 }
-                FutureBreakageItem {
-                    future_breakage_date: breakage.date,
-                    diagnostic: Diagnostic::from_errors_diagnostic(&diag, self),
-                }
+                FutureBreakageItem { diagnostic: Diagnostic::from_errors_diagnostic(&diag, self) }
             })
             .collect();
         let report = FutureIncompatReport { future_incompat_report: data };
@@ -216,7 +213,7 @@ macro_rules! encode_fields {
             $(
                 $enc.emit_struct_field(
                     stringify!($name),
-                    idx,
+                    idx == 0,
                     |enc| $name.encode(enc),
                 )?;
                 idx += 1;
@@ -229,7 +226,7 @@ macro_rules! encode_fields {
 // Special-case encoder to skip tool_metadata if not set
 impl<E: Encoder> Encodable<E> for Diagnostic {
     fn encode(&self, s: &mut E) -> Result<(), E::Error> {
-        s.emit_struct("diagnostic", 7, |s| {
+        s.emit_struct(false, |s| {
             let mut idx = 0;
 
             idx = encode_fields!(
@@ -326,7 +323,6 @@ struct ArtifactNotification<'a> {
 
 #[derive(Encodable)]
 struct FutureBreakageItem {
-    future_breakage_date: Option<&'static str>,
     diagnostic: Diagnostic,
 }
 
@@ -559,7 +555,7 @@ impl DiagnosticCode {
         s.map(|s| {
             let s = match s {
                 DiagnosticId::Error(s) => s,
-                DiagnosticId::Lint { name, has_future_breakage: _ } => name,
+                DiagnosticId::Lint { name, .. } => name,
             };
             let je_result =
                 je.registry.as_ref().map(|registry| registry.try_find_description(&s)).unwrap();

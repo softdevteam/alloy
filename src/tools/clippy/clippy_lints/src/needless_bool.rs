@@ -71,6 +71,9 @@ declare_lint_pass!(NeedlessBool => [NEEDLESS_BOOL]);
 impl<'tcx> LateLintPass<'tcx> for NeedlessBool {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) {
         use self::Expression::{Bool, RetBool};
+        if e.span.from_expansion() {
+            return;
+        }
         if let ExprKind::If(pred, then_block, Some(else_expr)) = e.kind {
             let reduce = |ret, not| {
                 let mut applicability = Applicability::MachineApplicable;
@@ -82,7 +85,7 @@ impl<'tcx> LateLintPass<'tcx> for NeedlessBool {
                 }
 
                 if is_else_clause(cx.tcx, e) {
-                    snip = snip.blockify()
+                    snip = snip.blockify();
                 }
 
                 span_lint_and_sugg(
@@ -144,7 +147,7 @@ impl<'tcx> LateLintPass<'tcx> for BoolComparison {
                         |h: Sugg<'_>| !h,
                         "equality checks against false can be replaced by a negation",
                     ));
-                    check_comparison(cx, e, true_case, false_case, true_case, false_case, ignore_no_literal)
+                    check_comparison(cx, e, true_case, false_case, true_case, false_case, ignore_no_literal);
                 },
                 BinOpKind::Ne => {
                     let true_case = Some((
@@ -152,7 +155,7 @@ impl<'tcx> LateLintPass<'tcx> for BoolComparison {
                         "inequality checks against true can be replaced by a negation",
                     ));
                     let false_case = Some((|h| h, "inequality checks against false are unnecessary"));
-                    check_comparison(cx, e, true_case, false_case, true_case, false_case, ignore_no_literal)
+                    check_comparison(cx, e, true_case, false_case, true_case, false_case, ignore_no_literal);
                 },
                 BinOpKind::Lt => check_comparison(
                     cx,
@@ -251,22 +254,22 @@ fn check_comparison<'a, 'tcx>(
                             snippet_with_applicability(cx, expression_info.right_span, "..", &mut applicability)
                         ),
                         applicability,
-                    )
+                    );
                 }
             }
 
             match (fetch_bool_expr(left_side), fetch_bool_expr(right_side)) {
                 (Bool(true), Other) => left_true.map_or((), |(h, m)| {
-                    suggest_bool_comparison(cx, e, right_side, applicability, m, h)
+                    suggest_bool_comparison(cx, e, right_side, applicability, m, h);
                 }),
                 (Other, Bool(true)) => right_true.map_or((), |(h, m)| {
-                    suggest_bool_comparison(cx, e, left_side, applicability, m, h)
+                    suggest_bool_comparison(cx, e, left_side, applicability, m, h);
                 }),
                 (Bool(false), Other) => left_false.map_or((), |(h, m)| {
-                    suggest_bool_comparison(cx, e, right_side, applicability, m, h)
+                    suggest_bool_comparison(cx, e, right_side, applicability, m, h);
                 }),
                 (Other, Bool(false)) => right_false.map_or((), |(h, m)| {
-                    suggest_bool_comparison(cx, e, left_side, applicability, m, h)
+                    suggest_bool_comparison(cx, e, left_side, applicability, m, h);
                 }),
                 (Other, Other) => no_literal.map_or((), |(h, m)| {
                     let left_side = Sugg::hir_with_applicability(cx, left_side, "..", &mut applicability);
@@ -279,7 +282,7 @@ fn check_comparison<'a, 'tcx>(
                         "try simplifying it as shown",
                         h(left_side, right_side).to_string(),
                         applicability,
-                    )
+                    );
                 }),
                 _ => (),
             }

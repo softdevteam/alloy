@@ -160,7 +160,7 @@ impl<'a> ArchiveBuilder<'a> for ArArchiveBuilder<'a> {
             };
 
             if !self.no_builtin_ranlib {
-                match object::File::parse(&data) {
+                match object::File::parse(&*data) {
                     Ok(object) => {
                         symbol_table.insert(
                             entry_name.as_bytes().to_vec(),
@@ -253,6 +253,15 @@ impl<'a> ArchiveBuilder<'a> for ArArchiveBuilder<'a> {
                 self.sess.fatal(&format!("Ranlib exited with code {:?}", status.code()));
             }
         }
+    }
+
+    fn inject_dll_import_lib(
+        &mut self,
+        _lib_name: &str,
+        _dll_imports: &[rustc_middle::middle::cstore::DllImport],
+        _tmpdir: &rustc_data_structures::temp_dir::MaybeTempDir,
+    ) {
+        bug!("injecting dll imports is not supported");
     }
 }
 

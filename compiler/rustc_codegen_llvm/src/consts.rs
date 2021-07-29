@@ -11,13 +11,12 @@ use rustc_codegen_ssa::traits::*;
 use rustc_hir::def_id::DefId;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::interpret::{
-    read_target_uint, Allocation, ErrorHandled, GlobalAlloc, Pointer,
+    read_target_uint, Allocation, ErrorHandled, GlobalAlloc, Pointer, Scalar as InterpScalar,
 };
 use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::ty::{self, Instance, Ty};
 use rustc_middle::{bug, span_bug};
 use rustc_target::abi::{AddressSpace, Align, HasDataLayout, LayoutOf, Primitive, Scalar, Size};
-use rustc_target::spec::RelocModel;
 use tracing::debug;
 
 pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll Value {
@@ -26,7 +25,7 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
     let pointer_size = dl.pointer_size.bytes() as usize;
 
     let mut next_offset = 0;
-    for &(offset, ((), alloc_id)) in alloc.relocations().iter() {
+    for &(offset, alloc_id) in alloc.relocations().iter() {
         let offset = offset.bytes();
         assert_eq!(offset as usize as u64, offset);
         let offset = offset as usize;
@@ -56,7 +55,10 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
         };
 
         llvals.push(cx.scalar_to_backend(
-            Pointer::new(alloc_id, Size::from_bytes(ptr_offset)).into(),
+            InterpScalar::from_pointer(
+                Pointer::new(alloc_id, Size::from_bytes(ptr_offset)),
+                &cx.tcx,
+            ),
             &Scalar { value: Primitive::Pointer, valid_range: 0..=!0 },
             cx.type_i8p_ext(address_space),
         ));
@@ -283,8 +285,8 @@ impl CodegenCx<'ll, 'tcx> {
             }
         }
 
-        if self.tcx.sess.relocation_model() == RelocModel::Static {
-            unsafe {
+        unsafe {
+            if self.should_assume_dso_local(g, true) {
                 llvm::LLVMRustSetDSOLocal(g, true);
             }
         }
@@ -370,9 +372,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
             set_global_alignment(&self, g, self.align_of(ty));
             llvm::LLVMSetInitializer(g, v);
 
-            let linkage = base::linkage_from_llvm(llvm::LLVMRustGetLinkage(g));
-            let visibility = base::visibility_from_llvm(llvm::LLVMRustGetVisibility(g));
-            if self.should_assume_dso_local(linkage, visibility) {
+            if self.should_assume_dso_local(g, true) {
                 llvm::LLVMRustSetDSOLocal(g, true);
             }
 

@@ -1,4 +1,4 @@
-#![feature(rustc_private, decl_macro, never_type, hash_drain_filter, vec_into_raw_parts)]
+#![feature(rustc_private, decl_macro, never_type, hash_drain_filter, vec_into_raw_parts, once_cell)]
 #![warn(rust_2018_idioms)]
 #![warn(unused_lifetimes)]
 #![warn(unreachable_pub)]
@@ -14,6 +14,9 @@ extern crate rustc_fs_util;
 extern crate rustc_hir;
 extern crate rustc_incremental;
 extern crate rustc_index;
+extern crate rustc_interface;
+extern crate rustc_metadata;
+extern crate rustc_mir;
 extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
@@ -28,8 +31,7 @@ use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_codegen_ssa::CodegenResults;
 use rustc_errors::ErrorReported;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
-use rustc_middle::middle::cstore::{EncodedMetadata, MetadataLoader};
-use rustc_middle::ty::query::Providers;
+use rustc_middle::middle::cstore::EncodedMetadata;
 use rustc_session::config::OutputFilenames;
 use rustc_session::Session;
 
@@ -98,7 +100,7 @@ mod prelude {
     pub(crate) use cranelift_codegen::isa::{self, CallConv};
     pub(crate) use cranelift_codegen::Context;
     pub(crate) use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-    pub(crate) use cranelift_module::{self, DataContext, DataId, FuncId, Linkage, Module};
+    pub(crate) use cranelift_module::{self, DataContext, FuncId, Linkage, Module};
 
     pub(crate) use crate::abi::*;
     pub(crate) use crate::base::{codegen_operand, codegen_place};
@@ -164,15 +166,12 @@ impl CodegenBackend for CraneliftCodegenBackend {
         }
     }
 
-    fn metadata_loader(&self) -> Box<dyn MetadataLoader + Sync> {
-        Box::new(rustc_codegen_ssa::back::metadata::DefaultMetadataLoader)
-    }
-
-    fn provide(&self, _providers: &mut Providers) {}
-    fn provide_extern(&self, _providers: &mut Providers) {}
-
     fn target_features(&self, _sess: &Session) -> Vec<rustc_span::Symbol> {
         vec![]
+    }
+
+    fn print_version(&self) {
+        println!("Cranelift version: {}", cranelift_codegen::VERSION);
     }
 
     fn codegen_crate(
@@ -222,10 +221,7 @@ impl CodegenBackend for CraneliftCodegenBackend {
             sess,
             &codegen_results,
             outputs,
-            &codegen_results.crate_name.as_str(),
-        );
-
-        Ok(())
+        )
     }
 }
 
@@ -256,6 +252,8 @@ fn build_isa(sess: &Session, backend_config: &BackendConfig) -> Box<dyn isa::Tar
 
     flags_builder.set("enable_llvm_abi_extensions", "true").unwrap();
 
+    flags_builder.set("regalloc", &backend_config.regalloc).unwrap();
+
     use rustc_session::config::OptLevel;
     match sess.opts.optimize {
         OptLevel::No => {
@@ -277,21 +275,25 @@ fn build_isa(sess: &Session, backend_config: &BackendConfig) -> Box<dyn isa::Tar
             builder
         }
         Some(value) => {
-            let mut builder = cranelift_codegen::isa::lookup_variant(target_triple, variant).unwrap();
+            let mut builder =
+                cranelift_codegen::isa::lookup_variant(target_triple, variant).unwrap();
             if let Err(_) = builder.enable(value) {
                 sess.fatal("The specified target cpu isn't currently supported by Cranelift.");
             }
             builder
         }
         None => {
-            let mut builder = cranelift_codegen::isa::lookup_variant(target_triple, variant).unwrap();
-            // Don't use "haswell" as the default, as it implies `has_lzcnt`.
-            // macOS CI is still at Ivy Bridge EP, so `lzcnt` is interpreted as `bsr`.
-            builder.enable("nehalem").unwrap();
+            let mut builder =
+                cranelift_codegen::isa::lookup_variant(target_triple.clone(), variant).unwrap();
+            if target_triple.architecture == target_lexicon::Architecture::X86_64 {
+                // Don't use "haswell" as the default, as it implies `has_lzcnt`.
+                // macOS CI is still at Ivy Bridge EP, so `lzcnt` is interpreted as `bsr`.
+                builder.enable("nehalem").unwrap();
+            }
             builder
         }
     };
-    
+
     isa_builder.finish(flags)
 }
 

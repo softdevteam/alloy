@@ -21,6 +21,11 @@ pub(crate) fn codegen_fn<'tcx>(
     debug_assert!(!instance.substs.needs_infer());
 
     let mir = tcx.instance_mir(instance.def);
+    let _mir_guard = crate::PrintOnPanic(|| {
+        let mut buf = Vec::new();
+        rustc_mir::util::write_mir_pretty(tcx, Some(instance.def_id()), &mut buf).unwrap();
+        String::from_utf8_lossy(&buf).into_owned()
+    });
 
     // Declare function
     let symbol_name = tcx.symbol_name(instance);
@@ -52,7 +57,6 @@ pub(crate) fn codegen_fn<'tcx>(
         module,
         tcx,
         pointer_type,
-        vtables: FxHashMap::default(),
         constants_cx: ConstantCx::new(),
 
         instance,
@@ -105,15 +109,17 @@ pub(crate) fn codegen_fn<'tcx>(
     let context = &mut cx.cached_context;
     context.func = func;
 
-    crate::pretty_clif::write_clif_file(tcx, "unopt", None, instance, &context, &clif_comments);
+    crate::pretty_clif::write_clif_file(
+        tcx,
+        "unopt",
+        module.isa(),
+        instance,
+        &context,
+        &clif_comments,
+    );
 
     // Verify function
     verify_func(tcx, &clif_comments, &context.func);
-
-    // Perform rust specific optimizations
-    tcx.sess.time("optimize clif ir", || {
-        crate::optimize::optimize_function(tcx, instance, context, &mut clif_comments);
-    });
 
     // If the return block is not reachable, then the SSA builder may have inserted an `iconst.i128`
     // instruction, which doesn't have an encoding.
@@ -125,10 +131,20 @@ pub(crate) fn codegen_fn<'tcx>(
     // invalidate it when it would change.
     context.domtree.clear();
 
-    context.want_disasm = crate::pretty_clif::should_write_ir(tcx);
+    // Perform rust specific optimizations
+    tcx.sess.time("optimize clif ir", || {
+        crate::optimize::optimize_function(
+            tcx,
+            module.isa(),
+            instance,
+            context,
+            &mut clif_comments,
+        );
+    });
 
     // Define function
     tcx.sess.time("define function", || {
+        context.want_disasm = crate::pretty_clif::should_write_ir(tcx);
         module
             .define_function(func_id, context, &mut NullTrapSink {}, &mut NullStackMapSink {})
             .unwrap()
@@ -138,7 +154,7 @@ pub(crate) fn codegen_fn<'tcx>(
     crate::pretty_clif::write_clif_file(
         tcx,
         "opt",
-        Some(module.isa()),
+        module.isa(),
         instance,
         &context,
         &clif_comments,
@@ -876,7 +892,7 @@ pub(crate) fn codegen_operand<'tcx>(
 pub(crate) fn codegen_panic<'tcx>(fx: &mut FunctionCx<'_, '_, 'tcx>, msg_str: &str, span: Span) {
     let location = fx.get_caller_location(span).load_scalar(fx);
 
-    let msg_ptr = fx.anonymous_str("assert", msg_str);
+    let msg_ptr = fx.anonymous_str(msg_str);
     let msg_len = fx.bcx.ins().iconst(fx.pointer_type, i64::try_from(msg_str.len()).unwrap());
     let args = [msg_ptr, msg_len, location];
 

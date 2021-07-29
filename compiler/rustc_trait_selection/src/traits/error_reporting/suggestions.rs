@@ -21,12 +21,14 @@ use rustc_middle::ty::{
     Infer, InferTy, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness,
 };
 use rustc_middle::ty::{TypeAndMut, TypeckResults};
+use rustc_span::def_id::LOCAL_CRATE;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{BytePos, MultiSpan, Span, DUMMY_SP};
 use rustc_target::spec::abi;
 use std::fmt;
 
 use super::InferCtxtPrivExt;
+use crate::infer::InferCtxtExt as _;
 use crate::traits::query::evaluate_obligation::InferCtxtExt as _;
 use rustc_middle::ty::print::with_no_trimmed_paths;
 
@@ -686,14 +688,16 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             return false;
         }
 
-        // Blacklist traits for which it would be nonsensical to suggest borrowing.
+        // List of traits for which it would be nonsensical to suggest borrowing.
         // For instance, immutable references are always Copy, so suggesting to
         // borrow would always succeed, but it's probably not what the user wanted.
-        let blacklist: Vec<_> =
-            [LangItem::Copy, LangItem::Clone, LangItem::Unpin, LangItem::Sized, LangItem::Send]
+        let mut never_suggest_borrow: Vec<_> =
+            [LangItem::Copy, LangItem::Clone, LangItem::Unpin, LangItem::Sized]
                 .iter()
                 .filter_map(|lang_item| self.tcx.lang_items().require(*lang_item).ok())
                 .collect();
+
+        never_suggest_borrow.push(self.tcx.get_diagnostic_item(sym::send_trait).unwrap());
 
         let span = obligation.cause.span;
         let param_env = obligation.param_env;
@@ -796,7 +800,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 ty::TraitRef::new(trait_ref.def_id, imm_substs),
                 trait_ref,
                 false,
-                &blacklist[..],
+                &never_suggest_borrow[..],
             ) {
                 return true;
             } else {
@@ -804,7 +808,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     ty::TraitRef::new(trait_ref.def_id, mut_substs),
                     trait_ref,
                     true,
-                    &blacklist[..],
+                    &never_suggest_borrow[..],
                 );
             }
         } else {
@@ -1898,7 +1902,9 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             | ObligationCauseCode::ReturnNoExpression
             | ObligationCauseCode::UnifyReceiver(..)
             | ObligationCauseCode::OpaqueType
-            | ObligationCauseCode::MiscObligation => {}
+            | ObligationCauseCode::MiscObligation
+            | ObligationCauseCode::WellFormed(..)
+            | ObligationCauseCode::MatchImpl(..) => {}
             ObligationCauseCode::SliceOrArrayElem => {
                 err.note("slice and array elements must have `Sized` type");
             }
@@ -1923,12 +1929,12 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             ObligationCauseCode::ItemObligation(item_def_id) => {
                 let item_name = tcx.def_path_str(item_def_id);
                 let msg = format!("required by `{}`", item_name);
-                if let Some(sp) = tcx.hir().span_if_local(item_def_id) {
-                    let sp = tcx.sess.source_map().guess_head_span(sp);
-                    err.span_label(sp, &msg);
-                } else {
-                    err.note(&msg);
-                }
+                let sp = tcx
+                    .hir()
+                    .span_if_local(item_def_id)
+                    .unwrap_or_else(|| tcx.def_span(item_def_id));
+                let sp = tcx.sess.source_map().guess_head_span(sp);
+                err.span_note(sp, &msg);
             }
             ObligationCauseCode::BindingObligation(item_def_id, span) => {
                 let item_name = tcx.def_path_str(item_def_id);
@@ -1947,7 +1953,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 if span != DUMMY_SP {
                     err.span_label(span, &msg);
                 } else {
-                    err.note(&msg);
+                    err.span_note(
+                        tcx.def_span(item_def_id),
+                        &format!("required by a bound in `{}`", item_name),
+                    );
                 }
             }
             ObligationCauseCode::ObjectCastObligation(object_ty) => {
@@ -1974,9 +1983,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 
                 if self.tcx.sess.is_nightly_build() && is_const_fn {
                     err.help(
-                        "create an inline `const` block, see RFC \
-                        #2920 <https://github.com/rust-lang/rfcs/pull/2920> \
-                        for more information",
+                        "create an inline `const` block, see RFC #2920 \
+                         <https://github.com/rust-lang/rfcs/pull/2920> for more information",
                     );
                 }
             }
@@ -2163,8 +2171,14 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 self.tcx.for_each_relevant_impl(
                     parent_def_id,
                     parent_trait_ref.self_ty().skip_binder(),
-                    |impl_def_id| {
-                        candidates.push(impl_def_id);
+                    |impl_def_id| match self.tcx.hir().get_if_local(impl_def_id) {
+                        Some(Node::Item(hir::Item {
+                            kind: hir::ItemKind::Impl(hir::Impl { .. }),
+                            ..
+                        })) => {
+                            candidates.push(impl_def_id);
+                        }
+                        _ => {}
                     },
                 );
                 match &candidates[..] {
@@ -2309,11 +2323,12 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     }
 
     fn suggest_new_overflow_limit(&self, err: &mut DiagnosticBuilder<'_>) {
-        let current_limit = self.tcx.sess.recursion_limit();
+        let current_limit = self.tcx.recursion_limit();
         let suggested_limit = current_limit * 2;
         err.help(&format!(
             "consider adding a `#![recursion_limit=\"{}\"]` attribute to your crate (`{}`)",
-            suggested_limit, self.tcx.crate_name,
+            suggested_limit,
+            self.tcx.crate_name(LOCAL_CRATE),
         ));
     }
 
@@ -2347,12 +2362,12 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 }
                 let self_ty = self.tcx.erase_regions(self_ty);
 
-                let impls_future = self.tcx.type_implements_trait((
+                let impls_future = self.type_implements_trait(
                     future_trait,
                     self_ty.skip_binder(),
                     ty::List::empty(),
                     obligation.param_env,
-                ));
+                );
 
                 let item_def_id = self
                     .tcx
@@ -2394,7 +2409,9 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     normalized_ty,
                 );
                 debug!("suggest_await_before_try: try_trait_obligation {:?}", try_obligation);
-                if self.predicate_may_hold(&try_obligation) && impls_future {
+                if self.predicate_may_hold(&try_obligation)
+                    && impls_future.must_apply_modulo_regions()
+                {
                     if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(span) {
                         if snippet.ends_with('?') {
                             err.span_suggestion_verbose(

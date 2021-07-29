@@ -4,7 +4,7 @@ use clippy_utils::diagnostics::{span_lint, span_lint_and_sugg, span_lint_and_the
 use clippy_utils::ptr::get_spans;
 use clippy_utils::source::snippet_opt;
 use clippy_utils::ty::{is_type_diagnostic_item, match_type, walk_ptrs_hir_ty};
-use clippy_utils::{expr_path_res, is_allowed, match_any_def_paths, paths};
+use clippy_utils::{expr_path_res, is_lint_allowed, match_any_def_paths, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{
@@ -211,7 +211,7 @@ fn check_invalid_ptr_usage<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
     ];
 
     if_chain! {
-        if let ExprKind::Call(ref fun, ref args) = expr.kind;
+        if let ExprKind::Call(fun, args) = expr.kind;
         if let ExprKind::Path(ref qpath) = fun.kind;
         if let Some(fun_def_id) = cx.qpath_res(qpath, fun.hir_id).opt_def_id();
         let fun_def_path = cx.get_def_path(fun_def_id).into_iter().map(Symbol::to_ident_string).collect::<Vec<_>>();
@@ -246,7 +246,7 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
     for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
         // Honor the allow attribute on parameters. See issue 5644.
         if let Some(body) = &body {
-            if is_allowed(cx, PTR_ARG, body.params[idx].hir_id) {
+            if is_lint_allowed(cx, PTR_ARG, body.params[idx].hir_id) {
                 continue;
             }
         }

@@ -39,7 +39,8 @@ use rustc_trait_selection::infer::InferCtxtExt as _;
 use rustc_trait_selection::opaque_types::InferCtxtExt as _;
 use rustc_trait_selection::traits::error_reporting::InferCtxtExt as _;
 use rustc_trait_selection::traits::{
-    self, ObligationCauseCode, StatementAsExpression, TraitEngine, TraitEngineExt,
+    self, ObligationCause, ObligationCauseCode, StatementAsExpression, TraitEngine, TraitEngineExt,
+    WellFormedLoc,
 };
 
 use std::collections::hash_map::Entry;
@@ -408,6 +409,29 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         value
     }
 
+    /// Convenience method which tracks extra diagnostic information for normalization
+    /// that occurs as a result of WF checking. The `hir_id` is the `HirId` of the hir item
+    /// whose type is being wf-checked - this is used to construct a more precise span if
+    /// an error occurs.
+    ///
+    /// It is never necessary to call this method - calling `normalize_associated_types_in` will
+    /// just result in a slightly worse diagnostic span, and will still be sound.
+    pub(in super::super) fn normalize_associated_types_in_wf<T>(
+        &self,
+        span: Span,
+        value: T,
+        loc: WellFormedLoc,
+    ) -> T
+    where
+        T: TypeFoldable<'tcx>,
+    {
+        self.inh.normalize_associated_types_in_with_cause(
+            ObligationCause::new(span, self.body_id, ObligationCauseCode::WellFormed(Some(loc))),
+            self.param_env,
+            value,
+        )
+    }
+
     pub(in super::super) fn normalize_associated_types_in<T>(&self, span: Span, value: T) -> T
     where
         T: TypeFoldable<'tcx>,
@@ -423,7 +447,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     where
         T: TypeFoldable<'tcx>,
     {
-        self.inh.partially_normalize_associated_types_in(span, self.body_id, self.param_env, value)
+        self.inh.partially_normalize_associated_types_in(
+            ObligationCause::misc(span, self.body_id),
+            self.param_env,
+            value,
+        )
     }
 
     pub fn require_type_meets(
@@ -906,13 +934,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Resolves an associated value path into a base type and associated constant, or method
     /// resolution. The newly resolved definition is written into `type_dependent_defs`.
-    pub fn resolve_ty_and_res_ufcs(
+    pub fn resolve_ty_and_res_fully_qualified_call(
         &self,
         qpath: &'tcx QPath<'tcx>,
         hir_id: hir::HirId,
         span: Span,
     ) -> (Res, Option<Ty<'tcx>>, &'tcx [hir::PathSegment<'tcx>]) {
-        debug!("resolve_ty_and_res_ufcs: qpath={:?} hir_id={:?} span={:?}", qpath, hir_id, span);
+        debug!(
+            "resolve_ty_and_res_fully_qualified_call: qpath={:?} hir_id={:?} span={:?}",
+            qpath, hir_id, span
+        );
         let (ty, qself, item_segment) = match *qpath {
             QPath::Resolved(ref opt_qself, ref path) => {
                 return (
@@ -922,7 +953,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 );
             }
             QPath::TypeRelative(ref qself, ref segment) => (self.to_ty(qself), qself, segment),
-            QPath::LangItem(..) => bug!("`resolve_ty_and_res_ufcs` called on `LangItem`"),
+            QPath::LangItem(..) => {
+                bug!("`resolve_ty_and_res_fully_qualified_call` called on `LangItem`")
+            }
         };
         if let Some(&cached_result) = self.typeck_results.borrow().type_dependent_defs().get(hir_id)
         {
@@ -932,25 +965,27 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return (def, Some(ty), slice::from_ref(&**item_segment));
         }
         let item_name = item_segment.ident;
-        let result = self.resolve_ufcs(span, item_name, ty, hir_id).or_else(|error| {
-            let result = match error {
-                method::MethodError::PrivateMatch(kind, def_id, _) => Ok((kind, def_id)),
-                _ => Err(ErrorReported),
-            };
-            if item_name.name != kw::Empty {
-                if let Some(mut e) = self.report_method_error(
-                    span,
-                    ty,
-                    item_name,
-                    SelfSource::QPath(qself),
-                    error,
-                    None,
-                ) {
-                    e.emit();
+        let result = self
+            .resolve_fully_qualified_call(span, item_name, ty, qself.span, hir_id)
+            .or_else(|error| {
+                let result = match error {
+                    method::MethodError::PrivateMatch(kind, def_id, _) => Ok((kind, def_id)),
+                    _ => Err(ErrorReported),
+                };
+                if item_name.name != kw::Empty {
+                    if let Some(mut e) = self.report_method_error(
+                        span,
+                        ty,
+                        item_name,
+                        SelfSource::QPath(qself),
+                        error,
+                        None,
+                    ) {
+                        e.emit();
+                    }
                 }
-            }
-            result
-        });
+                result
+            });
 
         if result.is_ok() {
             self.maybe_lint_bare_trait(qpath, hir_id);
@@ -1544,6 +1579,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     /// Add all the obligations that are required, substituting and normalized appropriately.
+    #[tracing::instrument(level = "debug", skip(self, span, def_id, substs))]
     fn add_required_obligations(&self, span: Span, def_id: DefId, substs: &SubstsRef<'tcx>) {
         let (bounds, spans) = self.instantiate_bounds(span, def_id, &substs);
 

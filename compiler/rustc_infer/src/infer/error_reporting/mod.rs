@@ -64,6 +64,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_hir::{Item, ItemKind, Node};
+use rustc_middle::dep_graph::DepContext;
 use rustc_middle::ty::error::TypeError;
 use rustc_middle::ty::{
     self,
@@ -524,7 +525,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
 
             fn path_crate(self, cnum: CrateNum) -> Result<Self::Path, Self::Error> {
-                Ok(vec![self.tcx.original_crate_name(cnum).to_string()])
+                Ok(vec![self.tcx.crate_name(cnum).to_string()])
             }
             fn path_qualified(
                 self,
@@ -994,7 +995,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         let get_lifetimes = |sig| {
             use rustc_hir::def::Namespace;
             let mut s = String::new();
-            let (_, (sig, reg)) = ty::print::FmtPrinter::new(self.tcx, &mut s, Namespace::TypeNS)
+            let (_, sig, reg) = ty::print::FmtPrinter::new(self.tcx, &mut s, Namespace::TypeNS)
                 .name_all_regions(sig)
                 .unwrap();
             let lts: Vec<String> = reg.into_iter().map(|(_, kind)| kind.to_string()).collect();
@@ -1589,17 +1590,13 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
         };
         if let Some((expected, found)) = expected_found {
-            let expected_label = match exp_found {
-                Mismatch::Variable(ef) => ef.expected.prefix_string(self.tcx),
-                Mismatch::Fixed(s) => s.into(),
-            };
-            let found_label = match exp_found {
-                Mismatch::Variable(ef) => ef.found.prefix_string(self.tcx),
-                Mismatch::Fixed(s) => s.into(),
-            };
-            let exp_found = match exp_found {
-                Mismatch::Variable(exp_found) => Some(exp_found),
-                Mismatch::Fixed(_) => None,
+            let (expected_label, found_label, exp_found) = match exp_found {
+                Mismatch::Variable(ef) => (
+                    ef.expected.prefix_string(self.tcx),
+                    ef.found.prefix_string(self.tcx),
+                    Some(ef),
+                ),
+                Mismatch::Fixed(s) => (s.into(), s.into(), None),
             };
             match (&terr, expected == found) {
                 (TypeError::Sorts(values), extra) => {
@@ -1965,7 +1962,33 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 struct_span_err!(self.tcx.sess, span, E0580, "{}", failure_str)
             }
             FailureCode::Error0308(failure_str) => {
-                struct_span_err!(self.tcx.sess, span, E0308, "{}", failure_str)
+                let mut err = struct_span_err!(self.tcx.sess, span, E0308, "{}", failure_str);
+                if let ValuePairs::Types(ty::error::ExpectedFound { expected, found }) =
+                    trace.values
+                {
+                    // If a tuple of length one was expected and the found expression has
+                    // parentheses around it, perhaps the user meant to write `(expr,)` to
+                    // build a tuple (issue #86100)
+                    match (expected.kind(), found.kind()) {
+                        (ty::Tuple(_), ty::Tuple(_)) => {}
+                        (ty::Tuple(_), _) if expected.tuple_fields().count() == 1 => {
+                            if let Ok(code) = self.tcx.sess().source_map().span_to_snippet(span) {
+                                if let Some(code) =
+                                    code.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+                                {
+                                    err.span_suggestion(
+                                        span,
+                                        "use a trailing comma to create a tuple with one element",
+                                        format!("({},)", code),
+                                        Applicability::MaybeIncorrect,
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                err
             }
             FailureCode::Error0644(failure_str) => {
                 struct_span_err!(self.tcx.sess, span, E0644, "{}", failure_str)
@@ -2107,7 +2130,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         let new_lt = generics
             .as_ref()
             .and_then(|(parent_g, g)| {
-                let possible: Vec<_> = (b'a'..=b'z').map(|c| format!("'{}", c as char)).collect();
+                let mut possible = (b'a'..=b'z').map(|c| format!("'{}", c as char));
                 let mut lts_names = g
                     .params
                     .iter()
@@ -2123,7 +2146,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                     );
                 }
                 let lts = lts_names.iter().map(|s| -> &str { &*s }).collect::<Vec<_>>();
-                possible.into_iter().find(|candidate| !lts.contains(&candidate.as_str()))
+                possible.find(|candidate| !lts.contains(&candidate.as_str()))
             })
             .unwrap_or("'lt".to_string());
         let add_lt_sugg = generics

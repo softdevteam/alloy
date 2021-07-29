@@ -51,7 +51,6 @@
 #![cfg(not(test))]
 #![stable(feature = "core", since = "1.6.0")]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(deny(warnings))),
@@ -66,6 +65,7 @@
 #![feature(allow_internal_unstable)]
 #![feature(arbitrary_self_types)]
 #![feature(asm)]
+#![feature(bool_to_option)]
 #![feature(cfg_target_has_atomic)]
 #![feature(const_heap)]
 #![feature(const_alloc_layout)]
@@ -87,7 +87,6 @@
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(const_fn_trait_bound)]
-#![cfg_attr(bootstrap, feature(const_fn))]
 #![feature(const_option)]
 #![feature(const_precise_live_drops)]
 #![feature(const_ptr_offset)]
@@ -112,7 +111,6 @@
 #![feature(doc_cfg)]
 #![feature(doc_notable_trait)]
 #![feature(duration_consts_2)]
-#![cfg_attr(bootstrap, feature(extended_key_value_attributes))]
 #![feature(extern_types)]
 #![feature(fundamental)]
 #![feature(gc)]
@@ -161,15 +159,14 @@
 #![feature(const_fn_transmute)]
 #![feature(abi_unadjusted)]
 #![feature(adx_target_feature)]
-#![feature(external_doc)]
 #![feature(associated_type_bounds)]
 #![feature(const_caller_location)]
 #![feature(slice_ptr_get)]
 #![feature(no_niche)] // rust-lang/rust#68303
 #![feature(no_coverage)] // rust-lang/rust#84605
-#![feature(int_error_matching)]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![deny(or_patterns_back_compat)]
+#![cfg_attr(bootstrap, deny(or_patterns_back_compat))]
+#![cfg_attr(not(bootstrap), deny(rust_2021_incompatible_or_patterns))]
 
 // allow using `core::` in intra-doc links
 #[allow(unused_extern_crates)]
@@ -182,6 +179,16 @@ use prelude::v1::*;
 #[cfg(not(test))] // See #65860
 #[macro_use]
 mod macros;
+
+// We don't export this through #[macro_export] for now, to avoid breakage.
+// See https://github.com/rust-lang/rust/issues/82913
+#[cfg(not(test))]
+#[unstable(feature = "assert_matches", issue = "82775")]
+/// Unstable module containing the unstable `assert_matches` macro.
+pub mod assert_matches {
+    #[unstable(feature = "assert_matches", issue = "82775")]
+    pub use crate::macros::{assert_matches, debug_assert_matches};
+}
 
 #[macro_use]
 mod internal_macros;
@@ -260,7 +267,6 @@ pub mod option;
 pub mod panic;
 pub mod panicking;
 pub mod pin;
-pub mod raw;
 pub mod result;
 #[unstable(feature = "async_stream", issue = "79024")]
 pub mod stream;
@@ -313,5 +319,35 @@ pub mod primitive;
 #[unstable(feature = "stdsimd", issue = "48556")]
 mod core_arch;
 
+#[doc = include_str!("../../stdarch/crates/core_arch/src/core_arch_docs.md")]
 #[stable(feature = "simd_arch", since = "1.27.0")]
-pub use core_arch::arch;
+pub mod arch {
+    #[stable(feature = "simd_arch", since = "1.27.0")]
+    pub use crate::core_arch::arch::*;
+
+    /// Inline assembly.
+    ///
+    /// Read the [unstable book] for the usage.
+    ///
+    /// [unstable book]: ../../unstable-book/library-features/asm.html
+    #[unstable(
+        feature = "asm",
+        issue = "72016",
+        reason = "inline assembly is not stable enough for use and is subject to change"
+    )]
+    #[rustc_builtin_macro]
+    pub macro asm("assembly template", $(operands,)* $(options($(option),*))?) {
+        /* compiler built-in */
+    }
+
+    /// Module-level inline assembly.
+    #[unstable(
+        feature = "global_asm",
+        issue = "35119",
+        reason = "`global_asm!` is not stable enough for use and is subject to change"
+    )]
+    #[rustc_builtin_macro]
+    pub macro global_asm("assembly template", $(operands,)* $(options($(option),*))?) {
+        /* compiler built-in */
+    }
+}

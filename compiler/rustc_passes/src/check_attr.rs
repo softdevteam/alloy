@@ -97,6 +97,10 @@ impl CheckAttrVisitor<'tcx> {
                 | sym::rustc_dirty
                 | sym::rustc_if_this_changed
                 | sym::rustc_then_this_would_need => self.check_rustc_dirty_clean(&attr),
+                sym::cmse_nonsecure_entry => self.check_cmse_nonsecure_entry(attr, span, target),
+                sym::default_method_body_is_const => {
+                    self.check_default_method_body_is_const(attr, span, target)
+                }
                 _ => true,
             };
             // lint-only checks
@@ -220,6 +224,25 @@ impl CheckAttrVisitor<'tcx> {
                 self.inline_attr_str_error_with_macro_def(hir_id, attr, "naked");
                 true
             }
+            _ => {
+                self.tcx
+                    .sess
+                    .struct_span_err(
+                        attr.span,
+                        "attribute should be applied to a function definition",
+                    )
+                    .span_label(*span, "not a function definition")
+                    .emit();
+                false
+            }
+        }
+    }
+
+    /// Checks if `#[cmse_nonsecure_entry]` is applied to a function definition.
+    fn check_cmse_nonsecure_entry(&self, attr: &Attribute, span: &Span, target: Target) -> bool {
+        match target {
+            Target::Fn
+            | Target::Method(MethodKind::Trait { body: true } | MethodKind::Inherent) => true,
             _ => {
                 self.tcx
                     .sess
@@ -456,6 +479,8 @@ impl CheckAttrVisitor<'tcx> {
                     _ => None,
                 }
             }
+            // we check the validity of params elsewhere
+            Target::Param => return false,
             _ => None,
         } {
             return err_fn(meta.span(), &format!("isn't allowed on {}", err));
@@ -523,8 +548,11 @@ impl CheckAttrVisitor<'tcx> {
             self.doc_attr_str_error(meta, "keyword");
             return false;
         }
-        match self.tcx.hir().expect_item(hir_id).kind {
-            ItemKind::Mod(ref module) => {
+        match self.tcx.hir().find(hir_id).and_then(|node| match node {
+            hir::Node::Item(item) => Some(&item.kind),
+            _ => None,
+        }) {
+            Some(ItemKind::Mod(ref module)) => {
                 if !module.item_ids.is_empty() {
                     self.tcx
                         .sess
@@ -577,7 +605,7 @@ impl CheckAttrVisitor<'tcx> {
         target: Target,
         specified_inline: &mut Option<(bool, Span)>,
     ) -> bool {
-        if target == Target::Use {
+        if target == Target::Use || target == Target::ExternCrate {
             let do_inline = meta.name_or_empty() == sym::inline;
             if let Some((prev_inline, prev_span)) = *specified_inline {
                 if do_inline != prev_inline {
@@ -705,7 +733,7 @@ impl CheckAttrVisitor<'tcx> {
         let mut is_valid = true;
 
         if let Some(list) = attr.meta().and_then(|mi| mi.meta_item_list().map(|l| l.to_vec())) {
-            for meta in list {
+            for meta in &list {
                 if let Some(i_meta) = meta.meta_item() {
                     match i_meta.name_or_empty() {
                         sym::alias
@@ -757,7 +785,6 @@ impl CheckAttrVisitor<'tcx> {
                         | sym::html_no_source
                         | sym::html_playground_url
                         | sym::html_root_url
-                        | sym::include
                         | sym::inline
                         | sym::issue_tracker_base_url
                         | sym::keyword
@@ -791,6 +818,30 @@ impl CheckAttrVisitor<'tcx> {
                                             Applicability::MachineApplicable,
                                         );
                                         diag.note("`doc(spotlight)` is now a no-op");
+                                    }
+                                    if i_meta.has_name(sym::include) {
+                                        if let Some(value) = i_meta.value_str() {
+                                            // if there are multiple attributes, the suggestion would suggest deleting all of them, which is incorrect
+                                            let applicability = if list.len() == 1 {
+                                                Applicability::MachineApplicable
+                                            } else {
+                                                Applicability::MaybeIncorrect
+                                            };
+                                            let inner = if attr.style == AttrStyle::Inner {
+                                                "!"
+                                            } else {
+                                                ""
+                                            };
+                                            diag.span_suggestion(
+                                                attr.meta().unwrap().span,
+                                                "use `doc = include_str!` instead",
+                                                format!(
+                                                    "#{}[doc = include_str!(\"{}\")]",
+                                                    inner, value
+                                                ),
+                                                applicability,
+                                            );
+                                        }
                                     }
                                     diag.emit();
                                 },
@@ -1412,6 +1463,29 @@ impl CheckAttrVisitor<'tcx> {
                     .sess
                     .struct_span_err(attr.span, "attribute should be applied to `const fn`")
                     .span_label(*span, "not a `const fn`")
+                    .emit();
+                false
+            }
+        }
+    }
+
+    /// default_method_body_is_const should only be applied to trait methods with default bodies.
+    fn check_default_method_body_is_const(
+        &self,
+        attr: &Attribute,
+        span: &Span,
+        target: Target,
+    ) -> bool {
+        match target {
+            Target::Method(MethodKind::Trait { body: true }) => true,
+            _ => {
+                self.tcx
+                    .sess
+                    .struct_span_err(
+                        attr.span,
+                        "attribute should be applied to a trait method with body",
+                    )
+                    .span_label(*span, "not a trait method or missing a body")
                     .emit();
                 false
             }

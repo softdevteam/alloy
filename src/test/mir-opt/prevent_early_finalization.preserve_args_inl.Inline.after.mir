@@ -38,6 +38,10 @@ fn preserve_args_inl() -> Finalizable {
                     scope 6 {
                         debug i => _20;  // in scope 6 at $DIR/prevent_early_finalization.rs:41:9: 41:10
                     }
+                    scope 9 (inlined iter::range::<impl Iterator for std::ops::Range<usize>>::next) { // at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                        debug self => _14; // in scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                        let mut _26: &mut std::ops::Range<usize>; // in scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+                    }
                 }
             }
             scope 8 (inlined <std::ops::Range<usize> as IntoIterator>::into_iter) { // at $DIR/prevent_early_finalization.rs:41:14: 41:20
@@ -69,9 +73,9 @@ fn preserve_args_inl() -> Finalizable {
         StorageDead(_24);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         (_1.0: usize) = move _23;        // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_23);                // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#431), _2)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#428), _2)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_2);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#434), _3)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:39:15: 39:74 (#431), _3)]); // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_3);                 // scope 7 at $DIR/prevent_early_finalization.rs:39:15: 39:74
         StorageDead(_3);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74
         StorageDead(_2);                 // scope 0 at $DIR/prevent_early_finalization.rs:39:73: 39:74
@@ -100,19 +104,15 @@ fn preserve_args_inl() -> Finalizable {
         StorageLive(_15);                // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
         _15 = &mut _9;                   // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
         _14 = &mut (*_15);               // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
-        _13 = <std::ops::Range<usize> as Iterator>::next(move _14) -> bb2; // scope 4 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageLive(_26);                // scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _26 = &mut (*_14);               // scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        _13 = <std::ops::Range<usize> as iter::range::RangeIteratorImpl>::spec_next(move _26) -> bb4; // scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
                                          // mir::Constant
                                          // + span: $DIR/prevent_early_finalization.rs:41:14: 41:20
-                                         // + literal: Const { ty: for<'r> fn(&'r mut std::ops::Range<usize>) -> std::option::Option<<std::ops::Range<usize> as std::iter::Iterator>::Item> {<std::ops::Range<usize> as std::iter::Iterator>::next}, val: Value(Scalar(<ZST>)) }
+                                         // + literal: Const { ty: for<'r> fn(&'r mut std::ops::Range<usize>) -> std::option::Option<<std::ops::Range<usize> as std::iter::range::RangeIteratorImpl>::Item> {<std::ops::Range<usize> as std::iter::range::RangeIteratorImpl>::spec_next}, val: Value(Scalar(<ZST>)) }
     }
 
     bb2: {
-        StorageDead(_14);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
-        _16 = discriminant(_13);         // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
-        switchInt(move _16) -> [0_isize: bb3, otherwise: bb4]; // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
-    }
-
-    bb3: {
         _6 = const ();                   // scope 4 at $DIR/prevent_early_finalization.rs:41:5: 43:6
         StorageDead(_15);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
         StorageDead(_13);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
@@ -122,14 +122,14 @@ fn preserve_args_inl() -> Finalizable {
         StorageDead(_7);                 // scope 2 at $DIR/prevent_early_finalization.rs:41:19: 41:20
         StorageDead(_6);                 // scope 2 at $DIR/prevent_early_finalization.rs:43:5: 43:6
         _0 = _4;                         // scope 2 at $DIR/prevent_early_finalization.rs:44:5: 44:6
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [(no-location (#0), _1)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
         StorageDead(_1);                 // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
-        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [($DIR/prevent_early_finalization.rs:1:1: 1:1 (#0), _4)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
+        llvm_asm!(LlvmInlineAsmInner { asm: "", asm_str_style: Cooked, outputs: [], inputs: ["r"], clobbers: ["memory"], volatile: true, alignstack: false, dialect: Att } : [] : [(no-location (#0), _4)]); // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
         StorageDead(_4);                 // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
         return;                          // scope 0 at $DIR/prevent_early_finalization.rs:45:2: 45:2
     }
 
-    bb4: {
+    bb3: {
         StorageLive(_17);                // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
         _17 = ((_13 as Some).0: usize);  // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
         StorageLive(_18);                // scope 5 at $DIR/prevent_early_finalization.rs:41:9: 41:10
@@ -154,5 +154,12 @@ fn preserve_args_inl() -> Finalizable {
         StorageDead(_20);                // scope 4 at $DIR/prevent_early_finalization.rs:43:5: 43:6
         StorageDead(_11);                // scope 3 at $DIR/prevent_early_finalization.rs:43:5: 43:6
         goto -> bb1;                     // scope 3 at $DIR/prevent_early_finalization.rs:41:5: 43:6
+    }
+
+    bb4: {
+        StorageDead(_26);                // scope 9 at $DIR/prevent_early_finalization.rs:41:14: 41:20
+        StorageDead(_14);                // scope 4 at $DIR/prevent_early_finalization.rs:41:19: 41:20
+        _16 = discriminant(_13);         // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
+        switchInt(move _16) -> [0_isize: bb2, otherwise: bb3]; // scope 4 at $DIR/prevent_early_finalization.rs:41:9: 41:10
     }
 }

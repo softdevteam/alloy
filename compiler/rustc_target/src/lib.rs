@@ -9,11 +9,11 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(bool_to_option)]
-#![feature(const_panic)]
 #![feature(nll)]
 #![feature(never_type)]
 #![feature(associated_type_bounds)]
 #![feature(exhaustive_patterns)]
+#![feature(min_specialization)]
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,9 @@ extern crate tracing;
 pub mod abi;
 pub mod asm;
 pub mod spec;
+
+#[cfg(test)]
+mod tests;
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro

@@ -27,7 +27,7 @@ macro_rules! rpc_encode_decode {
     (le $ty:ty) => {
         impl<S> Encode<S> for $ty {
             fn encode(self, w: &mut Writer, _: &mut S) {
-                w.write_all(&self.to_le_bytes()).unwrap();
+                w.extend_from_array(&self.to_le_bytes());
             }
         }
 
@@ -114,7 +114,7 @@ impl<S> DecodeMut<'_, '_, S> for () {
 
 impl<S> Encode<S> for u8 {
     fn encode(self, w: &mut Writer, _: &mut S) {
-        w.write_all(&[self]).unwrap();
+        w.push(self);
     }
 }
 
@@ -246,7 +246,7 @@ impl<S> DecodeMut<'_, '_, S> for String {
     }
 }
 
-/// Simplied version of panic payloads, ignoring
+/// Simplified version of panic payloads, ignoring
 /// types other than `&'static str` and `String`.
 pub enum PanicMessage {
     StaticStr(&'static str),

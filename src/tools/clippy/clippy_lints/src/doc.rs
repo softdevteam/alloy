@@ -1,4 +1,5 @@
-use clippy_utils::diagnostics::{span_lint, span_lint_and_note};
+use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_note};
+use clippy_utils::source::first_line_of_span;
 use clippy_utils::ty::{implements_trait, is_type_diagnostic_item};
 use clippy_utils::{is_entrypoint_fn, is_expn_of, match_panic_def_id, method_chain_args, return_ty};
 use if_chain::if_chain;
@@ -25,6 +26,7 @@ use rustc_span::source_map::{BytePos, FilePathMapping, MultiSpan, SourceMap, Spa
 use rustc_span::{sym, FileName, Pos};
 use std::io;
 use std::ops::Range;
+use std::thread;
 use url::Url;
 
 declare_clippy_lint! {
@@ -37,7 +39,8 @@ declare_clippy_lint! {
     /// consider that.
     ///
     /// **Known problems:** Lots of bad docs won’t be fixed, what the lint checks
-    /// for is limited, and there are still false positives.
+    /// for is limited, and there are still false positives. HTML elements and their
+    /// content are not linted.
     ///
     /// In addition, when writing documentation comments, including `[]` brackets
     /// inside a link text would trip the parser. Therfore, documenting link with
@@ -469,11 +472,11 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     spans: &[(usize, Span)],
 ) -> DocHeaders {
     // true if a safety header was found
-    use pulldown_cmark::CodeBlockKind;
     use pulldown_cmark::Event::{
         Code, End, FootnoteReference, HardBreak, Html, Rule, SoftBreak, Start, TaskListMarker, Text,
     };
-    use pulldown_cmark::Tag::{CodeBlock, Heading, Link};
+    use pulldown_cmark::Tag::{CodeBlock, Heading, Item, Link, Paragraph};
+    use pulldown_cmark::{CodeBlockKind, CowStr};
 
     let mut headers = DocHeaders {
         safety: false,
@@ -485,6 +488,9 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     let mut in_heading = false;
     let mut is_rust = false;
     let mut edition = None;
+    let mut ticks_unbalanced = false;
+    let mut text_to_check: Vec<(CowStr<'_>, Span)> = Vec::new();
+    let mut paragraph_span = spans.get(0).expect("function isn't called if doc comment is empty").1;
     for (event, range) in events {
         match event {
             Start(CodeBlock(ref kind)) => {
@@ -510,13 +516,42 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
             },
             Start(Link(_, url, _)) => in_link = Some(url),
             End(Link(..)) => in_link = None,
-            Start(Heading(_)) => in_heading = true,
-            End(Heading(_)) => in_heading = false,
+            Start(Heading(_) | Paragraph | Item) => {
+                if let Start(Heading(_)) = event {
+                    in_heading = true;
+                }
+                ticks_unbalanced = false;
+                let (_, span) = get_current_span(spans, range.start);
+                paragraph_span = first_line_of_span(cx, span);
+            },
+            End(Heading(_) | Paragraph | Item) => {
+                if let End(Heading(_)) = event {
+                    in_heading = false;
+                }
+                if ticks_unbalanced {
+                    span_lint_and_help(
+                        cx,
+                        DOC_MARKDOWN,
+                        paragraph_span,
+                        "backticks are unbalanced",
+                        None,
+                        "a backtick may be missing a pair",
+                    );
+                } else {
+                    for (text, span) in text_to_check {
+                        check_text(cx, valid_idents, &text, span);
+                    }
+                }
+                text_to_check = Vec::new();
+            },
             Start(_tag) | End(_tag) => (), // We don't care about other tags
             Html(_html) => (),             // HTML is weird, just ignore it
             SoftBreak | HardBreak | TaskListMarker(_) | Code(_) | Rule => (),
             FootnoteReference(text) | Text(text) => {
-                if Some(&text) == in_link.as_ref() {
+                let (begin, span) = get_current_span(spans, range.start);
+                paragraph_span = paragraph_span.with_hi(span.hi());
+                ticks_unbalanced |= text.contains('`') && !in_code;
+                if Some(&text) == in_link.as_ref() || ticks_unbalanced {
                     // Probably a link of the form `<http://example.com>`
                     // Which are represented as a link to "http://example.com" with
                     // text "http://example.com" by pulldown-cmark
@@ -525,11 +560,6 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
                 headers.safety |= in_heading && text.trim() == "Safety";
                 headers.errors |= in_heading && text.trim() == "Errors";
                 headers.panics |= in_heading && text.trim() == "Panics";
-                let index = match spans.binary_search_by(|c| c.0.cmp(&range.start)) {
-                    Ok(o) => o,
-                    Err(e) => e - 1,
-                };
-                let (begin, span) = spans[index];
                 if in_code {
                     if is_rust {
                         let edition = edition.unwrap_or_else(|| cx.tcx.sess.edition());
@@ -538,8 +568,7 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
                 } else {
                     // Adjust for the beginning of the current `Event`
                     let span = span.with_lo(span.lo() + BytePos::from_usize(range.start - begin));
-
-                    check_text(cx, valid_idents, &text, span);
+                    text_to_check.push((text, span));
                 }
             },
         }
@@ -547,18 +576,26 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     headers
 }
 
+fn get_current_span(spans: &[(usize, Span)], idx: usize) -> (usize, Span) {
+    let index = match spans.binary_search_by(|c| c.0.cmp(&idx)) {
+        Ok(o) => o,
+        Err(e) => e - 1,
+    };
+    spans[index]
+}
+
 fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
-    fn has_needless_main(code: &str, edition: Edition) -> bool {
+    fn has_needless_main(code: String, edition: Edition) -> bool {
         rustc_driver::catch_fatal_errors(|| {
-            rustc_span::with_session_globals(edition, || {
-                let filename = FileName::anon_source_code(code);
+            rustc_span::create_session_globals_then(edition, || {
+                let filename = FileName::anon_source_code(&code);
 
                 let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
                 let emitter = EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
                 let handler = Handler::with_emitter(false, None, box emitter);
                 let sess = ParseSess::with_span_handler(handler, sm);
 
-                let mut parser = match maybe_new_parser_from_source_str(&sess, filename, code.into()) {
+                let mut parser = match maybe_new_parser_from_source_str(&sess, filename, code) {
                     Ok(p) => p,
                     Err(errs) => {
                         for mut err in errs {
@@ -613,7 +650,13 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
         .unwrap_or_default()
     }
 
-    if has_needless_main(text, edition) {
+    // Because of the global session, we need to create a new session in a different thread with
+    // the edition we need.
+    let text = text.to_owned();
+    if thread::spawn(move || has_needless_main(text, edition))
+        .join()
+        .expect("thread::spawn failed")
+    {
         span_lint(cx, NEEDLESS_DOCTEST_MAIN, span, "needless `fn main` in doctest");
     }
 }

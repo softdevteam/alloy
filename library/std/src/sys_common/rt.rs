@@ -13,6 +13,17 @@ use crate::thread::Thread;
 #[cfg_attr(test, allow(dead_code))]
 pub unsafe fn init(argc: isize, argv: *const *const u8) {
     unsafe {
+        use crate::alloc::GcAllocator;
+
+        // Internally, this registers a SIGSEGV handler to compute the start and
+        // end bounds of the data segment. This means it *MUST* be called before
+        // rustc registers its own SIGSEGV stack overflow handler.
+        //
+        // Rust's stack overflow handler will unregister and return if there is
+        // no stack overflow, allowing the fault to "fall-through" to Boehm's
+        // handler next time. The is not true in the reverse case.
+        GcAllocator::init();
+
         sys::init(argc, argv);
 
         let main_guard = sys::thread::guard::init();

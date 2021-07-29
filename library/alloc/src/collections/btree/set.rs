@@ -810,7 +810,6 @@ impl<T> BTreeSet<T> {
     /// assert_eq!(set.remove(&2), true);
     /// assert_eq!(set.remove(&2), false);
     /// ```
-    #[doc(alias = "delete")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where
@@ -904,8 +903,8 @@ impl<T> BTreeSet<T> {
         self.map.append(&mut other.map);
     }
 
-    /// Splits the collection into two at the given key. Returns everything after the given key,
-    /// including the key.
+    /// Splits the collection into two at the given value. Returns everything after the given value,
+    /// including the value.
     ///
     /// # Examples
     ///
@@ -934,25 +933,27 @@ impl<T> BTreeSet<T> {
     /// assert!(b.contains(&41));
     /// ```
     #[stable(feature = "btree_split_off", since = "1.11.0")]
-    pub fn split_off<Q: ?Sized + Ord>(&mut self, key: &Q) -> Self
+    pub fn split_off<Q: ?Sized + Ord>(&mut self, value: &Q) -> Self
     where
         T: Borrow<Q> + Ord,
     {
-        BTreeSet { map: self.map.split_off(key) }
+        BTreeSet { map: self.map.split_off(value) }
     }
 
-    /// Creates an iterator which uses a closure to determine if a value should be removed.
+    /// Creates an iterator that visits all values in ascending order and uses a closure
+    /// to determine if a value should be removed.
     ///
-    /// If the closure returns true, then the value is removed and yielded.
-    /// If the closure returns false, the value will remain in the list and will not be yielded
-    /// by the iterator.
+    /// If the closure returns `true`, the value is removed from the set and yielded. If
+    /// the closure returns `false`, or panics, the value remains in the set and will
+    /// not be yielded.
     ///
-    /// If the iterator is only partially consumed or not consumed at all, each of the remaining
-    /// values will still be subjected to the closure and removed and dropped if it returns true.
+    /// If the iterator is only partially consumed or not consumed at all, each of the
+    /// remaining values is still subjected to the closure and removed and dropped if it
+    /// returns `true`.
     ///
-    /// It is unspecified how many more values will be subjected to the closure
-    /// if a panic occurs in the closure, or if a panic occurs while dropping a value, or if the
-    /// `DrainFilter` itself is leaked.
+    /// It is unspecified how many more values will be subjected to the closure if a
+    /// panic occurs in the closure, or if a panic occurs while dropping a value, or if
+    /// the `DrainFilter` itself is leaked.
     ///
     /// # Examples
     ///
@@ -1021,7 +1022,6 @@ impl<T> BTreeSet<T> {
     /// v.insert(1);
     /// assert_eq!(v.len(), 1);
     /// ```
-    #[doc(alias = "length")]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
     pub const fn len(&self) -> usize {

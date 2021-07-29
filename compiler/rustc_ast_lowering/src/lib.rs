@@ -43,12 +43,12 @@ use rustc_ast::walk_list;
 use rustc_ast::{self as ast, *};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::captures::Captures;
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::{struct_span_err, Applicability};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Namespace, PartialRes, PerNS, Res};
-use rustc_hir::def_id::{DefId, DefIdMap, LocalDefId, CRATE_DEF_ID};
+use rustc_hir::def_id::{DefId, DefIdMap, DefPathHash, LocalDefId, CRATE_DEF_ID};
 use rustc_hir::definitions::{DefKey, DefPathData, Definitions};
 use rustc_hir::intravisit;
 use rustc_hir::{ConstArg, GenericArg, ParamName};
@@ -59,7 +59,7 @@ use rustc_session::utils::{FlattenNonterminals, NtToTokenstream};
 use rustc_session::Session;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::ExpnId;
-use rustc_span::source_map::{respan, DesugaringKind};
+use rustc_span::source_map::{respan, CachingSourceMapView, DesugaringKind};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 use rustc_target::spec::abi::Abi;
@@ -198,11 +198,13 @@ pub trait ResolverAstLowering {
 
     fn next_node_id(&mut self) -> NodeId;
 
-    fn trait_map(&self) -> &NodeMap<Vec<hir::TraitCandidate>>;
+    fn take_trait_map(&mut self) -> NodeMap<Vec<hir::TraitCandidate>>;
 
     fn opt_local_def_id(&self, node: NodeId) -> Option<LocalDefId>;
 
     fn local_def_id(&self, node: NodeId) -> LocalDefId;
+
+    fn def_path_hash(&self, def_id: DefId) -> DefPathHash;
 
     fn create_def(
         &mut self,
@@ -212,6 +214,32 @@ pub trait ResolverAstLowering {
         expn_id: ExpnId,
         span: Span,
     ) -> LocalDefId;
+}
+
+struct LoweringHasher<'a> {
+    source_map: CachingSourceMapView<'a>,
+    resolver: &'a dyn ResolverAstLowering,
+}
+
+impl<'a> rustc_span::HashStableContext for LoweringHasher<'a> {
+    #[inline]
+    fn hash_spans(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn def_path_hash(&self, def_id: DefId) -> DefPathHash {
+        self.resolver.def_path_hash(def_id)
+    }
+
+    #[inline]
+    fn span_data_to_lines_and_cols(
+        &mut self,
+        span: &rustc_span::SpanData,
+    ) -> Option<(Lrc<rustc_span::SourceFile>, usize, rustc_span::BytePos, usize, rustc_span::BytePos)>
+    {
+        self.source_map.span_data_to_lines_and_cols(span)
+    }
 }
 
 /// Context of `impl Trait` in code, which determines whether it is allowed in an HIR subtree,
@@ -236,8 +264,8 @@ enum ImplTraitContext<'b, 'a> {
         /// Origin: Either OpaqueTyOrigin::FnReturn or OpaqueTyOrigin::AsyncFn,
         origin: hir::OpaqueTyOrigin,
     },
-    /// Impl trait in type aliases, consts and statics.
-    OtherOpaqueTy {
+    /// Impl trait in type aliases.
+    TypeAliasesOpaqueTy {
         /// Set of lifetimes that this opaque type can capture, if it uses
         /// them. This includes lifetimes bound since we entered this context.
         /// For example:
@@ -252,8 +280,6 @@ enum ImplTraitContext<'b, 'a> {
         // FIXME(impl_trait): but `required_region_bounds` will ICE later
         // anyway.
         capturable_lifetimes: &'b mut FxHashSet<hir::LifetimeName>,
-        /// Origin: Either OpaqueTyOrigin::Misc or OpaqueTyOrigin::Binding,
-        origin: hir::OpaqueTyOrigin,
     },
     /// `impl Trait` is not accepted in this position.
     Disallowed(ImplTraitPosition),
@@ -282,8 +308,8 @@ impl<'a> ImplTraitContext<'_, 'a> {
             ReturnPositionOpaqueTy { fn_def_id, origin } => {
                 ReturnPositionOpaqueTy { fn_def_id: *fn_def_id, origin: *origin }
             }
-            OtherOpaqueTy { capturable_lifetimes, origin } => {
-                OtherOpaqueTy { capturable_lifetimes, origin: *origin }
+            TypeAliasesOpaqueTy { capturable_lifetimes } => {
+                TypeAliasesOpaqueTy { capturable_lifetimes }
             }
             Disallowed(pos) => Disallowed(*pos),
         }
@@ -296,7 +322,7 @@ pub fn lower_crate<'a, 'hir>(
     resolver: &'a mut dyn ResolverAstLowering,
     nt_to_tokenstream: NtToTokenstream,
     arena: &'hir Arena<'hir>,
-) -> hir::Crate<'hir> {
+) -> &'hir hir::Crate<'hir> {
     let _prof_timer = sess.prof.verbose_generic_activity("hir_lowering");
 
     LoweringContext {
@@ -331,7 +357,7 @@ pub fn lower_crate<'a, 'hir>(
         lifetimes_to_define: Vec::new(),
         is_collecting_in_band_lifetimes: false,
         in_scope_lifetimes: Vec::new(),
-        allow_try_trait: Some([sym::control_flow_enum, sym::try_trait_v2][..].into()),
+        allow_try_trait: Some([sym::try_trait_v2][..].into()),
         allow_gen_future: Some([sym::gen_future][..].into()),
     }
     .lower_crate(krate)
@@ -403,7 +429,7 @@ enum AnonymousLifetimeMode {
 }
 
 impl<'a, 'hir> LoweringContext<'a, 'hir> {
-    fn lower_crate(mut self, c: &Crate) -> hir::Crate<'hir> {
+    fn lower_crate(mut self, c: &Crate) -> &'hir hir::Crate<'hir> {
         /// Full-crate AST visitor that inserts into a fresh
         /// `LoweringContext` any information that may be
         /// needed from arbitrary locations in the crate,
@@ -417,7 +443,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             fn allocate_use_tree_hir_id_counters(&mut self, tree: &UseTree) {
                 match tree.kind {
                     UseTreeKind::Simple(_, id1, id2) => {
-                        for &id in &[id1, id2] {
+                        for id in [id1, id2] {
                             self.lctx.allocate_hir_id_counter(id);
                         }
                     }
@@ -501,14 +527,13 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         let proc_macros =
             c.proc_macros.iter().map(|id| self.node_id_to_hir_id[*id].unwrap()).collect();
 
-        let trait_map = self
-            .resolver
-            .trait_map()
-            .iter()
-            .filter_map(|(&k, v)| {
-                self.node_id_to_hir_id.get(k).and_then(|id| id.as_ref()).map(|id| (*id, v.clone()))
-            })
-            .collect();
+        let mut trait_map: FxHashMap<_, FxHashMap<_, _>> = FxHashMap::default();
+        for (k, v) in self.resolver.take_trait_map().into_iter() {
+            if let Some(Some(hir_id)) = self.node_id_to_hir_id.get(k) {
+                let map = trait_map.entry(hir_id.owner).or_default();
+                map.insert(hir_id.local_id, v.into_boxed_slice());
+            }
+        }
 
         let mut def_id_to_hir_id = IndexVec::default();
 
@@ -531,7 +556,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             }
         }
 
-        hir::Crate {
+        let krate = hir::Crate {
             item: module,
             exported_macros: self.arena.alloc_from_iter(self.exported_macros),
             non_exported_macro_attrs: self.arena.alloc_from_iter(self.non_exported_macro_attrs),
@@ -546,7 +571,8 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             proc_macros,
             trait_map,
             attrs: self.attrs,
-        }
+        };
+        self.arena.alloc(krate)
     }
 
     fn insert_item(&mut self, item: hir::Item<'hir>) -> hir::ItemId {
@@ -563,6 +589,13 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         let lowered = self.lower_node_id_with_owner(owner, owner);
         debug_assert_eq!(lowered.local_id.as_u32(), 0);
         lowered
+    }
+
+    fn create_stable_hashing_context(&self) -> LoweringHasher<'_> {
+        LoweringHasher {
+            source_map: CachingSourceMapView::new(self.sess.source_map()),
+            resolver: self.resolver,
+        }
     }
 
     fn lower_node_id_generic(
@@ -684,7 +717,12 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         span: Span,
         allow_internal_unstable: Option<Lrc<[Symbol]>>,
     ) -> Span {
-        span.mark_with_reason(allow_internal_unstable, reason, self.sess.edition())
+        span.mark_with_reason(
+            allow_internal_unstable,
+            reason,
+            self.sess.edition(),
+            self.create_stable_hashing_context(),
+        )
     }
 
     fn with_anonymous_lifetime_mode<R>(
@@ -1086,7 +1124,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     //
                     //     fn foo() -> impl Iterator<Item = impl Debug>
                     ImplTraitContext::ReturnPositionOpaqueTy { .. }
-                    | ImplTraitContext::OtherOpaqueTy { .. } => (true, itctx),
+                    | ImplTraitContext::TypeAliasesOpaqueTy { .. } => (true, itctx),
 
                     // We are in the argument position, but within a dyn type:
                     //
@@ -1110,9 +1148,8 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                         capturable_lifetimes = FxHashSet::default();
                         (
                             true,
-                            ImplTraitContext::OtherOpaqueTy {
+                            ImplTraitContext::TypeAliasesOpaqueTy {
                                 capturable_lifetimes: &mut capturable_lifetimes,
-                                origin: hir::OpaqueTyOrigin::Misc,
                             },
                         )
                     }
@@ -1376,18 +1413,17 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             None,
                             |this| this.lower_param_bounds(bounds, itctx),
                         ),
-                    ImplTraitContext::OtherOpaqueTy { ref capturable_lifetimes, origin } => {
+                    ImplTraitContext::TypeAliasesOpaqueTy { ref capturable_lifetimes } => {
                         // Reset capturable lifetimes, any nested impl trait
                         // types will inherit lifetimes from this opaque type,
                         // so don't need to capture them again.
-                        let nested_itctx = ImplTraitContext::OtherOpaqueTy {
+                        let nested_itctx = ImplTraitContext::TypeAliasesOpaqueTy {
                             capturable_lifetimes: &mut FxHashSet::default(),
-                            origin,
                         };
                         self.lower_opaque_impl_trait(
                             span,
                             None,
-                            origin,
+                            hir::OpaqueTyOrigin::TyAlias,
                             def_node_id,
                             Some(capturable_lifetimes),
                             |this| this.lower_param_bounds(bounds, nested_itctx),
@@ -1424,25 +1460,14 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             }),
                         ))
                     }
-                    ImplTraitContext::Disallowed(pos) => {
-                        let allowed_in = if self.sess.features_untracked().impl_trait_in_bindings {
-                            "bindings or function and inherent method return types"
-                        } else {
-                            "function and inherent method return types"
-                        };
+                    ImplTraitContext::Disallowed(_) => {
                         let mut err = struct_span_err!(
                             self.sess,
                             t.span,
                             E0562,
                             "`impl Trait` not allowed outside of {}",
-                            allowed_in,
+                            "function and method return types",
                         );
-                        if pos == ImplTraitPosition::Binding && self.sess.is_nightly_build() {
-                            err.help(
-                                "add `#![feature(impl_trait_in_bindings)]` to the crate \
-                                   attributes to enable",
-                            );
-                        }
                         err.emit();
                         hir::TyKind::Err
                     }
@@ -1727,21 +1752,10 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     }
 
     fn lower_local(&mut self, l: &Local) -> hir::Local<'hir> {
-        let ty = l.ty.as_ref().map(|t| {
-            let mut capturable_lifetimes;
-            self.lower_ty(
-                t,
-                if self.sess.features_untracked().impl_trait_in_bindings {
-                    capturable_lifetimes = FxHashSet::default();
-                    ImplTraitContext::OtherOpaqueTy {
-                        capturable_lifetimes: &mut capturable_lifetimes,
-                        origin: hir::OpaqueTyOrigin::Binding,
-                    }
-                } else {
-                    ImplTraitContext::Disallowed(ImplTraitPosition::Binding)
-                },
-            )
-        });
+        let ty = l
+            .ty
+            .as_ref()
+            .map(|t| self.lower_ty(t, ImplTraitContext::Disallowed(ImplTraitPosition::Binding)));
         let init = l.init.as_ref().map(|e| self.lower_expr(e));
         let hir_id = self.lower_node_id(l.id);
         self.lower_attrs(hir_id, &l.attrs);
@@ -2292,13 +2306,17 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 )),
                 _ => None,
             });
-            if let ImplTraitContext::OtherOpaqueTy { ref mut capturable_lifetimes, .. } = itctx {
+            if let ImplTraitContext::TypeAliasesOpaqueTy { ref mut capturable_lifetimes, .. } =
+                itctx
+            {
                 capturable_lifetimes.extend(lt_def_names.clone());
             }
 
             let res = this.lower_trait_ref(&p.trait_ref, itctx.reborrow());
 
-            if let ImplTraitContext::OtherOpaqueTy { ref mut capturable_lifetimes, .. } = itctx {
+            if let ImplTraitContext::TypeAliasesOpaqueTy { ref mut capturable_lifetimes, .. } =
+                itctx
+            {
                 for param in lt_def_names {
                     capturable_lifetimes.remove(&param);
                 }
@@ -2537,21 +2555,35 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         self.pat_ident_binding_mode(span, ident, hir::BindingAnnotation::Unannotated)
     }
 
+    fn pat_ident_mut(&mut self, span: Span, ident: Ident) -> (hir::Pat<'hir>, hir::HirId) {
+        self.pat_ident_binding_mode_mut(span, ident, hir::BindingAnnotation::Unannotated)
+    }
+
     fn pat_ident_binding_mode(
         &mut self,
         span: Span,
         ident: Ident,
         bm: hir::BindingAnnotation,
     ) -> (&'hir hir::Pat<'hir>, hir::HirId) {
+        let (pat, hir_id) = self.pat_ident_binding_mode_mut(span, ident, bm);
+        (self.arena.alloc(pat), hir_id)
+    }
+
+    fn pat_ident_binding_mode_mut(
+        &mut self,
+        span: Span,
+        ident: Ident,
+        bm: hir::BindingAnnotation,
+    ) -> (hir::Pat<'hir>, hir::HirId) {
         let hir_id = self.next_id();
 
         (
-            self.arena.alloc(hir::Pat {
+            hir::Pat {
                 hir_id,
                 kind: hir::PatKind::Binding(bm, hir_id, ident.with_span_pos(span), None),
                 span,
                 default_binding_modes: true,
-            }),
+            },
             hir_id,
         )
     }
@@ -2569,13 +2601,8 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         })
     }
 
-    fn pat_without_dbm(&mut self, span: Span, kind: hir::PatKind<'hir>) -> &'hir hir::Pat<'hir> {
-        self.arena.alloc(hir::Pat {
-            hir_id: self.next_id(),
-            kind,
-            span,
-            default_binding_modes: false,
-        })
+    fn pat_without_dbm(&mut self, span: Span, kind: hir::PatKind<'hir>) -> hir::Pat<'hir> {
+        hir::Pat { hir_id: self.next_id(), kind, span, default_binding_modes: false }
     }
 
     fn ty_path(

@@ -356,10 +356,9 @@ impl Validator<'mir, 'tcx> {
     }
 
     fn check_static(&mut self, def_id: DefId, span: Span) {
-        assert!(
-            !self.tcx.is_thread_local_static(def_id),
-            "tls access is checked in `Rvalue::ThreadLocalRef"
-        );
+        if self.tcx.is_thread_local_static(def_id) {
+            self.tcx.sess.delay_span_bug(span, "tls access is checked in `Rvalue::ThreadLocalRef");
+        }
         self.check_op_spanned(ops::StaticAccess, span)
     }
 
@@ -730,13 +729,11 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                 let base_ty = Place::ty_from(place_local, proj_base, self.body, self.tcx).ty;
                 if let ty::RawPtr(_) = base_ty.kind() {
                     if proj_base.is_empty() {
-                        if let (local, []) = (place_local, proj_base) {
-                            let decl = &self.body.local_decls[local];
-                            if let Some(box LocalInfo::StaticRef { def_id, .. }) = decl.local_info {
-                                let span = decl.source_info.span;
-                                self.check_static(def_id, span);
-                                return;
-                            }
+                        let decl = &self.body.local_decls[place_local];
+                        if let Some(box LocalInfo::StaticRef { def_id, .. }) = decl.local_info {
+                            let span = decl.source_info.span;
+                            self.check_static(def_id, span);
+                            return;
                         }
                     }
                     self.check_op(ops::RawPtrDeref);
@@ -753,12 +750,8 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
             | ProjectionElem::Field(..)
             | ProjectionElem::Index(_) => {
                 let base_ty = Place::ty_from(place_local, proj_base, self.body, self.tcx).ty;
-                match base_ty.ty_adt_def() {
-                    Some(def) if def.is_union() => {
-                        self.check_op(ops::UnionAccess);
-                    }
-
-                    _ => {}
+                if base_ty.is_union() {
+                    self.check_op(ops::UnionAccess);
                 }
             }
         }
@@ -829,12 +822,7 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                     let obligation = Obligation::new(
                         ObligationCause::dummy(),
                         param_env,
-                        Binder::bind(
-                            TraitPredicate {
-                                trait_ref: TraitRef::from_method(tcx, trait_id, substs),
-                            },
-                            tcx,
-                        ),
+                        Binder::dummy(TraitPredicate { trait_ref }),
                     );
 
                     let implsrc = tcx.infer_ctxt().enter(|infcx| {
@@ -898,8 +886,37 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                 }
 
                 if !tcx.is_const_fn_raw(callee) {
-                    self.check_op(ops::FnCallNonConst);
-                    return;
+                    let mut permitted = false;
+
+                    let callee_trait = tcx.trait_of_item(callee);
+                    if let Some(trait_id) = callee_trait {
+                        if tcx.has_attr(caller, sym::default_method_body_is_const) {
+                            // permit call to non-const fn when caller has default_method_body_is_const..
+                            if tcx.trait_of_item(caller) == callee_trait {
+                                // ..and caller and callee are in the same trait.
+                                permitted = true;
+                            }
+                        }
+                        if !permitted {
+                            // if trait's impls are all const, permit the call.
+                            let mut const_impls = true;
+                            tcx.for_each_relevant_impl(trait_id, substs.type_at(0), |imp| {
+                                if const_impls {
+                                    if let hir::Constness::NotConst = tcx.impl_constness(imp) {
+                                        const_impls = false;
+                                    }
+                                }
+                            });
+                            if const_impls {
+                                permitted = true;
+                            }
+                        }
+                    }
+
+                    if !permitted {
+                        self.check_op(ops::FnCallNonConst);
+                        return;
+                    }
                 }
 
                 // If the `const fn` we are trying to call is not const-stable, ensure that we have

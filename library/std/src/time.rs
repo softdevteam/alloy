@@ -82,7 +82,7 @@ pub use core::time::Duration;
 /// Currently, the following system calls are being used to get the current time using `now()`:
 ///
 /// |  Platform |               System call                                            |
-/// |:---------:|:--------------------------------------------------------------------:|
+/// |-----------|----------------------------------------------------------------------|
 /// | SGX       | [`insecure_time` usercall]. More information on [timekeeping in SGX] |
 /// | UNIX      | [clock_gettime (Monotonic Clock)]                                    |
 /// | Darwin    | [mach_absolute_time]                                                 |
@@ -158,7 +158,7 @@ pub struct Instant(time::Instant);
 /// Currently, the following system calls are being used to get the current time using `now()`:
 ///
 /// |  Platform |               System call                                            |
-/// |:---------:|:--------------------------------------------------------------------:|
+/// |-----------|----------------------------------------------------------------------|
 /// | SGX       | [`insecure_time` usercall]. More information on [timekeeping in SGX] |
 /// | UNIX      | [clock_gettime (Realtime Clock)]                                     |
 /// | Darwin    | [gettimeofday]                                                       |
@@ -168,7 +168,7 @@ pub struct Instant(time::Instant);
 ///
 /// [`insecure_time` usercall]: https://edp.fortanix.com/docs/api/fortanix_sgx_abi/struct.Usercalls.html#method.insecure_time
 /// [timekeeping in SGX]: https://edp.fortanix.com/docs/concepts/rust-std/#codestdtimecode
-/// [gettimeofday]: http://man7.org/linux/man-pages/man2/gettimeofday.2.html
+/// [gettimeofday]: https://man7.org/linux/man-pages/man2/gettimeofday.2.html
 /// [clock_gettime (Realtime Clock)]: https://linux.die.net/man/3/clock_gettime
 /// [__wasi_clock_time_get (Realtime Clock)]: https://github.com/WebAssembly/WASI/blob/master/phases/snapshot/docs.md#clock_time_get
 /// [GetSystemTimePreciseAsFileTime]: https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimepreciseasfiletime

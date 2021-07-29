@@ -1,13 +1,11 @@
 use rustc_data_structures::fx::FxIndexSet;
 use rustc_hir as hir;
-use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, LOCAL_CRATE};
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::hir::map as hir_map;
 use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::{
     self, Binder, Predicate, PredicateKind, ToPredicate, Ty, TyCtxt, WithConstness,
 };
-use rustc_session::CrateDisambiguator;
-use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 use rustc_trait_selection::traits;
 
@@ -167,6 +165,16 @@ fn impl_defaultness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::Defaultness {
         impl_.defaultness
     } else {
         bug!("`impl_defaultness` called on {:?}", item);
+    }
+}
+
+fn impl_constness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::Constness {
+    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
+    let item = tcx.hir().expect_item(hir_id);
+    if let hir::ItemKind::Impl(impl_) = &item.kind {
+        impl_.constness
+    } else {
+        bug!("`impl_constness` called on {:?}", item);
     }
 }
 
@@ -389,16 +397,6 @@ fn param_env_reveal_all_normalized(tcx: TyCtxt<'_>, def_id: DefId) -> ty::ParamE
     tcx.param_env(def_id).with_reveal_all_normalized(tcx)
 }
 
-fn crate_disambiguator(tcx: TyCtxt<'_>, crate_num: CrateNum) -> CrateDisambiguator {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.sess.local_crate_disambiguator()
-}
-
-fn original_crate_name(tcx: TyCtxt<'_>, crate_num: CrateNum) -> Symbol {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.crate_name
-}
-
 fn instance_def_size_estimate<'tcx>(
     tcx: TyCtxt<'tcx>,
     instance_def: ty::InstanceDef<'tcx>,
@@ -408,7 +406,7 @@ fn instance_def_size_estimate<'tcx>(
     match instance_def {
         InstanceDef::Item(..) | InstanceDef::DropGlue(..) => {
             let mir = tcx.instance_mir(instance_def);
-            mir.basic_blocks().iter().map(|bb| bb.statements.len()).sum()
+            mir.basic_blocks().iter().map(|bb| bb.statements.len() + 1).sum()
         }
         // Estimate the size of other compiler-generated shims to be 1.
         _ => 1,
@@ -544,11 +542,10 @@ pub fn provide(providers: &mut ty::query::Providers) {
         param_env,
         param_env_reveal_all_normalized,
         trait_of_item,
-        crate_disambiguator,
-        original_crate_name,
         instance_def_size_estimate,
         issue33140_self_ty,
         impl_defaultness,
+        impl_constness,
         conservative_is_privately_uninhabited: conservative_is_privately_uninhabited_raw,
         ..*providers
     };

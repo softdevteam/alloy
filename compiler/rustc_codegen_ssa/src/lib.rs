@@ -1,15 +1,11 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(assert_matches)]
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
-#![feature(drain_filter)]
 #![feature(try_blocks)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(associated_type_bounds)]
-#![feature(iter_zip)]
 #![recursion_limit = "256"]
-#![feature(box_syntax)]
 
 //! This crate contains codegen code that is used by all codegen backends (LLVM and others).
 //! The backend-agnostic functions of this crate use functions defined in various traits that
@@ -28,10 +24,10 @@ use rustc_data_structures::sync::Lrc;
 use rustc_hir::def_id::CrateNum;
 use rustc_hir::LangItem;
 use rustc_middle::dep_graph::WorkProduct;
-use rustc_middle::middle::cstore::{self, CrateSource, LibSource};
+use rustc_middle::middle::cstore::{self, CrateSource};
 use rustc_middle::middle::dependency_format::Dependencies;
 use rustc_middle::ty::query::Providers;
-use rustc_session::config::{OutputFilenames, OutputType, RUST_CGU_EXT};
+use rustc_session::config::{CrateType, OutputFilenames, OutputType, RUST_CGU_EXT};
 use rustc_session::utils::NativeLibKind;
 use rustc_span::symbol::Symbol;
 use std::path::{Path, PathBuf};
@@ -114,11 +110,18 @@ pub struct NativeLib {
     pub name: Option<Symbol>,
     pub cfg: Option<ast::MetaItem>,
     pub verbatim: Option<bool>,
+    pub dll_imports: Vec<cstore::DllImport>,
 }
 
 impl From<&cstore::NativeLib> for NativeLib {
     fn from(lib: &cstore::NativeLib) -> Self {
-        NativeLib { kind: lib.kind, name: lib.name, cfg: lib.cfg.clone(), verbatim: lib.verbatim }
+        NativeLib {
+            kind: lib.kind,
+            name: lib.name,
+            cfg: lib.cfg.clone(),
+            verbatim: lib.verbatim,
+            dll_imports: lib.dll_imports.clone(),
+        }
     }
 }
 
@@ -132,7 +135,9 @@ impl From<&cstore::NativeLib> for NativeLib {
 /// and the corresponding properties without referencing information outside of a `CrateInfo`.
 #[derive(Debug, Encodable, Decodable)]
 pub struct CrateInfo {
-    pub panic_runtime: Option<CrateNum>,
+    pub target_cpu: String,
+    pub exported_symbols: FxHashMap<CrateType, Vec<String>>,
+    pub local_crate_name: Symbol,
     pub compiler_builtins: Option<CrateNum>,
     pub profiler_runtime: Option<CrateNum>,
     pub is_no_builtins: FxHashSet<CrateNum>,
@@ -140,22 +145,19 @@ pub struct CrateInfo {
     pub crate_name: FxHashMap<CrateNum, String>,
     pub used_libraries: Vec<NativeLib>,
     pub used_crate_source: FxHashMap<CrateNum, Lrc<CrateSource>>,
-    pub used_crates_static: Vec<(CrateNum, LibSource)>,
-    pub used_crates_dynamic: Vec<(CrateNum, LibSource)>,
+    pub used_crates: Vec<CrateNum>,
     pub lang_item_to_crate: FxHashMap<LangItem, CrateNum>,
     pub missing_lang_items: FxHashMap<CrateNum, Vec<LangItem>>,
     pub dependency_formats: Lrc<Dependencies>,
+    pub windows_subsystem: Option<String>,
 }
 
 #[derive(Encodable, Decodable)]
 pub struct CodegenResults {
-    pub crate_name: Symbol,
     pub modules: Vec<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
     pub metadata_module: Option<CompiledModule>,
     pub metadata: rustc_middle::middle::cstore::EncodedMetadata,
-    pub windows_subsystem: Option<String>,
-    pub linker_info: back::linker::LinkerInfo,
     pub crate_info: CrateInfo,
 }
 

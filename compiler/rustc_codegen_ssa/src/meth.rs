@@ -1,18 +1,14 @@
 use crate::traits::*;
 
-use rustc_middle::ty::{self, Instance, Ty};
+use rustc_middle::ty::{self, Ty};
 use rustc_target::abi::call::FnAbi;
 
 #[derive(Copy, Clone, Debug)]
 pub struct VirtualIndex(u64);
 
-pub const DESTRUCTOR: VirtualIndex = VirtualIndex(0);
-pub const SIZE: VirtualIndex = VirtualIndex(1);
-pub const ALIGN: VirtualIndex = VirtualIndex(2);
-
 impl<'a, 'tcx> VirtualIndex {
     pub fn from_index(index: usize) -> Self {
-        VirtualIndex(index as u64 + 3)
+        VirtualIndex(index as u64)
     }
 
     pub fn get_fn<Bx: BuilderMethods<'a, 'tcx>>(
@@ -24,10 +20,11 @@ impl<'a, 'tcx> VirtualIndex {
         // Load the data pointer from the object.
         debug!("get_fn({:?}, {:?})", llvtable, self);
 
-        let llvtable = bx.pointercast(llvtable, bx.type_ptr_to(bx.fn_ptr_backend_type(fn_abi)));
+        let llty = bx.fn_ptr_backend_type(fn_abi);
+        let llvtable = bx.pointercast(llvtable, bx.type_ptr_to(llty));
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
         let gep = bx.inbounds_gep(llvtable, &[bx.const_usize(self.0)]);
-        let ptr = bx.load(gep, ptr_align);
+        let ptr = bx.load(llty, gep, ptr_align);
         bx.nonnull_metadata(ptr);
         // Vtable loads are invariant.
         bx.set_invariant_load(ptr);
@@ -42,10 +39,11 @@ impl<'a, 'tcx> VirtualIndex {
         // Load the data pointer from the object.
         debug!("get_int({:?}, {:?})", llvtable, self);
 
-        let llvtable = bx.pointercast(llvtable, bx.type_ptr_to(bx.type_isize()));
+        let llty = bx.type_isize();
+        let llvtable = bx.pointercast(llvtable, bx.type_ptr_to(llty));
         let usize_align = bx.tcx().data_layout.pointer_align.abi;
         let gep = bx.inbounds_gep(llvtable, &[bx.const_usize(self.0)]);
-        let ptr = bx.load(gep, usize_align);
+        let ptr = bx.load(llty, gep, usize_align);
         // Vtable loads are invariant.
         bx.set_invariant_load(ptr);
         ptr
@@ -74,53 +72,13 @@ pub fn get_vtable<'tcx, Cx: CodegenMethods<'tcx>>(
         return val;
     }
 
-    // Not in the cache; build it.
-    let nullptr = cx.const_null(cx.type_i8p_ext(cx.data_layout().instruction_address_space));
-
-    let methods_root;
-    let methods = if let Some(trait_ref) = trait_ref {
-        methods_root = tcx.vtable_methods(trait_ref.with_self_ty(tcx, ty));
-        methods_root.iter()
-    } else {
-        (&[]).iter()
-    };
-
-    let methods = methods.cloned().map(|opt_mth| {
-        opt_mth.map_or(nullptr, |(def_id, substs)| {
-            cx.get_fn_addr(
-                ty::Instance::resolve_for_vtable(
-                    cx.tcx(),
-                    ty::ParamEnv::reveal_all(),
-                    def_id,
-                    substs,
-                )
-                .unwrap()
-                .polymorphize(cx.tcx()),
-            )
-        })
-    });
-
-    let layout = cx.layout_of(ty);
-    // /////////////////////////////////////////////////////////////////////////////////////////////
-    // If you touch this code, be sure to also make the corresponding changes to
-    // `get_vtable` in `rust_mir/interpret/traits.rs`.
-    // /////////////////////////////////////////////////////////////////////////////////////////////
-    let components: Vec<_> = [
-        cx.get_fn_addr(Instance::resolve_drop_in_place(cx.tcx(), ty)),
-        cx.const_usize(layout.size.bytes()),
-        cx.const_usize(layout.align.abi.bytes()),
-    ]
-    .iter()
-    .cloned()
-    .chain(methods)
-    .collect();
-
-    let vtable_const = cx.const_struct(&components, false);
+    let vtable_alloc_id = tcx.vtable_allocation(ty, trait_ref);
+    let vtable_allocation = tcx.global_alloc(vtable_alloc_id).unwrap_memory();
+    let vtable_const = cx.const_data_from_alloc(vtable_allocation);
     let align = cx.data_layout().pointer_align.abi;
     let vtable = cx.static_addr_of(vtable_const, align, Some("vtable"));
 
     cx.create_vtable_metadata(ty, vtable);
-
     cx.vtables().borrow_mut().insert((ty, trait_ref), vtable);
     vtable
 }

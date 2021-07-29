@@ -7,7 +7,6 @@ use crate::spec::{Target, TargetOptions};
 // https://static.docs.arm.com/ddi0406/cd/DDI0406C_d_armv7ar_arm.pdf
 
 pub fn target() -> Target {
-    let base = super::linux_musl_base::opts();
     Target {
         // It's important we use "gnueabihf" and not "musleabihf" here. LLVM
         // uses it to determine the calling convention and float ABI, and LLVM
@@ -20,11 +19,11 @@ pub fn target() -> Target {
         // Most of these settings are copied from the thumbv7neon_unknown_linux_gnueabihf
         // target.
         options: TargetOptions {
+            abi: "eabihf".to_string(),
             features: "+v7,+thumb-mode,+thumb2,+vfp3,+neon".to_string(),
             max_atomic_width: Some(64),
-            unsupported_abis: super::arm_base::unsupported_abis(),
             mcount: "\u{1}mcount".to_string(),
-            ..base
+            ..super::linux_musl_base::opts()
         },
     }
 }

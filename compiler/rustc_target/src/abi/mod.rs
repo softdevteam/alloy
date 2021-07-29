@@ -16,7 +16,7 @@ use rustc_span::Span;
 
 pub mod call;
 
-/// Parsed [Data layout](http://llvm.org/docs/LangRef.html#data-layout)
+/// Parsed [Data layout](https://llvm.org/docs/LangRef.html#data-layout)
 /// for a target, which contains everything needed to compute layouts.
 pub struct TargetDataLayout {
     pub endian: Endian,
@@ -222,6 +222,7 @@ pub trait HasDataLayout {
 }
 
 impl HasDataLayout for TargetDataLayout {
+    #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         self
     }
@@ -589,7 +590,7 @@ impl Integer {
     pub fn for_align<C: HasDataLayout>(cx: &C, wanted: Align) -> Option<Integer> {
         let dl = cx.data_layout();
 
-        for &candidate in &[I8, I16, I32, I64, I128] {
+        for candidate in [I8, I16, I32, I64, I128] {
             if wanted == candidate.align(dl).abi && wanted.bytes() == candidate.size().bytes() {
                 return Some(candidate);
             }
@@ -602,7 +603,7 @@ impl Integer {
         let dl = cx.data_layout();
 
         // FIXME(eddyb) maybe include I128 in the future, when it works everywhere.
-        for &candidate in &[I64, I32, I16] {
+        for candidate in [I64, I32, I16] {
             if wanted >= candidate.align(dl).abi && wanted.bytes() >= candidate.size().bytes() {
                 return candidate;
             }
@@ -752,11 +753,7 @@ impl FieldsShape {
         match *self {
             FieldsShape::Primitive => 0,
             FieldsShape::Union(count) => count.get(),
-            FieldsShape::Array { count, .. } => {
-                let usize_count = count as usize;
-                assert_eq!(usize_count as u64, count);
-                usize_count
-            }
+            FieldsShape::Array { count, .. } => count.try_into().unwrap(),
             FieldsShape::Arbitrary { ref offsets, .. } => offsets.len(),
         }
     }
@@ -790,11 +787,7 @@ impl FieldsShape {
                 unreachable!("FieldsShape::memory_index: `Primitive`s have no fields")
             }
             FieldsShape::Union(_) | FieldsShape::Array { .. } => i,
-            FieldsShape::Arbitrary { ref memory_index, .. } => {
-                let r = memory_index[i];
-                assert_eq!(r as usize as u32, r);
-                r as usize
-            }
+            FieldsShape::Arbitrary { ref memory_index, .. } => memory_index[i].try_into().unwrap(),
         }
     }
 
@@ -862,6 +855,7 @@ pub enum Abi {
 
 impl Abi {
     /// Returns `true` if the layout corresponds to an unsized type.
+    #[inline]
     pub fn is_unsized(&self) -> bool {
         match *self {
             Abi::Uninhabited | Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } => false,
@@ -881,11 +875,13 @@ impl Abi {
     }
 
     /// Returns `true` if this is an uninhabited type
+    #[inline]
     pub fn is_uninhabited(&self) -> bool {
         matches!(*self, Abi::Uninhabited)
     }
 
     /// Returns `true` is this is a scalar type
+    #[inline]
     pub fn is_scalar(&self) -> bool {
         matches!(*self, Abi::Scalar(_))
     }

@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::iter;
 
+use rustc_attr::{ConstStability, StabilityLevel};
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
@@ -18,7 +19,7 @@ use rustc_span::def_id::CRATE_DEF_INDEX;
 use rustc_target::spec::abi::Abi;
 
 use crate::clean::{
-    self, utils::find_nearest_parent_module, ExternalCrate, FakeDefId, GetDefId, PrimitiveType,
+    self, utils::find_nearest_parent_module, ExternalCrate, GetDefId, ItemId, PrimitiveType,
 };
 use crate::formats::item_type::ItemType;
 use crate::html::escape::Escape;
@@ -177,12 +178,22 @@ impl clean::GenericParamDef {
 
                 Ok(())
             }
-            clean::GenericParamDefKind::Const { ref ty, .. } => {
+            clean::GenericParamDefKind::Const { ref ty, ref default, .. } => {
                 if f.alternate() {
-                    write!(f, "const {}: {:#}", self.name, ty.print(cx))
+                    write!(f, "const {}: {:#}", self.name, ty.print(cx))?;
                 } else {
-                    write!(f, "const {}:&nbsp;{}", self.name, ty.print(cx))
+                    write!(f, "const {}:&nbsp;{}", self.name, ty.print(cx))?;
                 }
+
+                if let Some(default) = default {
+                    if f.alternate() {
+                        write!(f, " = {:#}", default)?;
+                    } else {
+                        write!(f, "&nbsp;=&nbsp;{}", default)?;
+                    }
+                }
+
+                Ok(())
             }
         })
     }
@@ -239,17 +250,33 @@ crate fn print_where_clause<'a, 'tcx: 'a>(
             }
 
             match pred {
-                clean::WherePredicate::BoundPredicate { ty, bounds } => {
+                clean::WherePredicate::BoundPredicate { ty, bounds, bound_params } => {
                     let bounds = bounds;
+                    let for_prefix = match bound_params.len() {
+                        0 => String::new(),
+                        _ if f.alternate() => {
+                            format!(
+                                "for<{:#}> ",
+                                comma_sep(bound_params.iter().map(|lt| lt.print()))
+                            )
+                        }
+                        _ => format!(
+                            "for&lt;{}&gt; ",
+                            comma_sep(bound_params.iter().map(|lt| lt.print()))
+                        ),
+                    };
+
                     if f.alternate() {
                         clause.push_str(&format!(
-                            "{:#}: {:#}",
+                            "{}{:#}: {:#}",
+                            for_prefix,
                             ty.print(cx),
                             print_generic_bounds(bounds, cx)
                         ));
                     } else {
                         clause.push_str(&format!(
-                            "{}: {}",
+                            "{}{}: {}",
+                            for_prefix,
                             ty.print(cx),
                             print_generic_bounds(bounds, cx)
                         ));
@@ -445,7 +472,19 @@ impl clean::GenericArgs {
     }
 }
 
-crate fn href(did: DefId, cx: &Context<'_>) -> Option<(String, ItemType, Vec<String>)> {
+// Possible errors when computing href link source for a `DefId`
+crate enum HrefError {
+    /// This item is known to rustdoc, but from a crate that does not have documentation generated.
+    ///
+    /// This can only happen for non-local items.
+    DocumentationNotBuilt,
+    /// This can only happen for non-local items when `--document-private-items` is not passed.
+    Private,
+    // Not in external cache, href link should be in same page
+    NotInExternalCache,
+}
+
+crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<String>), HrefError> {
     let cache = &cx.cache();
     let relative_to = &cx.current;
     fn to_module_fqp(shortty: ItemType, fqp: &[String]) -> &[String] {
@@ -453,7 +492,7 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Option<(String, ItemType, Vec<Str
     }
 
     if !did.is_local() && !cache.access_levels.is_public(did) && !cache.document_private {
-        return None;
+        return Err(HrefError::Private);
     }
 
     let (fqp, shortty, mut url_parts) = match cache.paths.get(&did) {
@@ -462,22 +501,25 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Option<(String, ItemType, Vec<Str
             href_relative_parts(module_fqp, relative_to)
         }),
         None => {
-            let &(ref fqp, shortty) = cache.external_paths.get(&did)?;
-            let module_fqp = to_module_fqp(shortty, fqp);
-            (
-                fqp,
-                shortty,
-                match cache.extern_locations[&did.krate] {
-                    ExternalLocation::Remote(ref s) => {
-                        let s = s.trim_end_matches('/');
-                        let mut s = vec![&s[..]];
-                        s.extend(module_fqp[..].iter().map(String::as_str));
-                        s
-                    }
-                    ExternalLocation::Local => href_relative_parts(module_fqp, relative_to),
-                    ExternalLocation::Unknown => return None,
-                },
-            )
+            if let Some(&(ref fqp, shortty)) = cache.external_paths.get(&did) {
+                let module_fqp = to_module_fqp(shortty, fqp);
+                (
+                    fqp,
+                    shortty,
+                    match cache.extern_locations[&did.krate] {
+                        ExternalLocation::Remote(ref s) => {
+                            let s = s.trim_end_matches('/');
+                            let mut s = vec![&s[..]];
+                            s.extend(module_fqp[..].iter().map(String::as_str));
+                            s
+                        }
+                        ExternalLocation::Local => href_relative_parts(module_fqp, relative_to),
+                        ExternalLocation::Unknown => return Err(HrefError::DocumentationNotBuilt),
+                    },
+                )
+            } else {
+                return Err(HrefError::NotInExternalCache);
+            }
         }
     };
     let last = &fqp.last().unwrap()[..];
@@ -491,7 +533,7 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Option<(String, ItemType, Vec<Str
             url_parts.push(&filename);
         }
     }
-    Some((url_parts.join("/"), shortty, fqp.to_vec()))
+    Ok((url_parts.join("/"), shortty, fqp.to_vec()))
 }
 
 /// Both paths should only be modules.
@@ -540,7 +582,7 @@ fn resolved_path<'a, 'cx: 'a>(
         write!(w, "{}{:#}", &last.name, last.args.print(cx))?;
     } else {
         let path = if use_absolute {
-            if let Some((_, _, fqp)) = href(did, cx) {
+            if let Ok((_, _, fqp)) = href(did, cx) {
                 format!(
                     "{}::{}",
                     fqp[..fqp.len() - 1].join("::"),
@@ -574,7 +616,7 @@ fn primitive_link(
                     f,
                     "<a class=\"primitive\" href=\"{}primitive.{}.html\">",
                     "../".repeat(len),
-                    prim.to_url_str()
+                    prim.as_sym()
                 )?;
                 needs_termination = true;
             }
@@ -603,7 +645,7 @@ fn primitive_link(
                         f,
                         "<a class=\"primitive\" href=\"{}/primitive.{}.html\">",
                         loc.join("/"),
-                        prim.to_url_str()
+                        prim.as_sym()
                     )?;
                     needs_termination = true;
                 }
@@ -620,18 +662,24 @@ fn primitive_link(
 
 /// Helper to render type parameters
 fn tybounds<'a, 'tcx: 'a>(
-    param_names: &'a Option<Vec<clean::GenericBound>>,
+    bounds: &'a Vec<clean::PolyTrait>,
+    lt: &'a Option<clean::Lifetime>,
     cx: &'a Context<'tcx>,
 ) -> impl fmt::Display + 'a + Captures<'tcx> {
-    display_fn(move |f| match *param_names {
-        Some(ref params) => {
-            for param in params {
+    display_fn(move |f| {
+        for (i, bound) in bounds.iter().enumerate() {
+            if i > 0 {
                 write!(f, " + ")?;
-                fmt::Display::fmt(&param.print(cx), f)?;
             }
-            Ok(())
+
+            fmt::Display::fmt(&bound.print(cx), f)?;
         }
-        None => Ok(()),
+
+        if let Some(lt) = lt {
+            write!(f, " + ")?;
+            fmt::Display::fmt(&lt.print(), f)?;
+        }
+        Ok(())
     })
 }
 
@@ -642,7 +690,7 @@ crate fn anchor<'a, 'cx: 'a>(
 ) -> impl fmt::Display + 'a {
     let parts = href(did.into(), cx);
     display_fn(move |f| {
-        if let Some((url, short_ty, fqp)) = parts {
+        if let Ok((url, short_ty, fqp)) = parts {
             write!(
                 f,
                 r#"<a class="{}" href="{}" title="{} {}">{}</a>"#,
@@ -668,16 +716,16 @@ fn fmt_type<'cx>(
 
     match *t {
         clean::Generic(name) => write!(f, "{}", name),
-        clean::ResolvedPath { did, ref param_names, ref path, is_generic } => {
-            if param_names.is_some() {
-                f.write_str("dyn ")?;
-            }
+        clean::ResolvedPath { did, ref path, is_generic } => {
             // Paths like `T::Output` and `Self::Output` should be rendered with all segments.
-            resolved_path(f, did, path, is_generic, use_absolute, cx)?;
-            fmt::Display::fmt(&tybounds(param_names, cx), f)
+            resolved_path(f, did, path, is_generic, use_absolute, cx)
+        }
+        clean::DynTrait(ref bounds, ref lt) => {
+            f.write_str("dyn ")?;
+            fmt::Display::fmt(&tybounds(bounds, lt, cx), f)
         }
         clean::Infer => write!(f, "_"),
-        clean::Primitive(prim) => primitive_link(f, prim, prim.as_str(), cx),
+        clean::Primitive(prim) => primitive_link(f, prim, &*prim.as_sym().as_str(), cx),
         clean::BareFunction(ref decl) => {
             if f.alternate() {
                 write!(
@@ -809,7 +857,9 @@ fn fmt_type<'cx>(
                         }
                     }
                 }
-                clean::ResolvedPath { param_names: Some(ref v), .. } if !v.is_empty() => {
+                clean::DynTrait(ref bounds, ref trait_lt)
+                    if bounds.len() > 1 || trait_lt.is_some() =>
+                {
                     write!(f, "{}{}{}(", amp, lt, m)?;
                     fmt_type(&ty, f, use_absolute, cx)?;
                     write!(f, ")")
@@ -870,9 +920,9 @@ fn fmt_type<'cx>(
                 //        the ugliness comes from inlining across crates where
                 //        everything comes in as a fully resolved QPath (hard to
                 //        look at).
-                box clean::ResolvedPath { did, ref param_names, .. } => {
+                box clean::ResolvedPath { did, .. } => {
                     match href(did.into(), cx) {
-                        Some((ref url, _, ref path)) if !f.alternate() => {
+                        Ok((ref url, _, ref path)) if !f.alternate() => {
                             write!(
                                 f,
                                 "<a class=\"type\" href=\"{url}#{shortty}.{name}\" \
@@ -885,9 +935,6 @@ fn fmt_type<'cx>(
                         }
                         _ => write!(f, "{}", name)?,
                     }
-
-                    // FIXME: `param_names` are not rendered, and this seems bad?
-                    drop(param_names);
                     Ok(())
                 }
                 _ => write!(f, "{}", name),
@@ -1149,7 +1196,7 @@ impl clean::FnDecl {
 impl clean::Visibility {
     crate fn print_with_space<'a, 'tcx: 'a>(
         self,
-        item_did: FakeDefId,
+        item_did: ItemId,
         cx: &'a Context<'tcx>,
     ) -> impl fmt::Display + 'a + Captures<'tcx> {
         let to_print = match self {
@@ -1159,7 +1206,7 @@ impl clean::Visibility {
                 // FIXME(camelid): This may not work correctly if `item_did` is a module.
                 //                 However, rustdoc currently never displays a module's
                 //                 visibility, so it shouldn't matter.
-                let parent_module = find_nearest_parent_module(cx.tcx(), item_did.expect_real());
+                let parent_module = find_nearest_parent_module(cx.tcx(), item_did.expect_def_id());
 
                 if vis_did.index == CRATE_DEF_INDEX {
                     "pub(crate) ".to_owned()
@@ -1243,15 +1290,6 @@ impl PrintWithSpace for hir::Unsafety {
     }
 }
 
-impl PrintWithSpace for hir::Constness {
-    fn print_with_space(&self) -> &str {
-        match self {
-            hir::Constness::Const => "const ",
-            hir::Constness::NotConst => "",
-        }
-    }
-}
-
 impl PrintWithSpace for hir::IsAsync {
     fn print_with_space(&self) -> &str {
         match self {
@@ -1267,6 +1305,22 @@ impl PrintWithSpace for hir::Mutability {
             hir::Mutability::Not => "",
             hir::Mutability::Mut => "mut ",
         }
+    }
+}
+
+crate fn print_constness_with_space(
+    c: &hir::Constness,
+    s: Option<&ConstStability>,
+) -> &'static str {
+    match (c, s) {
+        // const stable or when feature(staged_api) is not set
+        (
+            hir::Constness::Const,
+            Some(ConstStability { level: StabilityLevel::Stable { .. }, .. }),
+        )
+        | (hir::Constness::Const, None) => "const ",
+        // const unstable or not const
+        _ => "",
     }
 }
 

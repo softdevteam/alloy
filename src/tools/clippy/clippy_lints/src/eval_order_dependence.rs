@@ -38,7 +38,7 @@ declare_clippy_lint! {
     /// let a = tmp + x;
     /// ```
     pub EVAL_ORDER_DEPENDENCE,
-    complexity,
+    suspicious,
     "whether a variable read occurs before a write depends on sub-expression evaluation order"
 }
 
@@ -110,7 +110,7 @@ impl<'a, 'tcx> DivergenceVisitor<'a, 'tcx> {
                 self.visit_expr(e);
                 for arm in arms {
                     if let Some(Guard::If(if_expr)) = arm.guard {
-                        self.visit_expr(if_expr)
+                        self.visit_expr(if_expr);
                     }
                     // make sure top level arm expressions aren't linted
                     self.maybe_walk_expr(&*arm.body);

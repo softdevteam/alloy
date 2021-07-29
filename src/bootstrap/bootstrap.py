@@ -77,7 +77,7 @@ def download(path, url, probably_big, verbose):
 def _download(path, url, probably_big, verbose, exception):
     if probably_big or verbose:
         print("downloading {}".format(url))
-    # see http://serverfault.com/questions/301128/how-to-download
+    # see https://serverfault.com/questions/301128/how-to-download
     if sys.platform == 'win32':
         run(["PowerShell.exe", "/nologo", "-Command",
              "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;",
@@ -138,7 +138,7 @@ def unpack(tarball, tarball_suffix, dst, verbose=False, match=None):
     shutil.rmtree(os.path.join(dst, fname))
 
 
-def run(args, verbose=False, exception=False, **kwargs):
+def run(args, verbose=False, exception=False, is_bootstrap=False, **kwargs):
     """Run a child program in a new process"""
     if verbose:
         print("running: " + ' '.join(args))
@@ -151,7 +151,14 @@ def run(args, verbose=False, exception=False, **kwargs):
         err = "failed to run: " + ' '.join(args)
         if verbose or exception:
             raise RuntimeError(err)
-        sys.exit(err)
+        # For most failures, we definitely do want to print this error, or the user will have no
+        # idea what went wrong. But when we've successfully built bootstrap and it failed, it will
+        # have already printed an error above, so there's no need to print the exact command we're
+        # running.
+        if is_bootstrap:
+            sys.exit(1)
+        else:
+            sys.exit(err)
 
 
 def require(cmd, exit=True):
@@ -573,7 +580,13 @@ class RustBuild(object):
         if ostype != "Linux":
             return
 
-        if not os.path.exists("/etc/NIXOS"):
+        # Use `/etc/os-release` instead of `/etc/NIXOS`.
+        # The latter one does not exist on NixOS when using tmpfs as root.
+        try:
+            with open("/etc/os-release", "r") as f:
+                if not any(line.strip() == "ID=nixos" for line in f):
+                    return
+        except FileNotFoundError:
             return
         if os.path.exists("/lib"):
             return
@@ -648,18 +661,20 @@ class RustBuild(object):
         rev_parse = ["git", "rev-parse", "--show-toplevel"]
         top_level = subprocess.check_output(rev_parse, universal_newlines=True).strip()
         compiler = "{}/compiler/".format(top_level)
+        library = "{}/library/".format(top_level)
 
         # Look for a version to compare to based on the current commit.
         # Only commits merged by bors will have CI artifacts.
         merge_base = ["git", "log", "--author=bors", "--pretty=%H", "-n1"]
         commit = subprocess.check_output(merge_base, universal_newlines=True).strip()
 
-        # Warn if there were changes to the compiler since the ancestor commit.
-        status = subprocess.call(["git", "diff-index", "--quiet", commit, "--", compiler])
+        # Warn if there were changes to the compiler or standard library since the ancestor commit.
+        status = subprocess.call(["git", "diff-index", "--quiet", commit, "--", compiler, library])
         if status != 0:
             if download_rustc == "if-unchanged":
                 return None
-            print("warning: `download-rustc` is enabled, but there are changes to compiler/")
+            print("warning: `download-rustc` is enabled, but there are changes to \
+                   compiler/ or library/")
 
         if self.verbose:
             print("using downloaded stage1 artifacts from CI (commit {})".format(commit))
@@ -980,39 +995,40 @@ class RustBuild(object):
         slow_submodules = self.get_toml('fast-submodules') == "false"
         start_time = time()
         if slow_submodules:
-            print('Unconditionally updating all submodules')
+            print('Unconditionally updating submodules')
         else:
             print('Updating only changed submodules')
         default_encoding = sys.getdefaultencoding()
-        submodules = [s.split(' ', 1)[1] for s in subprocess.check_output(
-            ["git", "config", "--file",
-             os.path.join(self.rust_root, ".gitmodules"),
-             "--get-regexp", "path"]
-        ).decode(default_encoding).splitlines()]
+        # Only update submodules that are needed to build bootstrap.  These are needed because Cargo
+        # currently requires everything in a workspace to be "locally present" when starting a
+        # build, and will give a hard error if any Cargo.toml files are missing.
+        # FIXME: Is there a way to avoid cloning these eagerly? Bootstrap itself doesn't need to
+        #   share a workspace with any tools - maybe it could be excluded from the workspace?
+        #   That will still require cloning the submodules the second you check the standard
+        #   library, though...
+        # FIXME: Is there a way to avoid hard-coding the submodules required?
+        # WARNING: keep this in sync with the submodules hard-coded in bootstrap/lib.rs
+        submodules = [
+            "src/tools/rust-installer",
+            "src/tools/cargo",
+            "src/tools/rls",
+            "src/tools/miri",
+            "library/backtrace",
+            "library/stdarch"
+        ]
         filtered_submodules = []
         submodules_names = []
-        llvm_checked_out = os.path.exists(os.path.join(self.rust_root, "src/llvm-project/.git"))
-        external_llvm_provided = self.get_toml('llvm-config') or self.downloading_llvm()
-        llvm_needed = not self.get_toml('codegen-backends', 'rust') \
-            or "llvm" in self.get_toml('codegen-backends', 'rust')
         for module in submodules:
-            if module.endswith("llvm-project"):
-                # Don't sync the llvm-project submodule if an external LLVM was
-                # provided, if we are downloading LLVM or if the LLVM backend is
-                # not being built. Also, if the submodule has been initialized
-                # already, sync it anyways so that it doesn't mess up contributor
-                # pull requests.
-                if external_llvm_provided or not llvm_needed:
-                    if self.get_toml('lld') != 'true' and not llvm_checked_out:
-                        continue
             check = self.check_submodule(module, slow_submodules)
             filtered_submodules.append((module, check))
             submodules_names.append(module)
         recorded = subprocess.Popen(["git", "ls-tree", "HEAD"] + submodules_names,
                                     cwd=self.rust_root, stdout=subprocess.PIPE)
         recorded = recorded.communicate()[0].decode(default_encoding).strip().splitlines()
+        # { filename: hash }
         recorded_submodules = {}
         for data in recorded:
+            # [mode, kind, hash, filename]
             data = data.split()
             recorded_submodules[data[3]] = data[2]
         for module in filtered_submodules:
@@ -1176,7 +1192,7 @@ def bootstrap(help_triggered):
         env["BOOTSTRAP_CONFIG"] = toml_path
     if build.rustc_commit is not None:
         env["BOOTSTRAP_DOWNLOAD_RUSTC"] = '1'
-    run(args, env=env, verbose=build.verbose)
+    run(args, env=env, verbose=build.verbose, is_bootstrap=True)
 
 
 def main():

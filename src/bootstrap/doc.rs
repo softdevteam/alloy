@@ -22,8 +22,17 @@ use crate::config::{Config, TargetSelection};
 use crate::tool::{self, prepare_tool_cargo, SourceType, Tool};
 use crate::util::symlink_dir;
 
+macro_rules! submodule_helper {
+    ($path:expr, submodule) => {
+        $path
+    };
+    ($path:expr, submodule = $submodule:literal) => {
+        $submodule
+    };
+}
+
 macro_rules! book {
-    ($($name:ident, $path:expr, $book_name:expr;)+) => {
+    ($($name:ident, $path:expr, $book_name:expr $(, submodule $(= $submodule:literal)? )? ;)+) => {
         $(
             #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub struct $name {
@@ -46,6 +55,10 @@ macro_rules! book {
             }
 
             fn run(self, builder: &Builder<'_>) {
+                $(
+                    let path = Path::new(submodule_helper!( $path, submodule $( = $submodule )? ));
+                    builder.update_submodule(&path);
+                )?
                 builder.ensure(RustbookSrc {
                     target: self.target,
                     name: INTERNER.intern_str($book_name),
@@ -59,13 +72,16 @@ macro_rules! book {
 
 // NOTE: When adding a book here, make sure to ALSO build the book by
 // adding a build step in `src/bootstrap/builder.rs`!
+// NOTE: Make sure to add the corresponding submodule when adding a new book.
+// FIXME: Make checking for a submodule automatic somehow (maybe by having a list of all submodules
+// and checking against it?).
 book!(
-    CargoBook, "src/tools/cargo/src/doc", "cargo";
-    EditionGuide, "src/doc/edition-guide", "edition-guide";
-    EmbeddedBook, "src/doc/embedded-book", "embedded-book";
-    Nomicon, "src/doc/nomicon", "nomicon";
-    Reference, "src/doc/reference", "reference";
-    RustByExample, "src/doc/rust-by-example", "rust-by-example";
+    CargoBook, "src/tools/cargo/src/doc", "cargo", submodule = "src/tools/cargo";
+    EditionGuide, "src/doc/edition-guide", "edition-guide", submodule;
+    EmbeddedBook, "src/doc/embedded-book", "embedded-book", submodule;
+    Nomicon, "src/doc/nomicon", "nomicon", submodule;
+    Reference, "src/doc/reference", "reference", submodule;
+    RustByExample, "src/doc/rust-by-example", "rust-by-example", submodule;
     RustdocBook, "src/doc/rustdoc", "rustdoc";
 );
 
@@ -197,6 +213,9 @@ impl Step for TheBook {
     /// * Index page
     /// * Redirect pages
     fn run(self, builder: &Builder<'_>) {
+        let relative_path = Path::new("src").join("doc").join("book");
+        builder.update_submodule(&relative_path);
+
         let compiler = self.compiler;
         let target = self.target;
 
@@ -204,7 +223,7 @@ impl Step for TheBook {
         builder.ensure(RustbookSrc {
             target,
             name: INTERNER.intern_str("book"),
-            src: INTERNER.intern_path(builder.src.join("src/doc/book")),
+            src: INTERNER.intern_path(builder.src.join(&relative_path)),
         });
 
         // building older edition redirects
@@ -212,7 +231,7 @@ impl Step for TheBook {
             builder.ensure(RustbookSrc {
                 target,
                 name: INTERNER.intern_string(format!("book/{}", edition)),
-                src: INTERNER.intern_path(builder.src.join("src/doc/book").join(edition)),
+                src: INTERNER.intern_path(builder.src.join(&relative_path).join(edition)),
             });
         }
 
@@ -221,7 +240,7 @@ impl Step for TheBook {
 
         // build the redirect pages
         builder.info(&format!("Documenting book redirect pages ({})", target));
-        for file in t!(fs::read_dir(builder.src.join("src/doc/book/redirects"))) {
+        for file in t!(fs::read_dir(builder.src.join(&relative_path).join("redirects"))) {
             let file = t!(file);
             let path = file.path();
             let path = path.to_str().unwrap();
@@ -374,9 +393,15 @@ impl Step for Standalone {
             }
 
             if filename == "not_found.md" {
-                cmd.arg("--markdown-css").arg("https://doc.rust-lang.org/rust.css");
+                cmd.arg("--markdown-css")
+                    .arg(format!("https://doc.rust-lang.org/rustdoc{}.css", &builder.version))
+                    .arg("--markdown-css")
+                    .arg("https://doc.rust-lang.org/rust.css");
             } else {
-                cmd.arg("--markdown-css").arg("rust.css");
+                cmd.arg("--markdown-css")
+                    .arg(format!("rustdoc{}.css", &builder.version))
+                    .arg("--markdown-css")
+                    .arg("rust.css");
             }
             builder.run(&mut cmd);
         }
@@ -501,8 +526,8 @@ impl Step for Std {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Rustc {
-    stage: u32,
-    target: TargetSelection,
+    pub stage: u32,
+    pub target: TargetSelection,
 }
 
 impl Step for Rustc {
@@ -593,83 +618,102 @@ impl Step for Rustc {
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct Rustdoc {
-    stage: u32,
-    target: TargetSelection,
-}
-
-impl Step for Rustdoc {
-    type Output = ();
-    const DEFAULT: bool = true;
-    const ONLY_HOSTS: bool = true;
-
-    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.krate("rustdoc-tool")
-    }
-
-    fn make_run(run: RunConfig<'_>) {
-        run.builder.ensure(Rustdoc { stage: run.builder.top_stage, target: run.target });
-    }
-
-    /// Generates compiler documentation.
-    ///
-    /// This will generate all documentation for compiler and dependencies.
-    /// Compiler documentation is distributed separately, so we make sure
-    /// we do not merge it with the other documentation from std, test and
-    /// proc_macros. This is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder<'_>) {
-        let stage = self.stage;
-        let target = self.target;
-        builder.info(&format!("Documenting stage{} rustdoc ({})", stage, target));
-
-        // This is the intended out directory for compiler documentation.
-        let out = builder.compiler_doc_out(target);
-        t!(fs::create_dir_all(&out));
-
-        let compiler = builder.compiler(stage, builder.config.build);
-
-        if !builder.config.compiler_docs {
-            builder.info("\tskipping - compiler/librustdoc docs disabled");
-            return;
+macro_rules! tool_doc {
+    ($tool: ident, $should_run: literal, $path: literal, [$($krate: literal),+ $(,)?], binary=$bin:expr) => {
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub struct $tool {
+            stage: u32,
+            target: TargetSelection,
         }
 
-        // Build rustc docs so that we generate relative links.
-        builder.ensure(Rustc { stage, target });
+        impl Step for $tool {
+            type Output = ();
+            const DEFAULT: bool = true;
+            const ONLY_HOSTS: bool = true;
 
-        // Build rustdoc.
-        builder.ensure(tool::Rustdoc { compiler });
+            fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+                run.krate($should_run)
+            }
 
-        // Symlink compiler docs to the output directory of rustdoc documentation.
-        let out_dir = builder.stage_out(compiler, Mode::ToolRustc).join(target.triple).join("doc");
-        t!(fs::create_dir_all(&out_dir));
-        t!(symlink_dir_force(&builder.config, &out, &out_dir));
+            fn make_run(run: RunConfig<'_>) {
+                run.builder.ensure($tool { stage: run.builder.top_stage, target: run.target });
+            }
 
-        // Build cargo command.
-        let mut cargo = prepare_tool_cargo(
-            builder,
-            compiler,
-            Mode::ToolRustc,
-            target,
-            "doc",
-            "src/tools/rustdoc",
-            SourceType::InTree,
-            &[],
-        );
+            /// Generates compiler documentation.
+            ///
+            /// This will generate all documentation for compiler and dependencies.
+            /// Compiler documentation is distributed separately, so we make sure
+            /// we do not merge it with the other documentation from std, test and
+            /// proc_macros. This is largely just a wrapper around `cargo doc`.
+            fn run(self, builder: &Builder<'_>) {
+                let stage = self.stage;
+                let target = self.target;
+                builder.info(&format!("Documenting stage{} {} ({})", stage, stringify!($tool).to_lowercase(), target));
 
-        cargo.arg("-Zskip-rustdoc-fingerprint");
-        // Only include compiler crates, no dependencies of those, such as `libc`.
-        cargo.arg("--no-deps");
-        cargo.arg("-p").arg("rustdoc");
-        cargo.arg("-p").arg("rustdoc-json-types");
+                // This is the intended out directory for compiler documentation.
+                let out = builder.compiler_doc_out(target);
+                t!(fs::create_dir_all(&out));
 
-        cargo.rustdocflag("--document-private-items");
-        cargo.rustdocflag("--enable-index-page");
-        cargo.rustdocflag("--show-type-layout");
-        cargo.rustdocflag("-Zunstable-options");
-        builder.run(&mut cargo.into());
+                let compiler = builder.compiler(stage, builder.config.build);
+
+                if !builder.config.compiler_docs {
+                    builder.info("\tskipping - compiler/tool docs disabled");
+                    return;
+                }
+
+                // Build rustc docs so that we generate relative links.
+                builder.ensure(Rustc { stage, target });
+
+                // Symlink compiler docs to the output directory of rustdoc documentation.
+                let out_dir = builder.stage_out(compiler, Mode::ToolRustc).join(target.triple).join("doc");
+                t!(fs::create_dir_all(&out_dir));
+                t!(symlink_dir_force(&builder.config, &out, &out_dir));
+
+                // Build cargo command.
+                let mut cargo = prepare_tool_cargo(
+                    builder,
+                    compiler,
+                    Mode::ToolRustc,
+                    target,
+                    "doc",
+                    $path,
+                    SourceType::InTree,
+                    &[],
+                );
+
+                cargo.arg("-Zskip-rustdoc-fingerprint");
+                // Only include compiler crates, no dependencies of those, such as `libc`.
+                cargo.arg("--no-deps");
+                $(
+                    cargo.arg("-p").arg($krate);
+                )+
+
+                if !$bin {
+                    cargo.rustdocflag("--document-private-items");
+                }
+                cargo.rustdocflag("--enable-index-page");
+                cargo.rustdocflag("--show-type-layout");
+                cargo.rustdocflag("-Zunstable-options");
+                builder.run(&mut cargo.into());
+            }
+        }
     }
 }
+
+tool_doc!(
+    Rustdoc,
+    "rustdoc-tool",
+    "src/tools/rustdoc",
+    ["rustdoc", "rustdoc-json-types"],
+    binary = false
+);
+tool_doc!(
+    Rustfmt,
+    "rustfmt-nightly",
+    "src/tools/rustfmt",
+    ["rustfmt-nightly", "rustfmt-config_proc_macro"],
+    binary = true
+);
 
 #[derive(Ord, PartialOrd, Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct ErrorIndex {

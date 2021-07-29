@@ -5,16 +5,13 @@
 //! expressions) that are mostly just leftovers.
 
 pub use crate::def_id::DefPathHash;
-use crate::def_id::{
-    CrateNum, DefId, DefIndex, LocalDefId, StableCrateId, CRATE_DEF_INDEX, LOCAL_CRATE,
-};
+use crate::def_id::{CrateNum, DefIndex, LocalDefId, StableCrateId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use crate::hir;
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_index::vec::IndexVec;
-use rustc_span::crate_disambiguator::CrateDisambiguator;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::symbol::{kw, sym, Symbol};
 
@@ -26,7 +23,7 @@ use tracing::debug;
 /// Internally the `DefPathTable` holds a tree of `DefKey`s, where each `DefKey`
 /// stores the `DefIndex` of its parent.
 /// There is one `DefPathTable` for each crate.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct DefPathTable {
     index_to_key: IndexVec<DefIndex, DefKey>,
     def_path_hashes: IndexVec<DefIndex, DefPathHash>,
@@ -94,21 +91,12 @@ impl DefPathTable {
             .iter_enumerated()
             .map(move |(index, key)| (index, key, &self.def_path_hashes[index]))
     }
-
-    pub fn all_def_path_hashes_and_def_ids(
-        &self,
-        krate: CrateNum,
-    ) -> impl Iterator<Item = (DefPathHash, DefId)> + '_ {
-        self.def_path_hashes
-            .iter_enumerated()
-            .map(move |(index, hash)| (*hash, DefId { krate, index }))
-    }
 }
 
 /// The definition table containing node definitions.
 /// It holds the `DefPathTable` for `LocalDefId`s/`DefPath`s.
 /// It also stores mappings to convert `LocalDefId`s to/from `HirId`s.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Definitions {
     table: DefPathTable,
 
@@ -117,9 +105,6 @@ pub struct Definitions {
     /// The reverse mapping of `def_id_to_hir_id`.
     pub(super) hir_id_to_def_id: FxHashMap<hir::HirId, LocalDefId>,
 
-    /// If `ExpnId` is an ID of some macro expansion,
-    /// then `DefId` is the normal module (`mod`) in which the expanded macro was defined.
-    parent_modules_of_macro_defs: FxHashMap<ExpnId, DefId>,
     /// Item with a given `LocalDefId` was defined during macro expansion with ID `ExpnId`.
     expansions_that_defined: FxHashMap<LocalDefId, ExpnId>,
 }
@@ -306,6 +291,7 @@ impl Definitions {
         self.table.index_to_key.len()
     }
 
+    #[inline]
     pub fn def_key(&self, id: LocalDefId) -> DefKey {
         self.table.def_key(id.local_def_index)
     }
@@ -338,7 +324,7 @@ impl Definitions {
     }
 
     /// Adds a root definition (no parent) and a few other reserved definitions.
-    pub fn new(crate_name: &str, crate_disambiguator: CrateDisambiguator) -> Definitions {
+    pub fn new(stable_crate_id: StableCrateId) -> Definitions {
         let key = DefKey {
             parent: None,
             disambiguated_data: DisambiguatedDefPathData {
@@ -347,7 +333,6 @@ impl Definitions {
             },
         };
 
-        let stable_crate_id = StableCrateId::new(crate_name, crate_disambiguator);
         let parent_hash = DefPathHash::new(stable_crate_id, 0);
         let def_path_hash = key.compute_stable_hash(parent_hash);
 
@@ -361,7 +346,6 @@ impl Definitions {
             def_id_to_hir_id: Default::default(),
             hir_id_to_def_id: Default::default(),
             expansions_that_defined: Default::default(),
-            parent_modules_of_macro_defs: Default::default(),
         }
     }
 
@@ -428,16 +412,16 @@ impl Definitions {
         self.expansions_that_defined.get(&id).copied().unwrap_or_else(ExpnId::root)
     }
 
-    pub fn parent_module_of_macro_def(&self, expn_id: ExpnId) -> DefId {
-        self.parent_modules_of_macro_defs[&expn_id]
-    }
-
-    pub fn add_parent_module_of_macro_def(&mut self, expn_id: ExpnId, module: DefId) {
-        self.parent_modules_of_macro_defs.insert(expn_id, module);
-    }
-
     pub fn iter_local_def_id(&self) -> impl Iterator<Item = LocalDefId> + '_ {
         self.def_id_to_hir_id.iter_enumerated().map(|(k, _)| k)
+    }
+
+    #[inline(always)]
+    pub fn local_def_path_hash_to_def_id(&self, hash: DefPathHash) -> Option<LocalDefId> {
+        self.table
+            .def_path_hash_to_index
+            .get(&hash)
+            .map(|&local_def_index| LocalDefId { local_def_index })
     }
 }
 

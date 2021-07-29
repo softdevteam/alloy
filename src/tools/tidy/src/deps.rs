@@ -235,7 +235,6 @@ const PERMITTED_CRANELIFT_DEPENDENCIES: &[&str] = &[
     "ar",
     "autocfg",
     "bitflags",
-    "byteorder",
     "cfg-if",
     "cranelift-bforest",
     "cranelift-codegen",
@@ -248,9 +247,6 @@ const PERMITTED_CRANELIFT_DEPENDENCIES: &[&str] = &[
     "cranelift-native",
     "cranelift-object",
     "crc32fast",
-    "errno",
-    "errno-dragonfly",
-    "gcc",
     "gimli",
     "hashbrown",
     "indexmap",
@@ -258,18 +254,13 @@ const PERMITTED_CRANELIFT_DEPENDENCIES: &[&str] = &[
     "libloading",
     "log",
     "mach",
+    "memchr",
     "object",
-    "proc-macro2",
-    "quote",
     "regalloc",
     "region",
     "rustc-hash",
     "smallvec",
-    "syn",
     "target-lexicon",
-    "thiserror",
-    "thiserror-impl",
-    "unicode-xid",
     "winapi",
     "winapi-i686-pc-windows-gnu",
     "winapi-x86_64-pc-windows-gnu",
@@ -297,6 +288,7 @@ pub fn check(root: &Path, cargo: &Path, bad: &mut bool) {
     check_exceptions(&metadata, EXCEPTIONS, runtime_ids, bad);
     check_dependencies(&metadata, PERMITTED_DEPENDENCIES, RESTRICTED_DEPENDENCY_CRATES, bad);
     check_crate_duplicate(&metadata, FORBIDDEN_TO_HAVE_DUPLICATES, bad);
+    check_rustfix(&metadata, bad);
 
     // Check rustc_codegen_cranelift independently as it has it's own workspace.
     let mut cmd = cargo_metadata::MetadataCommand::new();
@@ -555,5 +547,24 @@ fn normal_deps_of_r<'a>(
         .unwrap_or_else(|| panic!("could not find `{}` in resolve", pkg_id));
     for dep in &node.deps {
         normal_deps_of_r(resolve, &dep.pkg, result);
+    }
+}
+
+fn check_rustfix(metadata: &Metadata, bad: &mut bool) {
+    let cargo = pkg_from_name(metadata, "cargo");
+    let compiletest = pkg_from_name(metadata, "compiletest");
+    let cargo_deps = deps_of(metadata, &cargo.id);
+    let compiletest_deps = deps_of(metadata, &compiletest.id);
+    let cargo_rustfix = cargo_deps.iter().find(|p| p.name == "rustfix").unwrap();
+    let compiletest_rustfix = compiletest_deps.iter().find(|p| p.name == "rustfix").unwrap();
+    if cargo_rustfix.version != compiletest_rustfix.version {
+        tidy_error!(
+            bad,
+            "cargo's rustfix version {} does not match compiletest's rustfix version {}\n\
+             rustfix should be kept in sync, update the cargo side first, and then update \
+             compiletest along with cargo.",
+            cargo_rustfix.version,
+            compiletest_rustfix.version
+        );
     }
 }

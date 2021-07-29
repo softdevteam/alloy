@@ -5,7 +5,6 @@
 use self::TyKind::*;
 
 use crate::infer::canonical::Canonical;
-use crate::ty::fold::BoundVarsCollector;
 use crate::ty::fold::ValidateBoundVars;
 use crate::ty::subst::{GenericArg, InternalSubsts, Subst, SubstsRef};
 use crate::ty::InferTy::{self, *};
@@ -966,15 +965,8 @@ where
     /// binder. This is commonly used to 'inject' a value T into a
     /// different binding level.
     pub fn dummy(value: T) -> Binder<'tcx, T> {
-        debug_assert!(!value.has_escaping_bound_vars());
+        assert!(!value.has_escaping_bound_vars());
         Binder(value, ty::List::empty())
-    }
-
-    /// Wraps `value` in a binder, binding higher-ranked vars (if any).
-    pub fn bind(value: T, tcx: TyCtxt<'tcx>) -> Binder<'tcx, T> {
-        let mut collector = BoundVarsCollector::new();
-        value.visit_with(&mut collector);
-        Binder(value, collector.into_vars(tcx))
     }
 
     pub fn bind_with_vars(value: T, vars: &'tcx List<BoundVariableKind>) -> Binder<'tcx, T> {
@@ -1370,8 +1362,8 @@ pub type Region<'tcx> = &'tcx RegionKind;
 /// happen, you can use `leak_check`. This is more clearly explained
 /// by the [rustc dev guide].
 ///
-/// [1]: http://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
-/// [2]: http://smallcultfollowing.com/babysteps/blog/2013/11/04/intermingled-parameter-lists/
+/// [1]: https://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
+/// [2]: https://smallcultfollowing.com/babysteps/blog/2013/11/04/intermingled-parameter-lists/
 /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
 #[derive(Clone, PartialEq, Eq, Hash, Copy, TyEncodable, TyDecodable, PartialOrd, Ord)]
 pub enum RegionKind {
@@ -1837,10 +1829,12 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_enum(&self) -> bool {
-        match self.kind() {
-            Adt(adt_def, _) => adt_def.is_enum(),
-            _ => false,
-        }
+        matches!(self.kind(), Adt(adt_def, _) if adt_def.is_enum())
+    }
+
+    #[inline]
+    pub fn is_union(&self) -> bool {
+        matches!(self.kind(), Adt(adt_def, _) if adt_def.is_union())
     }
 
     #[inline]
@@ -1886,11 +1880,6 @@ impl<'tcx> TyS<'tcx> {
     #[inline]
     pub fn is_ptr_sized_integral(&self) -> bool {
         matches!(self.kind(), Int(ty::IntTy::Isize) | Uint(ty::UintTy::Usize))
-    }
-
-    #[inline]
-    pub fn is_machine(&self) -> bool {
-        matches!(self.kind(), Int(..) | Uint(..) | Float(..))
     }
 
     #[inline]
@@ -2182,5 +2171,57 @@ impl<'tcx> TyS<'tcx> {
                 bug!("`is_trivially_sized` applied to unexpected type: {:?}", self)
             }
         }
+    }
+}
+
+/// Extra information about why we ended up with a particular variance.
+/// This is only used to add more information to error messages, and
+/// has no effect on soundness. While choosing the 'wrong' `VarianceDiagInfo`
+/// may lead to confusing notes in error messages, it will never cause
+/// a miscompilation or unsoundness.
+///
+/// When in doubt, use `VarianceDiagInfo::default()`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum VarianceDiagInfo<'tcx> {
+    /// No additional information - this is the default.
+    /// We will not add any additional information to error messages.
+    None,
+    /// We switched our variance because a type occurs inside
+    /// the generic argument of a mutable reference or pointer
+    /// (`*mut T` or `&mut T`). In either case, our variance
+    /// will always be `Invariant`.
+    Mut {
+        /// Tracks whether we had a mutable pointer or reference,
+        /// for better error messages
+        kind: VarianceDiagMutKind,
+        /// The type parameter of the mutable pointer/reference
+        /// (the `T` in `&mut T` or `*mut T`).
+        ty: Ty<'tcx>,
+    },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum VarianceDiagMutKind {
+    /// A mutable raw pointer (`*mut T`)
+    RawPtr,
+    /// A mutable reference (`&mut T`)
+    Ref,
+}
+
+impl<'tcx> VarianceDiagInfo<'tcx> {
+    /// Mirrors `Variance::xform` - used to 'combine' the existing
+    /// and new `VarianceDiagInfo`s when our variance changes.
+    pub fn xform(self, other: VarianceDiagInfo<'tcx>) -> VarianceDiagInfo<'tcx> {
+        // For now, just use the first `VarianceDiagInfo::Mut` that we see
+        match self {
+            VarianceDiagInfo::None => other,
+            VarianceDiagInfo::Mut { .. } => self,
+        }
+    }
+}
+
+impl<'tcx> Default for VarianceDiagInfo<'tcx> {
+    fn default() -> Self {
+        Self::None
     }
 }

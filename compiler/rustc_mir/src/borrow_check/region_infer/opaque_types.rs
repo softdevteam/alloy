@@ -1,7 +1,6 @@
-use rustc_data_structures::fx::FxHashMap;
-use rustc_hir::def_id::DefId;
+use rustc_data_structures::vec_map::VecMap;
 use rustc_infer::infer::InferCtxt;
-use rustc_middle::ty::{self, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{self, OpaqueTypeKey, Ty, TyCtxt, TypeFoldable};
 use rustc_span::Span;
 use rustc_trait_selection::opaque_types::InferCtxtExt;
 
@@ -51,42 +50,27 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     pub(in crate::borrow_check) fn infer_opaque_types(
         &self,
         infcx: &InferCtxt<'_, 'tcx>,
-        opaque_ty_decls: FxHashMap<DefId, ty::ResolvedOpaqueTy<'tcx>>,
+        opaque_ty_decls: VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>>,
         span: Span,
-    ) -> FxHashMap<DefId, ty::ResolvedOpaqueTy<'tcx>> {
+    ) -> VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>> {
         opaque_ty_decls
             .into_iter()
-            .map(|(opaque_def_id, ty::ResolvedOpaqueTy { concrete_type, substs })| {
+            .map(|(opaque_type_key, concrete_type)| {
+                let substs = opaque_type_key.substs;
                 debug!(?concrete_type, ?substs);
 
                 let mut subst_regions = vec![self.universal_regions.fr_static];
-                let universal_substs =
-                    infcx.tcx.fold_regions(substs, &mut false, |region, _| match *region {
-                        ty::ReVar(vid) => {
-                            subst_regions.push(vid);
-                            self.definitions[vid].external_name.unwrap_or_else(|| {
-                                infcx.tcx.sess.delay_span_bug(
-                                    span,
-                                    "opaque type with non-universal region substs",
-                                );
-                                infcx.tcx.lifetimes.re_static
-                            })
-                        }
-                        // We don't fold regions in the predicates of opaque
-                        // types to `ReVar`s. This means that in a case like
-                        //
-                        // fn f<'a: 'a>() -> impl Iterator<Item = impl Sized>
-                        //
-                        // The inner opaque type has `'static` in its substs.
-                        ty::ReStatic => region,
-                        _ => {
-                            infcx.tcx.sess.delay_span_bug(
-                                span,
-                                &format!("unexpected concrete region in borrowck: {:?}", region),
-                            );
-                            region
-                        }
-                    });
+                let universal_substs = infcx.tcx.fold_regions(substs, &mut false, |region, _| {
+                    let vid = self.universal_regions.to_region_vid(region);
+                    subst_regions.push(vid);
+                    self.definitions[vid].external_name.unwrap_or_else(|| {
+                        infcx
+                            .tcx
+                            .sess
+                            .delay_span_bug(span, "opaque type with non-universal region substs");
+                        infcx.tcx.lifetimes.re_static
+                    })
+                });
 
                 subst_regions.sort();
                 subst_regions.dedup();
@@ -110,16 +94,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
                 debug!(?universal_concrete_type, ?universal_substs);
 
+                let opaque_type_key =
+                    OpaqueTypeKey { def_id: opaque_type_key.def_id, substs: universal_substs };
                 let remapped_type = infcx.infer_opaque_definition_from_instantiation(
-                    opaque_def_id,
-                    universal_substs,
+                    opaque_type_key,
                     universal_concrete_type,
                     span,
                 );
-                (
-                    opaque_def_id,
-                    ty::ResolvedOpaqueTy { concrete_type: remapped_type, substs: universal_substs },
-                )
+                (opaque_type_key, remapped_type)
             })
             .collect()
     }

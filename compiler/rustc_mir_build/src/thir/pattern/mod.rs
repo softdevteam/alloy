@@ -31,7 +31,6 @@ crate enum PatternError {
     AssocConstInPattern(Span),
     ConstParamInPattern(Span),
     StaticInPattern(Span),
-    FloatBug,
     NonConstPath(Span),
 }
 
@@ -325,7 +324,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
 
     fn lower_tuple_subpats(
         &mut self,
-        pats: &'tcx [&'tcx hir::Pat<'tcx>],
+        pats: &'tcx [hir::Pat<'tcx>],
         expected_len: usize,
         gap_pos: Option<usize>,
     ) -> Vec<FieldPat<'tcx>> {
@@ -338,7 +337,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             .collect()
     }
 
-    fn lower_patterns(&mut self, pats: &'tcx [&'tcx hir::Pat<'tcx>]) -> Vec<Pat<'tcx>> {
+    fn lower_patterns(&mut self, pats: &'tcx [hir::Pat<'tcx>]) -> Vec<Pat<'tcx>> {
         pats.iter().map(|p| self.lower_pattern(p)).collect()
     }
 
@@ -350,9 +349,9 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
         &mut self,
         span: Span,
         ty: Ty<'tcx>,
-        prefix: &'tcx [&'tcx hir::Pat<'tcx>],
+        prefix: &'tcx [hir::Pat<'tcx>],
         slice: &'tcx Option<&'tcx hir::Pat<'tcx>>,
-        suffix: &'tcx [&'tcx hir::Pat<'tcx>],
+        suffix: &'tcx [hir::Pat<'tcx>],
     ) -> PatKind<'tcx> {
         let prefix = self.lower_patterns(prefix);
         let slice = self.lower_opt_pattern(slice);
@@ -423,6 +422,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             _ => {
                 let pattern_error = match res {
                     Res::Def(DefKind::ConstParam, _) => PatternError::ConstParamInPattern(span),
+                    Res::Def(DefKind::Static, _) => PatternError::StaticInPattern(span),
                     _ => PatternError::NonConstPath(span),
                 };
                 self.errors.push(pattern_error);
@@ -468,11 +468,10 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
         let instance = match ty::Instance::resolve(self.tcx, param_env_reveal_all, def_id, substs) {
             Ok(Some(i)) => i,
             Ok(None) => {
-                self.errors.push(if is_associated_const {
-                    PatternError::AssocConstInPattern(span)
-                } else {
-                    PatternError::StaticInPattern(span)
-                });
+                // It should be assoc consts if there's no error but we cannot resolve it.
+                debug_assert!(is_associated_const);
+
+                self.errors.push(PatternError::AssocConstInPattern(span));
 
                 return pat_from_kind(PatKind::Wild);
             }
@@ -563,10 +562,6 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                 LitToConstInput { lit: &lit.node, ty: self.typeck_results.expr_ty(expr), neg };
             match self.tcx.at(expr.span).lit_to_const(lit_input) {
                 Ok(val) => *self.const_to_pat(val, expr.hir_id, lit.span, false).kind,
-                Err(LitToConstError::UnparseableFloat) => {
-                    self.errors.push(PatternError::FloatBug);
-                    PatKind::Wild
-                }
                 Err(LitToConstError::Reported) => PatKind::Wild,
                 Err(LitToConstError::TypeError) => bug!("lower_lit: had type error"),
             }

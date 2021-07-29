@@ -95,7 +95,7 @@ impl<T> [T] {
     /// let a = [1, 2, 3];
     /// assert_eq!(a.len(), 3);
     /// ```
-    #[doc(alias = "length")]
+    #[cfg_attr(not(bootstrap), lang = "slice_len_fn")]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_stable(feature = "const_slice_len", since = "1.39.0")]
     #[inline]
@@ -2100,9 +2100,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search_by`], [`binary_search_by_key`], and [`partition_point`].
     ///
@@ -2153,9 +2155,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search`], [`binary_search_by_key`], and [`partition_point`].
     ///
@@ -2224,9 +2228,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search`], [`binary_search_by`], and [`partition_point`].
     ///
@@ -3462,27 +3468,7 @@ impl<T> [T] {
     where
         P: FnMut(&T) -> bool,
     {
-        let mut left = 0;
-        let mut right = self.len();
-
-        while left != right {
-            let mid = left + (right - left) / 2;
-            // SAFETY: When `left < right`, `left <= mid < right`.
-            // Therefore `left` always increases and `right` always decreases,
-            // and either of them is selected. In both cases `left <= right` is
-            // satisfied. Therefore if `left < right` in a step, `left <= right`
-            // is satisfied in the next step. Therefore as long as `left != right`,
-            // `0 <= left < right <= len` is satisfied and if this case
-            // `0 <= mid < len` is satisfied too.
-            let value = unsafe { self.get_unchecked(mid) };
-            if pred(value) {
-                left = mid + 1;
-            } else {
-                right = mid;
-            }
-        }
-
-        left
+        self.binary_search_by(|x| if pred(x) { Less } else { Greater }).unwrap_or_else(|i| i)
     }
 }
 

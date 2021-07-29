@@ -1,7 +1,7 @@
 use crate::cgu_reuse_tracker::CguReuseTracker;
 use crate::code_stats::CodeStats;
 pub use crate::code_stats::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
-use crate::config::{self, CrateType, OutputType, PrintRequest, SwitchWithOptPath};
+use crate::config::{self, CrateType, OutputType, SwitchWithOptPath};
 use crate::filesearch;
 use crate::lint::{self, LintId};
 use crate::parse::ParseSess;
@@ -20,9 +20,9 @@ use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitterWriter;
 use rustc_errors::emitter::{Emitter, EmitterWriter, HumanReadableErrorType};
 use rustc_errors::json::JsonEmitter;
 use rustc_errors::registry::Registry;
-use rustc_errors::{Diagnostic, DiagnosticBuilder, DiagnosticId, ErrorReported};
-use rustc_lint_defs::FutureBreakage;
-pub use rustc_span::crate_disambiguator::CrateDisambiguator;
+use rustc_errors::{DiagnosticBuilder, DiagnosticId, ErrorReported};
+use rustc_macros::HashStable_Generic;
+pub use rustc_span::def_id::StableCrateId;
 use rustc_span::source_map::{FileLoader, MultiSpan, RealFileLoader, SourceMap, Span};
 use rustc_span::{edition::Edition, RealFileName};
 use rustc_span::{sym, SourceFileHashAlgorithm, Symbol};
@@ -66,7 +66,7 @@ pub enum CtfeBacktrace {
 
 /// New-type wrapper around `usize` for representing limits. Ensures that comparisons against
 /// limits are consistent throughout the compiler.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, HashStable_Generic)]
 pub struct Limit(pub usize);
 
 impl Limit {
@@ -111,6 +111,20 @@ impl Mul<usize> for Limit {
     }
 }
 
+#[derive(Clone, Copy, Debug, HashStable_Generic)]
+pub struct Limits {
+    /// The maximum recursion limit for potentially infinitely recursive
+    /// operations such as auto-dereference and monomorphization.
+    pub recursion_limit: Limit,
+    /// The size at which the `large_assignments` lint starts
+    /// being emitted.
+    pub move_size_limit: Limit,
+    /// The maximum length of types during monomorphization.
+    pub type_length_limit: Limit,
+    /// The maximum blocks a const expression can evaluate.
+    pub const_eval_limit: Limit,
+}
+
 /// Represents the data associated with a compilation
 /// session for a single crate.
 pub struct Session {
@@ -133,30 +147,16 @@ pub struct Session {
     /// in order to avoid redundantly verbose output (Issue #24690, #44953).
     pub one_time_diagnostics: Lock<FxHashSet<(DiagnosticMessageId, Option<Span>, String)>>,
     crate_types: OnceCell<Vec<CrateType>>,
-    /// The `crate_disambiguator` is constructed out of all the `-C metadata`
-    /// arguments passed to the compiler. Its value together with the crate-name
-    /// forms a unique global identifier for the crate. It is used to allow
-    /// multiple crates with the same name to coexist. See the
+    /// The `stable_crate_id` is constructed out of the crate name and all the
+    /// `-C metadata` arguments passed to the compiler. Its value forms a unique
+    /// global identifier for the crate. It is used to allow multiple crates
+    /// with the same name to coexist. See the
     /// `rustc_codegen_llvm::back::symbol_names` module for more information.
-    pub crate_disambiguator: OnceCell<CrateDisambiguator>,
+    pub stable_crate_id: OnceCell<StableCrateId>,
 
     features: OnceCell<rustc_feature::Features>,
 
     lint_store: OnceCell<Lrc<dyn SessionLintStore>>,
-
-    /// The maximum recursion limit for potentially infinitely recursive
-    /// operations such as auto-dereference and monomorphization.
-    pub recursion_limit: OnceCell<Limit>,
-
-    /// The size at which the `large_assignments` lint starts
-    /// being emitted.
-    pub move_size_limit: OnceCell<usize>,
-
-    /// The maximum length of types during monomorphization.
-    pub type_length_limit: OnceCell<Limit>,
-
-    /// The maximum blocks a const expression can evaluate.
-    pub const_eval_limit: OnceCell<Limit>,
 
     incr_comp_session: OneThread<RefCell<IncrCompSession>>,
     /// Used for incremental compilation tests. Will only be populated if
@@ -316,27 +316,11 @@ impl Session {
         if diags.is_empty() {
             return;
         }
-        // If any future-breakage lints were registered, this lint store
-        // should be available
-        let lint_store = self.lint_store.get().expect("`lint_store` not initialized!");
-        let diags_and_breakage: Vec<(FutureBreakage, Diagnostic)> = diags
-            .into_iter()
-            .map(|diag| {
-                let lint_name = match &diag.code {
-                    Some(DiagnosticId::Lint { name, has_future_breakage: true }) => name,
-                    _ => panic!("Unexpected code in diagnostic {:?}", diag),
-                };
-                let lint = lint_store.name_to_lint(&lint_name);
-                let future_breakage =
-                    lint.lint.future_incompatible.unwrap().future_breakage.unwrap();
-                (future_breakage, diag)
-            })
-            .collect();
-        self.parse_sess.span_diagnostic.emit_future_breakage_report(diags_and_breakage);
+        self.parse_sess.span_diagnostic.emit_future_breakage_report(diags);
     }
 
-    pub fn local_crate_disambiguator(&self) -> CrateDisambiguator {
-        self.crate_disambiguator.get().copied().unwrap()
+    pub fn local_stable_crate_id(&self) -> StableCrateId {
+        self.stable_crate_id.get().copied().unwrap()
     }
 
     pub fn crate_types(&self) -> &[CrateType] {
@@ -347,27 +331,15 @@ impl Session {
         self.crate_types.set(crate_types).expect("`crate_types` was initialized twice")
     }
 
-    #[inline]
-    pub fn recursion_limit(&self) -> Limit {
-        self.recursion_limit.get().copied().unwrap()
-    }
-
-    #[inline]
-    pub fn move_size_limit(&self) -> usize {
-        self.move_size_limit.get().copied().unwrap()
-    }
-
-    #[inline]
-    pub fn type_length_limit(&self) -> Limit {
-        self.type_length_limit.get().copied().unwrap()
-    }
-
-    pub fn const_eval_limit(&self) -> Limit {
-        self.const_eval_limit.get().copied().unwrap()
-    }
-
     pub fn struct_span_warn<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> DiagnosticBuilder<'_> {
         self.diagnostic().struct_span_warn(sp, msg)
+    }
+    pub fn struct_span_force_warn<S: Into<MultiSpan>>(
+        &self,
+        sp: S,
+        msg: &str,
+    ) -> DiagnosticBuilder<'_> {
+        self.diagnostic().struct_span_force_warn(sp, msg)
     }
     pub fn struct_span_warn_with_code<S: Into<MultiSpan>>(
         &self,
@@ -379,6 +351,9 @@ impl Session {
     }
     pub fn struct_warn(&self, msg: &str) -> DiagnosticBuilder<'_> {
         self.diagnostic().struct_warn(msg)
+    }
+    pub fn struct_force_warn(&self, msg: &str) -> DiagnosticBuilder<'_> {
+        self.diagnostic().struct_force_warn(msg)
     }
     pub fn struct_span_allow<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> DiagnosticBuilder<'_> {
         self.diagnostic().struct_span_allow(sp, msg)
@@ -452,6 +427,7 @@ impl Session {
     pub fn emit_err<'a>(&'a self, err: impl SessionDiagnostic<'a>) {
         err.into_diagnostic(self).emit()
     }
+    #[inline]
     pub fn err_count(&self) -> usize {
         self.diagnostic().err_count()
     }
@@ -524,6 +500,7 @@ impl Session {
         self.diagnostic().struct_note_without_error(msg)
     }
 
+    #[inline]
     pub fn diagnostic(&self) -> &rustc_errors::Handler {
         &self.parse_sess.span_diagnostic
     }
@@ -790,18 +767,6 @@ impl Session {
         !self.target.is_like_windows && !self.target.is_like_osx
     }
 
-    pub fn must_not_eliminate_frame_pointers(&self) -> bool {
-        // "mcount" function relies on stack pointer.
-        // See <https://sourceware.org/binutils/docs/gprof/Implementation.html>.
-        if self.instrument_mcount() {
-            true
-        } else if let Some(x) = self.opts.cg.force_frame_pointers {
-            x
-        } else {
-            !self.target.eliminate_frame_pointer
-        }
-    }
-
     pub fn must_emit_unwind_tables(&self) -> bool {
         // This is used to control the emission of the `uwtable` attribute on
         // LLVM functions.
@@ -831,12 +796,12 @@ impl Session {
 
     /// Returns the symbol name for the registrar function,
     /// given the crate `Svh` and the function `DefIndex`.
-    pub fn generate_plugin_registrar_symbol(&self, disambiguator: CrateDisambiguator) -> String {
-        format!("__rustc_plugin_registrar_{}__", disambiguator.to_fingerprint().to_hex())
+    pub fn generate_plugin_registrar_symbol(&self, stable_crate_id: StableCrateId) -> String {
+        format!("__rustc_plugin_registrar_{:08x}__", stable_crate_id.to_u64())
     }
 
-    pub fn generate_proc_macro_decls_symbol(&self, disambiguator: CrateDisambiguator) -> String {
-        format!("__rustc_proc_macro_decls_{}__", disambiguator.to_fingerprint().to_hex())
+    pub fn generate_proc_macro_decls_symbol(&self, stable_crate_id: StableCrateId) -> String {
+        format!("__rustc_proc_macro_decls_{:08x}__", stable_crate_id.to_u64())
     }
 
     pub fn target_filesearch(&self, kind: PathKind) -> filesearch::FileSearch<'_> {
@@ -1282,9 +1247,12 @@ pub fn build_session(
 
     let target_cfg = config::build_target_config(&sopts, target_override, &sysroot);
     let host_triple = TargetTriple::from_triple(config::host_triple());
-    let host = Target::search(&host_triple, &sysroot).unwrap_or_else(|e| {
+    let (host, target_warnings) = Target::search(&host_triple, &sysroot).unwrap_or_else(|e| {
         early_error(sopts.error_format, &format!("Error loading host specification: {}", e))
     });
+    for warning in target_warnings.warning_messages() {
+        early_warn(sopts.error_format, &warning)
+    }
 
     let loader = file_loader.unwrap_or_else(|| Box::new(RealFileLoader));
     let hash_kind = sopts.debugging_opts.src_hash_algorithm.unwrap_or_else(|| {
@@ -1395,13 +1363,9 @@ pub fn build_session(
         working_dir,
         one_time_diagnostics: Default::default(),
         crate_types: OnceCell::new(),
-        crate_disambiguator: OnceCell::new(),
+        stable_crate_id: OnceCell::new(),
         features: OnceCell::new(),
         lint_store: OnceCell::new(),
-        recursion_limit: OnceCell::new(),
-        move_size_limit: OnceCell::new(),
-        type_length_limit: OnceCell::new(),
-        const_eval_limit: OnceCell::new(),
         incr_comp_session: OneThread::new(RefCell::new(IncrCompSession::NotInitialized)),
         cgu_reuse_tracker,
         prof,
@@ -1476,25 +1440,6 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         }
     }
 
-    // PGO does not work reliably with panic=unwind on Windows. Let's make it
-    // an error to combine the two for now. It always runs into an assertions
-    // if LLVM is built with assertions, but without assertions it sometimes
-    // does not crash and will probably generate a corrupted binary.
-    // We should only display this error if we're actually going to run PGO.
-    // If we're just supposed to print out some data, don't show the error (#61002).
-    if sess.opts.cg.profile_generate.enabled()
-        && sess.target.is_like_msvc
-        && sess.panic_strategy() == PanicStrategy::Unwind
-        && sess.opts.prints.iter().all(|&p| p == PrintRequest::NativeStaticLibs)
-    {
-        sess.err(
-            "Profile-guided optimization does not yet work in conjunction \
-                  with `-Cpanic=unwind` on Windows when targeting MSVC. \
-                  See issue #61002 <https://github.com/rust-lang/rust/issues/61002> \
-                  for more information.",
-        );
-    }
-
     // Sanitizers can only be used on platforms that we know have working sanitizer codegen.
     let supported_sanitizers = sess.target.options.supported_sanitizers;
     let unsupported_sanitizers = sess.opts.debugging_opts.sanitizer - supported_sanitizers;
@@ -1511,6 +1456,14 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     let mut sanitizer_iter = sess.opts.debugging_opts.sanitizer.into_iter();
     if let (Some(first), Some(second)) = (sanitizer_iter.next(), sanitizer_iter.next()) {
         sess.err(&format!("`-Zsanitizer={}` is incompatible with `-Zsanitizer={}`", first, second));
+    }
+
+    // Cannot enable crt-static with sanitizers on Linux
+    if sess.crt_static(None) && !sess.opts.debugging_opts.sanitizer.is_empty() {
+        sess.err(
+            "Sanitizer is incompatible with statically linked libc, \
+                                disable it using `-C target-feature=-crt-static`",
+        );
     }
 }
 

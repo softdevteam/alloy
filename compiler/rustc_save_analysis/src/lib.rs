@@ -109,9 +109,9 @@ impl<'tcx> SaveContext<'tcx> {
 
     // List external crates used by the current crate.
     pub fn get_external_crates(&self) -> Vec<ExternalCrateData> {
-        let mut result = Vec::with_capacity(self.tcx.crates().len());
+        let mut result = Vec::with_capacity(self.tcx.crates(()).len());
 
-        for &n in self.tcx.crates().iter() {
+        for &n in self.tcx.crates(()).iter() {
             let span = match self.tcx.extern_crate(n.as_def_id()) {
                 Some(&ExternCrate { span, .. }) => span,
                 None => {
@@ -127,7 +127,10 @@ impl<'tcx> SaveContext<'tcx> {
                 num: n.as_u32(),
                 id: GlobalCrateId {
                     name: self.tcx.crate_name(n).to_string(),
-                    disambiguator: self.tcx.crate_disambiguator(n).to_fingerprint().as_value(),
+                    disambiguator: (
+                        self.tcx.def_path_hash(n.as_def_id()).stable_crate_id().to_u64(),
+                        0,
+                    ),
                 },
             });
         }
@@ -785,7 +788,7 @@ impl<'tcx> SaveContext<'tcx> {
         let callee = span.source_callee()?;
 
         let mac_name = match callee.kind {
-            ExpnKind::Macro { kind, name, proc_macro: _ } => match kind {
+            ExpnKind::Macro(kind, name) => match kind {
                 MacroKind::Bang => name,
 
                 // Ignore attribute macros, their spans are usually mangled
@@ -823,20 +826,6 @@ impl<'tcx> SaveContext<'tcx> {
                 // FIXME: Should save-analysis beautify doc strings itself or leave it to users?
                 result.push_str(&beautify_doc_string(val).as_str());
                 result.push('\n');
-            } else if self.tcx.sess.check_name(attr, sym::doc) {
-                if let Some(meta_list) = attr.meta_item_list() {
-                    meta_list
-                        .into_iter()
-                        .filter(|it| it.has_name(sym::include))
-                        .filter_map(|it| it.meta_item_list().map(|l| l.to_owned()))
-                        .flat_map(|it| it)
-                        .filter(|meta| meta.has_name(sym::contents))
-                        .filter_map(|meta| meta.value_str())
-                        .for_each(|val| {
-                            result.push_str(&val.as_str());
-                            result.push('\n');
-                        });
-                }
             }
         }
 

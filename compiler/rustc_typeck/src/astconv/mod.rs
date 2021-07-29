@@ -838,6 +838,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                              this does nothing because the given bound is not \
                              a default; only `?Sized` is supported",
                         );
+                        return false;
                     }
                 }
             }
@@ -1694,7 +1695,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 };
 
                 self.one_bound_for_assoc_type(
-                    || traits::supertraits(tcx, ty::Binder::bind(trait_ref, tcx)),
+                    || traits::supertraits(tcx, ty::Binder::dummy(trait_ref)),
                     || "Self".to_string(),
                     assoc_ident,
                     span,
@@ -2418,6 +2419,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 visitor.0,
                 true,
                 hir_ty,
+                "function",
             );
         }
 

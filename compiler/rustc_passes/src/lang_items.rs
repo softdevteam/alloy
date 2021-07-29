@@ -257,9 +257,6 @@ impl LanguageItemCollector<'tcx> {
             | LangItem::Unpin
             | LangItem::Termination
             | LangItem::Try
-            | LangItem::Send
-            | LangItem::UnwindSafe
-            | LangItem::RefUnwindSafe
                 => Some(0),
 
             // Not a trait
@@ -309,7 +306,7 @@ fn get_lang_items(tcx: TyCtxt<'_>, (): ()) -> LanguageItems {
     let mut collector = LanguageItemCollector::new(tcx);
 
     // Collect lang items in other crates.
-    for &cnum in tcx.crates().iter() {
+    for &cnum in tcx.crates(()).iter() {
         for &(def_id, item_index) in tcx.defined_lang_items(cnum).iter() {
             collector.collect_item(item_index, def_id);
         }

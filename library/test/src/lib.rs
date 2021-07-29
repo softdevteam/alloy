@@ -19,8 +19,8 @@
 
 #![crate_name = "test"]
 #![unstable(feature = "test", issue = "50297")]
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
-#![cfg_attr(unix, feature(libc))]
+#![doc(test(attr(deny(warnings))))]
+#![feature(libc)]
 #![feature(rustc_private)]
 #![feature(nll)]
 #![feature(available_concurrency)]
@@ -80,6 +80,7 @@ mod formatters;
 mod helpers;
 mod options;
 pub mod stats;
+mod term;
 mod test_result;
 mod time;
 mod types;

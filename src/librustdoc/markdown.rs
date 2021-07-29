@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rustc_span::edition::Edition;
 use rustc_span::source_map::DUMMY_SP;
+use rustc_span::Symbol;
 
 use crate::config::{Options, RenderOptions};
 use crate::doctest::{Collector, TestOptions};
@@ -121,7 +122,7 @@ crate fn test(mut options: Options) -> Result<(), String> {
     opts.no_crate_inject = true;
     opts.display_warnings = options.display_warnings;
     let mut collector = Collector::new(
-        options.input.display().to_string(),
+        Symbol::intern(&options.input.display().to_string()),
         options.clone(),
         true,
         opts,
@@ -135,10 +136,13 @@ crate fn test(mut options: Options) -> Result<(), String> {
     find_testable_code(&input_str, &mut collector, codes, options.enable_per_target_ignores, None);
 
     options.test_args.insert(0, "rustdoctest".to_string());
-    testing::test_main(
+    if options.nocapture {
+        options.test_args.push("--nocapture".to_string());
+    }
+    test::test_main(
         &options.test_args,
         collector.tests,
-        Some(testing::Options::new().display_output(options.display_warnings)),
+        Some(test::Options::new().display_output(options.display_warnings)),
     );
     Ok(())
 }

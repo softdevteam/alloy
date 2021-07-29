@@ -458,7 +458,6 @@ impl<T> Vec<T> {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline]
-    #[doc(alias = "malloc")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_in(capacity, Global)
@@ -798,7 +797,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// assert!(vec.capacity() >= 11);
     /// ```
     #[cfg(not(no_global_oom_handling))]
-    #[doc(alias = "realloc")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn reserve(&mut self, additional: usize) {
         self.buf.reserve(self.len, additional);
@@ -825,7 +823,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// assert!(vec.capacity() >= 11);
     /// ```
     #[cfg(not(no_global_oom_handling))]
-    #[doc(alias = "realloc")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.buf.reserve_exact(self.len, additional);
@@ -863,7 +860,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// }
     /// # process_data(&[1, 2, 3]).expect("why is the test harness OOMing on 12 bytes?");
     /// ```
-    #[doc(alias = "realloc")]
     #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.buf.try_reserve(self.len, additional)
@@ -905,7 +901,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// }
     /// # process_data(&[1, 2, 3]).expect("why is the test harness OOMing on 12 bytes?");
     /// ```
-    #[doc(alias = "realloc")]
     #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
     pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.buf.try_reserve_exact(self.len, additional)
@@ -920,13 +915,12 @@ impl<T, A: Allocator> Vec<T, A> {
     ///
     /// ```
     /// let mut vec = Vec::with_capacity(10);
-    /// vec.extend([1, 2, 3].iter().cloned());
+    /// vec.extend([1, 2, 3]);
     /// assert_eq!(vec.capacity(), 10);
     /// vec.shrink_to_fit();
     /// assert!(vec.capacity() >= 3);
     /// ```
     #[cfg(not(no_global_oom_handling))]
-    #[doc(alias = "realloc")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn shrink_to_fit(&mut self) {
         // The capacity is never less than the length, and there's nothing to do when
@@ -949,7 +943,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// ```
     /// #![feature(shrink_to)]
     /// let mut vec = Vec::with_capacity(10);
-    /// vec.extend([1, 2, 3].iter().cloned());
+    /// vec.extend([1, 2, 3]);
     /// assert_eq!(vec.capacity(), 10);
     /// vec.shrink_to(4);
     /// assert!(vec.capacity() >= 4);
@@ -957,7 +951,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// assert!(vec.capacity() >= 3);
     /// ```
     #[cfg(not(no_global_oom_handling))]
-    #[doc(alias = "realloc")]
     #[unstable(feature = "shrink_to", reason = "new API", issue = "56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         if self.capacity() > min_capacity {
@@ -983,7 +976,7 @@ impl<T, A: Allocator> Vec<T, A> {
     ///
     /// ```
     /// let mut vec = Vec::with_capacity(10);
-    /// vec.extend([1, 2, 3].iter().cloned());
+    /// vec.extend([1, 2, 3]);
     ///
     /// assert_eq!(vec.capacity(), 10);
     /// let slice = vec.into_boxed_slice();
@@ -1819,7 +1812,6 @@ impl<T, A: Allocator> Vec<T, A> {
     /// let a = vec![1, 2, 3];
     /// assert_eq!(a.len(), 3);
     /// ```
-    #[doc(alias = "length")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
@@ -2406,6 +2398,18 @@ impl<T: Clone, A: Allocator + Clone> Clone for Vec<T, A> {
     }
 }
 
+/// The hash of a vector is the same as that of the corresponding slice,
+/// as required by the `core::borrow::Borrow` implementation.
+///
+/// ```
+/// #![feature(build_hasher_simple_hash_one)]
+/// use std::hash::BuildHasher;
+///
+/// let b = std::collections::hash_map::RandomState::new();
+/// let v: Vec<u8> = vec![0xa8, 0x3c, 0x09];
+/// let s: &[u8] = &[0xa8, 0x3c, 0x09];
+/// assert_eq!(b.hash_one(v), b.hash_one(s));
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Hash, A: Allocator> Hash for Vec<T, A> {
     #[inline]
@@ -2550,6 +2554,8 @@ impl<T, A: Allocator> Vec<T, A> {
             }
             unsafe {
                 ptr::write(self.as_mut_ptr().add(len), element);
+                // Since next() executes user code which can panic we have to bump the length
+                // after each step.
                 // NB can't overflow since we would have had to alloc the address space
                 self.set_len(len + 1);
             }
@@ -2585,7 +2591,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// ```
     /// let mut v = vec![1, 2, 3];
     /// let new = [7, 8];
-    /// let u: Vec<_> = v.splice(..2, new.iter().cloned()).collect();
+    /// let u: Vec<_> = v.splice(..2, new).collect();
     /// assert_eq!(v, &[7, 8, 3]);
     /// assert_eq!(u, &[1, 2]);
     /// ```

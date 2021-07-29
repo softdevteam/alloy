@@ -63,7 +63,7 @@ pub fn write_compressed_metadata<'tcx>(
     let section_name = if tcx.sess.target.is_like_osx { "__DATA,.rustc" } else { ".rustc" };
 
     let (metadata_llcx, metadata_llmod) = (&*llvm_module.llcx, llvm_module.llmod());
-    let mut compressed = tcx.metadata_encoding_version();
+    let mut compressed = rustc_metadata::METADATA_HEADER.to_vec();
     FrameEncoder::new(&mut compressed).write_all(&metadata.raw_data).unwrap();
 
     let llmeta = common::bytes_in_context(metadata_llcx, &compressed);
@@ -216,29 +216,5 @@ pub fn visibility_to_llvm(linkage: Visibility) -> llvm::Visibility {
         Visibility::Default => llvm::Visibility::Default,
         Visibility::Hidden => llvm::Visibility::Hidden,
         Visibility::Protected => llvm::Visibility::Protected,
-    }
-}
-
-pub fn linkage_from_llvm(linkage: llvm::Linkage) -> Linkage {
-    match linkage {
-        llvm::Linkage::ExternalLinkage => Linkage::External,
-        llvm::Linkage::AvailableExternallyLinkage => Linkage::AvailableExternally,
-        llvm::Linkage::LinkOnceAnyLinkage => Linkage::LinkOnceAny,
-        llvm::Linkage::LinkOnceODRLinkage => Linkage::LinkOnceODR,
-        llvm::Linkage::WeakAnyLinkage => Linkage::WeakAny,
-        llvm::Linkage::WeakODRLinkage => Linkage::WeakODR,
-        llvm::Linkage::AppendingLinkage => Linkage::Appending,
-        llvm::Linkage::InternalLinkage => Linkage::Internal,
-        llvm::Linkage::PrivateLinkage => Linkage::Private,
-        llvm::Linkage::ExternalWeakLinkage => Linkage::ExternalWeak,
-        llvm::Linkage::CommonLinkage => Linkage::Common,
-    }
-}
-
-pub fn visibility_from_llvm(linkage: llvm::Visibility) -> Visibility {
-    match linkage {
-        llvm::Visibility::Default => Visibility::Default,
-        llvm::Visibility::Hidden => Visibility::Hidden,
-        llvm::Visibility::Protected => Visibility::Protected,
     }
 }

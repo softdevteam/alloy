@@ -9,6 +9,7 @@
 //! a simple mistake)
 
 use if_chain::if_chain;
+use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::{
     self as hir, def::DefKind, intravisit, intravisit::Visitor, ExprKind, Item, ItemKind, Mutability, QPath,
@@ -46,8 +47,9 @@ const DEPRECATED_LINT_GROUP_STR: &str = "deprecated";
 const DEPRECATED_LINT_LEVEL: &str = "none";
 /// This array holds Clippy's lint groups with their corresponding default lint level. The
 /// lint level for deprecated lints is set in `DEPRECATED_LINT_LEVEL`.
-const DEFAULT_LINT_LEVELS: [(&str, &str); 8] = [
+const DEFAULT_LINT_LEVELS: &[(&str, &str)] = &[
     ("correctness", "deny"),
+    ("suspicious", "warn"),
     ("restriction", "allow"),
     ("style", "warn"),
     ("pedantic", "allow"),
@@ -379,7 +381,7 @@ impl<'hir> LateLintPass<'hir> for MetadataCollector {
     /// }
     /// ```
     fn check_item(&mut self, cx: &LateContext<'hir>, item: &'hir Item<'_>) {
-        if let ItemKind::Static(ref ty, Mutability::Not, _) = item.kind {
+        if let ItemKind::Static(ty, Mutability::Not, _) = item.kind {
             // Normal lint
             if_chain! {
                 // item validation
@@ -485,16 +487,32 @@ fn extract_attr_docs_or_lint(cx: &LateContext<'_>, item: &Item<'_>) -> Option<St
 ///
 /// Would result in `Hello world!\n=^.^=\n`
 fn extract_attr_docs(cx: &LateContext<'_>, item: &Item<'_>) -> Option<String> {
-    cx.tcx
-        .hir()
-        .attrs(item.hir_id())
-        .iter()
-        .filter_map(|ref x| x.doc_str().map(|sym| sym.as_str().to_string()))
-        .reduce(|mut acc, sym| {
-            acc.push_str(&sym);
-            acc.push('\n');
-            acc
-        })
+    let attrs = cx.tcx.hir().attrs(item.hir_id());
+    let mut lines = attrs.iter().filter_map(ast::Attribute::doc_str);
+    let mut docs = String::from(&*lines.next()?.as_str());
+    let mut in_code_block = false;
+    for line in lines {
+        docs.push('\n');
+        let line = line.as_str();
+        let line = &*line;
+        if let Some(info) = line.trim_start().strip_prefix("```") {
+            in_code_block = !in_code_block;
+            if in_code_block {
+                let lang = info
+                    .trim()
+                    .split(',')
+                    // remove rustdoc directives
+                    .find(|&s| !matches!(s, "" | "ignore" | "no_run" | "should_panic"))
+                    // if no language is present, fill in "rust"
+                    .unwrap_or("rust");
+                docs.push_str("```");
+                docs.push_str(lang);
+                continue;
+            }
+        }
+        docs.push_str(line);
+    }
+    Some(docs)
 }
 
 fn get_lint_group_and_level_or_lint(
@@ -502,7 +520,9 @@ fn get_lint_group_and_level_or_lint(
     lint_name: &str,
     item: &'hir Item<'_>,
 ) -> Option<(String, &'static str)> {
-    let result = cx.lint_store.check_lint_name(lint_name, Some(sym::clippy));
+    let result = cx
+        .lint_store
+        .check_lint_name(cx.sess(), lint_name, Some(sym::clippy), &[]);
     if let CheckLintNameResult::Tool(Ok(lint_lst)) = result {
         if let Some(group) = get_lint_group(cx, lint_lst[0]) {
             if EXCLUDED_LINT_GROUPS.contains(&group.as_str()) {
@@ -596,7 +616,7 @@ fn extract_emission_info<'hir>(
     let mut multi_part = false;
 
     for arg in args {
-        let (arg_ty, _) = walk_ptrs_ty_depth(cx.typeck_results().expr_ty(&arg));
+        let (arg_ty, _) = walk_ptrs_ty_depth(cx.typeck_results().expr_ty(arg));
 
         if match_type(cx, arg_ty, &paths::LINT) {
             // If we found the lint arg, extract the lint name
@@ -671,7 +691,7 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for LintResolver<'a, 'hir> {
             if let ExprKind::Path(qpath) = &expr.kind;
             if let QPath::Resolved(_, path) = qpath;
 
-            let (expr_ty, _) = walk_ptrs_ty_depth(self.cx.typeck_results().expr_ty(&expr));
+            let (expr_ty, _) = walk_ptrs_ty_depth(self.cx.typeck_results().expr_ty(expr));
             if match_type(self.cx, expr_ty, &paths::LINT);
             then {
                 if let hir::def::Res::Def(DefKind::Static, _) = path.res {
@@ -730,7 +750,7 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for ApplicabilityResolver<'a, 'hir> {
     }
 
     fn visit_expr(&mut self, expr: &'hir hir::Expr<'hir>) {
-        let (expr_ty, _) = walk_ptrs_ty_depth(self.cx.typeck_results().expr_ty(&expr));
+        let (expr_ty, _) = walk_ptrs_ty_depth(self.cx.typeck_results().expr_ty(expr));
 
         if_chain! {
             if match_type(self.cx, expr_ty, &paths::APPLICABILITY);
@@ -818,7 +838,7 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for IsMultiSpanScanner<'a, 'hir> {
                     .any(|func_path| match_function_call(self.cx, fn_expr, func_path).is_some());
                 if found_function {
                     // These functions are all multi part suggestions
-                    self.add_single_span_suggestion()
+                    self.add_single_span_suggestion();
                 }
             },
             ExprKind::MethodCall(path, _path_span, arg, _arg_span) => {

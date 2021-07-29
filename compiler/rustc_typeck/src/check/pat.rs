@@ -160,7 +160,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         ti: TopInfo<'tcx>,
     ) {
         let path_res = match &pat.kind {
-            PatKind::Path(qpath) => Some(self.resolve_ty_and_res_ufcs(qpath, pat.hir_id, pat.span)),
+            PatKind::Path(qpath) => {
+                Some(self.resolve_ty_and_res_fully_qualified_call(qpath, pat.hir_id, pat.span))
+            }
             _ => None,
         };
         let adjust_mode = self.calc_adjust_mode(pat, path_res.map(|(res, ..)| res));
@@ -862,7 +864,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &self,
         pat: &'tcx Pat<'tcx>,
         qpath: &'tcx hir::QPath<'tcx>,
-        subpats: &'tcx [&'tcx Pat<'tcx>],
+        subpats: &'tcx [Pat<'tcx>],
         ddpos: Option<usize>,
         expected: Ty<'tcx>,
         def_bm: BindingMode,
@@ -904,7 +906,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         // Resolve the path and check the definition for errors.
-        let (res, opt_ty, segments) = self.resolve_ty_and_res_ufcs(qpath, pat.hir_id, pat.span);
+        let (res, opt_ty, segments) =
+            self.resolve_ty_and_res_fully_qualified_call(qpath, pat.hir_id, pat.span);
         if res == Res::Err {
             self.set_tainted_by_errors();
             on_error();
@@ -979,7 +982,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         pat_span: Span,
         res: Res,
         qpath: &hir::QPath<'_>,
-        subpats: &'tcx [&'tcx Pat<'tcx>],
+        subpats: &'tcx [Pat<'tcx>],
         fields: &'tcx [ty::FieldDef],
         expected: Ty<'tcx>,
         had_err: bool,
@@ -1109,7 +1112,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn check_pat_tuple(
         &self,
         span: Span,
-        elements: &'tcx [&'tcx Pat<'tcx>],
+        elements: &'tcx [Pat<'tcx>],
         ddpos: Option<usize>,
         expected: Ty<'tcx>,
         def_bm: BindingMode,
@@ -1743,9 +1746,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn check_pat_slice(
         &self,
         span: Span,
-        before: &'tcx [&'tcx Pat<'tcx>],
+        before: &'tcx [Pat<'tcx>],
         slice: Option<&'tcx Pat<'tcx>>,
-        after: &'tcx [&'tcx Pat<'tcx>],
+        after: &'tcx [Pat<'tcx>],
         expected: Ty<'tcx>,
         def_bm: BindingMode,
         ti: TopInfo<'tcx>,

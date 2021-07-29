@@ -1143,7 +1143,7 @@ impl<'a> Parser<'a> {
                     ident,
                     vis,
                     id: DUMMY_NODE_ID,
-                    attrs: variant_attrs,
+                    attrs: variant_attrs.into(),
                     data: struct_def,
                     disr_expr,
                     span: vlo.to(this.prev_token.span),
@@ -1286,7 +1286,7 @@ impl<'a> Parser<'a> {
                         ident: None,
                         id: DUMMY_NODE_ID,
                         ty,
-                        attrs,
+                        attrs: attrs.into(),
                         is_placeholder: false,
                     },
                     TrailingToken::MaybeComma,
@@ -1460,7 +1460,7 @@ impl<'a> Parser<'a> {
             vis,
             id: DUMMY_NODE_ID,
             ty,
-            attrs,
+            attrs: attrs.into(),
             is_placeholder: false,
         })
     }
@@ -1474,7 +1474,10 @@ impl<'a> Parser<'a> {
                 self.sess.gated_spans.gate(sym::unnamed_fields, lo);
             } else {
                 let err = if self.check_fn_front_matter(false) {
-                    let _ = self.parse_fn(&mut Vec::new(), |_| true, lo);
+                    // We use `parse_fn` to get a span for the function
+                    if let Err(mut db) = self.parse_fn(&mut Vec::new(), |_| true, lo) {
+                        db.delay_as_bug();
+                    }
                     let mut err = self.struct_span_err(
                         lo.to(self.prev_token.span),
                         &format!("functions are not allowed in {} definitions", adt_ty),
@@ -1788,7 +1791,13 @@ impl<'a> Parser<'a> {
                     if self.check_keyword(kw::Pub) {
                         let sp = sp_start.to(self.prev_token.span);
                         if let Ok(snippet) = self.span_to_snippet(sp) {
-                            let vis = self.parse_visibility(FollowedByType::No)?;
+                            let vis = match self.parse_visibility(FollowedByType::No) {
+                                Ok(v) => v,
+                                Err(mut d) => {
+                                    d.cancel();
+                                    return Err(err);
+                                }
+                            };
                             let vs = pprust::vis_to_string(&vis);
                             let vs = vs.trim_end();
                             err.span_suggestion(

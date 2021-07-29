@@ -1,13 +1,18 @@
+use crate::traits::query::evaluate_obligation::InferCtxtExt as _;
 use crate::traits::query::outlives_bounds::InferCtxtExt as _;
 use crate::traits::{self, TraitEngine, TraitEngineExt};
 
 use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::traits::ObligationCause;
 use rustc_middle::arena::ArenaAllocatable;
 use rustc_middle::infer::canonical::{Canonical, CanonicalizedQueryResponse, QueryResponse};
 use rustc_middle::traits::query::Fallible;
+use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::ToPredicate;
+use rustc_middle::ty::WithConstness;
 use rustc_middle::ty::{self, Ty, TypeFoldable};
 use rustc_span::{Span, DUMMY_SP};
 
@@ -25,15 +30,28 @@ pub trait InferCtxtExt<'tcx> {
 
     fn partially_normalize_associated_types_in<T>(
         &self,
-        span: Span,
-        body_id: hir::HirId,
+        cause: ObligationCause<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
         value: T,
     ) -> InferOk<'tcx, T>
     where
         T: TypeFoldable<'tcx>;
-}
 
+    /// Check whether a `ty` implements given trait(trait_def_id).
+    /// The inputs are:
+    ///
+    /// - the def-id of the trait
+    /// - the self type
+    /// - the *other* type parameters of the trait, excluding the self-type
+    /// - the parameter environment
+    fn type_implements_trait(
+        &self,
+        trait_def_id: DefId,
+        ty: Ty<'tcx>,
+        params: SubstsRef<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+    ) -> traits::EvaluationResult;
+}
 impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
     fn type_is_copy_modulo_regions(
         &self,
@@ -60,8 +78,7 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
     /// new obligations that must further be processed.
     fn partially_normalize_associated_types_in<T>(
         &self,
-        span: Span,
-        body_id: hir::HirId,
+        cause: ObligationCause<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
         value: T,
     ) -> InferOk<'tcx, T>
@@ -70,7 +87,6 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
     {
         debug!("partially_normalize_associated_types_in(value={:?})", value);
         let mut selcx = traits::SelectionContext::new(self);
-        let cause = ObligationCause::misc(span, body_id);
         let traits::Normalized { value, obligations } =
             traits::normalize(&mut selcx, param_env, cause, value);
         debug!(
@@ -78,6 +94,30 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
             value, obligations
         );
         InferOk { value, obligations }
+    }
+
+    fn type_implements_trait(
+        &self,
+        trait_def_id: DefId,
+        ty: Ty<'tcx>,
+        params: SubstsRef<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+    ) -> traits::EvaluationResult {
+        debug!(
+            "type_implements_trait: trait_def_id={:?}, type={:?}, params={:?}, param_env={:?}",
+            trait_def_id, ty, params, param_env
+        );
+
+        let trait_ref =
+            ty::TraitRef { def_id: trait_def_id, substs: self.tcx.mk_substs_trait(ty, params) };
+
+        let obligation = traits::Obligation {
+            cause: traits::ObligationCause::dummy(),
+            param_env,
+            recursion_depth: 0,
+            predicate: trait_ref.without_const().to_predicate(self.tcx),
+        };
+        self.evaluate_obligation_no_overflow(&obligation)
     }
 }
 

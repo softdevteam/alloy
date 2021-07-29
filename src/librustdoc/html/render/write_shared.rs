@@ -18,17 +18,23 @@ use crate::docfs::PathError;
 use crate::error::Error;
 use crate::html::{layout, static_files};
 
-crate static FILES_UNVERSIONED: Lazy<FxHashMap<&str, &[u8]>> = Lazy::new(|| {
+static FILES_UNVERSIONED: Lazy<FxHashMap<&str, &[u8]>> = Lazy::new(|| {
     map! {
         "FiraSans-Regular.woff2" => static_files::fira_sans::REGULAR2,
         "FiraSans-Medium.woff2" => static_files::fira_sans::MEDIUM2,
         "FiraSans-Regular.woff" => static_files::fira_sans::REGULAR,
         "FiraSans-Medium.woff" => static_files::fira_sans::MEDIUM,
         "FiraSans-LICENSE.txt" => static_files::fira_sans::LICENSE,
+        "SourceSerif4-Regular.ttf.woff2" => static_files::source_serif_4::REGULAR2,
+        "SourceSerif4-Bold.ttf.woff2" => static_files::source_serif_4::BOLD2,
+        "SourceSerif4-It.ttf.woff2" => static_files::source_serif_4::ITALIC2,
         "SourceSerif4-Regular.ttf.woff" => static_files::source_serif_4::REGULAR,
         "SourceSerif4-Bold.ttf.woff" => static_files::source_serif_4::BOLD,
         "SourceSerif4-It.ttf.woff" => static_files::source_serif_4::ITALIC,
         "SourceSerif4-LICENSE.md" => static_files::source_serif_4::LICENSE,
+        "SourceCodePro-Regular.ttf.woff2" => static_files::source_code_pro::REGULAR2,
+        "SourceCodePro-Semibold.ttf.woff2" => static_files::source_code_pro::SEMIBOLD2,
+        "SourceCodePro-It.ttf.woff2" => static_files::source_code_pro::ITALIC2,
         "SourceCodePro-Regular.ttf.woff" => static_files::source_code_pro::REGULAR,
         "SourceCodePro-Semibold.ttf.woff" => static_files::source_code_pro::SEMIBOLD,
         "SourceCodePro-It.ttf.woff" => static_files::source_code_pro::ITALIC,
@@ -227,7 +233,6 @@ pub(super) fn write_shared(
     )?;
     write_minify("search.js", static_files::SEARCH_JS)?;
     write_minify("settings.js", static_files::SETTINGS_JS)?;
-    write_minify("sidebar-items.js", static_files::sidebar::ITEMS)?;
 
     if cx.shared.include_sources {
         write_minify("source-script.js", static_files::sidebar::SOURCE_SCRIPT)?;
@@ -461,7 +466,14 @@ pub(super) fn write_shared(
                     })
                     .collect::<String>()
             );
-            let v = layout::render(&cx.shared.layout, &page, "", content, &cx.shared.style_files);
+            let v = layout::render(
+                &cx.shared.templates,
+                &cx.shared.layout,
+                &page,
+                "",
+                content,
+                &cx.shared.style_files,
+            );
             cx.shared.fs.write(&dst, v.as_bytes())?;
         }
     }

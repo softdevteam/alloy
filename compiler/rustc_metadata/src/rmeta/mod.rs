@@ -18,11 +18,10 @@ use rustc_middle::mir;
 use rustc_middle::ty::{self, ReprOptions, Ty};
 use rustc_serialize::opaque::Encoder;
 use rustc_session::config::SymbolManglingVersion;
-use rustc_session::CrateDisambiguator;
 use rustc_span::edition::Edition;
-use rustc_span::hygiene::MacroKind;
+use rustc_span::hygiene::{ExpnIndex, MacroKind};
 use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::{self, ExpnData, ExpnId, Span};
+use rustc_span::{self, ExpnData, ExpnHash, ExpnId, Span};
 use rustc_target::spec::{PanicStrategy, TargetTriple};
 
 use std::marker::PhantomData;
@@ -52,7 +51,7 @@ const METADATA_VERSION: u8 = 5;
 /// This header is followed by the position of the `CrateRoot`,
 /// which is encoded as a 32-bit big-endian unsigned integer,
 /// and further followed by the rustc version string.
-crate const METADATA_HEADER: &[u8; 8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
+pub const METADATA_HEADER: &[u8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
 
 /// Additional metadata for a `Lazy<T>` where `T` may not be `Sized`,
 /// e.g. for `Lazy<[T]>`, this is the length (count of `T` values).
@@ -171,7 +170,8 @@ macro_rules! Lazy {
 }
 
 type SyntaxContextTable = Lazy<Table<u32, Lazy<SyntaxContextData>>>;
-type ExpnDataTable = Lazy<Table<u32, Lazy<ExpnData>>>;
+type ExpnDataTable = Lazy<Table<ExpnIndex, Lazy<ExpnData>>>;
+type ExpnHashTable = Lazy<Table<ExpnIndex, Lazy<ExpnHash>>>;
 
 #[derive(MetadataEncodable, MetadataDecodable)]
 crate struct ProcMacroData {
@@ -202,7 +202,6 @@ crate struct CrateRoot<'tcx> {
     triple: TargetTriple,
     extra_filename: String,
     hash: Svh,
-    disambiguator: CrateDisambiguator,
     stable_crate_id: StableCrateId,
     panic_strategy: PanicStrategy,
     edition: Edition,
@@ -228,6 +227,7 @@ crate struct CrateRoot<'tcx> {
 
     syntax_contexts: SyntaxContextTable,
     expn_data: ExpnDataTable,
+    expn_hashes: ExpnHashTable,
 
     source_map: Lazy<[rustc_span::SourceFile]>,
 
@@ -392,6 +392,7 @@ struct TraitData {
 #[derive(TyEncodable, TyDecodable)]
 struct ImplData {
     polarity: ty::ImplPolarity,
+    constness: hir::Constness,
     defaultness: hir::Defaultness,
     parent_impl: Option<DefId>,
 

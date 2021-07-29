@@ -16,8 +16,8 @@ use rustc_target::abi::{Align, Size};
 use rustc_target::spec::abi::Abi;
 
 use crate::interpret::{
-    self, compile_time_machine, AllocId, Allocation, Frame, ImmTy, InterpCx, InterpResult, Memory,
-    OpTy, PlaceTy, Pointer, Scalar,
+    self, compile_time_machine, AllocId, Allocation, Frame, ImmTy, InterpCx, InterpResult, OpTy,
+    PlaceTy, Scalar, StackPopUnwind,
 };
 
 use super::error::*;
@@ -59,7 +59,7 @@ pub struct CompileTimeInterpreter<'mir, 'tcx> {
     pub steps_remaining: usize,
 
     /// The virtual call stack.
-    pub(crate) stack: Vec<Frame<'mir, 'tcx, (), ()>>,
+    pub(crate) stack: Vec<Frame<'mir, 'tcx, AllocId, ()>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -168,11 +168,11 @@ impl<'mir, 'tcx: 'mir> CompileTimeEvalContext<'mir, 'tcx> {
             // Comparisons between integers are always known.
             (Scalar::Int { .. }, Scalar::Int { .. }) => a == b,
             // Equality with integers can never be known for sure.
-            (Scalar::Int { .. }, Scalar::Ptr(_)) | (Scalar::Ptr(_), Scalar::Int { .. }) => false,
+            (Scalar::Int { .. }, Scalar::Ptr(..)) | (Scalar::Ptr(..), Scalar::Int { .. }) => false,
             // FIXME: return `true` for when both sides are the same pointer, *except* that
             // some things (like functions and vtables) do not have stable addresses
             // so we need to be careful around them (see e.g. #73722).
-            (Scalar::Ptr(_), Scalar::Ptr(_)) => false,
+            (Scalar::Ptr(..), Scalar::Ptr(..)) => false,
         }
     }
 
@@ -183,13 +183,13 @@ impl<'mir, 'tcx: 'mir> CompileTimeEvalContext<'mir, 'tcx> {
             // Comparisons of abstract pointers with null pointers are known if the pointer
             // is in bounds, because if they are in bounds, the pointer can't be null.
             // Inequality with integers other than null can never be known for sure.
-            (Scalar::Int(int), Scalar::Ptr(ptr)) | (Scalar::Ptr(ptr), Scalar::Int(int)) => {
-                int.is_null() && !self.memory.ptr_may_be_null(ptr)
+            (Scalar::Int(int), Scalar::Ptr(ptr, _)) | (Scalar::Ptr(ptr, _), Scalar::Int(int)) => {
+                int.is_null() && !self.memory.ptr_may_be_null(ptr.into())
             }
             // FIXME: return `true` for at least some comparisons where we can reliably
             // determine the result of runtime inequality tests at compile-time.
             // Examples include comparison of addresses in different static items.
-            (Scalar::Ptr(_), Scalar::Ptr(_)) => false,
+            (Scalar::Ptr(..), Scalar::Ptr(..)) => false,
         }
     }
 }
@@ -200,6 +200,8 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
     type MemoryKind = MemoryKind;
 
     type MemoryExtra = MemoryExtra;
+
+    const PANIC_ON_ALLOC_FAIL: bool = false; // will be raised as a proper error
 
     fn load_mir(
         ecx: &InterpCx<'mir, 'tcx, Self>,
@@ -223,7 +225,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         _abi: Abi,
         args: &[OpTy<'tcx>],
         _ret: Option<(&PlaceTy<'tcx>, mir::BasicBlock)>,
-        _unwind: Option<mir::BasicBlock>, // unwinding is not supported in consts
+        _unwind: StackPopUnwind, // unwinding is not supported in consts
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
         debug!("find_mir_or_eval_fn: {:?}", instance);
 
@@ -233,12 +235,15 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
             // sensitive check here.  But we can at least rule out functions that are not const
             // at all.
             if !ecx.tcx.is_const_fn_raw(def.did) {
-                // Some functions we support even if they are non-const -- but avoid testing
-                // that for const fn!
-                ecx.hook_panic_fn(instance, args)?;
-                // We certainly do *not* want to actually call the fn
-                // though, so be sure we return here.
-                throw_unsup_format!("calling non-const function `{}`", instance)
+                // allow calling functions marked with #[default_method_body_is_const].
+                if !ecx.tcx.has_attr(def.did, sym::default_method_body_is_const) {
+                    // Some functions we support even if they are non-const -- but avoid testing
+                    // that for const fn!
+                    ecx.hook_panic_fn(instance, args)?;
+                    // We certainly do *not* want to actually call the fn
+                    // though, so be sure we return here.
+                    throw_unsup_format!("calling non-const function `{}`", instance)
+                }
             }
         }
         // This is a const fn. Call it.
@@ -263,7 +268,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx>],
         ret: Option<(&PlaceTy<'tcx>, mir::BasicBlock)>,
-        _unwind: Option<mir::BasicBlock>,
+        _unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
         // Shared intrinsics.
         if ecx.emulate_intrinsic(instance, args, ret)? {
@@ -306,8 +311,8 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
                     Size::from_bytes(size as u64),
                     align,
                     interpret::MemoryKind::Machine(MemoryKind::Heap),
-                );
-                ecx.write_scalar(Scalar::Ptr(ptr), dest)?;
+                )?;
+                ecx.write_pointer(ptr, dest)?;
             }
             _ => {
                 return Err(ConstEvalErrKind::NeedsRfc(format!(
@@ -351,10 +356,6 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         Err(ConstEvalErrKind::Abort(msg).into())
     }
 
-    fn ptr_to_int(_mem: &Memory<'mir, 'tcx, Self>, _ptr: Pointer) -> InterpResult<'tcx, u64> {
-        Err(ConstEvalErrKind::PtrToIntCast.into())
-    }
-
     fn binary_ptr_op(
         _ecx: &InterpCx<'mir, 'tcx, Self>,
         _bin_op: mir::BinOp,
@@ -391,7 +392,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
         frame: Frame<'mir, 'tcx>,
     ) -> InterpResult<'tcx, Frame<'mir, 'tcx>> {
         // Enforce stack size limit. Add 1 because this is run before the new frame is pushed.
-        if !ecx.tcx.sess.recursion_limit().value_within_limit(ecx.stack().len() + 1) {
+        if !ecx.recursion_limit.value_within_limit(ecx.stack().len() + 1) {
             throw_exhaust!(StackFrameLimitReached)
         } else {
             Ok(frame)
