@@ -7,13 +7,16 @@ use crate::char::EscapeDebugExtArgs;
 use crate::iter;
 use crate::marker::PhantomData;
 use crate::mem;
-use crate::num::flt2dec;
+use crate::num::fmt as numfmt;
 use crate::ops::Deref;
 use crate::result;
 use crate::str;
 
 mod builders;
+#[cfg(not(no_fp_fmt_parse))]
 mod float;
+#[cfg(no_fp_fmt_parse)]
+mod nofloat;
 mod num;
 
 #[stable(feature = "fmt_flags_align", since = "1.28.0")]
@@ -221,6 +224,28 @@ pub struct Formatter<'a> {
     buf: &'a mut (dyn Write + 'a),
 }
 
+impl<'a> Formatter<'a> {
+    /// Creates a new formatter with default settings.
+    ///
+    /// This can be used as a micro-optimization in cases where a full `Arguments`
+    /// structure (as created by `format_args!`) is not necessary; `Arguments`
+    /// is a little more expensive to use in simple formatting scenarios.
+    ///
+    /// Currently not intended for use outside of the standard library.
+    #[unstable(feature = "fmt_internals", reason = "internal to standard library", issue = "none")]
+    #[doc(hidden)]
+    pub fn new(buf: &'a mut (dyn Write + 'a)) -> Formatter<'a> {
+        Formatter {
+            flags: 0,
+            fill: ' ',
+            align: rt::v1::Alignment::Unknown,
+            width: None,
+            precision: None,
+            buf,
+        }
+    }
+}
+
 // NB. Argument is essentially an optimized partially applied formatting function,
 // equivalent to `exists T.(&T, fn(&T, &mut Formatter<'_>) -> Result`.
 
@@ -422,8 +447,9 @@ impl<'a> Arguments<'a> {
     /// assert_eq!(format_args!("{}", 1).as_str(), None);
     /// ```
     #[stable(feature = "fmt_as_str", since = "1.52.0")]
+    #[rustc_const_unstable(feature = "const_arguments_as_str", issue = "none")]
     #[inline]
-    pub fn as_str(&self) -> Option<&'static str> {
+    pub const fn as_str(&self) -> Option<&'static str> {
         match (self.pieces, self.args) {
             ([], []) => Some(""),
             ([s], []) => Some(s),
@@ -542,7 +568,7 @@ impl Display for Arguments<'_> {
     on(
         crate_local,
         label = "`{Self}` cannot be formatted using `{{:?}}`",
-        note = "add `#[derive(Debug)]` or manually implement `{Debug}`"
+        note = "add `#[derive(Debug)]` to `{Self}` or manually `impl {Debug} for {Self}`"
     ),
     message = "`{Self}` doesn't implement `{Debug}`",
     label = "`{Self}` cannot be formatted using `{{:?}}` because it doesn't implement `{Debug}`"
@@ -640,6 +666,7 @@ pub use macros::Debug;
     note = "in format strings you may be able to use `{{:?}}` (or {{:#?}} for pretty-print) instead"
 )]
 #[doc(alias = "{}")]
+#[rustc_diagnostic_item = "display_trait"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Display {
     /// Formats the value using the given formatter.
@@ -1075,22 +1102,16 @@ pub trait UpperExp {
 /// [`write!`]: crate::write!
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn write(output: &mut dyn Write, args: Arguments<'_>) -> Result {
-    let mut formatter = Formatter {
-        flags: 0,
-        width: None,
-        precision: None,
-        buf: output,
-        align: rt::v1::Alignment::Unknown,
-        fill: ' ',
-    };
-
+    let mut formatter = Formatter::new(output);
     let mut idx = 0;
 
     match args.fmt {
         None => {
             // We can use default formatting parameters for all arguments.
             for (arg, piece) in iter::zip(args.args, args.pieces) {
-                formatter.buf.write_str(*piece)?;
+                if !piece.is_empty() {
+                    formatter.buf.write_str(*piece)?;
+                }
                 (arg.formatter)(arg.value, &mut formatter)?;
                 idx += 1;
             }
@@ -1099,7 +1120,9 @@ pub fn write(output: &mut dyn Write, args: Arguments<'_>) -> Result {
             // Every spec has a corresponding argument that is preceded by
             // a string piece.
             for (arg, piece) in iter::zip(fmt, args.pieces) {
-                formatter.buf.write_str(*piece)?;
+                if !piece.is_empty() {
+                    formatter.buf.write_str(*piece)?;
+                }
                 // SAFETY: arg and args.args come from the same Arguments,
                 // which guarantees the indexes are always within bounds.
                 unsafe { run(&mut formatter, arg, &args.args) }?;
@@ -1227,12 +1250,13 @@ impl<'a> Formatter<'a> {
     ///         // We need to remove "-" from the number output.
     ///         let tmp = self.nb.abs().to_string();
     ///
-    ///         formatter.pad_integral(self.nb > 0, "Foo ", &tmp)
+    ///         formatter.pad_integral(self.nb >= 0, "Foo ", &tmp)
     ///     }
     /// }
     ///
     /// assert_eq!(&format!("{}", Foo::new(2)), "2");
     /// assert_eq!(&format!("{}", Foo::new(-1)), "-1");
+    /// assert_eq!(&format!("{}", Foo::new(0)), "0");
     /// assert_eq!(&format!("{:#}", Foo::new(-1)), "-Foo 1");
     /// assert_eq!(&format!("{:0>#8}", Foo::new(-1)), "00-Foo 1");
     /// ```
@@ -1402,7 +1426,7 @@ impl<'a> Formatter<'a> {
     /// Takes the formatted parts and applies the padding.
     /// Assumes that the caller already has rendered the parts with required precision,
     /// so that `self.precision` can be ignored.
-    fn pad_formatted_parts(&mut self, formatted: &flt2dec::Formatted<'_>) -> Result {
+    fn pad_formatted_parts(&mut self, formatted: &numfmt::Formatted<'_>) -> Result {
         if let Some(mut width) = self.width {
             // for the sign-aware zero padding, we render the sign first and
             // behave as if we had no sign from the beginning.
@@ -1442,14 +1466,14 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn write_formatted_parts(&mut self, formatted: &flt2dec::Formatted<'_>) -> Result {
+    fn write_formatted_parts(&mut self, formatted: &numfmt::Formatted<'_>) -> Result {
         fn write_bytes(buf: &mut dyn Write, s: &[u8]) -> Result {
-            // SAFETY: This is used for `flt2dec::Part::Num` and `flt2dec::Part::Copy`.
-            // It's safe to use for `flt2dec::Part::Num` since every char `c` is between
+            // SAFETY: This is used for `numfmt::Part::Num` and `numfmt::Part::Copy`.
+            // It's safe to use for `numfmt::Part::Num` since every char `c` is between
             // `b'0'` and `b'9'`, which means `s` is valid UTF-8.
-            // It's also probably safe in practice to use for `flt2dec::Part::Copy(buf)`
+            // It's also probably safe in practice to use for `numfmt::Part::Copy(buf)`
             // since `buf` should be plain ASCII, but it's possible for someone to pass
-            // in a bad value for `buf` into `flt2dec::to_shortest_str` since it is a
+            // in a bad value for `buf` into `numfmt::to_shortest_str` since it is a
             // public function.
             // FIXME: Determine whether this could result in UB.
             buf.write_str(unsafe { str::from_utf8_unchecked(s) })
@@ -1460,7 +1484,7 @@ impl<'a> Formatter<'a> {
         }
         for part in formatted.parts {
             match *part {
-                flt2dec::Part::Zero(mut nzeroes) => {
+                numfmt::Part::Zero(mut nzeroes) => {
                     const ZEROES: &str = // 64 zeroes
                         "0000000000000000000000000000000000000000000000000000000000000000";
                     while nzeroes > ZEROES.len() {
@@ -1471,7 +1495,7 @@ impl<'a> Formatter<'a> {
                         self.buf.write_str(&ZEROES[..nzeroes])?;
                     }
                 }
-                flt2dec::Part::Num(mut v) => {
+                numfmt::Part::Num(mut v) => {
                     let mut s = [0; 5];
                     let len = part.len();
                     for c in s[..len].iter_mut().rev() {
@@ -1480,7 +1504,7 @@ impl<'a> Formatter<'a> {
                     }
                     write_bytes(self.buf, &s[..len])?;
                 }
-                flt2dec::Part::Copy(buf) => {
+                numfmt::Part::Copy(buf) => {
                     write_bytes(self.buf, buf)?;
                 }
             }
@@ -2220,7 +2244,7 @@ impl Debug for () {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized> Debug for PhantomData<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        f.pad("PhantomData")
+        f.debug_struct("PhantomData").finish()
     }
 }
 
@@ -2270,7 +2294,7 @@ impl<T: ?Sized + Debug> Debug for RefMut<'_, T> {
 #[stable(feature = "core_impl_debug", since = "1.9.0")]
 impl<T: ?Sized> Debug for UnsafeCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        f.pad("UnsafeCell")
+        f.debug_struct("UnsafeCell").finish_non_exhaustive()
     }
 }
 

@@ -59,7 +59,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     pub SUSPICIOUS_OPERATION_GROUPINGS,
-    style,
+    nursery,
     "groupings of binary operations that look suspiciously like typos"
 }
 
@@ -195,7 +195,7 @@ fn attempt_to_emit_no_difference_lint(
     i: usize,
     expected_loc: IdentLocation,
 ) {
-    if let Some(binop) = binops.get(i).cloned() {
+    if let Some(binop) = binops.get(i).copied() {
         // We need to try and figure out which identifier we should
         // suggest using instead. Since there could be multiple
         // replacement candidates in a given expression, and we're
@@ -266,7 +266,7 @@ fn emit_suggestion(cx: &EarlyContext<'_>, span: Span, sugg: String, applicabilit
         "did you mean",
         sugg,
         applicability,
-    )
+    );
 }
 
 fn ident_swap_sugg(
@@ -475,7 +475,7 @@ impl Add for IdentLocation {
 
 impl AddAssign for IdentLocation {
     fn add_assign(&mut self, other: Self) {
-        *self = *self + other
+        *self = *self + other;
     }
 }
 
@@ -506,7 +506,7 @@ impl Add for IdentDifference {
 
 impl AddAssign for IdentDifference {
     fn add_assign(&mut self, other: Self) {
-        *self = *self + other
+        *self = *self + other;
     }
 }
 

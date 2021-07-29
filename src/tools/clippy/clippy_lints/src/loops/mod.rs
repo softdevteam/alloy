@@ -199,7 +199,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     pub FOR_LOOPS_OVER_FALLIBLES,
-    correctness,
+    suspicious,
     "for-looping over an `Option` or a `Result`, which is more clearly expressed as an `if let`"
 }
 
@@ -313,7 +313,7 @@ declare_clippy_lint! {
     /// loop {}
     /// ```
     pub EMPTY_LOOP,
-    style,
+    suspicious,
     "empty `loop {}`, which should block or sleep"
 }
 
@@ -401,7 +401,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     pub MUT_RANGE_BOUND,
-    complexity,
+    suspicious,
     "for loop over a range where one of the bounds is a mutable variable"
 }
 
@@ -602,22 +602,19 @@ fn check_for_loop<'tcx>(
 fn check_for_loop_arg(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>, expr: &Expr<'_>) {
     let mut next_loop_linted = false; // whether or not ITER_NEXT_LOOP lint was used
 
-    if let ExprKind::MethodCall(method, _, args, _) = arg.kind {
-        // just the receiver, no arguments
-        if args.len() == 1 {
-            let method_name = &*method.ident.as_str();
-            // check for looping over x.iter() or x.iter_mut(), could use &x or &mut x
-            match method_name {
-                "iter" | "iter_mut" => explicit_iter_loop::check(cx, args, arg, method_name),
-                "into_iter" => {
-                    explicit_iter_loop::check(cx, args, arg, method_name);
-                    explicit_into_iter_loop::check(cx, args, arg);
-                },
-                "next" => {
-                    next_loop_linted = iter_next_loop::check(cx, arg, expr);
-                },
-                _ => {},
-            }
+    if let ExprKind::MethodCall(method, _, [self_arg], _) = arg.kind {
+        let method_name = &*method.ident.as_str();
+        // check for looping over x.iter() or x.iter_mut(), could use &x or &mut x
+        match method_name {
+            "iter" | "iter_mut" => explicit_iter_loop::check(cx, self_arg, arg, method_name),
+            "into_iter" => {
+                explicit_iter_loop::check(cx, self_arg, arg, method_name);
+                explicit_into_iter_loop::check(cx, self_arg, arg);
+            },
+            "next" => {
+                next_loop_linted = iter_next_loop::check(cx, arg, expr);
+            },
+            _ => {},
         }
     }
 

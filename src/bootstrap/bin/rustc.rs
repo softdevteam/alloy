@@ -124,6 +124,13 @@ fn main() {
                 cmd.arg("-C").arg("target-feature=-crt-static");
             }
         }
+
+        if stage == "0" {
+            // Cargo doesn't pass RUSTFLAGS to proc_macros:
+            // https://github.com/rust-lang/cargo/issues/4423
+            // Set `--cfg=bootstrap` explicitly instead.
+            cmd.arg("--cfg=bootstrap");
+        }
     }
 
     if let Ok(map) = env::var("RUSTC_DEBUGINFO_MAP") {
@@ -305,7 +312,7 @@ fn format_rusage_data(_child: Child) -> Option<String> {
     };
     // Mac OS X reports the maxrss in bytes, not kb.
     let divisor = if env::consts::OS == "macos" { 1024 } else { 1 };
-    let maxrss = rusage.ru_maxrss + (divisor - 1) / divisor;
+    let maxrss = (rusage.ru_maxrss + (divisor - 1)) / divisor;
 
     let mut init_str = format!(
         "user: {USER_SEC}.{USER_USEC:03} \

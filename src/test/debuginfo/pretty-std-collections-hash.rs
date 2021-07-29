@@ -10,7 +10,7 @@
 // cdb-command: g
 
 // cdb-command: dx hash_set,d
-// cdb-check:hash_set,d [...] : { len=15 } [Type: [...]::HashSet<u64, [...]>]
+// cdb-check:hash_set,d [...] : { len=15 } [Type: [...]::HashSet<u64,[...]>]
 // cdb-check:    [len]            : 15 [Type: [...]]
 // cdb-check:    [capacity]       : [...]
 // cdb-check:    [[...]] [...]    : 0 [Type: u64]
@@ -44,7 +44,7 @@
 // cdb-check:    [[...]] [...]    : 14 [Type: u64]
 
 // cdb-command: dx hash_map,d
-// cdb-check:hash_map,d [...] : { len=15 } [Type: [...]::HashMap<u64, u64, [...]>]
+// cdb-check:hash_map,d [...] : { len=15 } [Type: [...]::HashMap<u64,u64,[...]>]
 // cdb-check:    [len]            : 15 [Type: [...]]
 // cdb-check:    [capacity]       : [...]
 // cdb-check:    ["0x0"]          : 0 [Type: unsigned __int64]
@@ -77,6 +77,8 @@
 // cdb-command: dx hash_map,d
 // cdb-check:    ["0xe"]          : 14 [Type: unsigned __int64]
 
+// cdb-command: dx x
+
 #![allow(unused_variables)]
 use std::collections::HashSet;
 use std::collections::HashMap;
@@ -94,6 +96,9 @@ fn main() {
     for i in 0..15 {
         hash_map.insert(i as u64, i as u64);
     }
+
+    let x = &(123u64, 456u64);
+    let string = "awefawefawe".to_string();
 
     zzz(); // #break
 }

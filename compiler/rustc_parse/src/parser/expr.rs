@@ -1,4 +1,4 @@
-use super::pat::{RecoverComma, PARAM_EXPECTED};
+use super::pat::{RecoverColon, RecoverComma, PARAM_EXPECTED};
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{AttrWrapper, BlockMode, ForceCollect, Parser, PathStyle, Restrictions, TokenType};
 use super::{SemiColonMode, SeqSep, TokenExpectType, TrailingToken};
@@ -94,17 +94,7 @@ impl<'a> Parser<'a> {
 
     /// Parses an expression, forcing tokens to be collected
     pub fn parse_expr_force_collect(&mut self) -> PResult<'a, P<Expr>> {
-        // If we have outer attributes, then the call to `collect_tokens_trailing_token`
-        // will be made for us.
-        if matches!(self.token.kind, TokenKind::Pound | TokenKind::DocComment(..)) {
-            self.parse_expr()
-        } else {
-            // If we don't have outer attributes, then we need to ensure
-            // that collection happens by using `collect_tokens_no_attrs`.
-            // Expression don't support custom inner attributes, so `parse_expr`
-            // will never try to collect tokens if we don't have outer attributes.
-            self.collect_tokens_no_attrs(|this| this.parse_expr())
-        }
+        self.collect_tokens_no_attrs(|this| this.parse_expr())
     }
 
     pub fn parse_anon_const_expr(&mut self) -> PResult<'a, AnonConst> {
@@ -441,7 +431,8 @@ impl<'a> Parser<'a> {
         let span = self.mk_expr_sp(&lhs, lhs.span, rhs_span);
         let limits =
             if op == AssocOp::DotDot { RangeLimits::HalfOpen } else { RangeLimits::Closed };
-        Ok(self.mk_expr(span, self.mk_range(Some(lhs), rhs, limits), AttrVec::new()))
+        let range = self.mk_range(Some(lhs), rhs, limits);
+        Ok(self.mk_expr(span, range, AttrVec::new()))
     }
 
     fn is_at_start_of_range_notation_rhs(&self) -> bool {
@@ -489,7 +480,8 @@ impl<'a> Parser<'a> {
             } else {
                 (lo, None)
             };
-            Ok(this.mk_expr(span, this.mk_range(None, opt_end, limits), attrs.into()))
+            let range = this.mk_range(None, opt_end, limits);
+            Ok(this.mk_expr(span, range, attrs.into()))
         })
     }
 
@@ -1118,9 +1110,6 @@ impl<'a> Parser<'a> {
             self.parse_closure_expr(attrs)
         } else if self.check(&token::OpenDelim(token::Bracket)) {
             self.parse_array_or_repeat_expr(attrs)
-        } else if self.eat_lt() {
-            let (qself, path) = self.parse_qpath(PathStyle::Expr)?;
-            Ok(self.mk_expr(lo.to(path.span), ExprKind::Path(Some(qself), path), attrs))
         } else if self.check_path() {
             self.parse_path_start_expr(attrs)
         } else if self.check_keyword(kw::Move) || self.check_keyword(kw::Static) {
@@ -1216,10 +1205,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_tuple_parens_expr(&mut self, mut attrs: AttrVec) -> PResult<'a, P<Expr>> {
+    fn parse_tuple_parens_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.token.span;
         self.expect(&token::OpenDelim(token::Paren))?;
-        attrs.extend(self.parse_inner_attributes()?); // `(#![foo] a, b, ...)` is OK.
         let (es, trailing_comma) = match self.parse_seq_to_end(
             &token::CloseDelim(token::Paren),
             SeqSep::trailing_allowed(token::Comma),
@@ -1239,11 +1227,9 @@ impl<'a> Parser<'a> {
         self.maybe_recover_from_bad_qpath(expr, true)
     }
 
-    fn parse_array_or_repeat_expr(&mut self, mut attrs: AttrVec) -> PResult<'a, P<Expr>> {
+    fn parse_array_or_repeat_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.token.span;
         self.bump(); // `[`
-
-        attrs.extend(self.parse_inner_attributes()?);
 
         let close = &token::CloseDelim(token::Bracket);
         let kind = if self.eat(close) {
@@ -1275,12 +1261,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_path_start_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
-        let path = self.parse_path(PathStyle::Expr)?;
+        let (qself, path) = if self.eat_lt() {
+            let (qself, path) = self.parse_qpath(PathStyle::Expr)?;
+            (Some(qself), path)
+        } else {
+            (None, self.parse_path(PathStyle::Expr)?)
+        };
         let lo = path.span;
 
         // `!`, as an operator, is prefix, so we know this isn't that.
         let (hi, kind) = if self.eat(&token::Not) {
             // MACRO INVOCATION expression
+            if qself.is_some() {
+                self.struct_span_err(path.span, "macros cannot use qualified paths").emit();
+            }
             let mac = MacCall {
                 path,
                 args: self.parse_mac_args()?,
@@ -1288,13 +1282,16 @@ impl<'a> Parser<'a> {
             };
             (self.prev_token.span, ExprKind::MacCall(mac))
         } else if self.check(&token::OpenDelim(token::Brace)) {
-            if let Some(expr) = self.maybe_parse_struct_expr(&path, &attrs) {
+            if let Some(expr) = self.maybe_parse_struct_expr(qself.as_ref(), &path, &attrs) {
+                if qself.is_some() {
+                    self.sess.gated_spans.gate(sym::more_qualified_paths, path.span);
+                }
                 return expr;
             } else {
-                (path.span, ExprKind::Path(None, path))
+                (path.span, ExprKind::Path(qself, path))
             }
         } else {
-            (path.span, ExprKind::Path(None, path))
+            (path.span, ExprKind::Path(qself, path))
         };
 
         let expr = self.mk_expr(lo.to(hi), kind, attrs);
@@ -1818,7 +1815,7 @@ impl<'a> Parser<'a> {
     /// The `let` token has already been eaten.
     fn parse_let_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.prev_token.span;
-        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
+        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes, RecoverColon::Yes)?;
         self.expect(&token::Eq)?;
         let expr = self.with_res(self.restrictions | Restrictions::NO_STRUCT_LITERAL, |this| {
             this.parse_assoc_expr_with(1 + prec_let_scrutinee_needs_par(), None.into())
@@ -1881,7 +1878,7 @@ impl<'a> Parser<'a> {
             _ => None,
         };
 
-        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
+        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes, RecoverColon::Yes)?;
         if !self.eat_keyword(kw::In) {
             self.error_missing_in_for_loop();
         }
@@ -2088,7 +2085,7 @@ impl<'a> Parser<'a> {
         let attrs = self.parse_outer_attributes()?;
         self.collect_tokens_trailing_token(attrs, ForceCollect::No, |this, attrs| {
             let lo = this.token.span;
-            let pat = this.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
+            let pat = this.parse_pat_allow_top_alt(None, RecoverComma::Yes, RecoverColon::Yes)?;
             let guard = if this.eat_keyword(kw::If) {
                 let if_span = this.prev_token.span;
                 let cond = this.parse_expr()?;
@@ -2122,7 +2119,7 @@ impl<'a> Parser<'a> {
                     let span = body.span;
                     return Ok((
                         ast::Arm {
-                            attrs,
+                            attrs: attrs.into(),
                             pat,
                             guard,
                             body,
@@ -2176,7 +2173,7 @@ impl<'a> Parser<'a> {
 
             Ok((
                 ast::Arm {
-                    attrs,
+                    attrs: attrs.into(),
                     pat,
                     guard,
                     body: expr,
@@ -2261,6 +2258,7 @@ impl<'a> Parser<'a> {
 
     fn maybe_parse_struct_expr(
         &mut self,
+        qself: Option<&ast::QSelf>,
         path: &ast::Path,
         attrs: &AttrVec,
     ) -> Option<PResult<'a, P<Expr>>> {
@@ -2269,7 +2267,7 @@ impl<'a> Parser<'a> {
             if let Err(err) = self.expect(&token::OpenDelim(token::Brace)) {
                 return Some(Err(err));
             }
-            let expr = self.parse_struct_expr(path.clone(), attrs.clone(), true);
+            let expr = self.parse_struct_expr(qself.cloned(), path.clone(), attrs.clone(), true);
             if let (Ok(expr), false) = (&expr, struct_allowed) {
                 // This is a struct literal, but we don't can't accept them here.
                 self.error_struct_lit_not_allowed_here(path.span, expr.span);
@@ -2292,15 +2290,14 @@ impl<'a> Parser<'a> {
     /// Precondition: already parsed the '{'.
     pub(super) fn parse_struct_expr(
         &mut self,
+        qself: Option<ast::QSelf>,
         pth: ast::Path,
-        mut attrs: AttrVec,
+        attrs: AttrVec,
         recover: bool,
     ) -> PResult<'a, P<Expr>> {
         let mut fields = Vec::new();
         let mut base = ast::StructRest::None;
         let mut recover_async = false;
-
-        attrs.extend(self.parse_inner_attributes()?);
 
         let mut async_block_err = |e: &mut DiagnosticBuilder<'_>, span: Span| {
             recover_async = true;
@@ -2391,7 +2388,7 @@ impl<'a> Parser<'a> {
         let expr = if recover_async {
             ExprKind::Err
         } else {
-            ExprKind::Struct(P(ast::StructExpr { path: pth, fields, rest: base }))
+            ExprKind::Struct(P(ast::StructExpr { qself, path: pth, fields, rest: base }))
         };
         Ok(self.mk_expr(span, expr, attrs))
     }
@@ -2522,13 +2519,13 @@ impl<'a> Parser<'a> {
     }
 
     fn mk_range(
-        &self,
+        &mut self,
         start: Option<P<Expr>>,
         end: Option<P<Expr>>,
         limits: RangeLimits,
     ) -> ExprKind {
         if end.is_none() && limits == RangeLimits::Closed {
-            self.error_inclusive_range_with_no_end(self.prev_token.span);
+            self.inclusive_range_with_incorrect_end(self.prev_token.span);
             ExprKind::Err
         } else {
             ExprKind::Range(start, end, limits)

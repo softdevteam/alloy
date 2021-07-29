@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 use build_helper::t;
@@ -52,7 +52,10 @@ impl Step for ToolBuild {
         let is_optional_tool = self.is_optional_tool;
 
         match self.mode {
-            Mode::ToolRustc => builder.ensure(compile::Rustc { compiler, target }),
+            Mode::ToolRustc => {
+                builder.ensure(compile::Std { compiler, target: compiler.host });
+                builder.ensure(compile::Rustc { compiler, target });
+            }
             Mode::ToolStd => builder.ensure(compile::Std { compiler, target }),
             Mode::ToolBootstrap => {} // uses downloaded stage0 compiler libs
             _ => panic!("unexpected Mode for tool build"),
@@ -214,9 +217,8 @@ impl Step for ToolBuild {
             if tool == "tidy" {
                 tool = "rust-tidy";
             }
-            let cargo_out =
-                builder.cargo_out(compiler, self.mode, target).join(exe(tool, compiler.host));
-            let bin = builder.tools_dir(compiler).join(exe(tool, compiler.host));
+            let cargo_out = builder.cargo_out(compiler, self.mode, target).join(exe(tool, target));
+            let bin = builder.tools_dir(compiler).join(exe(tool, target));
             builder.copy(&cargo_out, &bin);
             Some(bin)
         }
@@ -261,6 +263,7 @@ pub fn prepare_tool_cargo(
     cargo.env("CFG_RELEASE_CHANNEL", &builder.config.channel);
     cargo.env("CFG_VERSION", builder.rust_version());
     cargo.env("CFG_RELEASE_NUM", &builder.version);
+    cargo.env("DOC_RUST_LANG_ORG_CHANNEL", builder.doc_rust_lang_org_channel());
 
     let info = GitInfo::new(builder.config.ignore_git, &dir);
     if let Some(sha) = info.sha() {
@@ -373,6 +376,7 @@ bootstrap_tool!(
     ExpandYamlAnchors, "src/tools/expand-yaml-anchors", "expand-yaml-anchors";
     LintDocs, "src/tools/lint-docs", "lint-docs";
     JsonDocCk, "src/tools/jsondocck", "jsondocck";
+    HtmlChecker, "src/tools/html-checker", "html-checker";
 );
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
@@ -392,7 +396,10 @@ impl ErrorIndex {
         let compiler = builder.compiler(builder.top_stage.saturating_sub(1), builder.config.build);
         let mut cmd = Command::new(builder.ensure(ErrorIndex { compiler }));
         add_dylib_path(
-            vec![PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host))],
+            vec![
+                PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host)),
+                PathBuf::from(builder.rustc_libdir(compiler)),
+            ],
             &mut cmd,
         );
         cmd
@@ -590,7 +597,14 @@ impl Step for Cargo {
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
-        run.path("src/tools/cargo").default_condition(builder.config.extended)
+        run.path("src/tools/cargo").default_condition(
+            builder.config.extended
+                && builder.config.tools.as_ref().map_or(
+                    true,
+                    // If `tools` is set, search list for this tool.
+                    |tools| tools.iter().any(|tool| tool == "cargo"),
+                ),
+        )
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -656,7 +670,8 @@ macro_rules! tool_extended {
        $path:expr,
        $tool_name:expr,
        stable = $stable:expr,
-       $(in_tree = $in_tree:expr,)*
+       $(in_tree = $in_tree:expr,)?
+       $(submodule = $submodule:literal,)?
        $extra_deps:block;)+) => {
         $(
             #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -700,6 +715,7 @@ macro_rules! tool_extended {
             #[allow(unused_mut)]
             fn run(mut $sel, $builder: &Builder<'_>) -> Option<PathBuf> {
                 $extra_deps
+                $( $builder.update_submodule(&Path::new("src").join("tools").join($submodule)); )?
                 $builder.ensure(ToolBuild {
                     compiler: $sel.compiler,
                     target: $sel.target,
@@ -722,8 +738,10 @@ macro_rules! tool_extended {
 
 // Note: tools need to be also added to `Builder::get_step_descriptions` in `builder.rs`
 // to make `./x.py build <tool>` work.
+// Note: Most submodule updates for tools are handled by bootstrap.py, since they're needed just to
+// invoke Cargo to build bootstrap. See the comment there for more details.
 tool_extended!((self, builder),
-    Cargofmt, rustfmt, "src/tools/rustfmt", "cargo-fmt", stable=true, {};
+    Cargofmt, rustfmt, "src/tools/rustfmt", "cargo-fmt", stable=true, in_tree=true, {};
     CargoClippy, clippy, "src/tools/clippy", "cargo-clippy", stable=true, in_tree=true, {};
     Clippy, clippy, "src/tools/clippy", "clippy-driver", stable=true, in_tree=true, {};
     Miri, miri, "src/tools/miri", "miri", stable=false, {};
@@ -737,8 +755,8 @@ tool_extended!((self, builder),
         self.extra_features.push("clippy".to_owned());
     };
     RustDemangler, rust_demangler, "src/tools/rust-demangler", "rust-demangler", stable=false, in_tree=true, {};
-    Rustfmt, rustfmt, "src/tools/rustfmt", "rustfmt", stable=true, {};
-    RustAnalyzer, rust_analyzer, "src/tools/rust-analyzer/crates/rust-analyzer", "rust-analyzer", stable=false, {};
+    Rustfmt, rustfmt, "src/tools/rustfmt", "rustfmt", stable=true, in_tree=true, {};
+    RustAnalyzer, rust_analyzer, "src/tools/rust-analyzer/crates/rust-analyzer", "rust-analyzer", stable=false, submodule="rust-analyzer", {};
 );
 
 impl<'a> Builder<'a> {

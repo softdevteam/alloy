@@ -18,11 +18,15 @@ pub fn hashmap_random_keys() -> (u64, u64) {
     not(target_os = "freebsd"),
     not(target_os = "netbsd"),
     not(target_os = "fuchsia"),
-    not(target_os = "redox")
+    not(target_os = "redox"),
+    not(target_os = "vxworks")
 ))]
 mod imp {
     use crate::fs::File;
     use crate::io::Read;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    use crate::sys::weak::syscall;
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn getrandom(buf: &mut [u8]) -> libc::ssize_t {
@@ -107,6 +111,7 @@ mod imp {
     use crate::fs::File;
     use crate::io::Read;
     use crate::sys::os::errno;
+    use crate::sys::weak::weak;
     use libc::{c_int, c_void, size_t};
 
     fn getentropy_fill_bytes(v: &mut [u8]) -> bool {
@@ -235,5 +240,31 @@ mod imp {
         // Open rand:, read from it, and close it again.
         let mut file = File::open("rand:").expect("failed to open rand:");
         file.read_exact(v).expect("failed to read rand:")
+    }
+}
+
+#[cfg(target_os = "vxworks")]
+mod imp {
+    use crate::io;
+    use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+    pub fn fill_bytes(v: &mut [u8]) {
+        static RNG_INIT: AtomicBool = AtomicBool::new(false);
+        while !RNG_INIT.load(Relaxed) {
+            let ret = unsafe { libc::randSecure() };
+            if ret < 0 {
+                panic!("couldn't generate random bytes: {}", io::Error::last_os_error());
+            } else if ret > 0 {
+                RNG_INIT.store(true, Relaxed);
+                break;
+            }
+            unsafe { libc::usleep(10) };
+        }
+        let ret = unsafe {
+            libc::randABytes(v.as_mut_ptr() as *mut libc::c_uchar, v.len() as libc::c_int)
+        };
+        if ret < 0 {
+            panic!("couldn't generate random bytes: {}", io::Error::last_os_error());
+        }
     }
 }

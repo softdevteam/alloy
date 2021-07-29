@@ -47,6 +47,7 @@ use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::subst::{GenericArgKind, Subst};
 use rustc_middle::ty::Instance;
 use rustc_middle::ty::{self, layout::LayoutError, Ty, TyCtxt};
+use rustc_session::lint::FutureIncompatibilityReason;
 use rustc_session::Session;
 use rustc_span::edition::Edition;
 use rustc_span::source_map::Spanned;
@@ -489,7 +490,7 @@ fn has_doc(sess: &Session, attr: &ast::Attribute) -> bool {
 
     if let Some(list) = attr.meta_item_list() {
         for meta in list {
-            if meta.has_name(sym::include) || meta.has_name(sym::hidden) {
+            if meta.has_name(sym::hidden) {
                 return true;
             }
         }
@@ -570,6 +571,12 @@ impl<'tcx> LateLintPass<'tcx> for MissingDoc {
         self.check_missing_docs_attrs(cx, hir::CRATE_HIR_ID, krate.item.inner, "the", "crate");
 
         for macro_def in krate.exported_macros {
+            // Non exported macros should be skipped, since `missing_docs` only
+            // applies to externally visible items.
+            if !cx.access_levels.is_exported(macro_def.hir_id()) {
+                continue;
+            }
+
             let attrs = cx.tcx.hir().attrs(macro_def.hir_id());
             let has_doc = attrs.iter().any(|a| has_doc(cx.sess(), a));
             if !has_doc {
@@ -874,7 +881,7 @@ declare_lint! {
     "detects anonymous parameters",
     @future_incompatible = FutureIncompatibleInfo {
         reference: "issue #41686 <https://github.com/rust-lang/rust/issues/41686>",
-        edition: Some(Edition::Edition2018),
+        reason: FutureIncompatibilityReason::EditionError(Edition::Edition2018),
     };
 }
 
@@ -983,13 +990,16 @@ impl EarlyLintPass for DeprecatedAttr {
 }
 
 fn warn_if_doc(cx: &EarlyContext<'_>, node_span: Span, node_kind: &str, attrs: &[ast::Attribute]) {
+    use rustc_ast::token::CommentKind;
+
     let mut attrs = attrs.iter().peekable();
 
     // Accumulate a single span for sugared doc comments.
     let mut sugared_span: Option<Span> = None;
 
     while let Some(attr) = attrs.next() {
-        if attr.is_doc_comment() {
+        let is_doc_comment = attr.is_doc_comment();
+        if is_doc_comment {
             sugared_span =
                 Some(sugared_span.map_or(attr.span, |span| span.with_hi(attr.span.hi())));
         }
@@ -1000,13 +1010,21 @@ fn warn_if_doc(cx: &EarlyContext<'_>, node_span: Span, node_kind: &str, attrs: &
 
         let span = sugared_span.take().unwrap_or(attr.span);
 
-        if attr.is_doc_comment() || cx.sess().check_name(attr, sym::doc) {
+        if is_doc_comment || cx.sess().check_name(attr, sym::doc) {
             cx.struct_span_lint(UNUSED_DOC_COMMENTS, span, |lint| {
                 let mut err = lint.build("unused doc comment");
                 err.span_label(
                     node_span,
                     format!("rustdoc does not generate documentation for {}", node_kind),
                 );
+                match attr.kind {
+                    AttrKind::DocComment(CommentKind::Line, _) | AttrKind::Normal(..) => {
+                        err.help("use `//` for a plain comment");
+                    }
+                    AttrKind::DocComment(CommentKind::Block, _) => {
+                        err.help("use `/* */` for a plain comment");
+                    }
+                }
                 err.emit();
             });
         }
@@ -1083,7 +1101,7 @@ declare_lint! {
     ///
     /// ### Explanation
     ///
-    /// An function with generics must have its symbol mangled to accommodate
+    /// A function with generics must have its symbol mangled to accommodate
     /// the generic parameter. The [`no_mangle` attribute] has no effect in
     /// this situation, and should be removed.
     ///
@@ -1660,7 +1678,11 @@ declare_lint! {
     /// [`..` range expression]: https://doc.rust-lang.org/reference/expressions/range-expr.html
     pub ELLIPSIS_INCLUSIVE_RANGE_PATTERNS,
     Warn,
-    "`...` range patterns are deprecated"
+    "`...` range patterns are deprecated",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #80165 <https://github.com/rust-lang/rust/issues/80165>",
+        reason: FutureIncompatibilityReason::EditionError(Edition::Edition2021),
+    };
 }
 
 #[derive(Default)]
@@ -1704,32 +1726,57 @@ impl EarlyLintPass for EllipsisInclusiveRangePatterns {
             let suggestion = "use `..=` for an inclusive range";
             if parenthesise {
                 self.node_id = Some(pat.id);
-                cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, pat.span, |lint| {
-                    let end = expr_to_string(&end);
-                    let replace = match start {
-                        Some(start) => format!("&({}..={})", expr_to_string(&start), end),
-                        None => format!("&(..={})", end),
-                    };
-                    lint.build(msg)
-                        .span_suggestion(
-                            pat.span,
-                            suggestion,
-                            replace,
-                            Applicability::MachineApplicable,
-                        )
-                        .emit();
-                });
+                let end = expr_to_string(&end);
+                let replace = match start {
+                    Some(start) => format!("&({}..={})", expr_to_string(&start), end),
+                    None => format!("&(..={})", end),
+                };
+                if join.edition() >= Edition::Edition2021 {
+                    let mut err =
+                        rustc_errors::struct_span_err!(cx.sess, pat.span, E0783, "{}", msg,);
+                    err.span_suggestion(
+                        pat.span,
+                        suggestion,
+                        replace,
+                        Applicability::MachineApplicable,
+                    )
+                    .emit();
+                } else {
+                    cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, pat.span, |lint| {
+                        lint.build(msg)
+                            .span_suggestion(
+                                pat.span,
+                                suggestion,
+                                replace,
+                                Applicability::MachineApplicable,
+                            )
+                            .emit();
+                    });
+                }
             } else {
-                cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, join, |lint| {
-                    lint.build(msg)
-                        .span_suggestion_short(
-                            join,
-                            suggestion,
-                            "..=".to_owned(),
-                            Applicability::MachineApplicable,
-                        )
-                        .emit();
-                });
+                let replace = "..=".to_owned();
+                if join.edition() >= Edition::Edition2021 {
+                    let mut err =
+                        rustc_errors::struct_span_err!(cx.sess, pat.span, E0783, "{}", msg,);
+                    err.span_suggestion_short(
+                        join,
+                        suggestion,
+                        replace,
+                        Applicability::MachineApplicable,
+                    )
+                    .emit();
+                } else {
+                    cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, join, |lint| {
+                        lint.build(msg)
+                            .span_suggestion_short(
+                                join,
+                                suggestion,
+                                replace,
+                                Applicability::MachineApplicable,
+                            )
+                            .emit();
+                    });
+                }
             };
         }
     }
@@ -1862,7 +1909,7 @@ declare_lint! {
     "detects edition keywords being used as an identifier",
     @future_incompatible = FutureIncompatibleInfo {
         reference: "issue #49716 <https://github.com/rust-lang/rust/issues/49716>",
-        edition: Some(Edition::Edition2018),
+        reason: FutureIncompatibilityReason::EditionError(Edition::Edition2018),
     };
 }
 
@@ -2268,7 +2315,7 @@ declare_lint! {
     /// ### Example
     ///
     /// ```rust
-    /// #![feature(generic_associated_types)]
+    /// #![feature(const_generics)]
     /// ```
     ///
     /// {{produces}}
@@ -2297,7 +2344,7 @@ impl EarlyLintPass for IncompleteFeatures {
             .iter()
             .map(|(name, span, _)| (name, span))
             .chain(features.declared_lib_features.iter().map(|(name, span)| (name, span)))
-            .filter(|(name, _)| rustc_feature::INCOMPLETE_FEATURES.iter().any(|f| name == &f))
+            .filter(|(&name, _)| features.incomplete(name))
             .for_each(|(&name, &span)| {
                 cx.struct_span_lint(INCOMPLETE_FEATURES, span, |lint| {
                     let mut builder = lint.build(&format!(
@@ -2328,7 +2375,7 @@ const HAS_MIN_FEATURES: &[Symbol] = &[sym::specialization];
 
 declare_lint! {
     /// The `invalid_value` lint detects creating a value that is not valid,
-    /// such as a NULL reference.
+    /// such as a null reference.
     ///
     /// ### Example
     ///
@@ -2359,7 +2406,7 @@ declare_lint! {
     /// [undefined behavior]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html
     pub INVALID_VALUE,
     Warn,
-    "an invalid value is being created (such as a NULL reference)"
+    "an invalid value is being created (such as a null reference)"
 }
 
 declare_lint_pass!(InvalidValue => [INVALID_VALUE]);

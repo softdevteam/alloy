@@ -13,9 +13,8 @@ use crate::io::{
 /// This struct is generally created by calling [`empty()`]. Please see
 /// the documentation of [`empty()`] for more details.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct Empty {
-    _priv: (),
-}
+#[non_exhaustive]
+pub struct Empty;
 
 /// Constructs a new handle to an empty reader.
 ///
@@ -35,7 +34,7 @@ pub struct Empty {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_const_unstable(feature = "const_io_structs", issue = "78812")]
 pub const fn empty() -> Empty {
-    Empty { _priv: () }
+    Empty
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -78,11 +77,12 @@ impl Seek for Empty {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Empty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Empty { .. }")
+        f.debug_struct("Empty").finish_non_exhaustive()
     }
 }
 
 impl SizeHint for Empty {
+    #[inline]
     fn upper_bound(&self) -> Option<usize> {
         Some(0)
     }
@@ -147,10 +147,22 @@ impl Read for Repeat {
     }
 }
 
+impl SizeHint for Repeat {
+    #[inline]
+    fn lower_bound(&self) -> usize {
+        usize::MAX
+    }
+
+    #[inline]
+    fn upper_bound(&self) -> Option<usize> {
+        None
+    }
+}
+
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Repeat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Repeat { .. }")
+        f.debug_struct("Repeat").finish_non_exhaustive()
     }
 }
 
@@ -159,9 +171,8 @@ impl fmt::Debug for Repeat {
 /// This struct is generally created by calling [`sink`]. Please
 /// see the documentation of [`sink()`] for more details.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct Sink {
-    _priv: (),
-}
+#[non_exhaustive]
+pub struct Sink;
 
 /// Creates an instance of a writer which will successfully consume all data.
 ///
@@ -182,7 +193,7 @@ pub struct Sink {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_const_unstable(feature = "const_io_structs", issue = "78812")]
 pub const fn sink() -> Sink {
-    Sink { _priv: () }
+    Sink
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -236,6 +247,6 @@ impl Write for &Sink {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("Sink { .. }")
+        f.debug_struct("Sink").finish_non_exhaustive()
     }
 }

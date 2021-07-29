@@ -13,8 +13,8 @@ use rustc_target::abi::Size;
 use rustc_target::spec::abi::Abi;
 
 use super::{
-    AllocId, Allocation, AllocationExtra, CheckInAllocMsg, Frame, ImmTy, InterpCx, InterpResult,
-    LocalValue, MemPlace, Memory, MemoryKind, OpTy, Operand, PlaceTy, Pointer, Scalar,
+    AllocId, AllocRange, Allocation, Frame, ImmTy, InterpCx, InterpResult, LocalValue, MemPlace,
+    Memory, MemoryKind, OpTy, Operand, PlaceTy, Pointer, Provenance, Scalar, StackPopUnwind,
 };
 
 /// Data returned by Machine::stack_pop,
@@ -84,12 +84,8 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// Additional memory kinds a machine wishes to distinguish from the builtin ones
     type MemoryKind: Debug + std::fmt::Display + MayLeak + Eq + 'static;
 
-    /// Tag tracked alongside every pointer. This is used to implement "Stacked Borrows"
-    /// <https://www.ralfj.de/blog/2018/08/07/stacked-borrows.html>.
-    /// The `default()` is used for pointers to consts, statics, vtables and functions.
-    /// The `Debug` formatting is used for displaying pointers; we cannot use `Display`
-    /// as `()` does not implement that, but it should be "nice" output.
-    type PointerTag: Debug + Copy + Eq + Hash + 'static;
+    /// Pointers are "tagged" with provenance information; typically the `AllocId` they belong to.
+    type PointerTag: Provenance + Eq + Hash + 'static;
 
     /// Machines can define extra (non-instance) things that represent values of function pointers.
     /// For example, Miri uses this to return a function pointer from `dlsym`
@@ -105,7 +101,7 @@ pub trait Machine<'mir, 'tcx>: Sized {
     type MemoryExtra;
 
     /// Extra data stored in every allocation.
-    type AllocExtra: AllocationExtra<Self::PointerTag> + 'static;
+    type AllocExtra: Debug + Clone + 'static;
 
     /// Memory's allocation map
     type MemoryMap: AllocMap<
@@ -122,6 +118,9 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// that is added to the memory so that the work is not done twice.
     const GLOBAL_KIND: Option<Self::MemoryKind>;
 
+    /// Should the machine panic on allocation failures?
+    const PANIC_ON_ALLOC_FAIL: bool;
+
     /// Whether memory accesses should be alignment-checked.
     fn enforce_alignment(memory_extra: &Self::MemoryExtra) -> bool;
 
@@ -131,6 +130,11 @@ pub trait Machine<'mir, 'tcx>: Sized {
 
     /// Whether to enforce the validity invariant
     fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool;
+
+    /// Whether function calls should be [ABI](Abi)-checked.
+    fn enforce_abi(_ecx: &InterpCx<'mir, 'tcx, Self>) -> bool {
+        true
+    }
 
     /// Entry point for obtaining the MIR of anything that should get evaluated.
     /// So not just functions and shims, but also const/static initializers, anonymous
@@ -158,7 +162,7 @@ pub trait Machine<'mir, 'tcx>: Sized {
         abi: Abi,
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(&PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>>;
 
     /// Execute `fn_val`.  It is the hook's responsibility to advance the instruction
@@ -169,7 +173,7 @@ pub trait Machine<'mir, 'tcx>: Sized {
         abi: Abi,
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(&PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx>;
 
     /// Directly process an intrinsic without pushing a stack frame. It is the hook's
@@ -179,7 +183,7 @@ pub trait Machine<'mir, 'tcx>: Sized {
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(&PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx>;
 
     /// Called to evaluate `Assert` MIR terminators that trigger a panic.
@@ -258,28 +262,39 @@ pub trait Machine<'mir, 'tcx>: Sized {
     }
 
     /// Return the `AllocId` for the given thread-local static in the current thread.
-    fn thread_local_static_alloc_id(
+    fn thread_local_static_base_pointer(
         _ecx: &mut InterpCx<'mir, 'tcx, Self>,
         def_id: DefId,
-    ) -> InterpResult<'tcx, AllocId> {
+    ) -> InterpResult<'tcx, Pointer<Self::PointerTag>> {
         throw_unsup!(ThreadLocalStatic(def_id))
     }
 
-    /// Return the `AllocId` backing the given `extern static`.
-    fn extern_static_alloc_id(
+    /// Return the root pointer for the given `extern static`.
+    fn extern_static_base_pointer(
         mem: &Memory<'mir, 'tcx, Self>,
         def_id: DefId,
-    ) -> InterpResult<'tcx, AllocId> {
-        // Use the `AllocId` associated with the `DefId`. Any actual *access* will fail.
-        Ok(mem.tcx.create_static_alloc(def_id))
-    }
+    ) -> InterpResult<'tcx, Pointer<Self::PointerTag>>;
 
-    /// Return the "base" tag for the given *global* allocation: the one that is used for direct
-    /// accesses to this static/const/fn allocation. If `id` is not a global allocation,
-    /// this will return an unusable tag (i.e., accesses will be UB)!
+    /// Return a "base" pointer for the given allocation: the one that is used for direct
+    /// accesses to this static/const/fn allocation, or the one returned from the heap allocator.
     ///
-    /// Called on the id returned by `thread_local_static_alloc_id` and `extern_static_alloc_id`, if needed.
-    fn tag_global_base_pointer(memory_extra: &Self::MemoryExtra, id: AllocId) -> Self::PointerTag;
+    /// Not called on `extern` or thread-local statics (those use the methods above).
+    fn tag_alloc_base_pointer(
+        mem: &Memory<'mir, 'tcx, Self>,
+        ptr: Pointer,
+    ) -> Pointer<Self::PointerTag>;
+
+    /// "Int-to-pointer cast"
+    fn ptr_from_addr(
+        mem: &Memory<'mir, 'tcx, Self>,
+        addr: u64,
+    ) -> Pointer<Option<Self::PointerTag>>;
+
+    /// Convert a pointer with provenance into an allocation-offset pair.
+    fn ptr_get_alloc(
+        mem: &Memory<'mir, 'tcx, Self>,
+        ptr: Pointer<Self::PointerTag>,
+    ) -> (AllocId, Size);
 
     /// Called to initialize the "extra" state of an allocation and make the pointers
     /// it contains (in relocations) tagged.  The way we construct allocations is
@@ -294,35 +309,51 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// allocation (because a copy had to be done to add tags or metadata), machine memory will
     /// cache the result. (This relies on `AllocMap::get_or` being able to add the
     /// owned allocation to the map even when the map is shared.)
-    ///
-    /// Also return the "base" tag to use for this allocation: the one that is used for direct
-    /// accesses to this allocation. If `kind == STATIC_KIND`, this tag must be consistent
-    /// with `tag_global_base_pointer`.
     fn init_allocation_extra<'b>(
-        memory_extra: &Self::MemoryExtra,
+        mem: &Memory<'mir, 'tcx, Self>,
         id: AllocId,
         alloc: Cow<'b, Allocation>,
         kind: Option<MemoryKind<Self::MemoryKind>>,
-    ) -> (Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>, Self::PointerTag);
+    ) -> Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>;
 
-    /// Called to notify the machine before a deallocation occurs.
-    fn before_deallocation(
+    /// Hook for performing extra checks on a memory read access.
+    ///
+    /// Takes read-only access to the allocation so we can keep all the memory read
+    /// operations take `&self`. Use a `RefCell` in `AllocExtra` if you
+    /// need to mutate.
+    #[inline(always)]
+    fn memory_read(
+        _memory_extra: &Self::MemoryExtra,
+        _alloc_extra: &Self::AllocExtra,
+        _tag: Self::PointerTag,
+        _range: AllocRange,
+    ) -> InterpResult<'tcx> {
+        Ok(())
+    }
+
+    /// Hook for performing extra checks on a memory write access.
+    #[inline(always)]
+    fn memory_written(
         _memory_extra: &mut Self::MemoryExtra,
-        _id: AllocId,
+        _alloc_extra: &mut Self::AllocExtra,
+        _tag: Self::PointerTag,
+        _range: AllocRange,
     ) -> InterpResult<'tcx> {
         Ok(())
     }
 
-    /// Called after initializing static memory using the interpreter.
-    fn after_static_mem_initialized(
-        _ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        _ptr: Pointer<Self::PointerTag>,
-        _size: Size,
+    /// Hook for performing extra operations on a memory deallocation.
+    #[inline(always)]
+    fn memory_deallocated(
+        _memory_extra: &mut Self::MemoryExtra,
+        _alloc_extra: &mut Self::AllocExtra,
+        _tag: Self::PointerTag,
+        _range: AllocRange,
     ) -> InterpResult<'tcx> {
         Ok(())
     }
 
-    /// Executes a retagging operation
+    /// Executes a retagging operation.
     #[inline]
     fn retag(
         _ecx: &mut InterpCx<'mir, 'tcx, Self>,
@@ -362,31 +393,12 @@ pub trait Machine<'mir, 'tcx>: Sized {
         // By default, we do not support unwinding from panics
         Ok(StackPopJump::Normal)
     }
-
-    fn int_to_ptr(
-        _mem: &Memory<'mir, 'tcx, Self>,
-        int: u64,
-    ) -> InterpResult<'tcx, Pointer<Self::PointerTag>> {
-        Err((if int == 0 {
-            // This is UB, seriously.
-            err_ub!(DanglingIntPointer(0, CheckInAllocMsg::InboundsTest))
-        } else {
-            // This is just something we cannot support during const-eval.
-            err_unsup!(ReadBytesAsPointer)
-        })
-        .into())
-    }
-
-    fn ptr_to_int(
-        _mem: &Memory<'mir, 'tcx, Self>,
-        _ptr: Pointer<Self::PointerTag>,
-    ) -> InterpResult<'tcx, u64>;
 }
 
 // A lot of the flexibility above is just needed for `Miri`, but all "compile-time" machines
 // (CTFE and ConstProp) use the same instance.  Here, we share that code.
 pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
-    type PointerTag = ();
+    type PointerTag = AllocId;
     type ExtraFnVal = !;
 
     type MemoryMap =
@@ -421,27 +433,47 @@ pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
         _abi: Abi,
         _args: &[OpTy<$tcx>],
         _ret: Option<(&PlaceTy<$tcx>, mir::BasicBlock)>,
-        _unwind: Option<mir::BasicBlock>,
+        _unwind: StackPopUnwind,
     ) -> InterpResult<$tcx> {
         match fn_val {}
     }
 
     #[inline(always)]
     fn init_allocation_extra<'b>(
-        _memory_extra: &Self::MemoryExtra,
+        _mem: &Memory<$mir, $tcx, Self>,
         _id: AllocId,
         alloc: Cow<'b, Allocation>,
         _kind: Option<MemoryKind<Self::MemoryKind>>,
-    ) -> (Cow<'b, Allocation<Self::PointerTag>>, Self::PointerTag) {
+    ) -> Cow<'b, Allocation<Self::PointerTag>> {
         // We do not use a tag so we can just cheaply forward the allocation
-        (alloc, ())
+        alloc
+    }
+
+    fn extern_static_base_pointer(
+        mem: &Memory<$mir, $tcx, Self>,
+        def_id: DefId,
+    ) -> InterpResult<$tcx, Pointer> {
+        // Use the `AllocId` associated with the `DefId`. Any actual *access* will fail.
+        Ok(Pointer::new(mem.tcx.create_static_alloc(def_id), Size::ZERO))
     }
 
     #[inline(always)]
-    fn tag_global_base_pointer(
-        _memory_extra: &Self::MemoryExtra,
-        _id: AllocId,
-    ) -> Self::PointerTag {
-        ()
+    fn tag_alloc_base_pointer(
+        _mem: &Memory<$mir, $tcx, Self>,
+        ptr: Pointer<AllocId>,
+    ) -> Pointer<AllocId> {
+        ptr
+    }
+
+    #[inline(always)]
+    fn ptr_from_addr(_mem: &Memory<$mir, $tcx, Self>, addr: u64) -> Pointer<Option<AllocId>> {
+        Pointer::new(None, Size::from_bytes(addr))
+    }
+
+    #[inline(always)]
+    fn ptr_get_alloc(_mem: &Memory<$mir, $tcx, Self>, ptr: Pointer<AllocId>) -> (AllocId, Size) {
+        // We know `offset` is relative to the allocation, so we can use `into_parts`.
+        let (alloc_id, offset) = ptr.into_parts();
+        (alloc_id, offset)
     }
 }

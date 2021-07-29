@@ -61,7 +61,9 @@ pub fn expand_file(
 
     let topmost = cx.expansion_cause().unwrap_or(sp);
     let loc = cx.source_map().lookup_char_pos(topmost.lo());
-    base::MacEager::expr(cx.expr_str(topmost, Symbol::intern(&loc.file.name.to_string())))
+    base::MacEager::expr(
+        cx.expr_str(topmost, Symbol::intern(&loc.file.name.prefer_remapped().to_string_lossy())),
+    )
 }
 
 pub fn expand_stringify(
@@ -157,7 +159,7 @@ pub fn expand_include<'cx>(
         }
     }
 
-    Box::new(ExpandResult { p, node_id: cx.resolver.lint_node_id(cx.current_expansion.id) })
+    Box::new(ExpandResult { p, node_id: cx.current_expansion.lint_node_id })
 }
 
 // include_str! : read the given file, insert it as a literal string expr

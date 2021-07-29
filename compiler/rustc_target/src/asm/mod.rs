@@ -6,7 +6,6 @@ use rustc_span::Symbol;
 use std::fmt;
 use std::str::FromStr;
 
-#[macro_use]
 macro_rules! def_reg_class {
     ($arch:ident $arch_regclass:ident {
         $(
@@ -51,7 +50,6 @@ macro_rules! def_reg_class {
     }
 }
 
-#[macro_use]
 macro_rules! def_regs {
     ($arch:ident $arch_reg:ident $arch_regclass:ident {
         $(
@@ -129,7 +127,6 @@ macro_rules! def_regs {
     }
 }
 
-#[macro_use]
 macro_rules! types {
     (
         $(_ : $($ty:expr),+;)?
@@ -151,9 +148,11 @@ macro_rules! types {
 
 mod aarch64;
 mod arm;
+mod bpf;
 mod hexagon;
 mod mips;
 mod nvptx;
+mod powerpc;
 mod riscv;
 mod spirv;
 mod wasm;
@@ -161,9 +160,11 @@ mod x86;
 
 pub use aarch64::{AArch64InlineAsmReg, AArch64InlineAsmRegClass};
 pub use arm::{ArmInlineAsmReg, ArmInlineAsmRegClass};
+pub use bpf::{BpfInlineAsmReg, BpfInlineAsmRegClass};
 pub use hexagon::{HexagonInlineAsmReg, HexagonInlineAsmRegClass};
 pub use mips::{MipsInlineAsmReg, MipsInlineAsmRegClass};
 pub use nvptx::{NvptxInlineAsmReg, NvptxInlineAsmRegClass};
+pub use powerpc::{PowerPCInlineAsmReg, PowerPCInlineAsmRegClass};
 pub use riscv::{RiscVInlineAsmReg, RiscVInlineAsmRegClass};
 pub use spirv::{SpirVInlineAsmReg, SpirVInlineAsmRegClass};
 pub use wasm::{WasmInlineAsmReg, WasmInlineAsmRegClass};
@@ -181,8 +182,11 @@ pub enum InlineAsmArch {
     Hexagon,
     Mips,
     Mips64,
+    PowerPC,
+    PowerPC64,
     SpirV,
     Wasm32,
+    Bpf,
 }
 
 impl FromStr for InlineAsmArch {
@@ -197,11 +201,14 @@ impl FromStr for InlineAsmArch {
             "riscv32" => Ok(Self::RiscV32),
             "riscv64" => Ok(Self::RiscV64),
             "nvptx64" => Ok(Self::Nvptx64),
+            "powerpc" => Ok(Self::PowerPC),
+            "powerpc64" => Ok(Self::PowerPC64),
             "hexagon" => Ok(Self::Hexagon),
             "mips" => Ok(Self::Mips),
             "mips64" => Ok(Self::Mips64),
             "spirv" => Ok(Self::SpirV),
             "wasm32" => Ok(Self::Wasm32),
+            "bpf" => Ok(Self::Bpf),
             _ => Err(()),
         }
     }
@@ -225,10 +232,12 @@ pub enum InlineAsmReg {
     AArch64(AArch64InlineAsmReg),
     RiscV(RiscVInlineAsmReg),
     Nvptx(NvptxInlineAsmReg),
+    PowerPC(PowerPCInlineAsmReg),
     Hexagon(HexagonInlineAsmReg),
     Mips(MipsInlineAsmReg),
     SpirV(SpirVInlineAsmReg),
     Wasm(WasmInlineAsmReg),
+    Bpf(BpfInlineAsmReg),
     // Placeholder for invalid register constraints for the current target
     Err,
 }
@@ -240,8 +249,10 @@ impl InlineAsmReg {
             Self::Arm(r) => r.name(),
             Self::AArch64(r) => r.name(),
             Self::RiscV(r) => r.name(),
+            Self::PowerPC(r) => r.name(),
             Self::Hexagon(r) => r.name(),
             Self::Mips(r) => r.name(),
+            Self::Bpf(r) => r.name(),
             Self::Err => "<reg>",
         }
     }
@@ -252,8 +263,10 @@ impl InlineAsmReg {
             Self::Arm(r) => InlineAsmRegClass::Arm(r.reg_class()),
             Self::AArch64(r) => InlineAsmRegClass::AArch64(r.reg_class()),
             Self::RiscV(r) => InlineAsmRegClass::RiscV(r.reg_class()),
+            Self::PowerPC(r) => InlineAsmRegClass::PowerPC(r.reg_class()),
             Self::Hexagon(r) => InlineAsmRegClass::Hexagon(r.reg_class()),
             Self::Mips(r) => InlineAsmRegClass::Mips(r.reg_class()),
+            Self::Bpf(r) => InlineAsmRegClass::Bpf(r.reg_class()),
             Self::Err => InlineAsmRegClass::Err,
         }
     }
@@ -283,6 +296,9 @@ impl InlineAsmReg {
             InlineAsmArch::Nvptx64 => {
                 Self::Nvptx(NvptxInlineAsmReg::parse(arch, has_feature, target, &name)?)
             }
+            InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {
+                Self::PowerPC(PowerPCInlineAsmReg::parse(arch, has_feature, target, &name)?)
+            }
             InlineAsmArch::Hexagon => {
                 Self::Hexagon(HexagonInlineAsmReg::parse(arch, has_feature, target, &name)?)
             }
@@ -294,6 +310,9 @@ impl InlineAsmReg {
             }
             InlineAsmArch::Wasm32 => {
                 Self::Wasm(WasmInlineAsmReg::parse(arch, has_feature, target, &name)?)
+            }
+            InlineAsmArch::Bpf => {
+                Self::Bpf(BpfInlineAsmReg::parse(arch, has_feature, target, &name)?)
             }
         })
     }
@@ -311,8 +330,10 @@ impl InlineAsmReg {
             Self::Arm(r) => r.emit(out, arch, modifier),
             Self::AArch64(r) => r.emit(out, arch, modifier),
             Self::RiscV(r) => r.emit(out, arch, modifier),
+            Self::PowerPC(r) => r.emit(out, arch, modifier),
             Self::Hexagon(r) => r.emit(out, arch, modifier),
             Self::Mips(r) => r.emit(out, arch, modifier),
+            Self::Bpf(r) => r.emit(out, arch, modifier),
             Self::Err => unreachable!("Use of InlineAsmReg::Err"),
         }
     }
@@ -323,8 +344,10 @@ impl InlineAsmReg {
             Self::Arm(r) => r.overlapping_regs(|r| cb(Self::Arm(r))),
             Self::AArch64(_) => cb(self),
             Self::RiscV(_) => cb(self),
+            Self::PowerPC(_) => cb(self),
             Self::Hexagon(r) => r.overlapping_regs(|r| cb(Self::Hexagon(r))),
             Self::Mips(_) => cb(self),
+            Self::Bpf(r) => r.overlapping_regs(|r| cb(Self::Bpf(r))),
             Self::Err => unreachable!("Use of InlineAsmReg::Err"),
         }
     }
@@ -348,10 +371,12 @@ pub enum InlineAsmRegClass {
     AArch64(AArch64InlineAsmRegClass),
     RiscV(RiscVInlineAsmRegClass),
     Nvptx(NvptxInlineAsmRegClass),
+    PowerPC(PowerPCInlineAsmRegClass),
     Hexagon(HexagonInlineAsmRegClass),
     Mips(MipsInlineAsmRegClass),
     SpirV(SpirVInlineAsmRegClass),
     Wasm(WasmInlineAsmRegClass),
+    Bpf(BpfInlineAsmRegClass),
     // Placeholder for invalid register constraints for the current target
     Err,
 }
@@ -364,10 +389,12 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.name(),
             Self::RiscV(r) => r.name(),
             Self::Nvptx(r) => r.name(),
+            Self::PowerPC(r) => r.name(),
             Self::Hexagon(r) => r.name(),
             Self::Mips(r) => r.name(),
             Self::SpirV(r) => r.name(),
             Self::Wasm(r) => r.name(),
+            Self::Bpf(r) => r.name(),
             Self::Err => rustc_span::symbol::sym::reg,
         }
     }
@@ -382,10 +409,12 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::AArch64),
             Self::RiscV(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::RiscV),
             Self::Nvptx(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Nvptx),
+            Self::PowerPC(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::PowerPC),
             Self::Hexagon(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Hexagon),
             Self::Mips(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Mips),
             Self::SpirV(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::SpirV),
             Self::Wasm(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Wasm),
+            Self::Bpf(r) => r.suggest_class(arch, ty).map(InlineAsmRegClass::Bpf),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -407,10 +436,12 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.suggest_modifier(arch, ty),
             Self::RiscV(r) => r.suggest_modifier(arch, ty),
             Self::Nvptx(r) => r.suggest_modifier(arch, ty),
+            Self::PowerPC(r) => r.suggest_modifier(arch, ty),
             Self::Hexagon(r) => r.suggest_modifier(arch, ty),
             Self::Mips(r) => r.suggest_modifier(arch, ty),
             Self::SpirV(r) => r.suggest_modifier(arch, ty),
             Self::Wasm(r) => r.suggest_modifier(arch, ty),
+            Self::Bpf(r) => r.suggest_modifier(arch, ty),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -428,10 +459,12 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.default_modifier(arch),
             Self::RiscV(r) => r.default_modifier(arch),
             Self::Nvptx(r) => r.default_modifier(arch),
+            Self::PowerPC(r) => r.default_modifier(arch),
             Self::Hexagon(r) => r.default_modifier(arch),
             Self::Mips(r) => r.default_modifier(arch),
             Self::SpirV(r) => r.default_modifier(arch),
             Self::Wasm(r) => r.default_modifier(arch),
+            Self::Bpf(r) => r.default_modifier(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -448,10 +481,12 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.supported_types(arch),
             Self::RiscV(r) => r.supported_types(arch),
             Self::Nvptx(r) => r.supported_types(arch),
+            Self::PowerPC(r) => r.supported_types(arch),
             Self::Hexagon(r) => r.supported_types(arch),
             Self::Mips(r) => r.supported_types(arch),
             Self::SpirV(r) => r.supported_types(arch),
             Self::Wasm(r) => r.supported_types(arch),
+            Self::Bpf(r) => r.supported_types(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
     }
@@ -467,12 +502,16 @@ impl InlineAsmRegClass {
                 Self::RiscV(RiscVInlineAsmRegClass::parse(arch, name)?)
             }
             InlineAsmArch::Nvptx64 => Self::Nvptx(NvptxInlineAsmRegClass::parse(arch, name)?),
+            InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {
+                Self::PowerPC(PowerPCInlineAsmRegClass::parse(arch, name)?)
+            }
             InlineAsmArch::Hexagon => Self::Hexagon(HexagonInlineAsmRegClass::parse(arch, name)?),
             InlineAsmArch::Mips | InlineAsmArch::Mips64 => {
                 Self::Mips(MipsInlineAsmRegClass::parse(arch, name)?)
             }
             InlineAsmArch::SpirV => Self::SpirV(SpirVInlineAsmRegClass::parse(arch, name)?),
             InlineAsmArch::Wasm32 => Self::Wasm(WasmInlineAsmRegClass::parse(arch, name)?),
+            InlineAsmArch::Bpf => Self::Bpf(BpfInlineAsmRegClass::parse(arch, name)?),
         })
     }
 
@@ -485,12 +524,20 @@ impl InlineAsmRegClass {
             Self::AArch64(r) => r.valid_modifiers(arch),
             Self::RiscV(r) => r.valid_modifiers(arch),
             Self::Nvptx(r) => r.valid_modifiers(arch),
+            Self::PowerPC(r) => r.valid_modifiers(arch),
             Self::Hexagon(r) => r.valid_modifiers(arch),
             Self::Mips(r) => r.valid_modifiers(arch),
             Self::SpirV(r) => r.valid_modifiers(arch),
             Self::Wasm(r) => r.valid_modifiers(arch),
+            Self::Bpf(r) => r.valid_modifiers(arch),
             Self::Err => unreachable!("Use of InlineAsmRegClass::Err"),
         }
+    }
+
+    /// Returns whether registers in this class can only be used as clobbers
+    /// and not as inputs/outputs.
+    pub fn is_clobber_only(self, arch: InlineAsmArch) -> bool {
+        self.supported_types(arch).is_empty()
     }
 }
 
@@ -633,6 +680,11 @@ pub fn allocatable_registers(
             nvptx::fill_reg_map(arch, has_feature, target, &mut map);
             map
         }
+        InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {
+            let mut map = powerpc::regclass_map();
+            powerpc::fill_reg_map(arch, has_feature, target, &mut map);
+            map
+        }
         InlineAsmArch::Hexagon => {
             let mut map = hexagon::regclass_map();
             hexagon::fill_reg_map(arch, has_feature, target, &mut map);
@@ -651,6 +703,11 @@ pub fn allocatable_registers(
         InlineAsmArch::Wasm32 => {
             let mut map = wasm::regclass_map();
             wasm::fill_reg_map(arch, has_feature, target, &mut map);
+            map
+        }
+        InlineAsmArch::Bpf => {
+            let mut map = bpf::regclass_map();
+            bpf::fill_reg_map(arch, has_feature, target, &mut map);
             map
         }
     }

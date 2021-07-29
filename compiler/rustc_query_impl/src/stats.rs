@@ -50,13 +50,12 @@ where
         key_type: type_name::<C::Key>(),
         value_size: mem::size_of::<C::Value>(),
         value_type: type_name::<C::Value>(),
-        entry_count: map.iter_results(|results| results.count()),
+        entry_count: 0,
         local_def_id_keys: None,
     };
-    map.iter_results(|results| {
-        for (key, _, _) in results {
-            key.key_stats(&mut stats)
-        }
+    map.iter_results(&mut |key, _, _| {
+        stats.entry_count += 1;
+        key.key_stats(&mut stats)
     });
     stats
 }
@@ -109,7 +108,7 @@ pub fn print_stats(tcx: TyCtxt<'_>) {
         queries.iter().filter(|q| q.local_def_id_keys.is_some()).collect();
     def_id_density.sort_by_key(|q| q.local_def_id_keys.unwrap());
     eprintln!("\nLocal DefId density:");
-    let total = tcx.hir().definitions().def_index_count() as f64;
+    let total = tcx.resolutions(()).definitions.def_index_count() as f64;
     for q in def_id_density.iter().rev() {
         let local = q.local_def_id_keys.unwrap();
         eprintln!("   {} - {} = ({}%)", q.name, local, (local as f64 * 100.0) / total);

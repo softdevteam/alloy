@@ -6,17 +6,12 @@
 #![allow(dead_code)] // runtime init functions not used during testing
 
 use crate::ffi::OsString;
-use crate::marker::PhantomData;
+use crate::fmt;
 use crate::vec;
 
 /// One-time global initialization.
 pub unsafe fn init(argc: isize, argv: *const *const u8) {
     imp::init(argc, argv)
-}
-
-/// One-time global cleanup.
-pub unsafe fn cleanup() {
-    imp::cleanup()
 }
 
 /// Returns the command line arguments
@@ -26,12 +21,14 @@ pub fn args() -> Args {
 
 pub struct Args {
     iter: vec::IntoIter<OsString>,
-    _dont_send_or_sync_me: PhantomData<*mut ()>,
 }
 
-impl Args {
-    pub fn inner_debug(&self) -> &[OsString] {
-        self.iter.as_slice()
+impl !Send for Args {}
+impl !Sync for Args {}
+
+impl fmt::Debug for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.iter.as_slice().fmt(f)
     }
 }
 
@@ -76,21 +73,22 @@ impl DoubleEndedIterator for Args {
 mod imp {
     use super::Args;
     use crate::ffi::{CStr, OsString};
-    use crate::marker::PhantomData;
     use crate::os::unix::prelude::*;
     use crate::ptr;
     use crate::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
-    use crate::sys_common::mutex::StaticMutex;
-
+    // The system-provided argc and argv, which we store in static memory
+    // here so that we can defer the work of parsing them until its actually
+    // needed.
+    //
+    // Note that we never mutate argv/argc, the argv array, or the argv
+    // strings, which allows the code in this file to be very simple.
     static ARGC: AtomicIsize = AtomicIsize::new(0);
     static ARGV: AtomicPtr<*const u8> = AtomicPtr::new(ptr::null_mut());
-    // We never call `ENV_LOCK.init()`, so it is UB to attempt to
-    // acquire this mutex reentrantly!
-    static LOCK: StaticMutex = StaticMutex::new();
 
     unsafe fn really_init(argc: isize, argv: *const *const u8) {
-        let _guard = LOCK.lock();
+        // These don't need to be ordered with each other or other stores,
+        // because they only hold the unmodified system-provide argv/argc.
         ARGC.store(argc, Ordering::Relaxed);
         ARGV.store(argv as *mut _, Ordering::Relaxed);
     }
@@ -126,21 +124,22 @@ mod imp {
         init_wrapper
     };
 
-    pub unsafe fn cleanup() {
-        let _guard = LOCK.lock();
-        ARGC.store(0, Ordering::Relaxed);
-        ARGV.store(ptr::null_mut(), Ordering::Relaxed);
-    }
-
     pub fn args() -> Args {
-        Args { iter: clone().into_iter(), _dont_send_or_sync_me: PhantomData }
+        Args { iter: clone().into_iter() }
     }
 
     fn clone() -> Vec<OsString> {
         unsafe {
-            let _guard = LOCK.lock();
-            let argc = ARGC.load(Ordering::Relaxed);
+            // Load ARGC and ARGV, which hold the unmodified system-provided
+            // argc/argv, so we can read the pointed-to memory without atomics
+            // or synchronization.
+            //
+            // If either ARGC or ARGV is still zero or null, then either there
+            // really are no arguments, or someone is asking for `args()`
+            // before initialization has completed, and we return an empty
+            // list.
             let argv = ARGV.load(Ordering::Relaxed);
+            let argc = if argv.is_null() { 0 } else { ARGC.load(Ordering::Relaxed) };
             (0..argc)
                 .map(|i| {
                     let cstr = CStr::from_ptr(*argv.offset(i) as *const libc::c_char);
@@ -155,11 +154,8 @@ mod imp {
 mod imp {
     use super::Args;
     use crate::ffi::CStr;
-    use crate::marker::PhantomData;
 
     pub unsafe fn init(_argc: isize, _argv: *const *const u8) {}
-
-    pub fn cleanup() {}
 
     #[cfg(target_os = "macos")]
     pub fn args() -> Args {
@@ -180,7 +176,7 @@ mod imp {
                 })
                 .collect::<Vec<_>>()
         };
-        Args { iter: vec.into_iter(), _dont_send_or_sync_me: PhantomData }
+        Args { iter: vec.into_iter() }
     }
 
     // As _NSGetArgc and _NSGetArgv aren't mentioned in iOS docs
@@ -247,6 +243,6 @@ mod imp {
             }
         }
 
-        Args { iter: res.into_iter(), _dont_send_or_sync_me: PhantomData }
+        Args { iter: res.into_iter() }
     }
 }

@@ -21,10 +21,10 @@ All contributors are expected to follow the [Rust Code of Conduct].
     - [IntelliJ Rust](#intellij-rust)
     - [Rust Analyzer](#rust-analyzer)
   - [How Clippy works](#how-clippy-works)
-  - [Syncing changes between Clippy and [`rust-lang/rust`]](#syncing-changes-between-clippy-and-rust-langrust)
+  - [Syncing changes between Clippy and `rust-lang/rust`](#syncing-changes-between-clippy-and-rust-langrust)
     - [Patching git-subtree to work with big repos](#patching-git-subtree-to-work-with-big-repos)
-    - [Performing the sync from [`rust-lang/rust`] to Clippy](#performing-the-sync-from-rust-langrust-to-clippy)
-    - [Performing the sync from Clippy to [`rust-lang/rust`]](#performing-the-sync-from-clippy-to-rust-langrust)
+    - [Performing the sync from `rust-lang/rust` to Clippy](#performing-the-sync-from-rust-langrust-to-clippy)
+    - [Performing the sync from Clippy to `rust-lang/rust`](#performing-the-sync-from-clippy-to-rust-langrust)
     - [Defining remotes](#defining-remotes)
   - [Issue and PR triage](#issue-and-pr-triage)
   - [Bors and Homu](#bors-and-homu)
@@ -115,10 +115,10 @@ To work around this, you need to have a copy of the [rustc-repo][rustc_repo] ava
 `git clone https://github.com/rust-lang/rust/`.
 Then you can run a `cargo dev` command to automatically make Clippy use the rustc-repo via path-dependencies
 which `IntelliJ Rust` will be able to understand.
-Run `cargo dev ide_setup --repo-path <repo-path>` where `<repo-path>` is a path to the rustc repo
+Run `cargo dev setup intellij --repo-path <repo-path>` where `<repo-path>` is a path to the rustc repo
 you just cloned.
 The command will add path-dependencies pointing towards rustc-crates inside the rustc repo to
-Clippys `Cargo.toml`s and should allow rust-analyzer to understand most of the types that Clippy uses.
+Clippys `Cargo.toml`s and should allow `IntelliJ Rust` to understand most of the types that Clippy uses.
 Just make sure to remove the dependencies again before finally making a pull request!
 
 [rustc_repo]: https://github.com/rust-lang/rust/
@@ -342,7 +342,7 @@ We have prioritization labels and a sync-blocker label, which are described belo
 - [P-low][p-low]: Requires attention (fix/response/evaluation) by a team member but isn't urgent.
 - [P-medium][p-medium]: Should be addressed by a team member until the next sync.
 - [P-high][p-high]: Should be immediately addressed and will require an out-of-cycle sync or a backport.
-- [L-sync-blocker][l-sync-blocker]: An issue that "blocks" a sync. 
+- [L-sync-blocker][l-sync-blocker]: An issue that "blocks" a sync.
 Or rather: before the sync this should be addressed,
 e.g. by removing a lint again, so it doesn't hit beta/stable.
 

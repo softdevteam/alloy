@@ -5,36 +5,11 @@
 
 use crate::{is_expn_of, match_def_path, paths};
 use if_chain::if_chain;
-use rustc_ast::ast;
+use rustc_ast::ast::{self, LitKind};
 use rustc_hir as hir;
 use rustc_hir::{BorrowKind, Expr, ExprKind, StmtKind, UnOp};
 use rustc_lint::LateContext;
-use rustc_span::source_map::Span;
-
-/// Converts a hir binary operator to the corresponding `ast` type.
-#[must_use]
-pub fn binop(op: hir::BinOpKind) -> ast::BinOpKind {
-    match op {
-        hir::BinOpKind::Eq => ast::BinOpKind::Eq,
-        hir::BinOpKind::Ge => ast::BinOpKind::Ge,
-        hir::BinOpKind::Gt => ast::BinOpKind::Gt,
-        hir::BinOpKind::Le => ast::BinOpKind::Le,
-        hir::BinOpKind::Lt => ast::BinOpKind::Lt,
-        hir::BinOpKind::Ne => ast::BinOpKind::Ne,
-        hir::BinOpKind::Or => ast::BinOpKind::Or,
-        hir::BinOpKind::Add => ast::BinOpKind::Add,
-        hir::BinOpKind::And => ast::BinOpKind::And,
-        hir::BinOpKind::BitAnd => ast::BinOpKind::BitAnd,
-        hir::BinOpKind::BitOr => ast::BinOpKind::BitOr,
-        hir::BinOpKind::BitXor => ast::BinOpKind::BitXor,
-        hir::BinOpKind::Div => ast::BinOpKind::Div,
-        hir::BinOpKind::Mul => ast::BinOpKind::Mul,
-        hir::BinOpKind::Rem => ast::BinOpKind::Rem,
-        hir::BinOpKind::Shl => ast::BinOpKind::Shl,
-        hir::BinOpKind::Shr => ast::BinOpKind::Shr,
-        hir::BinOpKind::Sub => ast::BinOpKind::Sub,
-    }
-}
+use rustc_span::{sym, ExpnKind, Span, Symbol};
 
 /// Represent a range akin to `ast::ExprKind::Range`.
 #[derive(Debug, Copy, Clone)]
@@ -58,7 +33,7 @@ pub fn range<'a>(expr: &'a hir::Expr<'_>) -> Option<Range<'a>> {
     }
 
     match expr.kind {
-        hir::ExprKind::Call(ref path, ref args)
+        hir::ExprKind::Call(path, args)
             if matches!(
                 path.kind,
                 hir::ExprKind::Path(hir::QPath::LangItem(hir::LangItem::RangeInclusiveNew, _))
@@ -70,7 +45,7 @@ pub fn range<'a>(expr: &'a hir::Expr<'_>) -> Option<Range<'a>> {
                 limits: ast::RangeLimits::Closed,
             })
         },
-        hir::ExprKind::Struct(ref path, ref fields, None) => match path {
+        hir::ExprKind::Struct(path, fields, None) => match path {
             hir::QPath::LangItem(hir::LangItem::RangeFull, _) => Some(Range {
                 start: None,
                 end: None,
@@ -112,7 +87,7 @@ pub fn is_from_for_desugar(local: &hir::Local<'_>) -> bool {
     // }
     // ```
     if_chain! {
-        if let Some(ref expr) = local.init;
+        if let Some(expr) = local.init;
         if let hir::ExprKind::Match(_, _, hir::MatchSource::ForLoopDesugar) = expr.kind;
         then {
             return true;
@@ -140,14 +115,14 @@ pub fn for_loop<'tcx>(
     expr: &'tcx hir::Expr<'tcx>,
 ) -> Option<(&hir::Pat<'_>, &'tcx hir::Expr<'tcx>, &'tcx hir::Expr<'tcx>, Span)> {
     if_chain! {
-        if let hir::ExprKind::Match(ref iterexpr, ref arms, hir::MatchSource::ForLoopDesugar) = expr.kind;
-        if let hir::ExprKind::Call(_, ref iterargs) = iterexpr.kind;
+        if let hir::ExprKind::Match(iterexpr, arms, hir::MatchSource::ForLoopDesugar) = expr.kind;
+        if let hir::ExprKind::Call(_, iterargs) = iterexpr.kind;
         if iterargs.len() == 1 && arms.len() == 1 && arms[0].guard.is_none();
-        if let hir::ExprKind::Loop(ref block, ..) = arms[0].body.kind;
+        if let hir::ExprKind::Loop(block, ..) = arms[0].body.kind;
         if block.expr.is_none();
         if let [ _, _, ref let_stmt, ref body ] = *block.stmts;
-        if let hir::StmtKind::Local(ref local) = let_stmt.kind;
-        if let hir::StmtKind::Expr(ref expr) = body.kind;
+        if let hir::StmtKind::Local(local) = let_stmt.kind;
+        if let hir::StmtKind::Expr(expr) = body.kind;
         then {
             return Some((&*local.pat, &iterargs[0], expr, arms[0].span));
         }
@@ -182,7 +157,7 @@ pub enum VecArgs<'a> {
 /// from `vec!`.
 pub fn vec_macro<'e>(cx: &LateContext<'_>, expr: &'e hir::Expr<'_>) -> Option<VecArgs<'e>> {
     if_chain! {
-        if let hir::ExprKind::Call(ref fun, ref args) = expr.kind;
+        if let hir::ExprKind::Call(fun, args) = expr.kind;
         if let hir::ExprKind::Path(ref qpath) = fun.kind;
         if is_expn_of(fun.span, "vec").is_some();
         if let Some(fun_def_id) = cx.qpath_res(qpath, fun.hir_id).opt_def_id();
@@ -194,8 +169,8 @@ pub fn vec_macro<'e>(cx: &LateContext<'_>, expr: &'e hir::Expr<'_>) -> Option<Ve
             else if match_def_path(cx, fun_def_id, &paths::SLICE_INTO_VEC) && args.len() == 1 {
                 // `vec![a, b, c]` case
                 if_chain! {
-                    if let hir::ExprKind::Box(ref boxed) = args[0].kind;
-                    if let hir::ExprKind::Array(ref args) = boxed.kind;
+                    if let hir::ExprKind::Box(boxed) = args[0].kind;
+                    if let hir::ExprKind::Array(args) = boxed.kind;
                     then {
                         return Some(VecArgs::Vec(&*args));
                     }
@@ -227,7 +202,7 @@ pub fn extract_assert_macro_args<'tcx>(e: &'tcx Expr<'tcx>) -> Option<Vec<&'tcx 
     /// compared
     fn ast_matchblock(matchblock_expr: &'tcx Expr<'tcx>) -> Option<Vec<&Expr<'_>>> {
         if_chain! {
-            if let ExprKind::Match(ref headerexpr, _, _) = &matchblock_expr.kind;
+            if let ExprKind::Match(headerexpr, _, _) = &matchblock_expr.kind;
             if let ExprKind::Tup([lhs, rhs]) = &headerexpr.kind;
             if let ExprKind::AddrOf(BorrowKind::Ref, _, lhs) = lhs.kind;
             if let ExprKind::AddrOf(BorrowKind::Ref, _, rhs) = rhs.kind;
@@ -238,12 +213,12 @@ pub fn extract_assert_macro_args<'tcx>(e: &'tcx Expr<'tcx>) -> Option<Vec<&'tcx 
         None
     }
 
-    if let ExprKind::Block(ref block, _) = e.kind {
+    if let ExprKind::Block(block, _) = e.kind {
         if block.stmts.len() == 1 {
-            if let StmtKind::Semi(ref matchexpr) = block.stmts.get(0)?.kind {
+            if let StmtKind::Semi(matchexpr) = block.stmts.get(0)?.kind {
                 // macros with unique arg: `{debug_}assert!` (e.g., `debug_assert!(some_condition)`)
                 if_chain! {
-                    if let ExprKind::If(ref clause, _, _)  = matchexpr.kind;
+                    if let ExprKind::If(clause, _, _)  = matchexpr.kind;
                     if let ExprKind::Unary(UnOp::Not, condition) = clause.kind;
                     then {
                         return Some(vec![condition]);
@@ -252,8 +227,8 @@ pub fn extract_assert_macro_args<'tcx>(e: &'tcx Expr<'tcx>) -> Option<Vec<&'tcx 
 
                 // debug macros with two args: `debug_assert_{ne, eq}` (e.g., `assert_ne!(a, b)`)
                 if_chain! {
-                    if let ExprKind::Block(ref matchblock,_) = matchexpr.kind;
-                    if let Some(ref matchblock_expr) = matchblock.expr;
+                    if let ExprKind::Block(matchblock,_) = matchexpr.kind;
+                    if let Some(matchblock_expr) = matchblock.expr;
                     then {
                         return ast_matchblock(matchblock_expr);
                     }
@@ -261,8 +236,112 @@ pub fn extract_assert_macro_args<'tcx>(e: &'tcx Expr<'tcx>) -> Option<Vec<&'tcx 
             }
         } else if let Some(matchblock_expr) = block.expr {
             // macros with two args: `assert_{ne, eq}` (e.g., `assert_ne!(a, b)`)
-            return ast_matchblock(&matchblock_expr);
+            return ast_matchblock(matchblock_expr);
         }
     }
     None
+}
+
+/// A parsed `format!` expansion
+pub struct FormatExpn<'tcx> {
+    /// Span of `format!(..)`
+    pub call_site: Span,
+    /// Inner `format_args!` expansion
+    pub format_args: FormatArgsExpn<'tcx>,
+}
+
+impl FormatExpn<'tcx> {
+    /// Parses an expanded `format!` invocation
+    pub fn parse(expr: &'tcx Expr<'tcx>) -> Option<Self> {
+        if_chain! {
+            if let ExprKind::Block(block, _) = expr.kind;
+            if let [stmt] = block.stmts;
+            if let StmtKind::Local(local) = stmt.kind;
+            if let Some(init) = local.init;
+            if let ExprKind::Call(_, [format_args]) = init.kind;
+            let expn_data = expr.span.ctxt().outer_expn_data();
+            if let ExpnKind::Macro(_, sym::format) = expn_data.kind;
+            if let Some(format_args) = FormatArgsExpn::parse(format_args);
+            then {
+                Some(FormatExpn {
+                    call_site: expn_data.call_site,
+                    format_args,
+                })
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// A parsed `format_args!` expansion
+pub struct FormatArgsExpn<'tcx> {
+    /// Span of the first argument, the format string
+    pub format_string_span: Span,
+    /// Values passed after the format string
+    pub value_args: Vec<&'tcx Expr<'tcx>>,
+
+    /// String literal expressions which represent the format string split by "{}"
+    pub format_string_parts: &'tcx [Expr<'tcx>],
+    /// Symbols corresponding to [`format_string_parts`]
+    pub format_string_symbols: Vec<Symbol>,
+    /// Expressions like `ArgumentV1::new(arg0, Debug::fmt)`
+    pub args: &'tcx [Expr<'tcx>],
+    /// The final argument passed to `Arguments::new_v1_formatted`, if applicable
+    pub fmt_expr: Option<&'tcx Expr<'tcx>>,
+}
+
+impl FormatArgsExpn<'tcx> {
+    /// Parses an expanded `format_args!` or `format_args_nl!` invocation
+    pub fn parse(expr: &'tcx Expr<'tcx>) -> Option<Self> {
+        if_chain! {
+            if let ExpnKind::Macro(_, name) = expr.span.ctxt().outer_expn_data().kind;
+            let name = name.as_str();
+            if name.ends_with("format_args") || name.ends_with("format_args_nl");
+            if let ExprKind::Call(_, args) = expr.kind;
+            if let Some((strs_ref, args, fmt_expr)) = match args {
+                // Arguments::new_v1
+                [strs_ref, args] => Some((strs_ref, args, None)),
+                // Arguments::new_v1_formatted
+                [strs_ref, args, fmt_expr] => Some((strs_ref, args, Some(fmt_expr))),
+                _ => None,
+            };
+            if let ExprKind::AddrOf(BorrowKind::Ref, _, strs_arr) = strs_ref.kind;
+            if let ExprKind::Array(format_string_parts) = strs_arr.kind;
+            if let Some(format_string_symbols) = format_string_parts
+                .iter()
+                .map(|e| {
+                    if let ExprKind::Lit(lit) = &e.kind {
+                        if let LitKind::Str(symbol, _style) = lit.node {
+                            return Some(symbol);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            if let ExprKind::AddrOf(BorrowKind::Ref, _, args) = args.kind;
+            if let ExprKind::Match(args, [arm], _) = args.kind;
+            if let ExprKind::Tup(value_args) = args.kind;
+            if let Some(value_args) = value_args
+                .iter()
+                .map(|e| match e.kind {
+                    ExprKind::AddrOf(_, _, e) => Some(e),
+                    _ => None,
+                })
+                .collect();
+            if let ExprKind::Array(args) = arm.body.kind;
+            then {
+                Some(FormatArgsExpn {
+                    format_string_span: strs_ref.span,
+                    value_args,
+                    format_string_parts,
+                    format_string_symbols,
+                    args,
+                    fmt_expr,
+                })
+            } else {
+                None
+            }
+        }
+    }
 }

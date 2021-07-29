@@ -23,9 +23,6 @@ pub(crate) struct QueryVtable<CTX: QueryContext, K, V> {
     pub dep_kind: CTX::DepKind,
     pub eval_always: bool,
 
-    // Don't use this method to compute query results, instead use the methods on TyCtxt
-    pub compute: fn(CTX, K) -> V,
-
     pub hash_result: fn(&mut CTX::StableHashingContext, &V) -> Option<Fingerprint>,
     pub handle_cycle_error: fn(CTX, DiagnosticBuilder<'_>) -> V,
     pub cache_on_disk: fn(CTX, &K, Option<&V>) -> bool,
@@ -40,20 +37,12 @@ impl<CTX: QueryContext, K, V> QueryVtable<CTX, K, V> {
         DepNode::construct(tcx, self.dep_kind, key)
     }
 
-    pub(crate) fn compute(&self, tcx: CTX, key: K) -> V {
-        (self.compute)(tcx, key)
-    }
-
     pub(crate) fn hash_result(
         &self,
         hcx: &mut CTX::StableHashingContext,
         value: &V,
     ) -> Option<Fingerprint> {
         (self.hash_result)(hcx, value)
-    }
-
-    pub(crate) fn handle_cycle_error(&self, tcx: CTX, diag: DiagnosticBuilder<'_>) -> V {
-        (self.handle_cycle_error)(tcx, diag)
     }
 
     pub(crate) fn cache_on_disk(&self, tcx: CTX, key: &K, value: Option<&V>) -> bool {
@@ -83,7 +72,7 @@ pub trait QueryAccessors<CTX: QueryContext>: QueryConfig {
         CTX: 'a;
 
     // Don't use this method to compute query results, instead use the methods on TyCtxt
-    fn compute(tcx: CTX, key: Self::Key) -> Self::Value;
+    fn compute_fn(tcx: CTX, key: &Self::Key) -> fn(CTX::DepContext, Self::Key) -> Self::Value;
 
     fn hash_result(
         hcx: &mut CTX::StableHashingContext,
@@ -119,7 +108,6 @@ where
         anon: Q::ANON,
         dep_kind: Q::DEP_KIND,
         eval_always: Q::EVAL_ALWAYS,
-        compute: Q::compute,
         hash_result: Q::hash_result,
         handle_cycle_error: Q::handle_cycle_error,
         cache_on_disk: Q::cache_on_disk,

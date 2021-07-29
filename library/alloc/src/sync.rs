@@ -12,23 +12,31 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::hint;
 use core::intrinsics::abort;
+#[cfg(not(no_global_oom_handling))]
 use core::iter;
 use core::marker::{PhantomData, Unpin, Unsize};
-use core::mem::{self, align_of_val_raw, size_of_val};
+#[cfg(not(no_global_oom_handling))]
+use core::mem::size_of_val;
+use core::mem::{self, align_of_val_raw};
 use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
+#[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
 use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 
-use crate::alloc::{
-    box_free, handle_alloc_error, AllocError, Allocator, Global, Layout, WriteCloneIntoRaw,
-};
+#[cfg(not(no_global_oom_handling))]
+use crate::alloc::handle_alloc_error;
+#[cfg(not(no_global_oom_handling))]
+use crate::alloc::{box_free, WriteCloneIntoRaw};
+use crate::alloc::{AllocError, Allocator, Global, Layout};
 use crate::borrow::{Cow, ToOwned};
 use crate::boxed::Box;
 use crate::rc::is_dangling;
+#[cfg(not(no_global_oom_handling))]
 use crate::string::String;
+#[cfg(not(no_global_oom_handling))]
 use crate::vec::Vec;
 
 #[cfg(test)]
@@ -324,6 +332,7 @@ impl<T> Arc<T> {
     ///
     /// let five = Arc::new(5);
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new(data: T) -> Arc<T> {
@@ -357,6 +366,7 @@ impl<T> Arc<T> {
     ///     me: me.clone(),
     /// });
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[inline]
     #[unstable(feature = "arc_new_cyclic", issue = "75861")]
     pub fn new_cyclic(data_fn: impl FnOnce(&Weak<T>) -> T) -> Arc<T> {
@@ -431,6 +441,7 @@ impl<T> Arc<T> {
     ///
     /// assert_eq!(*five, 5)
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "new_uninit", issue = "63291")]
     pub fn new_uninit() -> Arc<mem::MaybeUninit<T>> {
         unsafe {
@@ -462,6 +473,7 @@ impl<T> Arc<T> {
     /// ```
     ///
     /// [zeroed]: ../../std/mem/union.MaybeUninit.html#method.zeroed
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "new_uninit", issue = "63291")]
     pub fn new_zeroed() -> Arc<mem::MaybeUninit<T>> {
         unsafe {
@@ -475,9 +487,17 @@ impl<T> Arc<T> {
 
     /// Constructs a new `Pin<Arc<T>>`. If `T` does not implement `Unpin`, then
     /// `data` will be pinned in memory and unable to be moved.
+    #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "pin", since = "1.33.0")]
     pub fn pin(data: T) -> Pin<Arc<T>> {
         unsafe { Pin::new_unchecked(Arc::new(data)) }
+    }
+
+    /// Constructs a new `Pin<Arc<T>>`, return an error if allocation fails.
+    #[unstable(feature = "allocator_api", issue = "32838")]
+    #[inline]
+    pub fn try_pin(data: T) -> Result<Pin<Arc<T>>, AllocError> {
+        unsafe { Ok(Pin::new_unchecked(Arc::try_new(data)?)) }
     }
 
     /// Constructs a new `Arc<T>`, returning an error if allocation fails.
@@ -635,6 +655,7 @@ impl<T> Arc<[T]> {
     ///
     /// assert_eq!(*values, [1, 2, 3])
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "new_uninit", issue = "63291")]
     pub fn new_uninit_slice(len: usize) -> Arc<[mem::MaybeUninit<T>]> {
         unsafe { Arc::from_ptr(Arc::allocate_for_slice(len)) }
@@ -660,6 +681,7 @@ impl<T> Arc<[T]> {
     /// ```
     ///
     /// [zeroed]: ../../std/mem/union.MaybeUninit.html#method.zeroed
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "new_uninit", issue = "63291")]
     pub fn new_zeroed_slice(len: usize) -> Arc<[mem::MaybeUninit<T>]> {
         unsafe {
@@ -1072,6 +1094,7 @@ impl<T: ?Sized> Arc<T> {
     ///
     /// The function `mem_to_arcinner` is called with the data pointer
     /// and must return back a (potentially fat)-pointer for the `ArcInner<T>`.
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn allocate_for_layout(
         value_layout: Layout,
         allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
@@ -1120,6 +1143,7 @@ impl<T: ?Sized> Arc<T> {
     }
 
     /// Allocates an `ArcInner<T>` with sufficient space for an unsized inner value.
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn allocate_for_ptr(ptr: *const T) -> *mut ArcInner<T> {
         // Allocate for the `ArcInner<T>` using the given value.
         unsafe {
@@ -1131,6 +1155,7 @@ impl<T: ?Sized> Arc<T> {
         }
     }
 
+    #[cfg(not(no_global_oom_handling))]
     fn from_box(v: Box<T>) -> Arc<T> {
         unsafe {
             let (box_unique, alloc) = Box::into_unique(v);
@@ -1156,6 +1181,7 @@ impl<T: ?Sized> Arc<T> {
 
 impl<T> Arc<[T]> {
     /// Allocates an `ArcInner<[T]>` with the given length.
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn allocate_for_slice(len: usize) -> *mut ArcInner<[T]> {
         unsafe {
             Self::allocate_for_layout(
@@ -1169,6 +1195,7 @@ impl<T> Arc<[T]> {
     /// Copy elements from slice into newly allocated Arc<\[T\]>
     ///
     /// Unsafe because the caller must either take ownership or bind `T: Copy`.
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn copy_from_slice(v: &[T]) -> Arc<[T]> {
         unsafe {
             let ptr = Self::allocate_for_slice(v.len());
@@ -1182,6 +1209,7 @@ impl<T> Arc<[T]> {
     /// Constructs an `Arc<[T]>` from an iterator known to be of a certain size.
     ///
     /// Behavior is undefined should the size be wrong.
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn from_iter_exact(iter: impl iter::Iterator<Item = T>, len: usize) -> Arc<[T]> {
         // Panic guard while cloning T elements.
         // In the event of a panic, elements that have been written
@@ -1229,10 +1257,12 @@ impl<T> Arc<[T]> {
 }
 
 /// Specialization trait used for `From<&[T]>`.
+#[cfg(not(no_global_oom_handling))]
 trait ArcFromSlice<T> {
     fn from_slice(slice: &[T]) -> Self;
 }
 
+#[cfg(not(no_global_oom_handling))]
 impl<T: Clone> ArcFromSlice<T> for Arc<[T]> {
     #[inline]
     default fn from_slice(v: &[T]) -> Self {
@@ -1240,6 +1270,7 @@ impl<T: Clone> ArcFromSlice<T> for Arc<[T]> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 impl<T: Copy> ArcFromSlice<T> for Arc<[T]> {
     #[inline]
     fn from_slice(v: &[T]) -> Self {
@@ -1341,6 +1372,7 @@ impl<T: Clone> Arc<T> {
     /// assert_eq!(*data, 8);
     /// assert_eq!(*other_data, 12);
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[inline]
     #[stable(feature = "arc_unique", since = "1.4.0")]
     pub fn make_mut(this: &mut Self) -> &mut T {
@@ -1993,7 +2025,7 @@ impl<T> Default for Weak<T> {
 }
 
 #[stable(feature = "arc_weak", since = "1.4.0")]
-impl<T: ?Sized> Drop for Weak<T> {
+unsafe impl<#[may_dangle] T: ?Sized> Drop for Weak<T> {
     /// Drops the `Weak` pointer.
     ///
     /// # Examples
@@ -2252,6 +2284,7 @@ impl<T: ?Sized> fmt::Pointer for Arc<T> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Default> Default for Arc<T> {
     /// Creates a new `Arc<T>`, with the `Default` value for `T`.
@@ -2276,13 +2309,29 @@ impl<T: ?Sized + Hash> Hash for Arc<T> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "from_for_ptrs", since = "1.6.0")]
 impl<T> From<T> for Arc<T> {
+    /// Converts a `T` into an `Arc<T>`
+    ///
+    /// The conversion moves the value into a
+    /// newly allocated `Arc`. It is equivalent to
+    /// calling `Arc::new(t)`.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use std::sync::Arc;
+    /// let x = 5;
+    /// let arc = Arc::new(5);
+    ///
+    /// assert_eq!(Arc::from(x), arc);
+    /// ```
     fn from(t: T) -> Self {
         Arc::new(t)
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
 impl<T: Clone> From<&[T]> for Arc<[T]> {
     /// Allocate a reference-counted slice and fill it by cloning `v`'s items.
@@ -2301,6 +2350,7 @@ impl<T: Clone> From<&[T]> for Arc<[T]> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
 impl From<&str> for Arc<str> {
     /// Allocate a reference-counted `str` and copy `v` into it.
@@ -2319,6 +2369,7 @@ impl From<&str> for Arc<str> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
 impl From<String> for Arc<str> {
     /// Allocate a reference-counted `str` and copy `v` into it.
@@ -2337,6 +2388,7 @@ impl From<String> for Arc<str> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
 impl<T: ?Sized> From<Box<T>> for Arc<T> {
     /// Move a boxed object to a new, reference-counted allocation.
@@ -2355,6 +2407,7 @@ impl<T: ?Sized> From<Box<T>> for Arc<T> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_slice", since = "1.21.0")]
 impl<T> From<Vec<T>> for Arc<[T]> {
     /// Allocate a reference-counted slice and move `v`'s items into it.
@@ -2386,6 +2439,18 @@ where
     B: ToOwned + ?Sized,
     Arc<B>: From<&'a B> + From<B::Owned>,
 {
+    /// Create an atomically reference-counted pointer from
+    /// a clone-on-write pointer by copying its content.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use std::sync::Arc;
+    /// # use std::borrow::Cow;
+    /// let cow: Cow<str> = Cow::Borrowed("eggplant");
+    /// let shared: Arc<str> = Arc::from(cow);
+    /// assert_eq!("eggplant", &shared[..]);
+    /// ```
     #[inline]
     fn from(cow: Cow<'a, B>) -> Arc<B> {
         match cow {
@@ -2408,6 +2473,7 @@ impl<T, const N: usize> TryFrom<Arc<[T]>> for Arc<[T; N]> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "shared_from_iter", since = "1.37.0")]
 impl<T> iter::FromIterator<T> for Arc<[T]> {
     /// Takes each element in the `Iterator` and collects it into an `Arc<[T]>`.
@@ -2458,12 +2524,14 @@ trait ToArcSlice<T>: Iterator<Item = T> + Sized {
     fn to_arc_slice(self) -> Arc<[T]>;
 }
 
+#[cfg(not(no_global_oom_handling))]
 impl<T, I: Iterator<Item = T>> ToArcSlice<T> for I {
     default fn to_arc_slice(self) -> Arc<[T]> {
         self.collect::<Vec<T>>().into()
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
 impl<T, I: iter::TrustedLen<Item = T>> ToArcSlice<T> for I {
     fn to_arc_slice(self) -> Arc<[T]> {
         // This is the case for a `TrustedLen` iterator.

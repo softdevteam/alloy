@@ -1,9 +1,7 @@
 // FIXME(jschievink): this is not rejected correctly (only when the non-const impl is actually used)
 // ignore-test
 
-#![feature(const_fn)]
 #![feature(const_trait_impl)]
-#![allow(incomplete_features)]
 
 struct S;
 

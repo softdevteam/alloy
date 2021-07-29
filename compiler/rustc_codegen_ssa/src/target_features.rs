@@ -17,6 +17,8 @@ const ARM_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
     ("neon", Some(sym::arm_target_feature)),
     ("crc", Some(sym::arm_target_feature)),
     ("crypto", Some(sym::arm_target_feature)),
+    ("aes", Some(sym::arm_target_feature)),
+    ("sha2", Some(sym::arm_target_feature)),
     ("v5te", Some(sym::arm_target_feature)),
     ("v6", Some(sym::arm_target_feature)),
     ("v6k", Some(sym::arm_target_feature)),
@@ -33,22 +35,95 @@ const ARM_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
     ("thumb-mode", Some(sym::arm_target_feature)),
 ];
 
+// Commented features are not available in LLVM 10.0, or have since been renamed
 const AARCH64_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
-    ("fp", Some(sym::aarch64_target_feature)),
+    // FEAT_AdvSimd
     ("neon", Some(sym::aarch64_target_feature)),
-    ("sve", Some(sym::aarch64_target_feature)),
-    ("crc", Some(sym::aarch64_target_feature)),
-    ("crypto", Some(sym::aarch64_target_feature)),
-    ("ras", Some(sym::aarch64_target_feature)),
-    ("lse", Some(sym::aarch64_target_feature)),
-    ("rdm", Some(sym::aarch64_target_feature)),
+    // FEAT_FP
+    ("fp", Some(sym::aarch64_target_feature)),
+    // FEAT_FP16
     ("fp16", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE
+    ("sve", Some(sym::aarch64_target_feature)),
+    // FEAT_CRC
+    ("crc", Some(sym::aarch64_target_feature)),
+    // Cryptographic extension
+    ("crypto", Some(sym::aarch64_target_feature)),
+    // FEAT_RAS
+    ("ras", Some(sym::aarch64_target_feature)),
+    // FEAT_LSE
+    ("lse", Some(sym::aarch64_target_feature)),
+    // FEAT_RDM
+    ("rdm", Some(sym::aarch64_target_feature)),
+    // FEAT_RCPC
     ("rcpc", Some(sym::aarch64_target_feature)),
+    // FEAT_RCPC2
+    ("rcpc2", Some(sym::aarch64_target_feature)),
+    // FEAT_DotProd
     ("dotprod", Some(sym::aarch64_target_feature)),
+    // FEAT_TME
     ("tme", Some(sym::aarch64_target_feature)),
+    // FEAT_FHM
+    ("fhm", Some(sym::aarch64_target_feature)),
+    // FEAT_DIT
+    ("dit", Some(sym::aarch64_target_feature)),
+    // FEAT_FLAGM
+    // ("flagm", Some(sym::aarch64_target_feature)),
+    // FEAT_SSBS
+    ("ssbs", Some(sym::aarch64_target_feature)),
+    // FEAT_SB
+    ("sb", Some(sym::aarch64_target_feature)),
+    // FEAT_PAUTH
+    // ("pauth", Some(sym::aarch64_target_feature)),
+    // FEAT_DPB
+    ("dpb", Some(sym::aarch64_target_feature)),
+    // FEAT_DPB2
+    ("dpb2", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE2
+    ("sve2", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE2_AES
+    ("sve2-aes", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE2_SM4
+    ("sve2-sm4", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE2_SHA3
+    ("sve2-sha3", Some(sym::aarch64_target_feature)),
+    // FEAT_SVE2_BitPerm
+    ("sve2-bitperm", Some(sym::aarch64_target_feature)),
+    // FEAT_FRINTTS
+    ("frintts", Some(sym::aarch64_target_feature)),
+    // FEAT_I8MM
+    // ("i8mm", Some(sym::aarch64_target_feature)),
+    // FEAT_F32MM
+    // ("f32mm", Some(sym::aarch64_target_feature)),
+    // FEAT_F64MM
+    // ("f64mm", Some(sym::aarch64_target_feature)),
+    // FEAT_BF16
+    // ("bf16", Some(sym::aarch64_target_feature)),
+    // FEAT_RAND
+    ("rand", Some(sym::aarch64_target_feature)),
+    // FEAT_BTI
+    ("bti", Some(sym::aarch64_target_feature)),
+    // FEAT_MTE
+    ("mte", Some(sym::aarch64_target_feature)),
+    // FEAT_JSCVT
+    ("jsconv", Some(sym::aarch64_target_feature)),
+    // FEAT_FCMA
+    ("fcma", Some(sym::aarch64_target_feature)),
+    // FEAT_AES
+    ("aes", Some(sym::aarch64_target_feature)),
+    // FEAT_SHA1 & FEAT_SHA256
+    ("sha2", Some(sym::aarch64_target_feature)),
+    // FEAT_SHA512 & FEAT_SHA3
+    ("sha3", Some(sym::aarch64_target_feature)),
+    // FEAT_SM3 & FEAT_SM4
+    ("sm4", Some(sym::aarch64_target_feature)),
     ("v8.1a", Some(sym::aarch64_target_feature)),
     ("v8.2a", Some(sym::aarch64_target_feature)),
     ("v8.3a", Some(sym::aarch64_target_feature)),
+    ("v8.4a", Some(sym::aarch64_target_feature)),
+    ("v8.5a", Some(sym::aarch64_target_feature)),
+    // ("v8.6a", Some(sym::aarch64_target_feature)),
+    // ("v8.7a", Some(sym::aarch64_target_feature)),
 ];
 
 const X86_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
@@ -130,10 +205,12 @@ const RISCV_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
 ];
 
 const WASM_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
-    ("simd128", Some(sym::wasm_target_feature)),
+    ("simd128", None),
     ("atomics", Some(sym::wasm_target_feature)),
     ("nontrapping-fptoint", Some(sym::wasm_target_feature)),
 ];
+
+const BPF_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[("alu32", Some(sym::bpf_target_feature))];
 
 /// When rustdoc is running, provide a list of all known features so that all their respective
 /// primitives may be documented.
@@ -149,6 +226,7 @@ pub fn all_known_features() -> impl Iterator<Item = (&'static str, Option<Symbol
         .chain(MIPS_ALLOWED_FEATURES.iter())
         .chain(RISCV_ALLOWED_FEATURES.iter())
         .chain(WASM_ALLOWED_FEATURES.iter())
+        .chain(BPF_ALLOWED_FEATURES.iter())
         .cloned()
 }
 
@@ -162,6 +240,7 @@ pub fn supported_target_features(sess: &Session) -> &'static [(&'static str, Opt
         "powerpc" | "powerpc64" => POWERPC_ALLOWED_FEATURES,
         "riscv32" | "riscv64" => RISCV_ALLOWED_FEATURES,
         "wasm32" | "wasm64" => WASM_ALLOWED_FEATURES,
+        "bpf" => BPF_ALLOWED_FEATURES,
         _ => &[],
     }
 }

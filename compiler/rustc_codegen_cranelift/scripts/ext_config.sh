@@ -1,11 +1,11 @@
 # Note to people running shellcheck: this file should only be sourced, not executed directly.
 
-# Various env vars that should only be set for the build system but not for cargo.sh
+# Various env vars that should only be set for the build system
 
 set -e
 
 export CG_CLIF_DISPLAY_CG_TIME=1
-export CG_CLIF_INCR_CACHE_DISABLED=1
+export CG_CLIF_DISABLE_INCR_CACHE=1
 
 export HOST_TRIPLE=$(rustc -vV | grep host | cut -d: -f2 | tr -d " ")
 export TARGET_TRIPLE=${TARGET_TRIPLE:-$HOST_TRIPLE}
@@ -24,4 +24,9 @@ if [[ "$HOST_TRIPLE" != "$TARGET_TRIPLE" ]]; then
    else
       echo "Unknown non-native platform"
    fi
+fi
+
+# FIXME fix `#[linkage = "extern_weak"]` without this
+if [[ "$(uname)" == 'Darwin' ]]; then
+   export RUSTFLAGS="$RUSTFLAGS -Clink-arg=-undefined -Clink-arg=dynamic_lookup"
 fi

@@ -28,6 +28,7 @@ use crate::traits::error_reporting::InferCtxtExt;
 use crate::traits::project::ProjectionCacheKeyExt;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::stack::ensure_sufficient_stack;
+use rustc_data_structures::sync::Lrc;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -48,7 +49,6 @@ use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::fmt::{self, Display};
 use std::iter;
-use std::rc::Rc;
 
 pub use rustc_middle::traits::select::*;
 
@@ -216,7 +216,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     pub fn new(infcx: &'cx InferCtxt<'cx, 'tcx>) -> SelectionContext<'cx, 'tcx> {
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -227,7 +227,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     pub fn intercrate(infcx: &'cx InferCtxt<'cx, 'tcx>) -> SelectionContext<'cx, 'tcx> {
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: true,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -242,7 +242,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         debug!(?allow_negative_impls, "with_negative");
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls,
@@ -257,7 +257,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         debug!(?query_mode, "with_query_mode");
         SelectionContext {
             infcx,
-            freshener: infcx.freshener(),
+            freshener: infcx.freshener_keep_static(),
             intercrate: false,
             intercrate_ambiguity_causes: None,
             allow_negative_impls: false,
@@ -492,7 +492,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     None => Ok(EvaluatedToAmbig),
                 },
 
-                ty::PredicateKind::TypeOutlives(..) | ty::PredicateKind::RegionOutlives(..) => {
+                ty::PredicateKind::TypeOutlives(pred) => {
+                    if pred.0.is_global() {
+                        Ok(EvaluatedToOk)
+                    } else {
+                        Ok(EvaluatedToOkModuloRegions)
+                    }
+                }
+
+                ty::PredicateKind::RegionOutlives(..) => {
                     // We do not consider region relationships when evaluating trait matches.
                     Ok(EvaluatedToOkModuloRegions)
                 }
@@ -557,6 +565,23 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 ty::PredicateKind::ConstEquate(c1, c2) => {
                     debug!(?c1, ?c2, "evaluate_predicate_recursively: equating consts");
 
+                    if self.tcx().features().const_evaluatable_checked {
+                        // FIXME: we probably should only try to unify abstract constants
+                        // if the constants depend on generic parameters.
+                        //
+                        // Let's just see where this breaks :shrug:
+                        if let (ty::ConstKind::Unevaluated(a), ty::ConstKind::Unevaluated(b)) =
+                            (c1.val, c2.val)
+                        {
+                            if self
+                                .tcx()
+                                .try_unify_abstract_consts(((a.def, a.substs), (b.def, b.substs)))
+                            {
+                                return Ok(EvaluatedToOk);
+                            }
+                        }
+                    }
+
                     let evaluate = |c: &'tcx ty::Const<'tcx>| {
                         if let ty::ConstKind::Unevaluated(unevaluated) = c.val {
                             self.infcx
@@ -591,7 +616,12 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                             )
                         }
                         (Err(ErrorHandled::TooGeneric), _) | (_, Err(ErrorHandled::TooGeneric)) => {
-                            Ok(EvaluatedToAmbig)
+                            if c1.has_infer_types_or_consts() || c2.has_infer_types_or_consts() {
+                                Ok(EvaluatedToAmbig)
+                            } else {
+                                // Two different constants using generic parameters ~> error.
+                                Ok(EvaluatedToErr)
+                            }
                         }
                     }
                 }
@@ -636,8 +666,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         if let Some(result) = stack.cache().get_provisional(fresh_trait_ref) {
             debug!(?result, "PROVISIONAL CACHE HIT");
-            stack.update_reached_depth(stack.cache().current_reached_depth());
-            return Ok(result);
+            stack.update_reached_depth(result.reached_depth);
+            return Ok(result.result);
         }
 
         // Check if this is a match for something already on the
@@ -661,7 +691,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             debug!(?result, "CACHE MISS");
             self.insert_evaluation_cache(obligation.param_env, fresh_trait_ref, dep_node, result);
 
-            stack.cache().on_completion(stack.depth, |fresh_trait_ref, provisional_result| {
+            stack.cache().on_completion(stack.dfn, |fresh_trait_ref, provisional_result| {
                 self.insert_evaluation_cache(
                     obligation.param_env,
                     fresh_trait_ref,
@@ -963,7 +993,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         obligation: &Obligation<'tcx, T>,
         error_obligation: &Obligation<'tcx, V>,
     ) -> Result<(), OverflowError> {
-        if !self.infcx.tcx.sess.recursion_limit().value_within_limit(obligation.recursion_depth) {
+        if !self.infcx.tcx.recursion_limit().value_within_limit(obligation.recursion_depth) {
             match self.query_mode {
                 TraitQueryMode::Standard => {
                     self.infcx().report_overflow_error(error_obligation, true);
@@ -1044,8 +1074,6 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     }
 
     /// Returns `true` if the global caches can be used.
-    /// Do note that if the type itself is not in the
-    /// global tcx, the local caches will be used.
     fn can_use_global_caches(&self, param_env: ty::ParamEnv<'tcx>) -> bool {
         // If there are any inference variables in the `ParamEnv`, then we
         // always use a cache local to this particular scope. Otherwise, we
@@ -1361,7 +1389,17 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             ) => false,
 
             (ParamCandidate(other), ParamCandidate(victim)) => {
-                if other.value == victim.value && victim.constness == Constness::NotConst {
+                let value_same_except_bound_vars = other.value.skip_binder()
+                    == victim.value.skip_binder()
+                    && !other.value.skip_binder().has_escaping_bound_vars();
+                if value_same_except_bound_vars {
+                    // See issue #84398. In short, we can generate multiple ParamCandidates which are
+                    // the same except for unused bound vars. Just pick the one with the fewest bound vars
+                    // or the current one if tied (they should both evaluate to the same answer). This is
+                    // probably best characterized as a "hack", since we might prefer to just do our
+                    // best to *not* create essentially duplicate candidates in the first place.
+                    other.value.bound_vars().len() <= victim.value.bound_vars().len()
+                } else if other.value == victim.value && victim.constness == Constness::NotConst {
                     // Drop otherwise equivalent non-const candidates in favor of const candidates.
                     true
                 } else {
@@ -1827,12 +1865,12 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         }
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
     fn match_impl(
         &mut self,
         impl_def_id: DefId,
         obligation: &TraitObligation<'tcx>,
     ) -> Result<Normalized<'tcx, SubstsRef<'tcx>>, ()> {
-        debug!(?impl_def_id, ?obligation, "match_impl");
         let impl_trait_ref = self.tcx().impl_trait_ref(impl_def_id).unwrap();
 
         // Before we create the substitutions and everything, first
@@ -1850,6 +1888,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let impl_trait_ref = impl_trait_ref.subst(self.tcx(), impl_substs);
 
+        debug!(?impl_trait_ref);
+
         let Normalized { value: impl_trait_ref, obligations: mut nested_obligations } =
             ensure_sufficient_stack(|| {
                 project::normalize_with_depth(
@@ -1863,9 +1903,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         debug!(?impl_trait_ref, ?placeholder_obligation_trait_ref);
 
+        let cause = ObligationCause::new(
+            obligation.cause.span,
+            obligation.cause.body_id,
+            ObligationCauseCode::MatchImpl(Lrc::new(obligation.cause.code.clone()), impl_def_id),
+        );
+
         let InferOk { obligations, .. } = self
             .infcx
-            .at(&obligation.cause, obligation.param_env)
+            .at(&cause, obligation.param_env)
             .eq(placeholder_obligation_trait_ref, impl_trait_ref)
             .map_err(|e| debug!("match_impl: failed eq_trait_refs due to `{}`", e))?;
         nested_obligations.extend(obligations);
@@ -1877,7 +1923,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             return Err(());
         }
 
-        debug!(?impl_substs, "match_impl: success");
+        debug!(?impl_substs, ?nested_obligations, "match_impl: success");
         Ok(Normalized { value: impl_substs, obligations: nested_obligations })
     }
 
@@ -2030,6 +2076,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     /// impl or trait. The obligations are substituted and fully
     /// normalized. This is used when confirming an impl or default
     /// impl.
+    #[tracing::instrument(level = "debug", skip(self, cause, param_env))]
     fn impl_or_trait_obligations(
         &mut self,
         cause: ObligationCause<'tcx>,
@@ -2038,7 +2085,6 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         def_id: DefId,           // of impl or trait
         substs: SubstsRef<'tcx>, // for impl or trait
     ) -> Vec<PredicateObligation<'tcx>> {
-        debug!(?def_id, "impl_or_trait_obligations");
         let tcx = self.tcx();
 
         // To allow for one-pass evaluation of the nested obligation,
@@ -2056,9 +2102,11 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         // `$1: Copy`, so we must ensure the obligations are emitted in
         // that order.
         let predicates = tcx.predicates_of(def_id);
+        debug!(?predicates);
         assert_eq!(predicates.parent, None);
         let mut obligations = Vec::with_capacity(predicates.predicates.len());
         for (predicate, _) in predicates.predicates {
+            debug!(?predicate);
             let predicate = normalize_with_depth_to(
                 self,
                 param_env,
@@ -2130,7 +2178,7 @@ impl<'tcx> TraitObligationExt<'tcx> for TraitObligation<'tcx> {
         // by using -Z verbose or just a CLI argument.
         let derived_cause = DerivedObligationCause {
             parent_trait_ref: obligation.predicate.to_poly_trait_ref(),
-            parent_code: Rc::new(obligation.cause.code.clone()),
+            parent_code: Lrc::new(obligation.cause.code.clone()),
         };
         let derived_code = variant(derived_cause);
         ObligationCause::new(obligation.cause.span, obligation.cause.body_id, derived_code)
@@ -2154,7 +2202,7 @@ impl<'o, 'tcx> TraitObligationStack<'o, 'tcx> {
     /// required accessing something from the stack at depth `reached_depth`.
     fn update_reached_depth(&self, reached_depth: usize) {
         assert!(
-            self.depth > reached_depth,
+            self.depth >= reached_depth,
             "invoked `update_reached_depth` with something under this stack: \
              self.depth={} reached_depth={}",
             self.depth,
@@ -2227,23 +2275,6 @@ struct ProvisionalEvaluationCache<'tcx> {
     /// next "depth first number" to issue -- just a counter
     dfn: Cell<usize>,
 
-    /// Stores the "coldest" depth (bottom of stack) reached by any of
-    /// the evaluation entries. The idea here is that all things in the provisional
-    /// cache are always dependent on *something* that is colder in the stack:
-    /// therefore, if we add a new entry that is dependent on something *colder still*,
-    /// we have to modify the depth for all entries at once.
-    ///
-    /// Example:
-    ///
-    /// Imagine we have a stack `A B C D E` (with `E` being the top of
-    /// the stack).  We cache something with depth 2, which means that
-    /// it was dependent on C.  Then we pop E but go on and process a
-    /// new node F: A B C D F.  Now F adds something to the cache with
-    /// depth 1, meaning it is dependent on B.  Our original cache
-    /// entry is also dependent on B, because there is a path from E
-    /// to C and then from C to F and from F to B.
-    reached_depth: Cell<usize>,
-
     /// Map from cache key to the provisionally evaluated thing.
     /// The cache entries contain the result but also the DFN in which they
     /// were added. The DFN is used to clear out values on failure.
@@ -2267,12 +2298,13 @@ struct ProvisionalEvaluationCache<'tcx> {
 #[derive(Copy, Clone, Debug)]
 struct ProvisionalEvaluation {
     from_dfn: usize,
+    reached_depth: usize,
     result: EvaluationResult,
 }
 
 impl<'tcx> Default for ProvisionalEvaluationCache<'tcx> {
     fn default() -> Self {
-        Self { dfn: Cell::new(0), reached_depth: Cell::new(usize::MAX), map: Default::default() }
+        Self { dfn: Cell::new(0), map: Default::default() }
     }
 }
 
@@ -2287,22 +2319,17 @@ impl<'tcx> ProvisionalEvaluationCache<'tcx> {
     /// Check the provisional cache for any result for
     /// `fresh_trait_ref`. If there is a hit, then you must consider
     /// it an access to the stack slots at depth
-    /// `self.current_reached_depth()` and above.
-    fn get_provisional(&self, fresh_trait_ref: ty::PolyTraitRef<'tcx>) -> Option<EvaluationResult> {
+    /// `reached_depth` (from the returned value).
+    fn get_provisional(
+        &self,
+        fresh_trait_ref: ty::PolyTraitRef<'tcx>,
+    ) -> Option<ProvisionalEvaluation> {
         debug!(
             ?fresh_trait_ref,
-            reached_depth = ?self.reached_depth.get(),
             "get_provisional = {:#?}",
             self.map.borrow().get(&fresh_trait_ref),
         );
-        Some(self.map.borrow().get(&fresh_trait_ref)?.result)
-    }
-
-    /// Current value of the `reached_depth` counter -- all the
-    /// provisional cache entries are dependent on the item at this
-    /// depth.
-    fn current_reached_depth(&self) -> usize {
-        self.reached_depth.get()
+        Some(self.map.borrow().get(&fresh_trait_ref)?.clone())
     }
 
     /// Insert a provisional result into the cache. The result came
@@ -2316,13 +2343,31 @@ impl<'tcx> ProvisionalEvaluationCache<'tcx> {
         fresh_trait_ref: ty::PolyTraitRef<'tcx>,
         result: EvaluationResult,
     ) {
-        debug!(?from_dfn, ?reached_depth, ?fresh_trait_ref, ?result, "insert_provisional");
-        let r_d = self.reached_depth.get();
-        self.reached_depth.set(r_d.min(reached_depth));
+        debug!(?from_dfn, ?fresh_trait_ref, ?result, "insert_provisional");
 
-        debug!(reached_depth = self.reached_depth.get());
+        let mut map = self.map.borrow_mut();
 
-        self.map.borrow_mut().insert(fresh_trait_ref, ProvisionalEvaluation { from_dfn, result });
+        // Subtle: when we complete working on the DFN `from_dfn`, anything
+        // that remains in the provisional cache must be dependent on some older
+        // stack entry than `from_dfn`. We have to update their depth with our transitive
+        // depth in that case or else it would be referring to some popped note.
+        //
+        // Example:
+        // A (reached depth 0)
+        //   ...
+        //      B // depth 1 -- reached depth = 0
+        //          C // depth 2 -- reached depth = 1 (should be 0)
+        //              B
+        //          A // depth 0
+        //   D (reached depth 1)
+        //      C (cache -- reached depth = 2)
+        for (_k, v) in &mut *map {
+            if v.from_dfn >= from_dfn {
+                v.reached_depth = reached_depth.min(v.reached_depth);
+            }
+        }
+
+        map.insert(fresh_trait_ref, ProvisionalEvaluation { from_dfn, reached_depth, result });
     }
 
     /// Invoked when the node with dfn `dfn` does not get a successful
@@ -2350,25 +2395,40 @@ impl<'tcx> ProvisionalEvaluationCache<'tcx> {
     /// was a failure, then `on_failure` should have been invoked
     /// already). The callback `op` will be invoked for each
     /// provisional entry that we can now confirm.
+    ///
+    /// Note that we may still have provisional cache items remaining
+    /// in the cache when this is done. For example, if there is a
+    /// cycle:
+    ///
+    /// * A depends on...
+    ///     * B depends on A
+    ///     * C depends on...
+    ///         * D depends on C
+    ///     * ...
+    ///
+    /// Then as we complete the C node we will have a provisional cache
+    /// with results for A, B, C, and D. This method would clear out
+    /// the C and D results, but leave A and B provisional.
+    ///
+    /// This is determined based on the DFN: we remove any provisional
+    /// results created since `dfn` started (e.g., in our example, dfn
+    /// would be 2, representing the C node, and hence we would
+    /// remove the result for D, which has DFN 3, but not the results for
+    /// A and B, which have DFNs 0 and 1 respectively).
     fn on_completion(
         &self,
-        depth: usize,
+        dfn: usize,
         mut op: impl FnMut(ty::PolyTraitRef<'tcx>, EvaluationResult),
     ) {
-        debug!(?depth, reached_depth = ?self.reached_depth.get(), "on_completion");
+        debug!(?dfn, "on_completion");
 
-        if self.reached_depth.get() < depth {
-            debug!("on_completion: did not yet reach depth to complete");
-            return;
-        }
-
-        for (fresh_trait_ref, eval) in self.map.borrow_mut().drain() {
+        for (fresh_trait_ref, eval) in
+            self.map.borrow_mut().drain_filter(|_k, eval| eval.from_dfn >= dfn)
+        {
             debug!(?fresh_trait_ref, ?eval, "on_completion");
 
             op(fresh_trait_ref, eval.result);
         }
-
-        self.reached_depth.set(usize::MAX);
     }
 }
 

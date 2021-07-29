@@ -23,7 +23,7 @@ impl Foo {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="hir_owner,hir_owner_nodes,associated_item_def_ids")]
+#[rustc_clean(cfg="cfail2", except="hir_owner,associated_item_def_ids")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
     #[rustc_clean(cfg="cfail3")]
@@ -85,7 +85,7 @@ impl Foo {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="hir_owner,hir_owner_nodes")]
+#[rustc_clean(cfg="cfail2", except="hir_owner")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
     #[rustc_clean(cfg="cfail2", except="associated_item,hir_owner,hir_owner_nodes")]
@@ -100,10 +100,13 @@ impl Foo {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="hir_owner,hir_owner_nodes")]
+#[rustc_clean(cfg="cfail2", except="hir_owner")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_dirty(cfg="cfail2", except="type_of,predicates_of,promoted_mir")]
+    #[rustc_clean(
+        cfg="cfail2",
+        except="hir_owner,hir_owner_nodes,fn_sig,generics_of,typeck,associated_item,optimized_mir",
+    )]
     #[rustc_clean(cfg="cfail3")]
     pub fn method_selfness(&self) { }
 }
@@ -135,7 +138,7 @@ impl Foo {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="hir_owner,hir_owner_nodes,associated_item_def_ids")]
+#[rustc_clean(cfg="cfail2", except="hir_owner,associated_item_def_ids")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
     #[rustc_clean(cfg="cfail2")]
@@ -468,7 +471,7 @@ impl Bar<u32> {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="hir_owner,hir_owner_nodes")]
+#[rustc_clean(cfg="cfail2", except="hir_owner")]
 #[rustc_clean(cfg="cfail3")]
 impl Bar<u64> {
     #[rustc_clean(cfg="cfail2", except="fn_sig,optimized_mir,typeck")]

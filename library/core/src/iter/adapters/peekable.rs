@@ -1,5 +1,5 @@
-use crate::iter::{adapters::SourceIter, FusedIterator, InPlaceIterable, TrustedLen};
-use crate::ops::Try;
+use crate::iter::{adapters::SourceIter, FusedIterator, TrustedLen};
+use crate::ops::{ControlFlow, Try};
 
 /// An iterator with a `peek()` that returns an optional reference to the next
 /// element.
@@ -91,7 +91,7 @@ impl<I: Iterator> Iterator for Peekable<I> {
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         let acc = match self.peeked.take() {
             Some(None) => return try { init },
@@ -134,15 +134,15 @@ where
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         match self.peeked.take() {
             Some(None) => try { init },
-            Some(Some(v)) => match self.iter.try_rfold(init, &mut f).into_result() {
-                Ok(acc) => f(acc, v),
-                Err(e) => {
+            Some(Some(v)) => match self.iter.try_rfold(init, &mut f).branch() {
+                ControlFlow::Continue(acc) => f(acc, v),
+                ControlFlow::Break(r) => {
                     self.peeked = Some(Some(v));
-                    Try::from_error(e)
+                    R::from_residual(r)
                 }
             },
             None => self.iter.try_rfold(init, f),
@@ -333,6 +333,3 @@ where
         unsafe { SourceIter::as_inner(&mut self.iter) }
     }
 }
-
-#[unstable(issue = "none", feature = "inplace_iteration")]
-unsafe impl<I: InPlaceIterable> InPlaceIterable for Peekable<I> {}

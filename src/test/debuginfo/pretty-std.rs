@@ -4,6 +4,7 @@
 // compile-flags:-g
 // min-gdb-version: 7.7
 // min-lldb-version: 310
+// min-cdb-version: 10.0.18317.1001
 
 // === GDB TESTS ===================================================================================
 
@@ -70,11 +71,15 @@
 // cdb-command: g
 
 // cdb-command: dx slice,d
-// cdb-check:slice,d [...]
-// NOTE: While slices have a .natvis entry that works in VS & VS Code, it fails in CDB 10.0.18362.1
+// cdb-check:slice,d          : { len=4 } [Type: slice$<i32>]
+// cdb-check:    [len]            : 4 [Type: [...]]
+// cdb-check:    [0]              : 0 [Type: int]
+// cdb-check:    [1]              : 1 [Type: int]
+// cdb-check:    [2]              : 2 [Type: int]
+// cdb-check:    [3]              : 3 [Type: int]
 
 // cdb-command: dx vec,d
-// cdb-check:vec,d [...] : { len=4 } [Type: [...]::Vec<u64, alloc::alloc::Global>]
+// cdb-check:vec,d [...] : { len=4 } [Type: [...]::Vec<u64,alloc::alloc::Global>]
 // cdb-check:    [len]            : 4 [Type: [...]]
 // cdb-check:    [capacity]       : [...] [Type: [...]]
 // cdb-check:    [0]              : 4 [Type: unsigned __int64]
@@ -83,8 +88,7 @@
 // cdb-check:    [3]              : 7 [Type: unsigned __int64]
 
 // cdb-command: dx str_slice
-// cdb-check:str_slice [...]
-// NOTE: While string slices have a .natvis entry that works in VS & VS Code, it fails in CDB
+// cdb-check:str_slice        : "IAMA string slice!" [Type: str]
 
 // cdb-command: dx string
 // cdb-check:string           : "IAMA string!" [Type: [...]::String]
@@ -107,19 +111,42 @@
 // cdb-check:    [11]             : 33 '!' [Type: char]
 
 // cdb-command: dx os_string
-// cdb-check:os_string        [Type: [...]::OsString]
-// NOTE: OsString doesn't have a .natvis entry yet.
+// cdb-check:os_string        : "IAMA OS string 😃" [Type: std::ffi::os_str::OsString]
+// cdb-check:    [<Raw View>]     [Type: std::ffi::os_str::OsString]
+// cdb-check:    [chars]          : "IAMA OS string 😃"
 
 // cdb-command: dx some
-// cdb-check:some             : Some(8) [Type: [...]::Option<i16>]
+// cdb-check:some             : Some [Type: enum$<core::option::Option<i16> >]
+// cdb-check:    [<Raw View>]     [Type: enum$<core::option::Option<i16> >]
+// cdb-check:    [variant]        : Some
+// cdb-check:    [+0x002] __0              : 8 [Type: short]
+
 // cdb-command: dx none
-// cdb-check:none             : None [Type: [...]::Option<i64>]
+// cdb-check:none             : None [Type: enum$<core::option::Option<i64> >]
+// cdb-check:    [<Raw View>]     [Type: enum$<core::option::Option<i64> >]
+// cdb-check:    [variant]        : None
+
 // cdb-command: dx some_string
-// cdb-check:some_string      : Some("IAMA optional string!") [[...]::Option<[...]::String>]
+// NOTE: cdb fails to interpret debug info of Option enums on i686.
+// cdb-check:some_string      [Type: enum$<core::option::Option<alloc::string::String>, 1, [...], Some>]
+
+// cdb-command: dx linkedlist
+// cdb-check:linkedlist       : { len=0x2 } [Type: alloc::collections::linked_list::LinkedList<i32>]
+// cdb-check:    [<Raw View>]     [Type: alloc::collections::linked_list::LinkedList<i32>]
+// cdb-check:    [0x0]            : 128 [Type: int]
+// cdb-check:    [0x1]            : 42 [Type: int]
+
+// cdb-command: dx vecdeque
+// cdb-check:vecdeque         : { len=0x2 } [Type: alloc::collections::vec_deque::VecDeque<i32>]
+// cdb-check:    [<Raw View>]     [Type: alloc::collections::vec_deque::VecDeque<i32>]
+// cdb-check:    [len]            : 0x2
+// cdb-check:    [capacity]       : 0x8 [Type: unsigned [...]]
+// cdb-check:    [0x0]            : 90 [Type: int]
+// cdb-check:    [0x1]            : 20 [Type: int]
 
 #![allow(unused_variables)]
+use std::collections::{LinkedList, VecDeque};
 use std::ffi::OsString;
-
 
 fn main() {
 
@@ -143,6 +170,16 @@ fn main() {
     let none: Option<i64> = None;
 
     let some_string = Some("IAMA optional string!".to_owned());
+
+    // LinkedList
+    let mut linkedlist = LinkedList::new();
+    linkedlist.push_back(42);
+    linkedlist.push_front(128);
+
+    // VecDeque
+    let mut vecdeque = VecDeque::new();
+    vecdeque.push_back(20);
+    vecdeque.push_front(90);
 
     zzz(); // #break
 }

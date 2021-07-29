@@ -1,7 +1,4 @@
-// check-pass
-
 #![feature(generic_associated_types)]
-  //~^ WARNING: the feature `generic_associated_types` is incomplete
 #![feature(associated_type_defaults)]
 
 trait Foo {
@@ -22,6 +19,7 @@ impl<T> Foo for Fooer<T> {
 }
 
 fn f(_arg : Box<dyn for<'a> Foo<A<'a> = &'a ()>>) {}
+//~^ the trait `Foo` cannot be made into an object
 
 
 fn main() {

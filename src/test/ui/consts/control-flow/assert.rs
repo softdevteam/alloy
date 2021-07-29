@@ -9,7 +9,6 @@ const _: () = assert!(true);
 
 const _: () = assert!(false);
 //[stock]~^ ERROR panicking in constants is unstable
-//[const_panic]~^^ ERROR any use of this value will cause an error
-//[const_panic]~| WARN this was previously accepted by the compiler but is being phased out
+//[const_panic]~^^ ERROR evaluation of constant value failed
 
 fn main() {}

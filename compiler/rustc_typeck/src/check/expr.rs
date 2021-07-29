@@ -466,7 +466,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         let tcx = self.tcx;
-        let (res, opt_ty, segs) = self.resolve_ty_and_res_ufcs(qpath, expr.hir_id, expr.span);
+        let (res, opt_ty, segs) =
+            self.resolve_ty_and_res_fully_qualified_call(qpath, expr.hir_id, expr.span);
         let ty = match res {
             Res::Err => {
                 self.set_tainted_by_errors();
@@ -674,7 +675,53 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         if self.ret_coercion.is_none() {
-            self.tcx.sess.emit_err(ReturnStmtOutsideOfFnBody { span: expr.span });
+            let mut err = ReturnStmtOutsideOfFnBody {
+                span: expr.span,
+                encl_body_span: None,
+                encl_fn_span: None,
+            };
+
+            let encl_item_id = self.tcx.hir().get_parent_item(expr.hir_id);
+
+            if let Some(hir::Node::Item(hir::Item {
+                kind: hir::ItemKind::Fn(..),
+                span: encl_fn_span,
+                ..
+            }))
+            | Some(hir::Node::TraitItem(hir::TraitItem {
+                kind: hir::TraitItemKind::Fn(_, hir::TraitFn::Provided(_)),
+                span: encl_fn_span,
+                ..
+            }))
+            | Some(hir::Node::ImplItem(hir::ImplItem {
+                kind: hir::ImplItemKind::Fn(..),
+                span: encl_fn_span,
+                ..
+            })) = self.tcx.hir().find(encl_item_id)
+            {
+                // We are inside a function body, so reporting "return statement
+                // outside of function body" needs an explanation.
+
+                let encl_body_owner_id = self.tcx.hir().enclosing_body_owner(expr.hir_id);
+
+                // If this didn't hold, we would not have to report an error in
+                // the first place.
+                assert_ne!(encl_item_id, encl_body_owner_id);
+
+                let encl_body_id = self.tcx.hir().body_owned_by(encl_body_owner_id);
+                let encl_body = self.tcx.hir().body(encl_body_id);
+
+                err.encl_body_span = Some(encl_body.value.span);
+                err.encl_fn_span = Some(*encl_fn_span);
+            }
+
+            self.tcx.sess.emit_err(err);
+
+            if let Some(e) = expr_opt {
+                // We still have to type-check `e` (issue #86188), but calling
+                // `check_return_expr` only works inside fn bodies.
+                self.check_expr(e);
+            }
         } else if let Some(e) = expr_opt {
             if self.ret_coercion_span.get().is_none() {
                 self.ret_coercion_span.set(Some(e.span));
@@ -940,7 +987,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // no need to check for bot/err -- callee does that
         let rcvr_t = self.structurally_resolved_type(args[0].span, rcvr_t);
 
-        let method = match self.lookup_method(rcvr_t, segment, span, expr, rcvr) {
+        let method = match self.lookup_method(rcvr_t, segment, span, expr, rcvr, args) {
             Ok(method) => {
                 // We could add a "consider `foo::<params>`" suggestion here, but I wasn't able to
                 // trigger this codepath causing `structuraly_resolved_type` to emit an error.
@@ -1230,7 +1277,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // struct-like enums (yet...), but it's definitely not
                 // a bug to have constructed one.
                 if adt_kind != AdtKind::Enum {
-                    tcx.check_stability(v_field.did, Some(expr_id), field.span);
+                    tcx.check_stability(v_field.did, Some(expr_id), field.span, None);
                 }
 
                 self.field_ty(field.span, v_field, substs)
@@ -1571,7 +1618,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             self.apply_adjustments(base, adjustments);
                             self.register_predicates(autoderef.into_obligations());
 
-                            self.tcx.check_stability(field.did, Some(expr.hir_id), expr.span);
+                            self.tcx.check_stability(field.did, Some(expr.hir_id), expr.span, None);
                             return field_ty;
                         }
                         private_candidate = Some((base_def.did, field_ty));

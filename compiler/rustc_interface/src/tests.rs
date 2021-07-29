@@ -12,13 +12,14 @@ use rustc_session::config::{
 };
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
-use rustc_session::utils::{CanonicalizedPath, NativeLibKind};
+use rustc_session::utils::{CanonicalizedPath, NativeLib, NativeLibKind};
 use rustc_session::{build_session, getopts, DiagnosticOutput, Session};
 use rustc_span::edition::{Edition, DEFAULT_EDITION};
 use rustc_span::symbol::sym;
 use rustc_span::SourceFileHashAlgorithm;
 use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy};
 use rustc_target::spec::{RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, TlsModel};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::FromIterator;
 use std::num::NonZeroUsize;
@@ -74,10 +75,39 @@ fn mk_map<K: Ord, V>(entries: Vec<(K, V)>) -> BTreeMap<K, V> {
     BTreeMap::from_iter(entries.into_iter())
 }
 
+fn assert_same_clone(x: &Options) {
+    assert_eq!(x.dep_tracking_hash(true), x.clone().dep_tracking_hash(true));
+    assert_eq!(x.dep_tracking_hash(false), x.clone().dep_tracking_hash(false));
+}
+
+fn assert_same_hash(x: &Options, y: &Options) {
+    assert_eq!(x.dep_tracking_hash(true), y.dep_tracking_hash(true));
+    assert_eq!(x.dep_tracking_hash(false), y.dep_tracking_hash(false));
+    // Check clone
+    assert_same_clone(x);
+    assert_same_clone(y);
+}
+
+fn assert_different_hash(x: &Options, y: &Options) {
+    assert_ne!(x.dep_tracking_hash(true), y.dep_tracking_hash(true));
+    assert_ne!(x.dep_tracking_hash(false), y.dep_tracking_hash(false));
+    // Check clone
+    assert_same_clone(x);
+    assert_same_clone(y);
+}
+
+fn assert_non_crate_hash_different(x: &Options, y: &Options) {
+    assert_eq!(x.dep_tracking_hash(true), y.dep_tracking_hash(true));
+    assert_ne!(x.dep_tracking_hash(false), y.dep_tracking_hash(false));
+    // Check clone
+    assert_same_clone(x);
+    assert_same_clone(y);
+}
+
 // When the user supplies --test we should implicitly supply --cfg test
 #[test]
 fn test_switch_implies_cfg_test() {
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let matches = optgroups().parse(&["--test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -88,7 +118,7 @@ fn test_switch_implies_cfg_test() {
 // When the user supplies --test and --cfg test, don't implicitly add another --cfg test
 #[test]
 fn test_switch_implies_cfg_test_unless_cfg_test() {
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let matches = optgroups().parse(&["--test".to_string(), "--cfg=test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -100,20 +130,20 @@ fn test_switch_implies_cfg_test_unless_cfg_test() {
 
 #[test]
 fn test_can_print_warnings() {
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let matches = optgroups().parse(&["-Awarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(!sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let matches =
             optgroups().parse(&["-Awarnings".to_string(), "-Dwarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let matches = optgroups().parse(&["-Adead_code".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
@@ -130,14 +160,9 @@ fn test_output_types_tracking_hash_different_paths() {
     v2.output_types = OutputTypes::new(&[(OutputType::Exe, Some(PathBuf::from("/some/thing")))]);
     v3.output_types = OutputTypes::new(&[(OutputType::Exe, None)]);
 
-    assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-    assert!(v2.dep_tracking_hash() != v3.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
+    assert_non_crate_hash_different(&v1, &v2);
+    assert_non_crate_hash_different(&v1, &v3);
+    assert_non_crate_hash_different(&v2, &v3);
 }
 
 #[test]
@@ -155,10 +180,7 @@ fn test_output_types_tracking_hash_different_construction_order() {
         (OutputType::Exe, Some(PathBuf::from("./some/thing"))),
     ]);
 
-    assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
+    assert_same_hash(&v1, &v2);
 }
 
 #[test]
@@ -182,14 +204,9 @@ fn test_externs_tracking_hash_different_construction_order() {
         (String::from("d"), new_public_extern_entry(vec!["f", "e"])),
     ]));
 
-    assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
-    assert_eq!(v1.dep_tracking_hash(), v3.dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v3.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
+    assert_same_hash(&v1, &v2);
+    assert_same_hash(&v1, &v3);
+    assert_same_hash(&v2, &v3);
 }
 
 #[test]
@@ -219,14 +236,9 @@ fn test_lints_tracking_hash_different_values() {
         (String::from("d"), Level::Deny),
     ];
 
-    assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-    assert!(v2.dep_tracking_hash() != v3.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
+    assert_non_crate_hash_different(&v1, &v2);
+    assert_non_crate_hash_different(&v1, &v3);
+    assert_non_crate_hash_different(&v2, &v3);
 }
 
 #[test]
@@ -248,11 +260,22 @@ fn test_lints_tracking_hash_different_construction_order() {
         (String::from("d"), Level::Forbid),
     ];
 
-    assert_eq!(v1.dep_tracking_hash(), v2.dep_tracking_hash());
+    // The hash should be order-dependent
+    assert_non_crate_hash_different(&v1, &v2);
+}
 
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
+#[test]
+fn test_lint_cap_hash_different() {
+    let mut v1 = Options::default();
+    let mut v2 = Options::default();
+    let v3 = Options::default();
+
+    v1.lint_cap = Some(Level::Forbid);
+    v2.lint_cap = Some(Level::Allow);
+
+    assert_non_crate_hash_different(&v1, &v2);
+    assert_non_crate_hash_different(&v1, &v3);
+    assert_non_crate_hash_different(&v2, &v3);
 }
 
 #[test]
@@ -292,15 +315,9 @@ fn test_search_paths_tracking_hash_different_order() {
     v4.search_paths.push(SearchPath::from_cli_opt("dependency=ghi", JSON));
     v4.search_paths.push(SearchPath::from_cli_opt("framework=jkl", JSON));
 
-    assert!(v1.dep_tracking_hash() == v2.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() == v3.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() == v4.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    assert_eq!(v4.dep_tracking_hash(), v4.clone().dep_tracking_hash());
+    assert_same_hash(&v1, &v2);
+    assert_same_hash(&v1, &v3);
+    assert_same_hash(&v1, &v4);
 }
 
 #[test]
@@ -309,44 +326,122 @@ fn test_native_libs_tracking_hash_different_values() {
     let mut v2 = Options::default();
     let mut v3 = Options::default();
     let mut v4 = Options::default();
+    let mut v5 = Options::default();
 
     // Reference
     v1.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change label
     v2.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("X"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("X"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change kind
     v3.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::StaticBundle),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change new-name
     v4.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), Some(String::from("X")), NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: Some(String::from("X")),
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
-    assert!(v1.dep_tracking_hash() != v2.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() != v3.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() != v4.dep_tracking_hash());
+    // Change verbatim
+    v5.libs = vec![
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: Some(true),
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
+    ];
 
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
-    assert_eq!(v4.dep_tracking_hash(), v4.clone().dep_tracking_hash());
+    assert_different_hash(&v1, &v2);
+    assert_different_hash(&v1, &v3);
+    assert_different_hash(&v1, &v4);
+    assert_different_hash(&v1, &v5);
 }
 
 #[test]
@@ -357,31 +452,72 @@ fn test_native_libs_tracking_hash_different_order() {
 
     // Reference
     v1.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     v2.libs = vec![
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     v3.libs = vec![
-        (String::from("c"), None, NativeLibKind::Unspecified),
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
     ];
 
-    assert!(v1.dep_tracking_hash() == v2.dep_tracking_hash());
-    assert!(v1.dep_tracking_hash() == v3.dep_tracking_hash());
-    assert!(v2.dep_tracking_hash() == v3.dep_tracking_hash());
-
-    // Check clone
-    assert_eq!(v1.dep_tracking_hash(), v1.clone().dep_tracking_hash());
-    assert_eq!(v2.dep_tracking_hash(), v2.clone().dep_tracking_hash());
-    assert_eq!(v3.dep_tracking_hash(), v3.clone().dep_tracking_hash());
+    // The hash should be order-dependent
+    assert_different_hash(&v1, &v2);
+    assert_different_hash(&v1, &v3);
+    assert_different_hash(&v2, &v3);
 }
 
 #[test]
@@ -391,8 +527,9 @@ fn test_codegen_options_tracking_hash() {
 
     macro_rules! untracked {
         ($name: ident, $non_default_value: expr) => {
+            assert_ne!(opts.cg.$name, $non_default_value);
             opts.cg.$name = $non_default_value;
-            assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
+            assert_same_hash(&reference, &opts);
         };
     }
 
@@ -416,8 +553,9 @@ fn test_codegen_options_tracking_hash() {
     macro_rules! tracked {
         ($name: ident, $non_default_value: expr) => {
             opts = reference.clone();
+            assert_ne!(opts.cg.$name, $non_default_value);
             opts.cg.$name = $non_default_value;
-            assert_ne!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
+            assert_different_hash(&reference, &opts);
         };
     }
 
@@ -455,14 +593,41 @@ fn test_codegen_options_tracking_hash() {
 }
 
 #[test]
+fn test_top_level_options_tracked_no_crate() {
+    let reference = Options::default();
+    let mut opts;
+
+    macro_rules! tracked {
+        ($name: ident, $non_default_value: expr) => {
+            opts = reference.clone();
+            assert_ne!(opts.$name, $non_default_value);
+            opts.$name = $non_default_value;
+            // The crate hash should be the same
+            assert_eq!(reference.dep_tracking_hash(true), opts.dep_tracking_hash(true));
+            // The incremental hash should be different
+            assert_ne!(reference.dep_tracking_hash(false), opts.dep_tracking_hash(false));
+        };
+    }
+
+    // Make sure that changing a [TRACKED_NO_CRATE_HASH] option leaves the crate hash unchanged but changes the incremental hash.
+    // This list is in alphabetical order.
+    tracked!(remap_path_prefix, vec![("/home/bors/rust".into(), "src".into())]);
+    tracked!(
+        real_rust_source_base_dir,
+        Some("/home/bors/rust/.rustup/toolchains/nightly/lib/rustlib/src/rust".into())
+    );
+}
+
+#[test]
 fn test_debugging_options_tracking_hash() {
     let reference = Options::default();
     let mut opts = Options::default();
 
     macro_rules! untracked {
         ($name: ident, $non_default_value: expr) => {
+            assert_ne!(opts.debugging_opts.$name, $non_default_value);
             opts.debugging_opts.$name = $non_default_value;
-            assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
+            assert_same_hash(&reference, &opts);
         };
     }
 
@@ -471,7 +636,7 @@ fn test_debugging_options_tracking_hash() {
     untracked!(ast_json, true);
     untracked!(ast_json_noexpand, true);
     untracked!(borrowck, String::from("other"));
-    untracked!(deduplicate_diagnostics, true);
+    untracked!(deduplicate_diagnostics, false);
     untracked!(dep_tasks, true);
     untracked!(dont_buffer_diagnostics, true);
     untracked!(dump_dep_graph, true);
@@ -482,6 +647,7 @@ fn test_debugging_options_tracking_hash() {
     untracked!(dump_mir_graphviz, true);
     untracked!(emit_future_incompat_report, true);
     untracked!(emit_stack_sizes, true);
+    untracked!(future_incompat_test, true);
     untracked!(hir_stats, true);
     untracked!(identify_regions, true);
     untracked!(incremental_ignore_spans, true);
@@ -503,6 +669,7 @@ fn test_debugging_options_tracking_hash() {
     untracked!(perf_stats, true);
     // `pre_link_arg` is omitted because it just forwards to `pre_link_args`.
     untracked!(pre_link_args, vec![String::from("abc"), String::from("def")]);
+    untracked!(profile_closures, true);
     untracked!(print_link_args, true);
     untracked!(print_llvm_passes, true);
     untracked!(print_mono_items, Some(String::from("abc")));
@@ -515,7 +682,7 @@ fn test_debugging_options_tracking_hash() {
     untracked!(self_profile_events, Some(vec![String::new()]));
     untracked!(span_debug, true);
     untracked!(span_free_formats, true);
-    untracked!(strip, Strip::None);
+    untracked!(strip, Strip::Debuginfo);
     untracked!(terminal_width, Some(80));
     untracked!(threads, 99);
     untracked!(time, true);
@@ -532,8 +699,9 @@ fn test_debugging_options_tracking_hash() {
     macro_rules! tracked {
         ($name: ident, $non_default_value: expr) => {
             opts = reference.clone();
+            assert_ne!(opts.debugging_opts.$name, $non_default_value);
             opts.debugging_opts.$name = $non_default_value;
-            assert_ne!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
+            assert_different_hash(&reference, &opts);
         };
     }
 
@@ -563,15 +731,14 @@ fn test_debugging_options_tracking_hash() {
     tracked!(instrument_coverage, Some(InstrumentCoverage::All));
     tracked!(instrument_mcount, true);
     tracked!(link_only, true);
+    tracked!(llvm_plugins, vec![String::from("plugin_name")]);
     tracked!(merge_functions, Some(MergeFunctions::Disabled));
     tracked!(mir_emit_retag, true);
     tracked!(mir_opt_level, Some(4));
     tracked!(mutable_noalias, Some(true));
-    tracked!(new_llvm_pass_manager, true);
-    tracked!(no_codegen, true);
+    tracked!(new_llvm_pass_manager, Some(true));
     tracked!(no_generate_arange_section, true);
     tracked!(no_link, true);
-    tracked!(no_profiler_runtime, true);
     tracked!(osx_rpath_install_name, true);
     tracked!(panic_abort_tests, true);
     tracked!(plt, Some(true));
@@ -580,8 +747,10 @@ fn test_debugging_options_tracking_hash() {
     tracked!(print_fuel, Some("abc".to_string()));
     tracked!(profile, true);
     tracked!(profile_emit, Some(PathBuf::from("abc")));
+    tracked!(profiler_runtime, None);
     tracked!(relax_elf_relocations, Some(true));
     tracked!(relro_level, Some(RelroLevel::Full));
+    tracked!(simulate_remapped_rust_src_base, Some(PathBuf::from("/rustc/abc")));
     tracked!(report_delayed_bugs, true);
     tracked!(sanitizer, SanitizerSet::ADDRESS);
     tracked!(sanitizer_memory_track_origins, 2);
@@ -593,6 +762,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(symbol_mangling_version, Some(SymbolManglingVersion::V0));
     tracked!(teach, true);
     tracked!(thinlto, Some(true));
+    tracked!(thir_unsafeck, true);
     tracked!(tune_cpu, Some(String::from("abc")));
     tracked!(tls_model, Some(TlsModel::GeneralDynamic));
     tracked!(trap_unreachable, Some(false));
@@ -601,6 +771,16 @@ fn test_debugging_options_tracking_hash() {
     tracked!(use_ctors_section, Some(true));
     tracked!(verify_llvm_ir, true);
     tracked!(wasi_exec_model, Some(WasiExecModel::Reactor));
+
+    macro_rules! tracked_no_crate_hash {
+        ($name: ident, $non_default_value: expr) => {
+            opts = reference.clone();
+            assert_ne!(opts.debugging_opts.$name, $non_default_value);
+            opts.debugging_opts.$name = $non_default_value;
+            assert_non_crate_hash_different(&reference, &opts);
+        };
+    }
+    tracked_no_crate_hash!(no_codegen, true);
 }
 
 #[test]

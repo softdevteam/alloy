@@ -90,13 +90,13 @@ static BAR: u32 = 42;
 const fn foo25() -> u32 { BAR } //~ ERROR cannot refer to statics
 const fn foo26() -> &'static u32 { &BAR } //~ ERROR cannot refer to statics
 const fn foo30(x: *const u32) -> usize { x as usize }
-//~^ ERROR casting pointers to integers
+//~^ ERROR pointers cannot be cast to integers
 const fn foo30_with_unsafe(x: *const u32) -> usize { unsafe { x as usize } }
-//~^ ERROR casting pointers to integers
+//~^ ERROR pointers cannot be cast to integers
 const fn foo30_2(x: *mut u32) -> usize { x as usize }
-//~^ ERROR casting pointers to integers
+//~^ ERROR pointers cannot be cast to integers
 const fn foo30_2_with_unsafe(x: *mut u32) -> usize { unsafe { x as usize } }
-//~^ ERROR casting pointers to integers
+//~^ ERROR pointers cannot be cast to integers
 const fn foo30_6() -> bool { let x = true; x }
 const fn inc(x: &mut i32) { *x += 1 }
 //~^ ERROR mutable references
@@ -133,13 +133,13 @@ const fn no_dyn_trait(_x: &dyn std::fmt::Debug) {}
 //~^ ERROR trait bounds other than `Sized`
 const fn no_dyn_trait_ret() -> &'static dyn std::fmt::Debug { &() }
 //~^ ERROR trait bounds other than `Sized`
-//~| ERROR unsizing cast
-//~| ERROR unsizing cast
 
 const fn no_unsafe() { unsafe {} }
 
 const fn really_no_traits_i_mean_it() { (&() as &dyn std::fmt::Debug, ()).1 }
-//~^ ERROR unsizing cast
+//~^ ERROR trait bounds other than `Sized`
+//~| ERROR trait bounds other than `Sized`
+//~| ERROR trait bounds other than `Sized`
 
 const fn no_fn_ptrs(_x: fn()) {}
 //~^ ERROR function pointer

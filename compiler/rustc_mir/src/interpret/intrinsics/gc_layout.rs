@@ -15,6 +15,6 @@ crate fn alloc_gc_layout<'tcx>(
     let mut pair = Vec::with_capacity(16);
     pair.extend_from_slice(&bitmap.to_le_bytes());
     pair.extend_from_slice(&bitmap_size.to_le_bytes());
-    let alloc = Allocation::from_byte_aligned_bytes(pair);
+    let alloc = Allocation::from_bytes_byte_aligned_immutable(pair);
     tcx.intern_const_alloc(alloc)
 }

@@ -1,6 +1,6 @@
-goto: file://|DOC_PATH|/index.html
+goto: file://|DOC_PATH|/test_docs/index.html
 click: ".srclink"
 click: "#sidebar-toggle"
 wait-for: 500
 fail: true
-assert: ("#source-sidebar", { "left": "-300px" })
+assert-css: ("#source-sidebar", { "left": "-300px" })

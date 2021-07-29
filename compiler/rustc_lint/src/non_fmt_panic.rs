@@ -4,10 +4,12 @@ use rustc_errors::{pluralize, Applicability};
 use rustc_hir as hir;
 use rustc_middle::ty;
 use rustc_parse_format::{ParseMode, Parser, Piece};
-use rustc_span::{sym, symbol::kw, InnerSpan, Span, Symbol};
+use rustc_session::lint::FutureIncompatibilityReason;
+use rustc_span::edition::Edition;
+use rustc_span::{hygiene, sym, symbol::kw, symbol::SymbolStr, InnerSpan, Span, Symbol};
 
 declare_lint! {
-    /// The `non_fmt_panic` lint detects `panic!(..)` invocations where the first
+    /// The `non_fmt_panics` lint detects `panic!(..)` invocations where the first
     /// argument is not a formatting string.
     ///
     /// ### Example
@@ -27,13 +29,17 @@ declare_lint! {
     /// an `i32` as message.
     ///
     /// Rust 2021 always interprets the first argument as format string.
-    NON_FMT_PANIC,
+    NON_FMT_PANICS,
     Warn,
     "detect single-argument panic!() invocations in which the argument is not a format string",
+    @future_incompatible = FutureIncompatibleInfo {
+        reason: FutureIncompatibilityReason::EditionSemanticsChange(Edition::Edition2021),
+        explain_reason: false,
+    };
     report_in_external_macro
 }
 
-declare_lint_pass!(NonPanicFmt => [NON_FMT_PANIC]);
+declare_lint_pass!(NonPanicFmt => [NON_FMT_PANICS]);
 
 impl<'tcx> LateLintPass<'tcx> for NonPanicFmt {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'tcx>) {
@@ -67,7 +73,7 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
 
     // The argument is *not* a string literal.
 
-    let (span, panic) = panic_call(cx, f);
+    let (span, panic, symbol_str) = panic_call(cx, f);
 
     // Find the span of the argument to `panic!()`, before expansion in the
     // case of `panic!(some_macro!())`.
@@ -85,9 +91,10 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
         arg_span = expn.call_site;
     }
 
-    cx.struct_span_lint(NON_FMT_PANIC, arg_span, |lint| {
+    cx.struct_span_lint(NON_FMT_PANICS, arg_span, |lint| {
         let mut l = lint.build("panic message is not a string literal");
-        l.note("this is no longer accepted in Rust 2021");
+        l.note("this usage of panic!() is deprecated; it will be a hard error in Rust 2021");
+        l.note("for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/panic-macro-consistency.html>");
         if !span.contains(arg_span) {
             // No clue where this argument is coming from.
             l.emit();
@@ -95,7 +102,7 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
         }
         if arg_macro.map_or(false, |id| cx.tcx.is_diagnostic_item(sym::format_macro, id)) {
             // A case of `panic!(format!(..))`.
-            l.note("the panic!() macro supports formatting, so there's no need for the format!() macro here");
+            l.note(format!("the {}!() macro supports formatting, so there's no need for the format!() macro here", symbol_str).as_str());
             if let Some((open, close, _)) = find_delimiters(cx, arg_span) {
                 l.multipart_suggestion(
                     "remove the `format!(..)` macro call",
@@ -160,14 +167,14 @@ fn check_panic_str<'tcx>(
         Parser::new(fmt.as_ref(), style, snippet.clone(), false, ParseMode::Format);
     let n_arguments = (&mut fmt_parser).filter(|a| matches!(a, Piece::NextArgument(_))).count();
 
-    let (span, _) = panic_call(cx, f);
+    let (span, _, _) = panic_call(cx, f);
 
     if n_arguments > 0 && fmt_parser.errors.is_empty() {
         let arg_spans: Vec<_> = match &fmt_parser.arg_places[..] {
             [] => vec![fmt_span],
             v => v.iter().map(|span| fmt_span.from_inner(*span)).collect(),
         };
-        cx.struct_span_lint(NON_FMT_PANIC, arg_spans, |lint| {
+        cx.struct_span_lint(NON_FMT_PANICS, arg_spans, |lint| {
             let mut l = lint.build(match n_arguments {
                 1 => "panic message contains an unused formatting placeholder",
                 _ => "panic message contains unused formatting placeholders",
@@ -201,7 +208,7 @@ fn check_panic_str<'tcx>(
             Some(v) if v.len() == 1 => "panic message contains a brace",
             _ => "panic message contains braces",
         };
-        cx.struct_span_lint(NON_FMT_PANIC, brace_spans.unwrap_or_else(|| vec![span]), |lint| {
+        cx.struct_span_lint(NON_FMT_PANICS, brace_spans.unwrap_or_else(|| vec![span]), |lint| {
             let mut l = lint.build(msg);
             l.note("this message is not used as a format string, but will be in Rust 2021");
             if span.contains(arg.span) {
@@ -230,7 +237,7 @@ fn find_delimiters<'tcx>(cx: &LateContext<'tcx>, span: Span) -> Option<(Span, Sp
     ))
 }
 
-fn panic_call<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>) -> (Span, Symbol) {
+fn panic_call<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>) -> (Span, Symbol, SymbolStr) {
     let mut expn = f.span.ctxt().outer_expn_data();
 
     let mut panic_macro = kw::Empty;
@@ -248,5 +255,7 @@ fn panic_call<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>) -> (Span, 
         }
     }
 
-    (expn.call_site, panic_macro)
+    let macro_symbol =
+        if let hygiene::ExpnKind::Macro(_, symbol) = expn.kind { symbol } else { sym::panic };
+    (expn.call_site, panic_macro, macro_symbol.as_str())
 }

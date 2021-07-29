@@ -74,7 +74,7 @@ impl Step for Docs {
 
         let mut tarball = Tarball::new(builder, "rust-docs", &host.triple);
         tarball.set_product_name("Rust Documentation");
-        tarball.add_dir(&builder.doc_out(host), dest);
+        tarball.add_bulk_dir(&builder.doc_out(host), dest);
         tarball.add_file(&builder.src.join("src/doc/robots.txt"), dest, 0o644);
         Some(tarball.generate())
     }
@@ -107,7 +107,7 @@ impl Step for RustcDocs {
 
         let mut tarball = Tarball::new(builder, "rustc-docs", &host.triple);
         tarball.set_product_name("Rustc Documentation");
-        tarball.add_dir(&builder.compiler_doc_out(host), "share/doc/rust/html/rustc");
+        tarball.add_bulk_dir(&builder.compiler_doc_out(host), "share/doc/rust/html/rustc");
         Some(tarball.generate())
     }
 }
@@ -400,8 +400,12 @@ impl Step for Rustc {
 
             // Copy over lld if it's there
             if builder.config.lld_enabled {
-                let exe = exe("rust-lld", compiler.host);
-                builder.copy(&src_dir.join(&exe), &dst_dir.join(&exe));
+                let rust_lld = exe("rust-lld", compiler.host);
+                builder.copy(&src_dir.join(&rust_lld), &dst_dir.join(&rust_lld));
+                // for `-Z gcc-ld=lld`
+                let gcc_lld_dir = dst_dir.join("gcc-ld");
+                t!(fs::create_dir(&gcc_lld_dir));
+                builder.copy(&src_dir.join(&rust_lld), &gcc_lld_dir.join(exe("ld", compiler.host)));
             }
 
             // Copy over llvm-dwp if it's there
@@ -1068,6 +1072,12 @@ impl Step for RustAnalyzer {
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<GeneratedTarball> {
+        // This prevents rust-analyzer from being built for "dist" or "install"
+        // on the stable/beta channels. It is a nightly-only tool and should
+        // not be included.
+        if !builder.build.unstable_features() {
+            return None;
+        }
         let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);
@@ -1167,6 +1177,12 @@ impl Step for Miri {
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<GeneratedTarball> {
+        // This prevents miri from being built for "dist" or "install"
+        // on the stable/beta channels. It is a nightly-only tool and should
+        // not be included.
+        if !builder.build.unstable_features() {
+            return None;
+        }
         let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);

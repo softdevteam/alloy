@@ -2,13 +2,14 @@
 
 use crate::mir::{abstract_const, Body, Promoted};
 use crate::ty::{self, Ty, TyCtxt};
-use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
+use rustc_data_structures::vec_map::VecMap;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_index::bit_set::BitMatrix;
 use rustc_index::vec::IndexVec;
+use rustc_middle::ty::OpaqueTypeKey;
 use rustc_span::Span;
 use rustc_target::abi::VariantIdx;
 use smallvec::SmallVec;
@@ -19,10 +20,8 @@ use super::{Field, SourceInfo};
 
 #[derive(Copy, Clone, PartialEq, TyEncodable, TyDecodable, HashStable, Debug)]
 pub enum UnsafetyViolationKind {
-    /// Only permitted in regular `fn`s, prohibited in `const fn`s.
+    /// Unsafe operation outside `unsafe`.
     General,
-    /// Permitted both in `const fn`s and regular `fn`s.
-    GeneralAndConstFn,
     /// Unsafe operation in an `unsafe fn` but outside an `unsafe` block.
     /// Has to be handled as a lint for backwards compatibility.
     UnsafeFn,
@@ -34,7 +33,6 @@ pub enum UnsafetyViolationDetails {
     UseOfInlineAssembly,
     InitializingTypeWith,
     CastOfPointerToInt,
-    BorrowOfPackedField,
     UseOfMutableStatic,
     UseOfExternStatic,
     DerefOfRawPointer,
@@ -66,11 +64,6 @@ impl UnsafetyViolationDetails {
             CastOfPointerToInt => {
                 ("cast of pointer to int", "casting pointers to integers in constants")
             }
-            BorrowOfPackedField => (
-                "borrow of packed field",
-                "fields of packed structs might be misaligned: dereferencing a misaligned pointer \
-                 or even just creating a misaligned reference is undefined behavior",
-            ),
             UseOfMutableStatic => (
                 "use of mutable static",
                 "mutable statics can be mutated by multiple threads: aliasing violations or data \
@@ -83,7 +76,7 @@ impl UnsafetyViolationDetails {
             ),
             DerefOfRawPointer => (
                 "dereference of raw pointer",
-                "raw pointers may be NULL, dangling or unaligned; they can violate aliasing rules \
+                "raw pointers may be null, dangling or unaligned; they can violate aliasing rules \
                  and cause data races: all of these are undefined behavior",
             ),
             AssignToDroppingUnionField => (
@@ -218,7 +211,7 @@ pub struct BorrowCheckResult<'tcx> {
     /// All the opaque types that are restricted to concrete types
     /// by this function. Unlike the value in `TypeckResults`, this has
     /// unerased regions.
-    pub concrete_opaque_types: FxHashMap<DefId, ty::ResolvedOpaqueTy<'tcx>>,
+    pub concrete_opaque_types: VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>>,
     pub closure_requirements: Option<ClosureRegionRequirements<'tcx>>,
     pub used_mut_upvars: SmallVec<[Field; 8]>,
 }

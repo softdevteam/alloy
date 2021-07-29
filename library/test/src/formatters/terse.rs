@@ -4,6 +4,7 @@ use super::OutputFormatter;
 use crate::{
     bench::fmt_bench_samples,
     console::{ConsoleTestState, OutputLocation},
+    term,
     test_result::TestResult,
     time,
     types::NamePadding,
@@ -158,7 +159,11 @@ impl<T: Write> TerseFormatter<T> {
 
     fn write_test_name(&mut self, desc: &TestDesc) -> io::Result<()> {
         let name = desc.padded_name(self.max_name_len, desc.name.padding());
-        self.write_plain(&format!("test {} ... ", name))?;
+        if let Some(test_mode) = desc.test_mode() {
+            self.write_plain(&format!("test {} - {} ... ", name, test_mode))?;
+        } else {
+            self.write_plain(&format!("test {} ... ", name))?;
+        }
 
         Ok(())
     }

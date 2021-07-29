@@ -444,8 +444,13 @@ impl Build {
 
         build.verbose("finding compilers");
         cc_detect::find(&mut build);
-        build.verbose("running sanity check");
-        sanity::check(&mut build);
+        // When running `setup`, the profile is about to change, so any requirements we have now may
+        // be different on the next invocation. Don't check for them until the next time x.py is
+        // run. This is ok because `setup` never runs any build commands, so it won't fail if commands are missing.
+        if !matches!(build.config.cmd, Subcommand::Setup { .. }) {
+            build.verbose("running sanity check");
+            sanity::check(&mut build);
+        }
 
         // If local-rust is the same major.minor as the current version, then force a
         // local-rebuild
@@ -472,14 +477,123 @@ impl Build {
         slice::from_ref(&self.build.triple)
     }
 
+    // modified from `check_submodule` and `update_submodule` in bootstrap.py
+    /// Given a path to the directory of a submodule, update it.
+    ///
+    /// `relative_path` should be relative to the root of the git repository, not an absolute path.
+    pub(crate) fn update_submodule(&self, relative_path: &Path) {
+        fn dir_is_empty(dir: &Path) -> bool {
+            t!(std::fs::read_dir(dir)).next().is_none()
+        }
+
+        if !self.config.submodules {
+            return;
+        }
+
+        let absolute_path = self.config.src.join(relative_path);
+
+        // NOTE: The check for the empty directory is here because when running x.py the first time,
+        // the submodule won't be checked out. Check it out now so we can build it.
+        if !channel::GitInfo::new(false, relative_path).is_git() && !dir_is_empty(&absolute_path) {
+            return;
+        }
+
+        // check_submodule
+        if self.config.fast_submodules {
+            let checked_out_hash = output(
+                Command::new("git").args(&["rev-parse", "HEAD"]).current_dir(&absolute_path),
+            );
+            // update_submodules
+            let recorded = output(
+                Command::new("git")
+                    .args(&["ls-tree", "HEAD"])
+                    .arg(relative_path)
+                    .current_dir(&self.config.src),
+            );
+            let actual_hash = recorded
+                .split_whitespace()
+                .nth(2)
+                .unwrap_or_else(|| panic!("unexpected output `{}`", recorded));
+
+            // update_submodule
+            if actual_hash == checked_out_hash.trim_end() {
+                // already checked out
+                return;
+            }
+        }
+
+        println!("Updating submodule {}", relative_path.display());
+        self.run(
+            Command::new("git")
+                .args(&["submodule", "-q", "sync"])
+                .arg(relative_path)
+                .current_dir(&self.config.src),
+        );
+
+        // Try passing `--progress` to start, then run git again without if that fails.
+        let update = |progress: bool| {
+            let mut git = Command::new("git");
+            git.args(&["submodule", "update", "--init", "--recursive"]);
+            if progress {
+                git.arg("--progress");
+            }
+            git.arg(relative_path).current_dir(&self.config.src);
+            git
+        };
+        // NOTE: doesn't use `try_run` because this shouldn't print an error if it fails.
+        if !update(true).status().map_or(false, |status| status.success()) {
+            self.run(&mut update(false));
+        }
+
+        self.run(Command::new("git").args(&["reset", "-q", "--hard"]).current_dir(&absolute_path));
+        self.run(Command::new("git").args(&["clean", "-qdfx"]).current_dir(absolute_path));
+    }
+
+    /// If any submodule has been initialized already, sync it unconditionally.
+    /// This avoids contributors checking in a submodule change by accident.
+    pub fn maybe_update_submodules(&self) {
+        // WARNING: keep this in sync with the submodules hard-coded in bootstrap.py
+        const BOOTSTRAP_SUBMODULES: &[&str] = &[
+            "src/tools/rust-installer",
+            "src/tools/cargo",
+            "src/tools/rls",
+            "src/tools/miri",
+            "library/backtrace",
+            "library/stdarch",
+        ];
+        // Avoid running git when there isn't a git checkout.
+        if !self.config.submodules {
+            return;
+        }
+        let output = output(
+            Command::new("git")
+                .args(&["config", "--file"])
+                .arg(&self.config.src.join(".gitmodules"))
+                .args(&["--get-regexp", "path"]),
+        );
+        for line in output.lines() {
+            // Look for `submodule.$name.path = $path`
+            // Sample output: `submodule.src/rust-installer.path src/tools/rust-installer`
+            let submodule = Path::new(line.splitn(2, ' ').nth(1).unwrap());
+            // avoid updating submodules twice
+            if !BOOTSTRAP_SUBMODULES.iter().any(|&p| Path::new(p) == submodule)
+                && channel::GitInfo::new(false, submodule).is_git()
+            {
+                self.update_submodule(submodule);
+            }
+        }
+    }
+
     /// Executes the entire build, as configured by the flags and configuration.
     pub fn build(&mut self) {
         unsafe {
             job::setup(self);
         }
 
-        if let Subcommand::Format { check } = self.config.cmd {
-            return format::format(self, check);
+        self.maybe_update_submodules();
+
+        if let Subcommand::Format { check, paths } = &self.config.cmd {
+            return format::format(self, *check, &paths);
         }
 
         if let Subcommand::Clean { all } = self.config.cmd {
@@ -852,7 +966,7 @@ impl Build {
         }
 
         // Work around an apparently bad MinGW / GCC optimization,
-        // See: http://lists.llvm.org/pipermail/cfe-dev/2016-December/051980.html
+        // See: https://lists.llvm.org/pipermail/cfe-dev/2016-December/051980.html
         // See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=78936
         if &*target.triple == "i686-pc-windows-gnu" {
             base.push("-fno-omit-frame-pointer".into());
@@ -916,6 +1030,21 @@ impl Build {
     // Only MSVC targets use LLD directly at the moment.
     fn is_fuse_ld_lld(&self, target: TargetSelection) -> bool {
         self.config.use_lld && !target.contains("msvc")
+    }
+
+    fn lld_flags(&self, target: TargetSelection) -> impl Iterator<Item = String> {
+        let mut options = [None, None];
+
+        if self.config.use_lld {
+            if self.is_fuse_ld_lld(target) {
+                options[0] = Some("-Clink-arg=-fuse-ld=lld".to_string());
+            }
+
+            let threads = if target.contains("windows") { "/threads:1" } else { "--threads=1" };
+            options[1] = Some(format!("-Clink-arg=-Wl,{}", threads));
+        }
+
+        std::array::IntoIter::new(options).flatten()
     }
 
     /// Returns if this target should statically link the C runtime, if specified
@@ -1366,7 +1495,7 @@ impl Build {
                 eprintln!(
                     "
 Couldn't find required command: ninja
-You should install ninja, or set ninja=false in config.toml
+You should install ninja, or set `ninja=false` in config.toml in the `[llvm]` section.
 "
                 );
                 std::process::exit(1);

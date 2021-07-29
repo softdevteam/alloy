@@ -4,8 +4,8 @@
 use compiletest_rs as compiletest;
 use compiletest_rs::common::Mode as TestMode;
 
-use std::env::{self, set_var, var};
-use std::ffi::OsStr;
+use std::env::{self, remove_var, set_var, var_os};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -48,7 +48,24 @@ fn third_party_crates() -> String {
                     && name.rsplit('.').next().map(|ext| ext.eq_ignore_ascii_case("rlib")) == Some(true)
                 {
                     if let Some(old) = crates.insert(dep, path.clone()) {
-                        panic!("Found multiple rlibs for crate `{}`: `{:?}` and `{:?}", dep, old, path);
+                        // Check which action should be done in order to remove compiled deps.
+                        // If pre-installed version of compiler is used, `cargo clean` will do.
+                        // Otherwise (for bootstrapped compiler), the dependencies directory
+                        // must be removed manually.
+                        let suggested_action = if std::env::var_os("RUSTC_BOOTSTRAP").is_some() {
+                            "remove the stageN-tools directory"
+                        } else {
+                            "run `cargo clean`"
+                        };
+
+                        panic!(
+                            "\n---------------------------------------------------\n\n \
+                            Found multiple rlibs for crate `{}`: `{:?}` and `{:?}`.\n \
+                            Probably, you need to {} before running tests again.\n \
+                            \nFor details on that error see https://github.com/rust-lang/rust-clippy/issues/7343 \
+                            \n---------------------------------------------------\n",
+                            dep, old, path, suggested_action
+                        );
                     }
                     break;
                 }
@@ -83,21 +100,16 @@ fn default_config() -> compiletest::Config {
         third_party_crates(),
     ));
 
-    config.build_base = if cargo::is_rustc_test_suite() {
-        // This make the stderr files go to clippy OUT_DIR on rustc repo build dir
-        let mut path = PathBuf::from(env!("OUT_DIR"));
-        path.push("test_build_base");
-        path
-    } else {
-        host_lib().join("test_build_base")
-    };
+    config.build_base = host_lib().join("test_build_base");
     config.rustc_path = clippy_driver_path();
     config
 }
 
-fn run_mode(cfg: &mut compiletest::Config) {
+fn run_ui(cfg: &mut compiletest::Config) {
     cfg.mode = TestMode::Ui;
     cfg.src_base = Path::new("tests").join("ui");
+    // use tests/clippy.toml
+    let _g = VarGuard::set("CARGO_MANIFEST_DIR", std::fs::canonicalize("tests").unwrap());
     compiletest::run_tests(cfg);
 }
 
@@ -121,7 +133,7 @@ fn run_ui_toml(config: &mut compiletest::Config) {
                 continue;
             }
             let dir_path = dir.path();
-            set_var("CARGO_MANIFEST_DIR", &dir_path);
+            let _g = VarGuard::set("CARGO_MANIFEST_DIR", &dir_path);
             for file in fs::read_dir(&dir_path)? {
                 let file = file?;
                 let file_path = file.path();
@@ -152,9 +164,7 @@ fn run_ui_toml(config: &mut compiletest::Config) {
 
     let tests = compiletest::make_tests(config);
 
-    let manifest_dir = var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let res = run_tests(config, tests);
-    set_var("CARGO_MANIFEST_DIR", &manifest_dir);
     match res {
         Ok(true) => {},
         Ok(false) => panic!("Some tests failed"),
@@ -215,7 +225,7 @@ fn run_ui_cargo(config: &mut compiletest::Config) {
                         Some("main.rs") => {},
                         _ => continue,
                     }
-                    set_var("CLIPPY_CONF_DIR", case.path());
+                    let _g = VarGuard::set("CLIPPY_CONF_DIR", case.path());
                     let paths = compiletest::common::TestPaths {
                         file: file_path,
                         base: config.src_base.clone(),
@@ -243,10 +253,8 @@ fn run_ui_cargo(config: &mut compiletest::Config) {
     let tests = compiletest::make_tests(config);
 
     let current_dir = env::current_dir().unwrap();
-    let conf_dir = var("CLIPPY_CONF_DIR").unwrap_or_default();
     let res = run_tests(config, &config.filters, tests);
     env::set_current_dir(current_dir).unwrap();
-    set_var("CLIPPY_CONF_DIR", conf_dir);
 
     match res {
         Ok(true) => {},
@@ -267,8 +275,32 @@ fn prepare_env() {
 fn compile_test() {
     prepare_env();
     let mut config = default_config();
-    run_mode(&mut config);
+    run_ui(&mut config);
     run_ui_toml(&mut config);
     run_ui_cargo(&mut config);
     run_internal_tests(&mut config);
+}
+
+/// Restores an env var on drop
+#[must_use]
+struct VarGuard {
+    key: &'static str,
+    value: Option<OsString>,
+}
+
+impl VarGuard {
+    fn set(key: &'static str, val: impl AsRef<OsStr>) -> Self {
+        let value = var_os(key);
+        set_var(key, val);
+        Self { key, value }
+    }
+}
+
+impl Drop for VarGuard {
+    fn drop(&mut self) {
+        match self.value.as_deref() {
+            None => remove_var(self.key),
+            Some(value) => set_var(self.key, value),
+        }
+    }
 }

@@ -11,7 +11,7 @@ use crate::thir::util::UserAnnotatedTyHelpers;
 
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
-use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
+use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::RangeEnd;
 use rustc_index::vec::Idx;
@@ -19,335 +19,19 @@ use rustc_middle::mir::interpret::{get_slice_bytes, ConstValue};
 use rustc_middle::mir::interpret::{ErrorHandled, LitToConstError, LitToConstInput};
 use rustc_middle::mir::UserTypeProjection;
 use rustc_middle::mir::{BorrowKind, Field, Mutability};
+use rustc_middle::thir::{Ascription, BindingMode, FieldPat, Pat, PatKind, PatRange, PatTyProj};
 use rustc_middle::ty::subst::{GenericArg, SubstsRef};
 use rustc_middle::ty::{self, AdtDef, DefIdTree, Region, Ty, TyCtxt, UserType};
-use rustc_middle::ty::{
-    CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations,
-};
-use rustc_span::{Span, Symbol, DUMMY_SP};
-use rustc_target::abi::VariantIdx;
+use rustc_span::{Span, Symbol};
 
 use std::cmp::Ordering;
-use std::fmt;
 
 #[derive(Clone, Debug)]
 crate enum PatternError {
     AssocConstInPattern(Span),
     ConstParamInPattern(Span),
     StaticInPattern(Span),
-    FloatBug,
     NonConstPath(Span),
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum BindingMode {
-    ByValue,
-    ByRef(BorrowKind),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct FieldPat<'tcx> {
-    pub field: Field,
-    pub pattern: Pat<'tcx>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Pat<'tcx> {
-    pub ty: Ty<'tcx>,
-    pub span: Span,
-    pub kind: Box<PatKind<'tcx>>,
-}
-
-impl<'tcx> Pat<'tcx> {
-    pub(crate) fn wildcard_from_ty(ty: Ty<'tcx>) -> Self {
-        Pat { ty, span: DUMMY_SP, kind: Box::new(PatKind::Wild) }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct PatTyProj<'tcx> {
-    pub user_ty: CanonicalUserType<'tcx>,
-}
-
-impl<'tcx> PatTyProj<'tcx> {
-    pub(crate) fn from_user_type(user_annotation: CanonicalUserType<'tcx>) -> Self {
-        Self { user_ty: user_annotation }
-    }
-
-    pub(crate) fn user_ty(
-        self,
-        annotations: &mut CanonicalUserTypeAnnotations<'tcx>,
-        inferred_ty: Ty<'tcx>,
-        span: Span,
-    ) -> UserTypeProjection {
-        UserTypeProjection {
-            base: annotations.push(CanonicalUserTypeAnnotation {
-                span,
-                user_ty: self.user_ty,
-                inferred_ty,
-            }),
-            projs: Vec::new(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Ascription<'tcx> {
-    pub user_ty: PatTyProj<'tcx>,
-    /// Variance to use when relating the type `user_ty` to the **type of the value being
-    /// matched**. Typically, this is `Variance::Covariant`, since the value being matched must
-    /// have a type that is some subtype of the ascribed type.
-    ///
-    /// Note that this variance does not apply for any bindings within subpatterns. The type
-    /// assigned to those bindings must be exactly equal to the `user_ty` given here.
-    ///
-    /// The only place where this field is not `Covariant` is when matching constants, where
-    /// we currently use `Contravariant` -- this is because the constant type just needs to
-    /// be "comparable" to the type of the input value. So, for example:
-    ///
-    /// ```text
-    /// match x { "foo" => .. }
-    /// ```
-    ///
-    /// requires that `&'static str <: T_x`, where `T_x` is the type of `x`. Really, we should
-    /// probably be checking for a `PartialEq` impl instead, but this preserves the behavior
-    /// of the old type-check for now. See #57280 for details.
-    pub variance: ty::Variance,
-    pub user_ty_span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum PatKind<'tcx> {
-    Wild,
-
-    AscribeUserType {
-        ascription: Ascription<'tcx>,
-        subpattern: Pat<'tcx>,
-    },
-
-    /// `x`, `ref x`, `x @ P`, etc.
-    Binding {
-        mutability: Mutability,
-        name: Symbol,
-        mode: BindingMode,
-        var: hir::HirId,
-        ty: Ty<'tcx>,
-        subpattern: Option<Pat<'tcx>>,
-        /// Is this the leftmost occurrence of the binding, i.e., is `var` the
-        /// `HirId` of this pattern?
-        is_primary: bool,
-    },
-
-    /// `Foo(...)` or `Foo{...}` or `Foo`, where `Foo` is a variant name from an ADT with
-    /// multiple variants.
-    Variant {
-        adt_def: &'tcx AdtDef,
-        substs: SubstsRef<'tcx>,
-        variant_index: VariantIdx,
-        subpatterns: Vec<FieldPat<'tcx>>,
-    },
-
-    /// `(...)`, `Foo(...)`, `Foo{...}`, or `Foo`, where `Foo` is a variant name from an ADT with
-    /// a single variant.
-    Leaf {
-        subpatterns: Vec<FieldPat<'tcx>>,
-    },
-
-    /// `box P`, `&P`, `&mut P`, etc.
-    Deref {
-        subpattern: Pat<'tcx>,
-    },
-
-    /// One of the following:
-    /// * `&str`, which will be handled as a string pattern and thus exhaustiveness
-    ///   checking will detect if you use the same string twice in different patterns.
-    /// * integer, bool, char or float, which will be handled by exhaustivenes to cover exactly
-    ///   its own value, similar to `&str`, but these values are much simpler.
-    /// * Opaque constants, that must not be matched structurally. So anything that does not derive
-    ///   `PartialEq` and `Eq`.
-    Constant {
-        value: &'tcx ty::Const<'tcx>,
-    },
-
-    Range(PatRange<'tcx>),
-
-    /// Matches against a slice, checking the length and extracting elements.
-    /// irrefutable when there is a slice pattern and both `prefix` and `suffix` are empty.
-    /// e.g., `&[ref xs @ ..]`.
-    Slice {
-        prefix: Vec<Pat<'tcx>>,
-        slice: Option<Pat<'tcx>>,
-        suffix: Vec<Pat<'tcx>>,
-    },
-
-    /// Fixed match against an array; irrefutable.
-    Array {
-        prefix: Vec<Pat<'tcx>>,
-        slice: Option<Pat<'tcx>>,
-        suffix: Vec<Pat<'tcx>>,
-    },
-
-    /// An or-pattern, e.g. `p | q`.
-    /// Invariant: `pats.len() >= 2`.
-    Or {
-        pats: Vec<Pat<'tcx>>,
-    },
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct PatRange<'tcx> {
-    pub lo: &'tcx ty::Const<'tcx>,
-    pub hi: &'tcx ty::Const<'tcx>,
-    pub end: RangeEnd,
-}
-
-impl<'tcx> fmt::Display for Pat<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Printing lists is a chore.
-        let mut first = true;
-        let mut start_or_continue = |s| {
-            if first {
-                first = false;
-                ""
-            } else {
-                s
-            }
-        };
-        let mut start_or_comma = || start_or_continue(", ");
-
-        match *self.kind {
-            PatKind::Wild => write!(f, "_"),
-            PatKind::AscribeUserType { ref subpattern, .. } => write!(f, "{}: _", subpattern),
-            PatKind::Binding { mutability, name, mode, ref subpattern, .. } => {
-                let is_mut = match mode {
-                    BindingMode::ByValue => mutability == Mutability::Mut,
-                    BindingMode::ByRef(bk) => {
-                        write!(f, "ref ")?;
-                        matches!(bk, BorrowKind::Mut { .. })
-                    }
-                };
-                if is_mut {
-                    write!(f, "mut ")?;
-                }
-                write!(f, "{}", name)?;
-                if let Some(ref subpattern) = *subpattern {
-                    write!(f, " @ {}", subpattern)?;
-                }
-                Ok(())
-            }
-            PatKind::Variant { ref subpatterns, .. } | PatKind::Leaf { ref subpatterns } => {
-                let variant = match *self.kind {
-                    PatKind::Variant { adt_def, variant_index, .. } => {
-                        Some(&adt_def.variants[variant_index])
-                    }
-                    _ => {
-                        if let ty::Adt(adt, _) = self.ty.kind() {
-                            if !adt.is_enum() {
-                                Some(&adt.variants[VariantIdx::new(0)])
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                };
-
-                if let Some(variant) = variant {
-                    write!(f, "{}", variant.ident)?;
-
-                    // Only for Adt we can have `S {...}`,
-                    // which we handle separately here.
-                    if variant.ctor_kind == CtorKind::Fictive {
-                        write!(f, " {{ ")?;
-
-                        let mut printed = 0;
-                        for p in subpatterns {
-                            if let PatKind::Wild = *p.pattern.kind {
-                                continue;
-                            }
-                            let name = variant.fields[p.field.index()].ident;
-                            write!(f, "{}{}: {}", start_or_comma(), name, p.pattern)?;
-                            printed += 1;
-                        }
-
-                        if printed < variant.fields.len() {
-                            write!(f, "{}..", start_or_comma())?;
-                        }
-
-                        return write!(f, " }}");
-                    }
-                }
-
-                let num_fields = variant.map_or(subpatterns.len(), |v| v.fields.len());
-                if num_fields != 0 || variant.is_none() {
-                    write!(f, "(")?;
-                    for i in 0..num_fields {
-                        write!(f, "{}", start_or_comma())?;
-
-                        // Common case: the field is where we expect it.
-                        if let Some(p) = subpatterns.get(i) {
-                            if p.field.index() == i {
-                                write!(f, "{}", p.pattern)?;
-                                continue;
-                            }
-                        }
-
-                        // Otherwise, we have to go looking for it.
-                        if let Some(p) = subpatterns.iter().find(|p| p.field.index() == i) {
-                            write!(f, "{}", p.pattern)?;
-                        } else {
-                            write!(f, "_")?;
-                        }
-                    }
-                    write!(f, ")")?;
-                }
-
-                Ok(())
-            }
-            PatKind::Deref { ref subpattern } => {
-                match self.ty.kind() {
-                    ty::Adt(def, _) if def.is_box() => write!(f, "box ")?,
-                    ty::Ref(_, _, mutbl) => {
-                        write!(f, "&{}", mutbl.prefix_str())?;
-                    }
-                    _ => bug!("{} is a bad Deref pattern type", self.ty),
-                }
-                write!(f, "{}", subpattern)
-            }
-            PatKind::Constant { value } => write!(f, "{}", value),
-            PatKind::Range(PatRange { lo, hi, end }) => {
-                write!(f, "{}", lo)?;
-                write!(f, "{}", end)?;
-                write!(f, "{}", hi)
-            }
-            PatKind::Slice { ref prefix, ref slice, ref suffix }
-            | PatKind::Array { ref prefix, ref slice, ref suffix } => {
-                write!(f, "[")?;
-                for p in prefix {
-                    write!(f, "{}{}", start_or_comma(), p)?;
-                }
-                if let Some(ref slice) = *slice {
-                    write!(f, "{}", start_or_comma())?;
-                    match *slice.kind {
-                        PatKind::Wild => {}
-                        _ => write!(f, "{}", slice)?,
-                    }
-                    write!(f, "..")?;
-                }
-                for p in suffix {
-                    write!(f, "{}{}", start_or_comma(), p)?;
-                }
-                write!(f, "]")
-            }
-            PatKind::Or { ref pats } => {
-                for pat in pats {
-                    write!(f, "{}{}", start_or_continue(" | "), pat)?;
-                }
-                Ok(())
-            }
-        }
-    }
 }
 
 crate struct PatCtxt<'a, 'tcx> {
@@ -358,22 +42,20 @@ crate struct PatCtxt<'a, 'tcx> {
     include_lint_checks: bool,
 }
 
-impl<'a, 'tcx> Pat<'tcx> {
-    crate fn from_hir(
-        tcx: TyCtxt<'tcx>,
-        param_env: ty::ParamEnv<'tcx>,
-        typeck_results: &'a ty::TypeckResults<'tcx>,
-        pat: &'tcx hir::Pat<'tcx>,
-    ) -> Self {
-        let mut pcx = PatCtxt::new(tcx, param_env, typeck_results);
-        let result = pcx.lower_pattern(pat);
-        if !pcx.errors.is_empty() {
-            let msg = format!("encountered errors lowering pattern: {:?}", pcx.errors);
-            tcx.sess.delay_span_bug(pat.span, &msg);
-        }
-        debug!("Pat::from_hir({:?}) = {:?}", pat, result);
-        result
+crate fn pat_from_hir<'a, 'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    typeck_results: &'a ty::TypeckResults<'tcx>,
+    pat: &'tcx hir::Pat<'tcx>,
+) -> Pat<'tcx> {
+    let mut pcx = PatCtxt::new(tcx, param_env, typeck_results);
+    let result = pcx.lower_pattern(pat);
+    if !pcx.errors.is_empty() {
+        let msg = format!("encountered errors lowering pattern: {:?}", pcx.errors);
+        tcx.sess.delay_span_bug(pat.span, &msg);
     }
+    debug!("pat_from_hir({:?}) = {:?}", pat, result);
+    result
 }
 
 impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
@@ -642,7 +324,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
 
     fn lower_tuple_subpats(
         &mut self,
-        pats: &'tcx [&'tcx hir::Pat<'tcx>],
+        pats: &'tcx [hir::Pat<'tcx>],
         expected_len: usize,
         gap_pos: Option<usize>,
     ) -> Vec<FieldPat<'tcx>> {
@@ -655,7 +337,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             .collect()
     }
 
-    fn lower_patterns(&mut self, pats: &'tcx [&'tcx hir::Pat<'tcx>]) -> Vec<Pat<'tcx>> {
+    fn lower_patterns(&mut self, pats: &'tcx [hir::Pat<'tcx>]) -> Vec<Pat<'tcx>> {
         pats.iter().map(|p| self.lower_pattern(p)).collect()
     }
 
@@ -667,9 +349,9 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
         &mut self,
         span: Span,
         ty: Ty<'tcx>,
-        prefix: &'tcx [&'tcx hir::Pat<'tcx>],
+        prefix: &'tcx [hir::Pat<'tcx>],
         slice: &'tcx Option<&'tcx hir::Pat<'tcx>>,
-        suffix: &'tcx [&'tcx hir::Pat<'tcx>],
+        suffix: &'tcx [hir::Pat<'tcx>],
     ) -> PatKind<'tcx> {
         let prefix = self.lower_patterns(prefix);
         let slice = self.lower_opt_pattern(slice);
@@ -740,6 +422,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             _ => {
                 let pattern_error = match res {
                     Res::Def(DefKind::ConstParam, _) => PatternError::ConstParamInPattern(span),
+                    Res::Def(DefKind::Static, _) => PatternError::StaticInPattern(span),
                     _ => PatternError::NonConstPath(span),
                 };
                 self.errors.push(pattern_error);
@@ -785,11 +468,10 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
         let instance = match ty::Instance::resolve(self.tcx, param_env_reveal_all, def_id, substs) {
             Ok(Some(i)) => i,
             Ok(None) => {
-                self.errors.push(if is_associated_const {
-                    PatternError::AssocConstInPattern(span)
-                } else {
-                    PatternError::StaticInPattern(span)
-                });
+                // It should be assoc consts if there's no error but we cannot resolve it.
+                debug_assert!(is_associated_const);
+
+                self.errors.push(PatternError::AssocConstInPattern(span));
 
                 return pat_from_kind(PatKind::Wild);
             }
@@ -880,10 +562,6 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                 LitToConstInput { lit: &lit.node, ty: self.typeck_results.expr_ty(expr), neg };
             match self.tcx.at(expr.span).lit_to_const(lit_input) {
                 Ok(val) => *self.const_to_pat(val, expr.hir_id, lit.span, false).kind,
-                Err(LitToConstError::UnparseableFloat) => {
-                    self.errors.push(PatternError::FloatBug);
-                    PatKind::Wild
-                }
                 Err(LitToConstError::Reported) => PatKind::Wild,
                 Err(LitToConstError::TypeError) => bug!("lower_lit: had type error"),
             }

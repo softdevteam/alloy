@@ -89,6 +89,7 @@
                over elements of type `{A}`",
     label = "value of type `{Self}` cannot be built from `std::iter::Iterator<Item={A}>`"
 )]
+#[rustc_diagnostic_item = "FromIterator"]
 pub trait FromIterator<A>: Sized {
     /// Creates a value from an iterator.
     ///
@@ -198,6 +199,7 @@ pub trait FromIterator<A>: Sized {
 /// }
 /// ```
 #[rustc_diagnostic_item = "IntoIterator"]
+#[rustc_skip_array_during_method_dispatch]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait IntoIterator {
     /// The type of the elements being iterated over.
@@ -237,6 +239,7 @@ impl<I: Iterator> IntoIterator for I {
     type Item = I::Item;
     type IntoIter = I;
 
+    #[inline]
     fn into_iter(self) -> I {
         self
     }

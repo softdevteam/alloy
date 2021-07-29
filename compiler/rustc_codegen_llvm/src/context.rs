@@ -71,7 +71,7 @@ pub struct CodegenCx<'ll, 'tcx> {
     pub statics_to_rauw: RefCell<Vec<(&'ll Value, &'ll Value)>>,
 
     /// Statics that will be placed in the llvm.used variable
-    /// See <http://llvm.org/docs/LangRef.html#the-llvm-used-global-variable> for details
+    /// See <https://llvm.org/docs/LangRef.html#the-llvm-used-global-variable> for details
     pub used_statics: RefCell<Vec<&'ll Value>>,
 
     pub lltypes: RefCell<FxHashMap<(Ty<'tcx>, Option<VariantIdx>), &'ll Type>>,
@@ -149,11 +149,12 @@ pub unsafe fn create_module(
 
         if !custom_llvm_used && target_data_layout != llvm_data_layout {
             bug!(
-                "data-layout for builtin `{}` target, `{}`, \
-                  differs from LLVM default, `{}`",
-                sess.target.llvm_target,
-                target_data_layout,
-                llvm_data_layout
+                "data-layout for target `{rustc_target}`, `{rustc_layout}`, \
+                  differs from LLVM target's `{llvm_target}` default layout, `{llvm_layout}`",
+                rustc_target = sess.opts.target_triple,
+                rustc_layout = target_data_layout,
+                llvm_target = sess.target.llvm_target,
+                llvm_layout = llvm_data_layout
             );
         }
     }
@@ -385,11 +386,16 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 } else {
                     "rust_eh_personality"
                 };
-                let fty = self.type_variadic_func(&[], self.type_i32());
-                self.declare_cfn(name, llvm::UnnamedAddr::Global, fty)
+                if let Some(llfn) = self.get_declared_value(name) {
+                    llfn
+                } else {
+                    let fty = self.type_variadic_func(&[], self.type_i32());
+                    let llfn = self.declare_cfn(name, llvm::UnnamedAddr::Global, fty);
+                    attributes::apply_target_cpu_attr(self, llfn);
+                    llfn
+                }
             }
         };
-        attributes::apply_target_cpu_attr(self, llfn);
         self.eh_personality.set(Some(llfn));
         llfn
     }
@@ -410,8 +416,8 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         &self.used_statics
     }
 
-    fn set_frame_pointer_elimination(&self, llfn: &'ll Value) {
-        attributes::set_frame_pointer_elimination(self, llfn)
+    fn set_frame_pointer_type(&self, llfn: &'ll Value) {
+        attributes::set_frame_pointer_type(self, llfn)
     }
 
     fn apply_target_cpu_attr(&self, llfn: &'ll Value) {
@@ -500,17 +506,10 @@ impl CodegenCx<'b, 'tcx> {
         let t_i32 = self.type_i32();
         let t_i64 = self.type_i64();
         let t_i128 = self.type_i128();
+        let t_isize = self.type_isize();
         let t_f32 = self.type_f32();
         let t_f64 = self.type_f64();
 
-        ifn!("llvm.wasm.trunc.saturate.unsigned.i32.f32", fn(t_f32) -> t_i32);
-        ifn!("llvm.wasm.trunc.saturate.unsigned.i32.f64", fn(t_f64) -> t_i32);
-        ifn!("llvm.wasm.trunc.saturate.unsigned.i64.f32", fn(t_f32) -> t_i64);
-        ifn!("llvm.wasm.trunc.saturate.unsigned.i64.f64", fn(t_f64) -> t_i64);
-        ifn!("llvm.wasm.trunc.saturate.signed.i32.f32", fn(t_f32) -> t_i32);
-        ifn!("llvm.wasm.trunc.saturate.signed.i32.f64", fn(t_f64) -> t_i32);
-        ifn!("llvm.wasm.trunc.saturate.signed.i64.f32", fn(t_f32) -> t_i64);
-        ifn!("llvm.wasm.trunc.saturate.signed.i64.f64", fn(t_f64) -> t_i64);
         ifn!("llvm.wasm.trunc.unsigned.i32.f32", fn(t_f32) -> t_i32);
         ifn!("llvm.wasm.trunc.unsigned.i32.f64", fn(t_f64) -> t_i32);
         ifn!("llvm.wasm.trunc.unsigned.i64.f32", fn(t_f32) -> t_i64);
@@ -519,6 +518,28 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.wasm.trunc.signed.i32.f64", fn(t_f64) -> t_i32);
         ifn!("llvm.wasm.trunc.signed.i64.f32", fn(t_f32) -> t_i64);
         ifn!("llvm.wasm.trunc.signed.i64.f64", fn(t_f64) -> t_i64);
+
+        ifn!("llvm.fptosi.sat.i8.f32", fn(t_f32) -> t_i8);
+        ifn!("llvm.fptosi.sat.i16.f32", fn(t_f32) -> t_i16);
+        ifn!("llvm.fptosi.sat.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.fptosi.sat.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.fptosi.sat.i128.f32", fn(t_f32) -> t_i128);
+        ifn!("llvm.fptosi.sat.i8.f64", fn(t_f64) -> t_i8);
+        ifn!("llvm.fptosi.sat.i16.f64", fn(t_f64) -> t_i16);
+        ifn!("llvm.fptosi.sat.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.fptosi.sat.i64.f64", fn(t_f64) -> t_i64);
+        ifn!("llvm.fptosi.sat.i128.f64", fn(t_f64) -> t_i128);
+
+        ifn!("llvm.fptoui.sat.i8.f32", fn(t_f32) -> t_i8);
+        ifn!("llvm.fptoui.sat.i16.f32", fn(t_f32) -> t_i16);
+        ifn!("llvm.fptoui.sat.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.fptoui.sat.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.fptoui.sat.i128.f32", fn(t_f32) -> t_i128);
+        ifn!("llvm.fptoui.sat.i8.f64", fn(t_f64) -> t_i8);
+        ifn!("llvm.fptoui.sat.i16.f64", fn(t_f64) -> t_i16);
+        ifn!("llvm.fptoui.sat.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.fptoui.sat.i64.f64", fn(t_f64) -> t_i64);
+        ifn!("llvm.fptoui.sat.i128.f64", fn(t_f64) -> t_i128);
 
         ifn!("llvm.trap", fn() -> void);
         ifn!("llvm.debugtrap", fn() -> void);
@@ -698,6 +719,10 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.assume", fn(i1) -> void);
         ifn!("llvm.prefetch", fn(i8p, t_i32, t_i32, t_i32) -> void);
 
+        // This isn't an "LLVM intrinsic", but LLVM's optimization passes
+        // recognize it like one and we assume it exists in `core::slice::cmp`
+        ifn!("memcmp", fn(i8p, i8p, t_isize) -> t_i32);
+
         // variadic intrinsics
         ifn!("llvm.va_start", fn(i8p) -> void);
         ifn!("llvm.va_end", fn(i8p) -> void);
@@ -751,18 +776,21 @@ impl<'b, 'tcx> CodegenCx<'b, 'tcx> {
 }
 
 impl HasDataLayout for CodegenCx<'ll, 'tcx> {
+    #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         &self.tcx.data_layout
     }
 }
 
 impl HasTargetSpec for CodegenCx<'ll, 'tcx> {
+    #[inline]
     fn target_spec(&self) -> &Target {
         &self.tcx.sess.target
     }
 }
 
 impl ty::layout::HasTyCtxt<'tcx> for CodegenCx<'ll, 'tcx> {
+    #[inline]
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }

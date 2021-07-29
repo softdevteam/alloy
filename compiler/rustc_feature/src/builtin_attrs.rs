@@ -23,6 +23,7 @@ pub type GatedCfg = (Symbol, Symbol, GateFn);
 /// `cfg(...)`'s that are feature gated.
 const GATED_CFGS: &[GatedCfg] = &[
     // (name in cfg, feature, function to check if the feature is enabled)
+    (sym::target_abi, sym::cfg_target_abi, cfg_fn!(cfg_target_abi)),
     (sym::target_thread_local, sym::cfg_target_thread_local, cfg_fn!(cfg_target_thread_local)),
     (sym::target_has_atomic, sym::cfg_target_has_atomic, cfg_fn!(cfg_target_has_atomic)),
     (sym::target_has_atomic_load_store, sym::cfg_target_has_atomic, cfg_fn!(cfg_target_has_atomic)),
@@ -241,6 +242,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         const_eval_limit, CrateLevel, template!(NameValueStr: "N"), const_eval_limit,
         experimental!(const_eval_limit)
     ),
+    gated!(
+        move_size_limit, CrateLevel, template!(NameValueStr: "N"), large_assignments,
+        experimental!(move_size_limit)
+    ),
 
     // Entry point:
     ungated!(main, Normal, template!(Word)),
@@ -269,6 +274,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(List: "address, memory, thread"),
         experimental!(no_sanitize)
     ),
+    gated!(no_coverage, AssumedUsed, template!(Word), experimental!(no_coverage)),
 
     // FIXME: #14408 assume docs are used since rustdoc looks at them.
     ungated!(doc, AssumedUsed, template!(List: "hidden|inline|...", NameValueStr: "string")),
@@ -344,6 +350,12 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ),
 
     gated!(cmse_nonsecure_entry, AssumedUsed, template!(Word), experimental!(cmse_nonsecure_entry)),
+    // RFC 2632
+    gated!(
+        default_method_body_is_const, AssumedUsed, template!(Word), const_trait_impl,
+        "`default_method_body_is_const` is a temporary placeholder for declaring default bodies \
+        as `const`, which may be removed or renamed in the future."
+    ),
 
     // ==========================================================================
     // Internal attributes: Stability, deprecation, and unsafe:
@@ -437,7 +449,11 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // Internal attributes, Macro related:
     // ==========================================================================
 
-    rustc_attr!(rustc_builtin_macro, AssumedUsed, template!(Word, NameValueStr: "name"), IMPL_DETAIL),
+    rustc_attr!(
+        rustc_builtin_macro, AssumedUsed,
+        template!(Word, List: "name, /*opt*/ attributes(name1, name2, ...)"),
+        IMPL_DETAIL,
+    ),
     rustc_attr!(rustc_proc_macro_decls, Normal, template!(Word), INTERNAL_UNSTABLE),
     rustc_attr!(
         rustc_macro_transparency, AssumedUsed,
@@ -465,7 +481,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // ==========================================================================
 
     rustc_attr!(rustc_promotable, AssumedUsed, template!(Word), IMPL_DETAIL),
-    rustc_attr!(rustc_args_required_const, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
     rustc_attr!(rustc_legacy_const_generics, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
 
     // ==========================================================================
@@ -541,6 +556,11 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         rustc_main, Normal, template!(Word),
         "the `#[rustc_main]` attribute is used internally to specify test entry point function",
     ),
+    rustc_attr!(
+        rustc_skip_array_during_method_dispatch, Normal, template!(Word),
+        "the `#[rustc_skip_array_during_method_dispatch]` attribute is used to exclude a trait \
+        from method dispatch when the receiver is an array, for compatibility in editions < 2021."
+    ),
 
     // ==========================================================================
     // Internal attributes, Testing:
@@ -548,6 +568,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     rustc_attr!(TEST, rustc_outlives, Normal, template!(Word)),
     rustc_attr!(TEST, rustc_capture_analysis, Normal, template!(Word)),
+    rustc_attr!(TEST, rustc_insignificant_dtor, Normal, template!(Word)),
     rustc_attr!(TEST, rustc_variance, Normal, template!(Word)),
     rustc_attr!(TEST, rustc_layout, Normal, template!(List: "field1, field2, ...")),
     rustc_attr!(TEST, rustc_regions, Normal, template!(Word)),
@@ -556,12 +577,9 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(Word, List: "delay_span_bug_from_inside_query")
     ),
     rustc_attr!(TEST, rustc_dump_user_substs, AssumedUsed, template!(Word)),
+    rustc_attr!(TEST, rustc_evaluate_where_clauses, AssumedUsed, template!(Word)),
     rustc_attr!(TEST, rustc_if_this_changed, AssumedUsed, template!(Word, List: "DepNode")),
     rustc_attr!(TEST, rustc_then_this_would_need, AssumedUsed, template!(List: "DepNode")),
-    rustc_attr!(
-        TEST, rustc_dirty, AssumedUsed,
-        template!(List: r#"cfg = "...", /*opt*/ label = "...", /*opt*/ except = "...""#),
-    ),
     rustc_attr!(
         TEST, rustc_clean, AssumedUsed,
         template!(List: r#"cfg = "...", /*opt*/ label = "...", /*opt*/ except = "...""#),

@@ -8,12 +8,10 @@
 #![feature(bool_to_option)]
 #![feature(const_cstr_unchecked)]
 #![feature(crate_visibility_modifier)]
-#![feature(extended_key_value_attributes)]
 #![feature(extern_types)]
 #![feature(in_band_lifetimes)]
 #![feature(iter_zip)]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![recursion_limit = "256"]
 
 use back::write::{create_informational_target_machine, create_target_machine};
@@ -30,8 +28,8 @@ use rustc_codegen_ssa::{CodegenResults, CompiledModule};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{ErrorReported, FatalError, Handler};
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
-use rustc_middle::middle::cstore::{EncodedMetadata, MetadataLoaderDyn};
-use rustc_middle::ty::{self, TyCtxt};
+use rustc_middle::middle::cstore::EncodedMetadata;
+use rustc_middle::ty::TyCtxt;
 use rustc_session::config::{OptLevel, OutputFilenames, PrintRequest};
 use rustc_session::Session;
 use rustc_span::symbol::Symbol;
@@ -69,7 +67,6 @@ pub mod llvm {
 }
 
 mod llvm_util;
-mod metadata;
 mod mono_item;
 mod type_;
 mod type_of;
@@ -162,7 +159,7 @@ impl WriteBackendMethods for LlvmCodegenBackend {
         module: &ModuleCodegen<Self::Module>,
         config: &ModuleConfig,
     ) -> Result<(), FatalError> {
-        Ok(back::write::optimize(cgcx, diag_handler, module, config))
+        back::write::optimize(cgcx, diag_handler, module, config)
     }
     unsafe fn optimize_thin(
         cgcx: &CodegenContext<Self>,
@@ -189,8 +186,9 @@ impl WriteBackendMethods for LlvmCodegenBackend {
         module: &ModuleCodegen<Self::Module>,
         config: &ModuleConfig,
         thin: bool,
-    ) {
-        back::lto::run_pass_manager(cgcx, module, config, thin)
+    ) -> Result<(), FatalError> {
+        let diag_handler = cgcx.create_diag_handler();
+        back::lto::run_pass_manager(cgcx, &diag_handler, module, config, thin)
     }
 }
 
@@ -249,18 +247,6 @@ impl CodegenBackend for LlvmCodegenBackend {
         target_features(sess)
     }
 
-    fn metadata_loader(&self) -> Box<MetadataLoaderDyn> {
-        Box::new(metadata::LlvmMetadataLoader)
-    }
-
-    fn provide(&self, providers: &mut ty::query::Providers) {
-        attributes::provide_both(providers);
-    }
-
-    fn provide_extern(&self, providers: &mut ty::query::Providers) {
-        attributes::provide_both(providers);
-    }
-
     fn codegen_crate<'tcx>(
         &self,
         tcx: TyCtxt<'tcx>,
@@ -270,6 +256,7 @@ impl CodegenBackend for LlvmCodegenBackend {
         Box::new(rustc_codegen_ssa::base::codegen_crate(
             LlvmCodegenBackend(()),
             tcx,
+            crate::llvm_util::target_cpu(tcx.sess).to_string(),
             metadata,
             need_metadata_module,
         ))
@@ -305,16 +292,7 @@ impl CodegenBackend for LlvmCodegenBackend {
 
         // Run the linker on any artifacts that resulted from the LLVM run.
         // This should produce either a finished executable or library.
-        let target_cpu = crate::llvm_util::target_cpu(sess);
-        link_binary::<LlvmArchiveBuilder<'_>>(
-            sess,
-            &codegen_results,
-            outputs,
-            &codegen_results.crate_name.as_str(),
-            target_cpu,
-        );
-
-        Ok(())
+        link_binary::<LlvmArchiveBuilder<'_>>(sess, &codegen_results, outputs)
     }
 }
 

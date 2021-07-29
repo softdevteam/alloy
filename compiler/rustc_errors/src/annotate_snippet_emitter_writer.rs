@@ -126,7 +126,8 @@ impl AnnotateSnippetEmitterWriter {
             }
             // owned: line source, line index, annotations
             type Owned = (String, usize, Vec<crate::snippet::Annotation>);
-            let origin = primary_lo.file.name.to_string();
+            let filename = primary_lo.file.name.prefer_local();
+            let origin = filename.to_string_lossy();
             let annotated_files: Vec<Owned> = annotated_files
                 .into_iter()
                 .flat_map(|annotated_file| {
@@ -144,8 +145,9 @@ impl AnnotateSnippetEmitterWriter {
                 title: Some(Annotation {
                     label: Some(&message),
                     id: code.as_ref().map(|c| match c {
-                        DiagnosticId::Error(val)
-                        | DiagnosticId::Lint { name: val, has_future_breakage: _ } => val.as_str(),
+                        DiagnosticId::Error(val) | DiagnosticId::Lint { name: val, .. } => {
+                            val.as_str()
+                        }
                     }),
                     annotation_type: annotation_type_for_level(*level),
                 }),

@@ -3,7 +3,7 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/mir/index.html
 
 use crate::mir::coverage::{CodeRegion, CoverageKind};
-use crate::mir::interpret::{Allocation, GlobalAlloc, Scalar};
+use crate::mir::interpret::{Allocation, ConstValue, GlobalAlloc, Scalar};
 use crate::mir::visit::MirVisitable;
 use crate::ty::adjustment::PointerCast;
 use crate::ty::codec::{TyDecoder, TyEncoder};
@@ -12,10 +12,10 @@ use crate::ty::print::{FmtPrinter, Printer};
 use crate::ty::subst::{Subst, SubstsRef};
 use crate::ty::{self, List, Ty, TyCtxt};
 use crate::ty::{AdtDef, InstanceDef, Region, ScalarInt, UserTypeAnnotationIndex};
-use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, Namespace};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::{self, GeneratorKind};
+use rustc_hir::{self as hir, HirId};
 use rustc_target::abi::{Size, VariantIdx};
 
 use polonius_engine::Atom;
@@ -461,7 +461,7 @@ impl<'tcx> Body<'tcx> {
     }
 
     #[inline]
-    pub fn predecessors(&self) -> impl std::ops::Deref<Target = Predecessors> + '_ {
+    pub fn predecessors(&self) -> &Predecessors {
         self.predecessor_cache.compute(&self.basic_blocks)
     }
 
@@ -494,7 +494,7 @@ impl<'tcx> Body<'tcx> {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, TyEncodable, TyDecodable, HashStable)]
 pub enum Safety {
     Safe,
-    /// Unsafe because of a PushUnsafeBlock
+    /// Unsafe because of compiler-generated unsafe code, like `await` desugaring
     BuiltinUnsafe,
     /// Unsafe because of an unsafe fn
     FnUnsafe,
@@ -651,7 +651,7 @@ pub enum BorrowKind {
     /// in an aliasable location. To solve, you'd have to translate with
     /// an `&mut` borrow:
     ///
-    ///     struct Env { x: & &mut isize }
+    ///     struct Env { x: &mut &mut isize }
     ///     let x: &mut isize = ...;
     ///     let y = (&mut Env { &mut x }, fn_ptr); // changed from &x to &mut x
     ///     fn fn_ptr(env: &mut Env) { **env.x += 5; }
@@ -681,6 +681,15 @@ impl BorrowKind {
         match *self {
             BorrowKind::Shared | BorrowKind::Shallow | BorrowKind::Unique => false,
             BorrowKind::Mut { allow_two_phase_borrow } => allow_two_phase_borrow,
+        }
+    }
+
+    pub fn describe_mutability(&self) -> String {
+        match *self {
+            BorrowKind::Shared | BorrowKind::Shallow | BorrowKind::Unique => {
+                "immutable".to_string()
+            }
+            BorrowKind::Mut { .. } => "mutable".to_string(),
         }
     }
 }
@@ -1240,10 +1249,12 @@ impl<'tcx> BasicBlockData<'tcx> {
     ///
     /// Terminator may not be None after construction of the basic block is complete. This accessor
     /// provides a convenience way to reach the terminator.
+    #[inline]
     pub fn terminator(&self) -> &Terminator<'tcx> {
         self.terminator.as_ref().expect("invalid terminator state")
     }
 
+    #[inline]
     pub fn terminator_mut(&mut self) -> &mut Terminator<'tcx> {
         self.terminator.as_mut().expect("invalid terminator state")
     }
@@ -1340,7 +1351,7 @@ impl<O> AssertKind<O> {
     }
 
     /// Format the message arguments for the `assert(cond, msg..)` terminator in MIR printing.
-    fn fmt_assert_args<W: Write>(&self, f: &mut W) -> fmt::Result
+    pub fn fmt_assert_args<W: Write>(&self, f: &mut W) -> fmt::Result
     where
         O: Debug,
     {
@@ -1861,6 +1872,7 @@ impl<'tcx> PlaceRef<'tcx> {
 
     /// If this place represents a local variable like `_X` with no
     /// projections, return `Some(_X)`.
+    #[inline]
     pub fn as_local(&self) -> Option<Local> {
         match *self {
             PlaceRef { local, projection: [] } => Some(local),
@@ -1868,6 +1880,7 @@ impl<'tcx> PlaceRef<'tcx> {
         }
     }
 
+    #[inline]
     pub fn last_projection(&self) -> Option<(PlaceRef<'tcx>, PlaceElem<'tcx>)> {
         if let &[ref proj_base @ .., elem] = self.projection {
             Some((PlaceRef { local: self.local, projection: proj_base }, elem))
@@ -1945,6 +1958,29 @@ rustc_index::newtype_index! {
         derive [HashStable]
         DEBUG_FORMAT = "scope[{}]",
         const OUTERMOST_SOURCE_SCOPE = 0,
+    }
+}
+
+impl SourceScope {
+    /// Finds the original HirId this MIR item came from.
+    /// This is necessary after MIR optimizations, as otherwise we get a HirId
+    /// from the function that was inlined instead of the function call site.
+    pub fn lint_root(
+        self,
+        source_scopes: &IndexVec<SourceScope, SourceScopeData<'tcx>>,
+    ) -> Option<HirId> {
+        let mut data = &source_scopes[self];
+        // FIXME(oli-obk): we should be able to just walk the `inlined_parent_scope`, but it
+        // does not work as I thought it would. Needs more investigation and documentation.
+        while data.inlined.is_some() {
+            trace!(?data);
+            data = &source_scopes[data.parent_scope.unwrap()];
+        }
+        trace!(?data);
+        match &data.local_data {
+            ClearCrossCrate::Set(data) => Some(data.lint_root),
+            ClearCrossCrate::Clear => None,
+        }
     }
 }
 
@@ -2059,7 +2095,7 @@ impl<'tcx> Operand<'tcx> {
         Operand::Constant(box Constant {
             span,
             user_ty: None,
-            literal: ConstantKind::Val(val.into(), ty),
+            literal: ConstantKind::Val(ConstValue::Scalar(val), ty),
         })
     }
 
@@ -2342,10 +2378,14 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                                 )
                             } else {
                                 let span = tcx.hir().span(hir_id);
-                                format!("[closure@{}]", tcx.sess.source_map().span_to_string(span))
+                                format!(
+                                    "[closure@{}]",
+                                    tcx.sess.source_map().span_to_diagnostic_string(span)
+                                )
                             };
                             let mut struct_fmt = fmt.debug_struct(&name);
 
+                            // FIXME(project-rfc-2229#48): This should be a list of capture names/places
                             if let Some(upvars) = tcx.upvars_mentioned(def_id) {
                                 for (&var_id, place) in iter::zip(upvars.keys(), places) {
                                     let var_name = tcx.hir().name(var_id);
@@ -2365,6 +2405,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                             let name = format!("[generator@{:?}]", tcx.hir().span(hir_id));
                             let mut struct_fmt = fmt.debug_struct(&name);
 
+                            // FIXME(project-rfc-2229#48): This should be a list of capture names/places
                             if let Some(upvars) = tcx.upvars_mentioned(def_id) {
                                 for (&var_id, place) in iter::zip(upvars.keys(), places) {
                                     let var_name = tcx.hir().name(var_id);
@@ -2417,7 +2458,7 @@ pub enum ConstantKind<'tcx> {
 impl Constant<'tcx> {
     pub fn check_static_ptr(&self, tcx: TyCtxt<'_>) -> Option<DefId> {
         match self.literal.const_for_ty()?.val.try_to_scalar() {
-            Some(Scalar::Ptr(ptr)) => match tcx.global_alloc(ptr.alloc_id) {
+            Some(Scalar::Ptr(ptr, _size)) => match tcx.global_alloc(ptr.provenance) {
                 GlobalAlloc::Static(def_id) => {
                     assert!(!tcx.is_thread_local_static(def_id));
                     Some(def_id)
@@ -2427,12 +2468,14 @@ impl Constant<'tcx> {
             _ => None,
         }
     }
+    #[inline]
     pub fn ty(&self) -> Ty<'tcx> {
         self.literal.ty()
     }
 }
 
 impl From<&'tcx ty::Const<'tcx>> for ConstantKind<'tcx> {
+    #[inline]
     fn from(ct: &'tcx ty::Const<'tcx>) -> Self {
         Self::Ty(ct)
     }
@@ -2781,13 +2824,13 @@ impl<'a, 'b> graph::GraphSuccessors<'b> for Body<'a> {
 
 impl graph::GraphPredecessors<'graph> for Body<'tcx> {
     type Item = BasicBlock;
-    type Iter = smallvec::IntoIter<[BasicBlock; 4]>;
+    type Iter = std::iter::Copied<std::slice::Iter<'graph, BasicBlock>>;
 }
 
 impl graph::WithPredecessors for Body<'tcx> {
     #[inline]
     fn predecessors(&self, node: Self::Node) -> <Self as graph::GraphPredecessors<'_>>::Iter {
-        self.predecessors()[node].clone().into_iter()
+        self.predecessors()[node].iter().copied()
     }
 }
 

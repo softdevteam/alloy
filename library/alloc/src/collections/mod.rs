@@ -2,11 +2,16 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+#[cfg(not(no_global_oom_handling))]
 pub mod binary_heap;
+#[cfg(not(no_global_oom_handling))]
 mod btree;
+#[cfg(not(no_global_oom_handling))]
 pub mod linked_list;
+#[cfg(not(no_global_oom_handling))]
 pub mod vec_deque;
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod btree_map {
     //! A map based on a B-Tree.
@@ -14,6 +19,7 @@ pub mod btree_map {
     pub use super::btree::map::*;
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub mod btree_set {
     //! A set based on a B-Tree.
@@ -21,22 +27,27 @@ pub mod btree_set {
     pub use super::btree::set::*;
 }
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
 pub use binary_heap::BinaryHeap;
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
 pub use btree_map::BTreeMap;
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
 pub use btree_set::BTreeSet;
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
 pub use linked_list::LinkedList;
 
+#[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
 pub use vec_deque::VecDeque;
@@ -72,6 +83,7 @@ pub enum TryReserveError {
 
 #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
 impl From<LayoutError> for TryReserveError {
+    /// Always evaluates to [`TryReserveError::CapacityOverflow`].
     #[inline]
     fn from(_: LayoutError) -> Self {
         TryReserveError::CapacityOverflow

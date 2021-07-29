@@ -1,11 +1,9 @@
 #![feature(generic_associated_types)]
-//~^ WARNING the feature
 
 pub trait SubTrait {}
 
 pub trait SuperTrait {
     type SubType<'a>: SubTrait;
-    //~^ ERROR missing generics for associated
 
     fn get_sub<'a>(&'a mut self) -> Self::SubType<'a>;
 }
@@ -36,4 +34,7 @@ impl SuperTrait for SuperStruct {
 
 fn main() {
     let sub: Box<dyn SuperTrait<SubType = SubStruct>> = Box::new(SuperStruct::new(0));
+      //~^ ERROR missing generics for associated type
+      //~^^ ERROR the trait
+      //~| ERROR the trait
 }

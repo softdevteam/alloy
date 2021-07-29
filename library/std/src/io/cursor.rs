@@ -71,7 +71,7 @@ use core::convert::TryInto;
 /// }
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct Cursor<T> {
     inner: T,
     pos: u64,
@@ -205,6 +205,79 @@ impl<T> Cursor<T> {
     }
 }
 
+impl<T> Cursor<T>
+where
+    T: AsRef<[u8]>,
+{
+    /// Returns the remaining slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(cursor_remaining)]
+    /// use std::io::Cursor;
+    ///
+    /// let mut buff = Cursor::new(vec![1, 2, 3, 4, 5]);
+    ///
+    /// assert_eq!(buff.remaining_slice(), &[1, 2, 3, 4, 5]);
+    ///
+    /// buff.set_position(2);
+    /// assert_eq!(buff.remaining_slice(), &[3, 4, 5]);
+    ///
+    /// buff.set_position(4);
+    /// assert_eq!(buff.remaining_slice(), &[5]);
+    ///
+    /// buff.set_position(6);
+    /// assert_eq!(buff.remaining_slice(), &[]);
+    /// ```
+    #[unstable(feature = "cursor_remaining", issue = "86369")]
+    pub fn remaining_slice(&self) -> &[u8] {
+        let len = self.pos.min(self.inner.as_ref().len() as u64);
+        &self.inner.as_ref()[(len as usize)..]
+    }
+
+    /// Returns `true` if the remaining slice is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(cursor_remaining)]
+    /// use std::io::Cursor;
+    ///
+    /// let mut buff = Cursor::new(vec![1, 2, 3, 4, 5]);
+    ///
+    /// buff.set_position(2);
+    /// assert!(!buff.is_empty());
+    ///
+    /// buff.set_position(5);
+    /// assert!(buff.is_empty());
+    ///
+    /// buff.set_position(10);
+    /// assert!(buff.is_empty());
+    /// ```
+    #[unstable(feature = "cursor_remaining", issue = "86369")]
+    pub fn is_empty(&self) -> bool {
+        self.pos >= self.inner.as_ref().len() as u64
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T> Clone for Cursor<T>
+where
+    T: Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        Cursor { inner: self.inner.clone(), pos: self.pos }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, other: &Self) {
+        self.inner.clone_from(&other.inner);
+        self.pos = other.pos;
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> io::Seek for Cursor<T>
 where
@@ -251,7 +324,7 @@ where
     T: AsRef<[u8]>,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = Read::read(&mut self.fill_buf()?, buf)?;
+        let n = Read::read(&mut self.remaining_slice(), buf)?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -274,7 +347,7 @@ where
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
         let n = buf.len();
-        Read::read_exact(&mut self.fill_buf()?, buf)?;
+        Read::read_exact(&mut self.remaining_slice(), buf)?;
         self.pos += n as u64;
         Ok(())
     }
@@ -291,8 +364,7 @@ where
     T: AsRef<[u8]>,
 {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        let amt = cmp::min(self.pos, self.inner.as_ref().len() as u64);
-        Ok(&self.inner.as_ref()[(amt as usize)..])
+        Ok(self.remaining_slice())
     }
     fn consume(&mut self, amt: usize) {
         self.pos += amt as u64;

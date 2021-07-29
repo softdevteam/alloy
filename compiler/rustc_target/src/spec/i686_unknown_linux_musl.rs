@@ -1,4 +1,4 @@
-use crate::spec::{LinkerFlavor, StackProbeType, Target};
+use crate::spec::{FramePointer, LinkerFlavor, StackProbeType, Target};
 
 pub fn target() -> Target {
     let mut base = super::linux_musl_base::opts();
@@ -6,7 +6,8 @@ pub fn target() -> Target {
     base.max_atomic_width = Some(64);
     base.pre_link_args.entry(LinkerFlavor::Gcc).or_default().push("-m32".to_string());
     base.pre_link_args.entry(LinkerFlavor::Gcc).or_default().push("-Wl,-melf_i386".to_string());
-    base.stack_probes = StackProbeType::InlineOrCall { min_llvm_version_for_inline: (11, 0, 1) };
+    // don't use probe-stack=inline-asm until rust#83139 and rust#84667 are resolved
+    base.stack_probes = StackProbeType::Call;
 
     // The unwinder used by i686-unknown-linux-musl, the LLVM libunwind
     // implementation, apparently relies on frame pointers existing... somehow.
@@ -20,7 +21,7 @@ pub fn target() -> Target {
     //
     // This may or may not be related to this bug:
     // https://llvm.org/bugs/show_bug.cgi?id=30879
-    base.eliminate_frame_pointer = false;
+    base.frame_pointer = FramePointer::Always;
 
     Target {
         llvm_target: "i686-unknown-linux-musl".to_string(),

@@ -3,11 +3,9 @@ mod tests;
 
 use crate::cell::UnsafeCell;
 use crate::fmt;
-use crate::mem;
 use crate::ops::{Deref, DerefMut};
-use crate::ptr;
+use crate::sync::{poison, LockResult, TryLockError, TryLockResult};
 use crate::sys_common::mutex as sys;
-use crate::sys_common::poison::{self, LockResult, TryLockError, TryLockResult};
 
 /// A mutual exclusion primitive useful for protecting shared data
 ///
@@ -219,26 +217,6 @@ impl<T> Mutex<T> {
             data: UnsafeCell::new(t),
         }
     }
-
-    /// Immediately drops the guard, and consequently unlocks the mutex.
-    ///
-    /// This function is equivalent to calling [`drop`] on the guard but is more self-documenting.
-    /// Alternately, the guard will be automatically dropped when it goes out of scope.
-    ///
-    /// ```
-    /// #![feature(mutex_unlock)]
-    ///
-    /// use std::sync::Mutex;
-    /// let mutex = Mutex::new(0);
-    ///
-    /// let mut guard = mutex.lock().unwrap();
-    /// *guard += 20;
-    /// Mutex::unlock(guard);
-    /// ```
-    #[unstable(feature = "mutex_unlock", issue = "81872")]
-    pub fn unlock(guard: MutexGuard<'_, T>) {
-        drop(guard);
-    }
 }
 
 impl<T: ?Sized> Mutex<T> {
@@ -296,8 +274,14 @@ impl<T: ?Sized> Mutex<T> {
     /// # Errors
     ///
     /// If another user of this mutex panicked while holding the mutex, then
-    /// this call will return an error if the mutex would otherwise be
-    /// acquired.
+    /// this call will return the [`Poisoned`] error if the mutex would
+    /// otherwise be acquired.
+    ///
+    /// If the mutex could not be acquired because it is already locked, then
+    /// this call will return the [`WouldBlock`] error.
+    ///
+    /// [`Poisoned`]: TryLockError::Poisoned
+    /// [`WouldBlock`]: TryLockError::WouldBlock
     ///
     /// # Examples
     ///
@@ -327,6 +311,26 @@ impl<T: ?Sized> Mutex<T> {
                 Err(TryLockError::WouldBlock)
             }
         }
+    }
+
+    /// Immediately drops the guard, and consequently unlocks the mutex.
+    ///
+    /// This function is equivalent to calling [`drop`] on the guard but is more self-documenting.
+    /// Alternately, the guard will be automatically dropped when it goes out of scope.
+    ///
+    /// ```
+    /// #![feature(mutex_unlock)]
+    ///
+    /// use std::sync::Mutex;
+    /// let mutex = Mutex::new(0);
+    ///
+    /// let mut guard = mutex.lock().unwrap();
+    /// *guard += 20;
+    /// Mutex::unlock(guard);
+    /// ```
+    #[unstable(feature = "mutex_unlock", issue = "81872")]
+    pub fn unlock(guard: MutexGuard<'_, T>) {
+        drop(guard);
     }
 
     /// Determines whether the mutex is poisoned.
@@ -376,23 +380,8 @@ impl<T: ?Sized> Mutex<T> {
     where
         T: Sized,
     {
-        // We know statically that there are no outstanding references to
-        // `self` so there's no need to lock the inner mutex.
-        //
-        // To get the inner value, we'd like to call `data.into_inner()`,
-        // but because `Mutex` impl-s `Drop`, we can't move out of it, so
-        // we'll have to destructure it manually instead.
-        unsafe {
-            // Like `let Mutex { inner, poison, data } = self`.
-            let (inner, poison, data) = {
-                let Mutex { ref inner, ref poison, ref data } = self;
-                (ptr::read(inner), ptr::read(poison), ptr::read(data))
-            };
-            mem::forget(self);
-            drop(inner);
-
-            poison::map_result(poison.borrow(), |_| data.into_inner())
-        }
+        let data = self.data.into_inner();
+        poison::map_result(self.poison.borrow(), |_| data)
     }
 
     /// Returns a mutable reference to the underlying data.

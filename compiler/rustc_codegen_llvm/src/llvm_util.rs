@@ -1,15 +1,19 @@
 use crate::back::write::create_informational_target_machine;
-use crate::llvm;
+use crate::{llvm, llvm_util};
 use libc::c_int;
 use rustc_codegen_ssa::target_features::supported_target_features;
 use rustc_data_structures::fx::FxHashSet;
+use rustc_metadata::dynamic_lib::DynamicLibrary;
 use rustc_middle::bug;
 use rustc_session::config::PrintRequest;
 use rustc_session::Session;
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
 use std::ffi::{CStr, CString};
+use tracing::debug;
 
+use std::mem;
+use std::path::Path;
 use std::ptr;
 use std::slice;
 use std::str;
@@ -84,6 +88,17 @@ unsafe fn configure_llvm(sess: &Session) {
         if !sess.opts.debugging_opts.no_generate_arange_section {
             add("-generate-arange-section", false);
         }
+
+        // FIXME(nagisa): disable the machine outliner by default in LLVM versions 11, where it was
+        // introduced and up.
+        //
+        // This should remain in place until https://reviews.llvm.org/D103167 is fixed. If LLVM
+        // has been upgraded since, consider adjusting the version check below to contain an upper
+        // bound.
+        if llvm_util::get_version() >= (11, 0, 0) {
+            add("-enable-machine-outliner=never", false);
+        }
+
         match sess.opts.debugging_opts.merge_functions.unwrap_or(sess.target.merge_functions) {
             MergeFunctions::Disabled | MergeFunctions::Trampolines => {}
             MergeFunctions::Aliases => {
@@ -117,6 +132,16 @@ unsafe fn configure_llvm(sess: &Session) {
     }
 
     llvm::LLVMInitializePasses();
+
+    for plugin in &sess.opts.debugging_opts.llvm_plugins {
+        let path = Path::new(plugin);
+        let res = DynamicLibrary::open(path);
+        match res {
+            Ok(_) => debug!("LLVM plugin loaded succesfully {} ({})", path.display(), plugin),
+            Err(e) => bug!("couldn't load plugin: {}", e),
+        }
+        mem::forget(res);
+    }
 
     rustc_llvm::initialize_available_targets();
 
@@ -152,6 +177,12 @@ pub fn to_llvm_feature<'a>(sess: &Session, s: &'a str) -> &'a str {
         ("x86", "avx512vpclmulqdq") => "vpclmulqdq",
         ("aarch64", "fp") => "fp-armv8",
         ("aarch64", "fp16") => "fullfp16",
+        ("aarch64", "fhm") => "fp16fml",
+        ("aarch64", "rcpc2") => "rcpc-immo",
+        ("aarch64", "dpb") => "ccpp",
+        ("aarch64", "dpb2") => "ccdp",
+        ("aarch64", "frintts") => "fptoint",
+        ("aarch64", "fcma") => "complxnum",
         (_, s) => s,
     }
 }
@@ -339,24 +370,32 @@ pub fn llvm_global_features(sess: &Session) -> Vec<String> {
         Some(_) | None => {}
     };
 
+    let filter = |s: &str| {
+        if s.is_empty() {
+            return None;
+        }
+        let feature = if s.starts_with("+") || s.starts_with("-") {
+            &s[1..]
+        } else {
+            return Some(s.to_string());
+        };
+        // Rustc-specific feature requests like `+crt-static` or `-crt-static`
+        // are not passed down to LLVM.
+        if RUSTC_SPECIFIC_FEATURES.contains(&feature) {
+            return None;
+        }
+        // ... otherwise though we run through `to_llvm_feature` feature when
+        // passing requests down to LLVM. This means that all in-language
+        // features also work on the command line instead of having two
+        // different names when the LLVM name and the Rust name differ.
+        Some(format!("{}{}", &s[..1], to_llvm_feature(sess, feature)))
+    };
+
     // Features implied by an implicit or explicit `--target`.
-    features.extend(
-        sess.target
-            .features
-            .split(',')
-            .filter(|f| !f.is_empty() && !RUSTC_SPECIFIC_FEATURES.iter().any(|s| f.contains(s)))
-            .map(String::from),
-    );
+    features.extend(sess.target.features.split(',').filter_map(&filter));
 
     // -Ctarget-features
-    features.extend(
-        sess.opts
-            .cg
-            .target_feature
-            .split(',')
-            .filter(|f| !f.is_empty() && !RUSTC_SPECIFIC_FEATURES.iter().any(|s| f.contains(s)))
-            .map(String::from),
-    );
+    features.extend(sess.opts.cg.target_feature.split(',').filter_map(&filter));
 
     features
 }

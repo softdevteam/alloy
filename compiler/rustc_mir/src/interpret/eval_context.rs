@@ -2,24 +2,24 @@ use std::cell::Cell;
 use std::fmt;
 use std::mem;
 
-use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::{self as hir, def_id::DefId, definitions::DefPathData};
 use rustc_index::vec::IndexVec;
 use rustc_macros::HashStable;
 use rustc_middle::ich::StableHashingContext;
 use rustc_middle::mir;
-use rustc_middle::mir::interpret::{GlobalId, InterpResult, Pointer, Scalar};
 use rustc_middle::ty::layout::{self, TyAndLayout};
 use rustc_middle::ty::{
     self, query::TyCtxtAt, subst::SubstsRef, ParamEnv, Ty, TyCtxt, TypeFoldable,
 };
+use rustc_session::Limit;
 use rustc_span::{Pos, Span};
 use rustc_target::abi::{Align, HasDataLayout, LayoutOf, Size, TargetDataLayout};
 
 use super::{
-    Immediate, MPlaceTy, Machine, MemPlace, MemPlaceMeta, Memory, Operand, Place, PlaceTy,
-    ScalarMaybeUninit, StackPopJump,
+    AllocId, GlobalId, Immediate, InterpResult, MPlaceTy, Machine, MemPlace, MemPlaceMeta, Memory,
+    MemoryKind, Operand, Place, PlaceTy, Pointer, Provenance, Scalar, ScalarMaybeUninit,
+    StackPopJump,
 };
 use crate::transform::validate::equal_up_to_regions;
 use crate::util::storage::AlwaysLiveLocals;
@@ -41,9 +41,8 @@ pub struct InterpCx<'mir, 'tcx, M: Machine<'mir, 'tcx>> {
     /// The virtual memory system.
     pub memory: Memory<'mir, 'tcx, M>,
 
-    /// A cache for deduplicating vtables
-    pub(super) vtables:
-        FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), Pointer<M::PointerTag>>,
+    /// The recursion limit (cached from `tcx.recursion_limit(())`)
+    pub recursion_limit: Limit,
 }
 
 // The Phantomdata exists to prevent this type from being `Send`. If it were sent across a thread
@@ -81,7 +80,7 @@ impl Drop for SpanGuard {
 }
 
 /// A stack frame.
-pub struct Frame<'mir, 'tcx, Tag = (), Extra = ()> {
+pub struct Frame<'mir, 'tcx, Tag: Provenance = AllocId, Extra = ()> {
     ////////////////////////////////////////////////////////////////////////////////
     // Function and callsite information
     ////////////////////////////////////////////////////////////////////////////////
@@ -134,14 +133,25 @@ pub struct FrameInfo<'tcx> {
     pub lint_root: Option<hir::HirId>,
 }
 
-#[derive(Clone, Eq, PartialEq, Debug, HashStable)] // Miri debug-prints these
+/// Unwind information.
+#[derive(Clone, Copy, Eq, PartialEq, Debug, HashStable)]
+pub enum StackPopUnwind {
+    /// The cleanup block.
+    Cleanup(mir::BasicBlock),
+    /// No cleanup needs to be done.
+    Skip,
+    /// Unwinding is not allowed (UB).
+    NotAllowed,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, HashStable)] // Miri debug-prints these
 pub enum StackPopCleanup {
     /// Jump to the next block in the caller, or cause UB if None (that's a function
     /// that may never return). Also store layout of return place so
     /// we can validate it at that layout.
     /// `ret` stores the block we jump to on a normal return, while `unwind`
     /// stores the block used for cleanup during unwinding.
-    Goto { ret: Option<mir::BasicBlock>, unwind: Option<mir::BasicBlock> },
+    Goto { ret: Option<mir::BasicBlock>, unwind: StackPopUnwind },
     /// Just do nothing: Used by Main and for the `box_alloc` hook in miri.
     /// `cleanup` says whether locals are deallocated. Static computation
     /// wants them leaked to intern what they need (and just throw away
@@ -151,7 +161,7 @@ pub enum StackPopCleanup {
 
 /// State of a local variable including a memoized layout
 #[derive(Clone, PartialEq, Eq, HashStable)]
-pub struct LocalState<'tcx, Tag = ()> {
+pub struct LocalState<'tcx, Tag: Provenance = AllocId> {
     pub value: LocalValue<Tag>,
     /// Don't modify if `Some`, this is only used to prevent computing the layout twice
     #[stable_hasher(ignore)]
@@ -159,8 +169,8 @@ pub struct LocalState<'tcx, Tag = ()> {
 }
 
 /// Current value of a local variable
-#[derive(Copy, Clone, PartialEq, Eq, Debug, HashStable)] // Miri debug-prints these
-pub enum LocalValue<Tag = ()> {
+#[derive(Copy, Clone, PartialEq, Eq, HashStable, Debug)] // Miri debug-prints these
+pub enum LocalValue<Tag: Provenance = AllocId> {
     /// This local is not currently alive, and cannot be used at all.
     Dead,
     /// This local is alive but not yet initialized. It can be written to
@@ -176,7 +186,7 @@ pub enum LocalValue<Tag = ()> {
     Live(Operand<Tag>),
 }
 
-impl<'tcx, Tag: Copy + 'static> LocalState<'tcx, Tag> {
+impl<'tcx, Tag: Provenance + 'static> LocalState<'tcx, Tag> {
     /// Read the local's value or error if the local is not yet live or not live anymore.
     ///
     /// Note: This may only be invoked from the `Machine::access_local` hook and not from
@@ -210,7 +220,7 @@ impl<'tcx, Tag: Copy + 'static> LocalState<'tcx, Tag> {
     }
 }
 
-impl<'mir, 'tcx, Tag> Frame<'mir, 'tcx, Tag> {
+impl<'mir, 'tcx, Tag: Provenance> Frame<'mir, 'tcx, Tag> {
     pub fn with_extra<Extra>(self, extra: Extra) -> Frame<'mir, 'tcx, Tag, Extra> {
         Frame {
             body: self.body,
@@ -225,7 +235,7 @@ impl<'mir, 'tcx, Tag> Frame<'mir, 'tcx, Tag> {
     }
 }
 
-impl<'mir, 'tcx, Tag, Extra> Frame<'mir, 'tcx, Tag, Extra> {
+impl<'mir, 'tcx, Tag: Provenance, Extra> Frame<'mir, 'tcx, Tag, Extra> {
     /// Get the current location within the Frame.
     ///
     /// If this is `Err`, we are not currently executing any particular statement in
@@ -263,7 +273,13 @@ impl<'tcx> fmt::Display for FrameInfo<'tcx> {
             }
             if !self.span.is_dummy() {
                 let lo = tcx.sess.source_map().lookup_char_pos(self.span.lo());
-                write!(f, " at {}:{}:{}", lo.file.name, lo.line, lo.col.to_usize() + 1)?;
+                write!(
+                    f,
+                    " at {}:{}:{}",
+                    lo.file.name.prefer_local(),
+                    lo.line,
+                    lo.col.to_usize() + 1
+                )?;
             }
             Ok(())
         })
@@ -376,30 +392,22 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             tcx: tcx.at(root_span),
             param_env,
             memory: Memory::new(tcx, memory_extra),
-            vtables: FxHashMap::default(),
+            recursion_limit: tcx.recursion_limit(),
         }
     }
 
     #[inline(always)]
     pub fn cur_span(&self) -> Span {
-        self.stack().last().map_or(self.tcx.span, |f| f.current_span())
+        self.stack()
+            .iter()
+            .rev()
+            .find(|frame| !frame.instance.def.requires_caller_location(*self.tcx))
+            .map_or(self.tcx.span, |f| f.current_span())
     }
 
     #[inline(always)]
-    pub fn force_ptr(
-        &self,
-        scalar: Scalar<M::PointerTag>,
-    ) -> InterpResult<'tcx, Pointer<M::PointerTag>> {
-        self.memory.force_ptr(scalar)
-    }
-
-    #[inline(always)]
-    pub fn force_bits(
-        &self,
-        scalar: Scalar<M::PointerTag>,
-        size: Size,
-    ) -> InterpResult<'tcx, u128> {
-        self.memory.force_bits(scalar, size)
+    pub fn scalar_to_ptr(&self, scalar: Scalar<M::PointerTag>) -> Pointer<Option<M::PointerTag>> {
+        self.memory.scalar_to_ptr(scalar)
     }
 
     /// Call this to turn untagged "global" pointers (obtained via `tcx`) into
@@ -630,7 +638,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 Ok(Some((size, align)))
             }
             ty::Dynamic(..) => {
-                let vtable = metadata.unwrap_meta();
+                let vtable = self.scalar_to_ptr(metadata.unwrap_meta());
                 // Read size and align from vtable (already checks size).
                 Ok(Some(self.read_size_and_align_from_vtable(vtable)?))
             }
@@ -740,13 +748,20 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// *Unwind* to the given `target` basic block.
     /// Do *not* use for returning! Use `return_to_block` instead.
     ///
-    /// If `target` is `None`, that indicates the function does not need cleanup during
-    /// unwinding, and we will just keep propagating that upwards.
-    pub fn unwind_to_block(&mut self, target: Option<mir::BasicBlock>) {
+    /// If `target` is `StackPopUnwind::Skip`, that indicates the function does not need cleanup
+    /// during unwinding, and we will just keep propagating that upwards.
+    ///
+    /// If `target` is `StackPopUnwind::NotAllowed`, that indicates the function does not allow
+    /// unwinding, and doing so is UB.
+    pub fn unwind_to_block(&mut self, target: StackPopUnwind) -> InterpResult<'tcx> {
         self.frame_mut().loc = match target {
-            Some(block) => Ok(mir::Location { block, statement_index: 0 }),
-            None => Err(self.frame_mut().body.span),
+            StackPopUnwind::Cleanup(block) => Ok(mir::Location { block, statement_index: 0 }),
+            StackPopUnwind::Skip => Err(self.frame_mut().body.span),
+            StackPopUnwind::NotAllowed => {
+                throw_ub_format!("unwinding past a stack frame that does not allow unwinding")
+            }
         };
+        Ok(())
     }
 
     /// Pops the current frame from the stack, deallocating the
@@ -795,21 +810,20 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
         }
 
+        let return_to_block = frame.return_to_block;
+
         // Now where do we jump next?
 
         // Usually we want to clean up (deallocate locals), but in a few rare cases we don't.
         // In that case, we return early. We also avoid validation in that case,
         // because this is CTFE and the final value will be thoroughly validated anyway.
-        let (cleanup, next_block) = match frame.return_to_block {
-            StackPopCleanup::Goto { ret, unwind } => {
-                (true, Some(if unwinding { unwind } else { ret }))
-            }
-            StackPopCleanup::None { cleanup, .. } => (cleanup, None),
+        let cleanup = match return_to_block {
+            StackPopCleanup::Goto { .. } => true,
+            StackPopCleanup::None { cleanup, .. } => cleanup,
         };
 
         if !cleanup {
             assert!(self.stack().is_empty(), "only the topmost frame should ever be leaked");
-            assert!(next_block.is_none(), "tried to skip cleanup when we have a next block!");
             assert!(!unwinding, "tried to skip cleanup during unwinding");
             // Leak the locals, skip validation, skip machine hook.
             return Ok(());
@@ -828,16 +842,20 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // Normal return, figure out where to jump.
         if unwinding {
             // Follow the unwind edge.
-            let unwind = next_block.expect("Encountered StackPopCleanup::None when unwinding!");
-            self.unwind_to_block(unwind);
+            let unwind = match return_to_block {
+                StackPopCleanup::Goto { unwind, .. } => unwind,
+                StackPopCleanup::None { .. } => {
+                    panic!("Encountered StackPopCleanup::None when unwinding!")
+                }
+            };
+            self.unwind_to_block(unwind)
         } else {
             // Follow the normal return edge.
-            if let Some(ret) = next_block {
-                self.return_to_block(ret)?;
+            match return_to_block {
+                StackPopCleanup::Goto { ret, .. } => self.return_to_block(ret),
+                StackPopCleanup::None { .. } => Ok(()),
             }
         }
-
-        Ok(())
     }
 
     /// Mark a storage as live, killing the previous content.
@@ -867,10 +885,13 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     fn deallocate_local(&mut self, local: LocalValue<M::PointerTag>) -> InterpResult<'tcx> {
         if let LocalValue::Live(Operand::Indirect(MemPlace { ptr, .. })) = local {
             // All locals have a backing allocation, even if the allocation is empty
-            // due to the local having ZST type.
-            let ptr = ptr.assert_ptr();
-            trace!("deallocating local: {:?}", self.memory.dump_alloc(ptr.alloc_id));
-            self.memory.deallocate_local(ptr)?;
+            // due to the local having ZST type. Hence we can `unwrap`.
+            trace!(
+                "deallocating local {:?}: {:?}",
+                local,
+                self.memory.dump_alloc(ptr.provenance.unwrap().get_alloc_id())
+            );
+            self.memory.deallocate(ptr, None, MemoryKind::Stack)?;
         };
         Ok(())
     }
@@ -901,7 +922,12 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     #[must_use]
     pub fn generate_stacktrace(&self) -> Vec<FrameInfo<'tcx>> {
         let mut frames = Vec::new();
-        for frame in self.stack().iter().rev() {
+        for frame in self
+            .stack()
+            .iter()
+            .rev()
+            .skip_while(|frame| frame.instance.def.requires_caller_location(*self.tcx))
+        {
             let lint_root = frame.current_source_info().and_then(|source_info| {
                 match &frame.body.source_scopes[source_info.scope].local_data {
                     mir::ClearCrossCrate::Set(data) => Some(data.lint_root),
@@ -940,46 +966,45 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> std::fmt::Debug
                 match self.ecx.stack()[frame].locals[local].value {
                     LocalValue::Dead => write!(fmt, " is dead")?,
                     LocalValue::Uninitialized => write!(fmt, " is uninitialized")?,
-                    LocalValue::Live(Operand::Indirect(mplace)) => match mplace.ptr {
-                        Scalar::Ptr(ptr) => {
-                            write!(
-                                fmt,
-                                " by align({}){} ref:",
-                                mplace.align.bytes(),
-                                match mplace.meta {
-                                    MemPlaceMeta::Meta(meta) => format!(" meta({:?})", meta),
-                                    MemPlaceMeta::Poison | MemPlaceMeta::None => String::new(),
-                                }
-                            )?;
-                            allocs.push(ptr.alloc_id);
-                        }
-                        ptr => write!(fmt, " by integral ref: {:?}", ptr)?,
-                    },
+                    LocalValue::Live(Operand::Indirect(mplace)) => {
+                        write!(
+                            fmt,
+                            " by align({}){} ref {:?}:",
+                            mplace.align.bytes(),
+                            match mplace.meta {
+                                MemPlaceMeta::Meta(meta) => format!(" meta({:?})", meta),
+                                MemPlaceMeta::Poison | MemPlaceMeta::None => String::new(),
+                            },
+                            mplace.ptr,
+                        )?;
+                        allocs.extend(mplace.ptr.provenance.map(Provenance::get_alloc_id));
+                    }
                     LocalValue::Live(Operand::Immediate(Immediate::Scalar(val))) => {
                         write!(fmt, " {:?}", val)?;
-                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr)) = val {
-                            allocs.push(ptr.alloc_id);
+                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr, _size)) = val {
+                            allocs.push(ptr.provenance.get_alloc_id());
                         }
                     }
                     LocalValue::Live(Operand::Immediate(Immediate::ScalarPair(val1, val2))) => {
                         write!(fmt, " ({:?}, {:?})", val1, val2)?;
-                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr)) = val1 {
-                            allocs.push(ptr.alloc_id);
+                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr, _size)) = val1 {
+                            allocs.push(ptr.provenance.get_alloc_id());
                         }
-                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr)) = val2 {
-                            allocs.push(ptr.alloc_id);
+                        if let ScalarMaybeUninit::Scalar(Scalar::Ptr(ptr, _size)) = val2 {
+                            allocs.push(ptr.provenance.get_alloc_id());
                         }
                     }
                 }
 
                 write!(fmt, ": {:?}", self.ecx.memory.dump_allocs(allocs))
             }
-            Place::Ptr(mplace) => match mplace.ptr {
-                Scalar::Ptr(ptr) => write!(
+            Place::Ptr(mplace) => match mplace.ptr.provenance.map(Provenance::get_alloc_id) {
+                Some(alloc_id) => write!(
                     fmt,
-                    "by align({}) ref: {:?}",
+                    "by align({}) ref {:?}: {:?}",
                     mplace.align.bytes(),
-                    self.ecx.memory.dump_alloc(ptr.alloc_id)
+                    mplace.ptr,
+                    self.ecx.memory.dump_alloc(alloc_id)
                 ),
                 ptr => write!(fmt, " integral by ref: {:?}", ptr),
             },
@@ -987,7 +1012,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> std::fmt::Debug
     }
 }
 
-impl<'ctx, 'mir, 'tcx, Tag, Extra> HashStable<StableHashingContext<'ctx>>
+impl<'ctx, 'mir, 'tcx, Tag: Provenance, Extra> HashStable<StableHashingContext<'ctx>>
     for Frame<'mir, 'tcx, Tag, Extra>
 where
     Extra: HashStable<StableHashingContext<'ctx>>,

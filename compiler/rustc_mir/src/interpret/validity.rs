@@ -15,34 +15,35 @@ use rustc_middle::mir::interpret::InterpError;
 use rustc_middle::ty;
 use rustc_middle::ty::layout::TyAndLayout;
 use rustc_span::symbol::{sym, Symbol};
-use rustc_target::abi::{Abi, LayoutOf, Scalar, Size, VariantIdx, Variants};
+use rustc_target::abi::{Abi, LayoutOf, Scalar as ScalarAbi, Size, VariantIdx, Variants};
 
 use std::hash::Hash;
 
 use super::{
-    CheckInAllocMsg, GlobalAlloc, InterpCx, InterpResult, MPlaceTy, Machine, MemPlaceMeta, OpTy,
-    ScalarMaybeUninit, ValueVisitor,
+    alloc_range, CheckInAllocMsg, GlobalAlloc, InterpCx, InterpResult, MPlaceTy, Machine,
+    MemPlaceMeta, OpTy, ScalarMaybeUninit, ValueVisitor,
 };
 
 macro_rules! throw_validation_failure {
     ($where:expr, { $( $what_fmt:expr ),+ } $( expected { $( $expected_fmt:expr ),+ } )?) => {{
-        let msg = rustc_middle::ty::print::with_no_trimmed_paths(|| {
-            let mut msg = String::new();
-            msg.push_str("encountered ");
-            write!(&mut msg, $($what_fmt),+).unwrap();
+        let mut msg = String::new();
+        msg.push_str("encountered ");
+        write!(&mut msg, $($what_fmt),+).unwrap();
+        $(
+            msg.push_str(", but expected ");
+            write!(&mut msg, $($expected_fmt),+).unwrap();
+        )?
+        let path = rustc_middle::ty::print::with_no_trimmed_paths(|| {
             let where_ = &$where;
             if !where_.is_empty() {
-                msg.push_str(" at ");
-                write_path(&mut msg, where_);
+                let mut path = String::new();
+                write_path(&mut path, where_);
+                Some(path)
+            } else {
+                None
             }
-            $(
-                msg.push_str(", but expected ");
-                write!(&mut msg, $($expected_fmt),+).unwrap();
-            )?
-
-            msg
         });
-        throw_ub!(ValidationFailure(msg))
+        throw_ub!(ValidationFailure { path, msg })
     }};
 }
 
@@ -323,19 +324,18 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
         let tail = self.ecx.tcx.struct_tail_erasing_lifetimes(pointee.ty, self.ecx.param_env);
         match tail.kind() {
             ty::Dynamic(..) => {
-                let vtable = meta.unwrap_meta();
+                let vtable = self.ecx.scalar_to_ptr(meta.unwrap_meta());
                 // Direct call to `check_ptr_access_align` checks alignment even on CTFE machines.
                 try_validation!(
                     self.ecx.memory.check_ptr_access_align(
                         vtable,
                         3 * self.ecx.tcx.data_layout.pointer_size, // drop, size, align
-                        Some(self.ecx.tcx.data_layout.pointer_align.abi),
-                        CheckInAllocMsg::InboundsTest,
+                        self.ecx.tcx.data_layout.pointer_align.abi,
+                        CheckInAllocMsg::InboundsTest, // will anyway be replaced by validity message
                     ),
                     self.path,
                     err_ub!(DanglingIntPointer(..)) |
-                    err_ub!(PointerUseAfterFree(..)) |
-                    err_unsup!(ReadBytesAsPointer) =>
+                    err_ub!(PointerUseAfterFree(..)) =>
                         { "dangling vtable pointer in wide pointer" },
                     err_ub!(AlignmentCheckFailed { .. }) =>
                         { "unaligned vtable pointer in wide pointer" },
@@ -346,15 +346,18 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                     self.ecx.read_drop_type_from_vtable(vtable),
                     self.path,
                     err_ub!(DanglingIntPointer(..)) |
-                    err_ub!(InvalidFunctionPointer(..)) |
-                    err_unsup!(ReadBytesAsPointer) =>
+                    err_ub!(InvalidFunctionPointer(..)) =>
                         { "invalid drop function pointer in vtable (not pointing to a function)" },
-                    err_ub!(InvalidDropFn(..)) =>
+                    err_ub!(InvalidVtableDropFn(..)) =>
                         { "invalid drop function pointer in vtable (function has incompatible signature)" },
                 );
                 try_validation!(
                     self.ecx.read_size_and_align_from_vtable(vtable),
                     self.path,
+                    err_ub!(InvalidVtableSize) =>
+                        { "invalid vtable: size is bigger than largest supported object" },
+                    err_ub!(InvalidVtableAlignment(msg)) =>
+                        { "invalid vtable: alignment {}", msg },
                     err_unsup!(ReadPointerAsBytes) => { "invalid size or align in vtable" },
                 );
                 // FIXME: More checks for the vtable.
@@ -411,12 +414,12 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
             // alignment should take attributes into account).
             .unwrap_or_else(|| (place.layout.size, place.layout.align.abi));
         // Direct call to `check_ptr_access_align` checks alignment even on CTFE machines.
-        let ptr: Option<_> = try_validation!(
+        try_validation!(
             self.ecx.memory.check_ptr_access_align(
                 place.ptr,
                 size,
-                Some(align),
-                CheckInAllocMsg::InboundsTest,
+                align,
+                CheckInAllocMsg::InboundsTest, // will anyway be replaced by validity message
             ),
             self.path,
             err_ub!(AlignmentCheckFailed { required, has }) =>
@@ -427,13 +430,11 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                     has.bytes()
                 },
             err_ub!(DanglingIntPointer(0, _)) =>
-                { "a NULL {}", kind },
+                { "a null {}", kind },
             err_ub!(DanglingIntPointer(i, _)) =>
                 { "a dangling {} (address 0x{:x} is unallocated)", kind, i },
             err_ub!(PointerOutOfBounds { .. }) =>
                 { "a dangling {} (going beyond the bounds of its allocation)", kind },
-            err_unsup!(ReadBytesAsPointer) =>
-                { "a dangling {} (created from integer)", kind },
             // This cannot happen during const-eval (because interning already detects
             // dangling pointers), but it can happen in Miri.
             err_ub!(PointerUseAfterFree(..)) =>
@@ -441,10 +442,12 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
         );
         // Recursive checking
         if let Some(ref mut ref_tracking) = self.ref_tracking {
-            if let Some(ptr) = ptr {
+            // Proceed recursively even for ZST, no reason to skip them!
+            // `!` is a ZST and we want to validate it.
+            // Skip validation entirely for some external statics
+            if let Ok((alloc_id, _offset, _ptr)) = self.ecx.memory.ptr_try_get_alloc(place.ptr) {
                 // not a ZST
-                // Skip validation entirely for some external statics
-                let alloc_kind = self.ecx.tcx.get_global_alloc(ptr.alloc_id);
+                let alloc_kind = self.ecx.tcx.get_global_alloc(alloc_id);
                 if let Some(GlobalAlloc::Static(did)) = alloc_kind {
                     assert!(!self.ecx.tcx.is_thread_local_static(did));
                     assert!(self.ecx.tcx.is_static(did));
@@ -473,15 +476,6 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                     return Ok(());
                 }
             }
-            // Proceed recursively even for ZST, no reason to skip them!
-            // `!` is a ZST and we want to validate it.
-            // Normalize before handing `place` to tracking because that will
-            // check for duplicates.
-            let place = if size.bytes() > 0 {
-                self.ecx.force_mplace_ptr(place).expect("we already bounds-checked")
-            } else {
-                place
-            };
             let path = &self.path;
             ref_tracking.track(place, || {
                 // We need to clone the path anyway, make sure it gets created
@@ -541,7 +535,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 // types below!
                 if self.ctfe_mode.is_some() {
                     // Integers/floats in CTFE: Must be scalar bits, pointers are dangerous
-                    let is_bits = value.check_init().map_or(false, |v| v.is_bits());
+                    let is_bits = value.check_init().map_or(false, |v| v.try_to_int().is_ok());
                     if !is_bits {
                         throw_validation_failure!(self.path,
                             { "{}", value } expected { "initialized plain (non-pointer) bytes" }
@@ -596,12 +590,11 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 // message below.
                 let value = value.to_scalar_or_uninit();
                 let _fn = try_validation!(
-                    value.check_init().and_then(|ptr| self.ecx.memory.get_fn(ptr)),
+                    value.check_init().and_then(|ptr| self.ecx.memory.get_fn(self.ecx.scalar_to_ptr(ptr))),
                     self.path,
                     err_ub!(DanglingIntPointer(..)) |
                     err_ub!(InvalidFunctionPointer(..)) |
-                    err_ub!(InvalidUninitBytes(None)) |
-                    err_unsup!(ReadBytesAsPointer) =>
+                    err_ub!(InvalidUninitBytes(None)) =>
                         { "{}", value } expected { "a function pointer" },
                 );
                 // FIXME: Check if the signature matches
@@ -638,7 +631,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
     fn visit_scalar(
         &mut self,
         op: &OpTy<'tcx, M::PointerTag>,
-        scalar_layout: &Scalar,
+        scalar_layout: &ScalarAbi,
     ) -> InterpResult<'tcx> {
         let value = self.read_scalar(op)?;
         let valid_range = &scalar_layout.valid_range;
@@ -659,13 +652,16 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
             err_ub!(InvalidUninitBytes(None)) => { "{}", value }
                 expected { "something {}", wrapping_range_format(valid_range, max_hi) },
         );
-        let bits = match value.to_bits_or_ptr(op.layout.size, self.ecx) {
-            Err(ptr) => {
+        let bits = match value.try_to_int() {
+            Err(_) => {
+                // So this is a pointer then, and casting to an int failed.
+                // Can only happen during CTFE.
+                let ptr = self.ecx.scalar_to_ptr(value);
                 if lo == 1 && hi == max_hi {
-                    // Only NULL is the niche.  So make sure the ptr is NOT NULL.
+                    // Only null is the niche.  So make sure the ptr is NOT null.
                     if self.ecx.memory.ptr_may_be_null(ptr) {
                         throw_validation_failure!(self.path,
-                            { "a potentially NULL pointer" }
+                            { "a potentially null pointer" }
                             expected {
                                 "something that cannot possibly fail to be {}",
                                 wrapping_range_format(valid_range, max_hi)
@@ -685,7 +681,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                     )
                 }
             }
-            Ok(data) => data,
+            Ok(int) => int.assert_bits(op.layout.size),
         };
         // Now compare. This is slightly subtle because this is a special "wrap-around" range.
         if wrapping_range_contains(&valid_range, bits) {
@@ -827,12 +823,13 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     ) -> InterpResult<'tcx> {
         match op.layout.ty.kind() {
             ty::Str => {
-                let mplace = op.assert_mem_place(self.ecx); // strings are never immediate
+                let mplace = op.assert_mem_place(); // strings are never immediate
                 let len = mplace.len(self.ecx)?;
                 try_validation!(
                     self.ecx.memory.read_bytes(mplace.ptr, Size::from_bytes(len)),
                     self.path,
                     err_ub!(InvalidUninitBytes(..)) => { "uninitialized data in `str`" },
+                    err_unsup!(ReadPointerAsBytes) => { "a pointer in `str`" },
                 );
             }
             ty::Array(tys, ..) | ty::Slice(tys)
@@ -847,19 +844,13 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                 // Optimized handling for arrays of integer/float type.
 
                 // Arrays cannot be immediate, slices are never immediate.
-                let mplace = op.assert_mem_place(self.ecx);
+                let mplace = op.assert_mem_place();
                 // This is the length of the array/slice.
                 let len = mplace.len(self.ecx)?;
-                // Zero length slices have nothing to be checked.
-                if len == 0 {
-                    return Ok(());
-                }
                 // This is the element type size.
                 let layout = self.ecx.layout_of(tys)?;
                 // This is the size in bytes of the whole array. (This checks for overflow.)
                 let size = layout.size * len;
-                // Size is not 0, get a pointer.
-                let ptr = self.ecx.force_ptr(mplace.ptr)?;
 
                 // Optimization: we just check the entire range at once.
                 // NOTE: Keep this in sync with the handling of integer and float
@@ -871,10 +862,16 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                 // to reject those pointers, we just do not have the machinery to
                 // talk about parts of a pointer.
                 // We also accept uninit, for consistency with the slow path.
-                match self.ecx.memory.get_raw(ptr.alloc_id)?.check_bytes(
-                    self.ecx,
-                    ptr,
-                    size,
+                let alloc = match self.ecx.memory.get(mplace.ptr, size, mplace.align)? {
+                    Some(a) => a,
+                    None => {
+                        // Size 0, nothing more to check.
+                        return Ok(());
+                    }
+                };
+
+                match alloc.check_bytes(
+                    alloc_range(Size::ZERO, size),
                     /*allow_uninit_and_ptr*/ self.ctfe_mode.is_none(),
                 ) {
                     // In the happy case, we needn't check anything else.
@@ -884,12 +881,12 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                         // For some errors we might be able to provide extra information.
                         // (This custom logic does not fit the `try_validation!` macro.)
                         match err.kind() {
-                            err_ub!(InvalidUninitBytes(Some(access))) => {
+                            err_ub!(InvalidUninitBytes(Some((_alloc_id, access)))) => {
                                 // Some byte was uninitialized, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
                                 let i = usize::try_from(
-                                    access.uninit_ptr.offset.bytes() / layout.size.bytes(),
+                                    access.uninit_offset.bytes() / layout.size.bytes(),
                                 )
                                 .unwrap();
                                 self.path.push(PathElem::ArrayElem(i));
@@ -933,9 +930,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         // Construct a visitor
         let mut visitor = ValidityVisitor { path, ref_tracking, ctfe_mode, ecx: self };
-
-        // Try to cast to ptr *once* instead of all the time.
-        let op = self.force_op_ptr(&op).unwrap_or(*op);
 
         // Run it.
         match visitor.visit_value(&op) {

@@ -25,7 +25,11 @@ macro_rules! pluralize {
 /// before applying the suggestion.
 #[derive(Copy, Clone, Debug, PartialEq, Hash, Encodable, Decodable)]
 pub enum Applicability {
-    /// The suggestion is definitely what the user intended. This suggestion should be
+    /// The suggestion is definitely what the user intended, or maintains the exact meaning of the code.
+    /// This suggestion should be automatically applied.
+    ///
+    /// In case of multiple `MachineApplicable` suggestions (whether as part of
+    /// the same `multipart_suggestion` or not), all of them should be
     /// automatically applied.
     MachineApplicable,
 
@@ -47,6 +51,7 @@ pub enum Applicability {
 pub enum Level {
     Allow,
     Warn,
+    ForceWarn,
     Deny,
     Forbid,
 }
@@ -59,6 +64,7 @@ impl Level {
         match self {
             Level::Allow => "allow",
             Level::Warn => "warn",
+            Level::ForceWarn => "force-warn",
             Level::Deny => "deny",
             Level::Forbid => "forbid",
         }
@@ -138,23 +144,50 @@ pub struct Lint {
 pub struct FutureIncompatibleInfo {
     /// e.g., a URL for an issue/PR/RFC or error code
     pub reference: &'static str,
-    /// If this is an edition fixing lint, the edition in which
-    /// this lint becomes obsolete
-    pub edition: Option<Edition>,
-    /// Information about a future breakage, which will
-    /// be emitted in JSON messages to be displayed by Cargo
-    /// for upstream deps
-    pub future_breakage: Option<FutureBreakage>,
+    /// The reason for the lint used by diagnostics to provide
+    /// the right help message
+    pub reason: FutureIncompatibilityReason,
+    /// Whether to explain the reason to the user.
+    ///
+    /// Set to false for lints that already include a more detailed
+    /// explanation.
+    pub explain_reason: bool,
 }
 
+/// The reason for future incompatibility
 #[derive(Copy, Clone, Debug)]
-pub struct FutureBreakage {
-    pub date: Option<&'static str>,
+pub enum FutureIncompatibilityReason {
+    /// This will be an error in a future release
+    /// for all editions
+    FutureReleaseError,
+    /// This will be an error in a future release, and
+    /// Cargo should create a report even for dependencies
+    FutureReleaseErrorReportNow,
+    /// Previously accepted code that will become an
+    /// error in the provided edition
+    EditionError(Edition),
+    /// Code that changes meaning in some way in
+    /// the provided edition
+    EditionSemanticsChange(Edition),
+}
+
+impl FutureIncompatibilityReason {
+    pub fn edition(self) -> Option<Edition> {
+        match self {
+            Self::EditionError(e) => Some(e),
+            Self::EditionSemanticsChange(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 impl FutureIncompatibleInfo {
     pub const fn default_fields_for_macro() -> Self {
-        FutureIncompatibleInfo { reference: "", edition: None, future_breakage: None }
+        FutureIncompatibleInfo {
+            reference: "",
+            reason: FutureIncompatibilityReason::FutureReleaseError,
+            explain_reason: true,
+        }
     }
 }
 
@@ -241,7 +274,7 @@ impl<HCX> ToStableHashKey<HCX> for LintId {
 }
 
 // Duplicated from rustc_session::config::ExternDepSpec to avoid cyclic dependency
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum ExternDepSpec {
     Json(Json),
     Raw(String),
@@ -249,7 +282,7 @@ pub enum ExternDepSpec {
 
 // This could be a closure, but then implementing derive trait
 // becomes hacky (and it gets allocated).
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum BuiltinLintDiagnostics {
     Normal,
     BareTraitObject(Span, /* is_global */ bool),
@@ -268,6 +301,7 @@ pub enum BuiltinLintDiagnostics {
     ExternDepSpec(String, ExternDepSpec),
     ProcMacroBackCompat(String),
     OrPatternsBackCompat(Span, String),
+    ReservedPrefix(Span),
 }
 
 /// Lints that are buffered up early on in the `Session` before the

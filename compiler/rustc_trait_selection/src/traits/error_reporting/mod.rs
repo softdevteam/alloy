@@ -14,7 +14,7 @@ use crate::infer::{self, InferCtxt, TyCtxtInferExt};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder, ErrorReported};
 use rustc_hir as hir;
-use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::Node;
 use rustc_middle::mir::abstract_const::NotConstEvaluatable;
@@ -55,9 +55,13 @@ pub trait InferCtxtExt<'tcx> {
 
     fn report_overflow_error_cycle(&self, cycle: &[PredicateObligation<'tcx>]) -> !;
 
+    /// The `root_obligation` parameter should be the `root_obligation` field
+    /// from a `FulfillmentError`. If no `FulfillmentError` is available,
+    /// then it should be the same as `obligation`.
     fn report_selection_error(
         &self,
-        obligation: &PredicateObligation<'tcx>,
+        obligation: PredicateObligation<'tcx>,
+        root_obligation: &PredicateObligation<'tcx>,
         error: &SelectionError<'tcx>,
         fallback_has_occurred: bool,
         points_at_arg: bool,
@@ -225,16 +229,29 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 
     fn report_selection_error(
         &self,
-        obligation: &PredicateObligation<'tcx>,
+        mut obligation: PredicateObligation<'tcx>,
+        root_obligation: &PredicateObligation<'tcx>,
         error: &SelectionError<'tcx>,
         fallback_has_occurred: bool,
         points_at_arg: bool,
     ) {
         let tcx = self.tcx;
-        let span = obligation.cause.span;
+        let mut span = obligation.cause.span;
 
         let mut err = match *error {
             SelectionError::Unimplemented => {
+                // If this obligation was generated as a result of well-formed checking, see if we
+                // can get a better error message by performing HIR-based well formed checking.
+                if let ObligationCauseCode::WellFormed(Some(wf_loc)) =
+                    root_obligation.cause.code.peel_derives()
+                {
+                    if let Some(cause) =
+                        self.tcx.diagnostic_hir_wf_check((obligation.predicate, wf_loc.clone()))
+                    {
+                        obligation.cause = cause;
+                        span = obligation.cause.span;
+                    }
+                }
                 if let ObligationCauseCode::CompareImplMethodObligation {
                     item_name,
                     impl_item_def_id,
@@ -279,7 +296,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                             .unwrap_or_default();
 
                         let OnUnimplementedNote { message, label, note, enclosing_scope } =
-                            self.on_unimplemented_note(trait_ref, obligation);
+                            self.on_unimplemented_note(trait_ref, &obligation);
                         let have_alt_message = message.is_some() || label.is_some();
                         let is_try_conversion = self.is_try_conversion(span, trait_ref.def_id());
                         let is_unsize =
@@ -338,7 +355,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                                     Applicability::MachineApplicable,
                                 );
                             }
-                            if let Some(ret_span) = self.return_type_span(obligation) {
+                            if let Some(ret_span) = self.return_type_span(&obligation) {
                                 err.span_label(
                                     ret_span,
                                     &format!(
@@ -368,7 +385,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                             points_at_arg,
                             have_alt_message,
                         ) {
-                            self.note_obligation_cause(&mut err, obligation);
+                            self.note_obligation_cause(&mut err, &obligation);
                             err.emit();
                             return;
                         }
@@ -512,6 +529,30 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                                 );
                                 err.help("did you intend to use the type `()` here instead?");
                             }
+                        }
+
+                        // Return early if the trait is Debug or Display and the invocation
+                        // originates within a standard library macro, because the output
+                        // is otherwise overwhelming and unhelpful (see #85844 for an
+                        // example).
+
+                        let trait_is_debug =
+                            self.tcx.is_diagnostic_item(sym::debug_trait, trait_ref.def_id());
+                        let trait_is_display =
+                            self.tcx.is_diagnostic_item(sym::display_trait, trait_ref.def_id());
+
+                        let in_std_macro =
+                            match obligation.cause.span.ctxt().outer_expn_data().macro_def_id {
+                                Some(macro_def_id) => {
+                                    let crate_name = tcx.crate_name(macro_def_id.krate);
+                                    crate_name == sym::std || crate_name == sym::core
+                                }
+                                None => false,
+                            };
+
+                        if in_std_macro && (trait_is_debug || trait_is_display) {
+                            err.emit();
+                            return;
                         }
 
                         err
@@ -797,7 +838,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             }
         };
 
-        self.note_obligation_cause(&mut err, obligation);
+        self.note_obligation_cause(&mut err, &obligation);
         self.point_at_returns_when_relevant(&mut err, &obligation);
 
         err.emit();
@@ -1144,7 +1185,8 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
         match error.code {
             FulfillmentErrorCode::CodeSelectionError(ref selection_error) => {
                 self.report_selection_error(
-                    &error.obligation,
+                    error.obligation.clone(),
+                    &error.root_obligation,
                     selection_error,
                     fallback_has_occurred,
                     error.points_at_arg_span,
@@ -1427,7 +1469,7 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
             self.tcx.find_map_relevant_impl(trait_def_id, trait_ref.skip_binder().self_ty(), Some)
         };
         let required_trait_path = self.tcx.def_path_str(trait_ref.def_id());
-        let all_traits = self.tcx.all_traits(LOCAL_CRATE);
+        let all_traits = self.tcx.all_traits(());
         let traits_with_same_path: std::collections::BTreeSet<_> = all_traits
             .iter()
             .filter(|trait_def_id| **trait_def_id != trait_ref.def_id())
@@ -1876,6 +1918,10 @@ impl<'v> Visitor<'v> for FindTypeParam {
 
     fn nested_visit_map(&mut self) -> hir::intravisit::NestedVisitorMap<Self::Map> {
         hir::intravisit::NestedVisitorMap::None
+    }
+
+    fn visit_where_predicate(&mut self, _: &'v hir::WherePredicate<'v>) {
+        // Skip where-clauses, to avoid suggesting indirection for type parameters found there.
     }
 
     fn visit_ty(&mut self, ty: &hir::Ty<'_>) {

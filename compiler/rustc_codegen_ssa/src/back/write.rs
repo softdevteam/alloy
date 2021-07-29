@@ -1,5 +1,4 @@
 use super::link::{self, ensure_removed};
-use super::linker::LinkerInfo;
 use super::lto::{self, SerializedModule};
 use super::symbol_export::symbol_name_for_instance_in_crate;
 
@@ -31,7 +30,7 @@ use rustc_session::config::{self, CrateType, Lto, OutputFilenames, OutputType};
 use rustc_session::config::{Passes, SwitchWithOptPath};
 use rustc_session::Session;
 use rustc_span::source_map::SourceMap;
-use rustc_span::symbol::{sym, Symbol};
+use rustc_span::symbol::sym;
 use rustc_span::{BytePos, FileName, InnerSpan, Pos, Span};
 use rustc_target::spec::{MergeFunctions, PanicStrategy, SanitizerSet};
 
@@ -84,6 +83,8 @@ pub struct ModuleConfig {
 
     pub pgo_gen: SwitchWithOptPath,
     pub pgo_use: Option<PathBuf>,
+    pub instrument_coverage: bool,
+    pub instrument_gcov: bool,
 
     pub sanitizer: SanitizerSet,
     pub sanitizer_recover: SanitizerSet,
@@ -108,7 +109,7 @@ pub struct ModuleConfig {
     pub vectorize_slp: bool,
     pub merge_functions: bool,
     pub inline_threshold: Option<u32>,
-    pub new_llvm_pass_manager: bool,
+    pub new_llvm_pass_manager: Option<bool>,
     pub emit_lifetime_markers: bool,
 }
 
@@ -165,25 +166,7 @@ impl ModuleConfig {
         };
 
         ModuleConfig {
-            passes: if_regular!(
-                {
-                    let mut passes = sess.opts.cg.passes.clone();
-                    // compiler_builtins overrides the codegen-units settings,
-                    // which is incompatible with -Zprofile which requires that
-                    // only a single codegen unit is used per crate.
-                    if sess.opts.debugging_opts.profile && !is_compiler_builtins {
-                        passes.push("insert-gcov-profiling".to_owned());
-                    }
-
-                    // The rustc option `-Zinstrument_coverage` injects intrinsic calls to
-                    // `llvm.instrprof.increment()`, which requires the LLVM `instrprof` pass.
-                    if sess.instrument_coverage() {
-                        passes.push("instrprof".to_owned());
-                    }
-                    passes
-                },
-                vec![]
-            ),
+            passes: if_regular!(sess.opts.cg.passes.clone(), vec![]),
 
             opt_level: opt_level_and_size,
             opt_size: opt_level_and_size,
@@ -193,6 +176,14 @@ impl ModuleConfig {
                 SwitchWithOptPath::Disabled
             ),
             pgo_use: if_regular!(sess.opts.cg.profile_use.clone(), None),
+            instrument_coverage: if_regular!(sess.instrument_coverage(), false),
+            instrument_gcov: if_regular!(
+                // compiler_builtins overrides the codegen-units settings,
+                // which is incompatible with -Zprofile which requires that
+                // only a single codegen unit is used per crate.
+                sess.opts.debugging_opts.profile && !is_compiler_builtins,
+                false
+            ),
 
             sanitizer: if_regular!(sess.opts.debugging_opts.sanitizer, SanitizerSet::empty()),
             sanitizer_recover: if_regular!(
@@ -427,30 +418,18 @@ fn need_pre_lto_bitcode_for_incr_comp(sess: &Session) -> bool {
 pub fn start_async_codegen<B: ExtraBackendMethods>(
     backend: B,
     tcx: TyCtxt<'_>,
+    target_cpu: String,
     metadata: EncodedMetadata,
     total_cgus: usize,
 ) -> OngoingCodegen<B> {
     let (coordinator_send, coordinator_receive) = channel();
     let sess = tcx.sess;
 
-    let crate_name = tcx.crate_name(LOCAL_CRATE);
     let crate_attrs = tcx.hir().attrs(rustc_hir::CRATE_HIR_ID);
     let no_builtins = tcx.sess.contains_name(crate_attrs, sym::no_builtins);
     let is_compiler_builtins = tcx.sess.contains_name(crate_attrs, sym::compiler_builtins);
-    let subsystem = tcx.sess.first_attr_value_str_by_name(crate_attrs, sym::windows_subsystem);
-    let windows_subsystem = subsystem.map(|subsystem| {
-        if subsystem != sym::windows && subsystem != sym::console {
-            tcx.sess.fatal(&format!(
-                "invalid windows subsystem `{}`, only \
-                                     `windows` and `console` are allowed",
-                subsystem
-            ));
-        }
-        subsystem.to_string()
-    });
 
-    let linker_info = LinkerInfo::new(tcx);
-    let crate_info = CrateInfo::new(tcx);
+    let crate_info = CrateInfo::new(tcx, target_cpu);
 
     let regular_config =
         ModuleConfig::new(ModuleKind::Regular, sess, no_builtins, is_compiler_builtins);
@@ -479,17 +458,14 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
 
     OngoingCodegen {
         backend,
-        crate_name,
         metadata,
-        windows_subsystem,
-        linker_info,
         crate_info,
 
         coordinator_send,
         codegen_worker_receive,
         shared_emitter_main,
         future: coordinator_thread,
-        output_filenames: tcx.output_filenames(LOCAL_CRATE),
+        output_filenames: tcx.output_filenames(()),
     }
 }
 
@@ -1015,7 +991,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
             }
             Lto::Fat | Lto::Thin => {
                 exported_symbols.insert(LOCAL_CRATE, copy_symbols(LOCAL_CRATE));
-                for &cnum in tcx.crates().iter() {
+                for &cnum in tcx.crates(()).iter() {
                     exported_symbols.insert(cnum, copy_symbols(cnum));
                 }
                 Some(Arc::new(exported_symbols))
@@ -1049,7 +1025,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         // If we know that we won’t be doing codegen, create target machines without optimisation.
         config::OptLevel::No
     } else {
-        tcx.backend_optimization_level(LOCAL_CRATE)
+        tcx.backend_optimization_level(())
     };
     let cgcx = CodegenContext::<B> {
         backend: backend.clone(),
@@ -1068,7 +1044,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         cgu_reuse_tracker: sess.cgu_reuse_tracker.clone(),
         coordinator_send,
         diag_emitter: shared_emitter.clone(),
-        output_filenames: tcx.output_filenames(LOCAL_CRATE),
+        output_filenames: tcx.output_filenames(()),
         regular_module_config: regular_config,
         metadata_module_config: metadata_config,
         allocator_module_config: allocator_config,
@@ -1819,10 +1795,7 @@ impl SharedEmitterMain {
 
 pub struct OngoingCodegen<B: ExtraBackendMethods> {
     pub backend: B,
-    pub crate_name: Symbol,
     pub metadata: EncodedMetadata,
-    pub windows_subsystem: Option<String>,
-    pub linker_info: LinkerInfo,
     pub crate_info: CrateInfo,
     pub coordinator_send: Sender<Box<dyn Any + Send>>,
     pub codegen_worker_receive: Receiver<Message<B>>,
@@ -1864,10 +1837,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
 
         (
             CodegenResults {
-                crate_name: self.crate_name,
                 metadata: self.metadata,
-                windows_subsystem: self.windows_subsystem,
-                linker_info: self.linker_info,
                 crate_info: self.crate_info,
 
                 modules: compiled_modules.modules,

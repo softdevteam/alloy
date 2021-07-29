@@ -401,7 +401,10 @@ unsafe impl Allocator for Global {
         self.alloc_precise_impl(layout, bitmap, bitmap_size, false)
     }
 }
-#[cfg(not(test))]
+
+/// The allocator for unique pointers.
+// This function must not unwind. If it does, MIR codegen will fail.
+#[cfg(all(not(no_global_oom_handling), not(test)))]
 #[lang = "exchange_malloc"]
 #[inline]
 #[allow(unused_variables)]
@@ -415,7 +418,7 @@ unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
 
 /// The allocator for unique pointers.
 // This function must not unwind. If it does, MIR codegen will fail.
-#[cfg(not(test))]
+#[cfg(all(not(no_global_oom_handling), not(test)))]
 #[cfg(not(bootstrap))]
 #[lang = "exchange_malloc_precise"]
 #[inline]
@@ -433,7 +436,7 @@ unsafe fn exchange_malloc_precise(
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(no_global_oom_handling), not(test)))]
 #[cfg_attr(not(bootstrap), lang = "exchange_malloc_untraceable")]
 #[allow(dead_code)]
 #[inline]
@@ -445,7 +448,7 @@ unsafe fn exchange_malloc_untraceable(size: usize, align: usize) -> *mut u8 {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(no_global_oom_handling), not(test)))]
 #[cfg_attr(not(bootstrap), lang = "exchange_malloc_conservative")]
 #[allow(dead_code)]
 #[inline]
@@ -475,6 +478,7 @@ pub(crate) unsafe fn box_free<T: ?Sized, A: Allocator>(ptr: Unique<T>, alloc: A)
 
 // # Allocation error handler
 
+#[cfg(not(no_global_oom_handling))]
 extern "Rust" {
     // This is the magic symbol to call the global alloc error handler.  rustc generates
     // it to call `__rg_oom` if there is a `#[alloc_error_handler]`, or to call the
@@ -496,7 +500,7 @@ extern "Rust" {
 /// [`set_alloc_error_hook`]: ../../std/alloc/fn.set_alloc_error_hook.html
 /// [`take_alloc_error_hook`]: ../../std/alloc/fn.take_alloc_error_hook.html
 #[stable(feature = "global_alloc", since = "1.28.0")]
-#[cfg(not(test))]
+#[cfg(all(not(no_global_oom_handling), not(test)))]
 #[rustc_allocator_nounwind]
 #[cold]
 pub fn handle_alloc_error(layout: Layout) -> ! {
@@ -506,10 +510,10 @@ pub fn handle_alloc_error(layout: Layout) -> ! {
 }
 
 // For alloc test `std::alloc::handle_alloc_error` can be used directly.
-#[cfg(test)]
+#[cfg(all(not(no_global_oom_handling), test))]
 pub use std::alloc::handle_alloc_error;
 
-#[cfg(not(any(target_os = "hermit", test)))]
+#[cfg(all(not(no_global_oom_handling), not(any(target_os = "hermit", test))))]
 #[doc(hidden)]
 #[allow(unused_attributes)]
 #[unstable(feature = "alloc_internals", issue = "none")]

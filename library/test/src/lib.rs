@@ -19,11 +19,12 @@
 
 #![crate_name = "test"]
 #![unstable(feature = "test", issue = "50297")]
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
-#![cfg_attr(unix, feature(libc))]
+#![doc(test(attr(deny(warnings))))]
+#![feature(libc)]
 #![feature(rustc_private)]
 #![feature(nll)]
 #![feature(available_concurrency)]
+#![feature(bench_black_box)]
 #![feature(internal_output_capture)]
 #![feature(panic_unwind)]
 #![feature(staged_api)]
@@ -48,7 +49,7 @@ pub mod test {
         cli::{parse_opts, TestOpts},
         filter_tests,
         helpers::metrics::{Metric, MetricMap},
-        options::{Options, RunIgnored, RunStrategy, ShouldPanic},
+        options::{Concurrent, Options, RunIgnored, RunStrategy, ShouldPanic},
         run_test, test_main, test_main_static,
         test_result::{TestResult, TrFailed, TrFailedMsg, TrIgnored, TrOk},
         time::{TestExecTime, TestTimeOptions},
@@ -79,6 +80,7 @@ mod formatters;
 mod helpers;
 mod options;
 pub mod stats;
+mod term;
 mod test_result;
 mod time;
 mod types;

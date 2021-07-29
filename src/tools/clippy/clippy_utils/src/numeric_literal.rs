@@ -52,7 +52,7 @@ impl<'a> NumericLiteral<'a> {
 
     pub fn from_lit_kind(src: &'a str, lit_kind: &LitKind) -> Option<NumericLiteral<'a>> {
         if lit_kind.is_numeric() && src.chars().next().map_or(false, |c| c.is_digit(10)) {
-            let (unsuffixed, suffix) = split_suffix(&src, lit_kind);
+            let (unsuffixed, suffix) = split_suffix(src, lit_kind);
             let float = matches!(lit_kind, LitKind::Float(..));
             Some(NumericLiteral::new(unsuffixed, suffix, float))
         } else {
@@ -162,6 +162,9 @@ impl<'a> NumericLiteral<'a> {
         }
 
         if let Some(suffix) = self.suffix {
+            if output.ends_with('.') {
+                output.push('0');
+            }
             output.push('_');
             output.push_str(suffix);
         }

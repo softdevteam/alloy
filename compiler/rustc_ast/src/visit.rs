@@ -90,9 +90,6 @@ pub trait Visitor<'ast>: Sized {
     fn visit_foreign_item(&mut self, i: &'ast ForeignItem) {
         walk_foreign_item(self, i)
     }
-    fn visit_global_asm(&mut self, ga: &'ast GlobalAsm) {
-        walk_global_asm(self, ga)
-    }
     fn visit_item(&mut self, i: &'ast Item) {
         walk_item(self, i)
     }
@@ -299,7 +296,7 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
         ItemKind::ForeignMod(ref foreign_module) => {
             walk_list!(visitor, visit_foreign_item, &foreign_module.items);
         }
-        ItemKind::GlobalAsm(ref ga) => visitor.visit_global_asm(ga),
+        ItemKind::GlobalAsm(ref asm) => walk_inline_asm(visitor, asm),
         ItemKind::TyAlias(box TyAliasKind(_, ref generics, ref bounds, ref ty)) => {
             visitor.visit_generics(generics);
             walk_list!(visitor, visit_param_bound, bounds);
@@ -407,6 +404,9 @@ pub fn walk_ty<'a, V: Visitor<'a>>(visitor: &mut V, typ: &'a Ty) {
         TyKind::Typeof(ref expression) => visitor.visit_anon_const(expression),
         TyKind::Infer | TyKind::ImplicitSelf | TyKind::Err => {}
         TyKind::MacCall(ref mac) => visitor.visit_mac_call(mac),
+        TyKind::AnonymousStruct(ref fields, ..) | TyKind::AnonymousUnion(ref fields, ..) => {
+            walk_list!(visitor, visit_field_def, fields)
+        }
         TyKind::Never | TyKind::CVarArgs => {}
     }
 }
@@ -497,7 +497,10 @@ pub fn walk_assoc_ty_constraint<'a, V: Visitor<'a>>(
 
 pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
     match pattern.kind {
-        PatKind::TupleStruct(ref path, ref elems) => {
+        PatKind::TupleStruct(ref opt_qself, ref path, ref elems) => {
+            if let Some(ref qself) = *opt_qself {
+                visitor.visit_ty(&qself.ty);
+            }
             visitor.visit_path(path, pattern.id);
             walk_list!(visitor, visit_pat, elems);
         }
@@ -507,7 +510,10 @@ pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
             }
             visitor.visit_path(path, pattern.id)
         }
-        PatKind::Struct(ref path, ref fields, _) => {
+        PatKind::Struct(ref opt_qself, ref path, ref fields, _) => {
+            if let Some(ref qself) = *opt_qself {
+                visitor.visit_ty(&qself.ty);
+            }
             visitor.visit_path(path, pattern.id);
             walk_list!(visitor, visit_pat_field, fields);
         }
@@ -555,10 +561,6 @@ pub fn walk_foreign_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a ForeignI
             visitor.visit_mac_call(mac);
         }
     }
-}
-
-pub fn walk_global_asm<'a, V: Visitor<'a>>(_: &mut V, _: &'a GlobalAsm) {
-    // Empty!
 }
 
 pub fn walk_param_bound<'a, V: Visitor<'a>>(visitor: &mut V, bound: &'a GenericBound) {
@@ -708,6 +710,28 @@ pub fn walk_anon_const<'a, V: Visitor<'a>>(visitor: &mut V, constant: &'a AnonCo
     visitor.visit_expr(&constant.value);
 }
 
+fn walk_inline_asm<'a, V: Visitor<'a>>(visitor: &mut V, asm: &'a InlineAsm) {
+    for (op, _) in &asm.operands {
+        match op {
+            InlineAsmOperand::In { expr, .. }
+            | InlineAsmOperand::InOut { expr, .. }
+            | InlineAsmOperand::Sym { expr, .. } => visitor.visit_expr(expr),
+            InlineAsmOperand::Out { expr, .. } => {
+                if let Some(expr) = expr {
+                    visitor.visit_expr(expr);
+                }
+            }
+            InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
+                visitor.visit_expr(in_expr);
+                if let Some(out_expr) = out_expr {
+                    visitor.visit_expr(out_expr);
+                }
+            }
+            InlineAsmOperand::Const { anon_const, .. } => visitor.visit_anon_const(anon_const),
+        }
+    }
+}
+
 pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
     walk_list!(visitor, visit_attribute, expression.attrs.iter());
 
@@ -722,6 +746,9 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
             visitor.visit_anon_const(count)
         }
         ExprKind::Struct(ref se) => {
+            if let Some(ref qself) = se.qself {
+                visitor.visit_ty(&qself.ty);
+            }
             visitor.visit_path(&se.path, expression.id);
             walk_list!(visitor, visit_expr_field, &se.fields);
             match &se.rest {
@@ -830,29 +857,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         }
         ExprKind::MacCall(ref mac) => visitor.visit_mac_call(mac),
         ExprKind::Paren(ref subexpression) => visitor.visit_expr(subexpression),
-        ExprKind::InlineAsm(ref ia) => {
-            for (op, _) in &ia.operands {
-                match op {
-                    InlineAsmOperand::In { expr, .. }
-                    | InlineAsmOperand::InOut { expr, .. }
-                    | InlineAsmOperand::Sym { expr, .. } => visitor.visit_expr(expr),
-                    InlineAsmOperand::Out { expr, .. } => {
-                        if let Some(expr) = expr {
-                            visitor.visit_expr(expr);
-                        }
-                    }
-                    InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
-                        visitor.visit_expr(in_expr);
-                        if let Some(out_expr) = out_expr {
-                            visitor.visit_expr(out_expr);
-                        }
-                    }
-                    InlineAsmOperand::Const { anon_const, .. } => {
-                        visitor.visit_anon_const(anon_const)
-                    }
-                }
-            }
-        }
+        ExprKind::InlineAsm(ref asm) => walk_inline_asm(visitor, asm),
         ExprKind::LlvmInlineAsm(ref ia) => {
             for &(_, ref input) in &ia.inputs {
                 visitor.visit_expr(input)

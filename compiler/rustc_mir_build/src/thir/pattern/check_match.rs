@@ -1,8 +1,8 @@
 use super::usefulness::{
-    compute_match_usefulness, expand_pattern, MatchArm, MatchCheckCtxt, Reachability,
+    compute_match_usefulness, expand_pattern, is_wildcard, MatchArm, MatchCheckCtxt, Reachability,
     UsefulnessReport,
 };
-use super::{PatCtxt, PatKind, PatternError};
+use super::{PatCtxt, PatternError};
 
 use rustc_arena::TypedArena;
 use rustc_ast::Mutability;
@@ -12,6 +12,7 @@ use rustc_hir::def::*;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{HirId, Pat};
+use rustc_middle::thir::PatKind;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_session::lint::builtin::BINDINGS_WITH_VARIANT_NAME;
 use rustc_session::lint::builtin::{IRREFUTABLE_LET_PATTERNS, UNREACHABLE_PATTERNS};
@@ -83,7 +84,7 @@ impl<'tcx> Visitor<'tcx> for MatchVisitor<'_, 'tcx> {
 }
 
 impl PatCtxt<'_, '_> {
-    fn report_inlining_errors(&self, pat_span: Span) {
+    fn report_inlining_errors(&self) {
         for error in &self.errors {
             match *error {
                 PatternError::StaticInPattern(span) => {
@@ -94,14 +95,6 @@ impl PatCtxt<'_, '_> {
                 }
                 PatternError::ConstParamInPattern(span) => {
                     self.span_e0158(span, "const parameters cannot be referenced in patterns")
-                }
-                PatternError::FloatBug => {
-                    // FIXME(#31407) this is only necessary because float parsing is buggy
-                    rustc_middle::mir::interpret::struct_error(
-                        self.tcx.at(pat_span),
-                        "could not evaluate float literal (see issue #31407)",
-                    )
-                    .emit();
                 }
                 PatternError::NonConstPath(span) => {
                     rustc_middle::mir::interpret::struct_error(
@@ -141,7 +134,7 @@ impl<'tcx> MatchVisitor<'_, 'tcx> {
         let pattern: &_ = cx.pattern_arena.alloc(expand_pattern(pattern));
         if !patcx.errors.is_empty() {
             *have_errors = true;
-            patcx.report_inlining_errors(pat.span);
+            patcx.report_inlining_errors();
         }
         (pattern, pattern_ty)
     }
@@ -344,7 +337,7 @@ fn check_for_bindings_named_same_as_variants(cx: &MatchVisitor<'_, '_>, pat: &Pa
 
 /// Checks for common cases of "catchall" patterns that may not be intended as such.
 fn pat_is_catchall(pat: &super::Pat<'_>) -> bool {
-    use super::PatKind::*;
+    use PatKind::*;
     match &*pat.kind {
         Binding { subpattern: None, .. } => true,
         Binding { subpattern: Some(s), .. } | Deref { subpattern: s } => pat_is_catchall(s),
@@ -496,16 +489,25 @@ fn non_exhaustive_match<'p, 'tcx>(
         err.span_label(sp, pattern_not_covered_label(&witnesses, &joined_patterns));
     };
 
+    let is_variant_list_non_exhaustive = match scrut_ty.kind() {
+        ty::Adt(def, _) if def.is_variant_list_non_exhaustive() && !def.did.is_local() => true,
+        _ => false,
+    };
+
     adt_defined_here(cx, &mut err, scrut_ty, &witnesses);
     err.help(
         "ensure that all possible cases are being handled, \
               possibly by adding wildcards or more match arms",
     );
-    err.note(&format!("the matched value is of type `{}`", scrut_ty));
+    err.note(&format!(
+        "the matched value is of type `{}`{}",
+        scrut_ty,
+        if is_variant_list_non_exhaustive { ", which is marked as non-exhaustive" } else { "" }
+    ));
     if (scrut_ty == cx.tcx.types.usize || scrut_ty == cx.tcx.types.isize)
         && !is_empty_match
         && witnesses.len() == 1
-        && witnesses[0].is_wildcard()
+        && is_wildcard(&witnesses[0])
     {
         err.note(&format!(
             "`{}` does not have a fixed maximum value, \

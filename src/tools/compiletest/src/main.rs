@@ -5,8 +5,10 @@
 
 extern crate test;
 
-use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
-use crate::common::{CompareMode, Config, Debugger, Mode, PassMode, Pretty, TestPaths};
+use crate::common::{
+    expected_output_path, output_base_dir, output_relative_path, PanicStrategy, UI_EXTENSIONS,
+};
+use crate::common::{CompareMode, Config, Debugger, Mode, PassMode, TestPaths};
 use crate::util::logv;
 use getopts::Options;
 use std::env;
@@ -20,7 +22,7 @@ use test::ColorConfig;
 use tracing::*;
 use walkdir::WalkDir;
 
-use self::header::EarlyProps;
+use self::header::{make_test_description, EarlyProps};
 
 #[cfg(test)]
 mod tests;
@@ -87,6 +89,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "force {check,build,run}-pass tests to this mode.",
             "check | build | run",
         )
+        .optopt("", "run", "whether to execute run-* tests", "auto | always | never")
         .optflag("", "ignored", "run tests marked as ignored")
         .optflag("", "exact", "filters match exactly")
         .optopt(
@@ -96,8 +99,9 @@ pub fn parse_config(args: Vec<String>) -> Config {
              (eg. emulator, valgrind)",
             "PROGRAM",
         )
-        .optopt("", "host-rustcflags", "flags to pass to rustc for host", "FLAGS")
-        .optopt("", "target-rustcflags", "flags to pass to rustc for target", "FLAGS")
+        .optmulti("", "host-rustcflags", "flags to pass to rustc for host", "FLAGS")
+        .optmulti("", "target-rustcflags", "flags to pass to rustc for target", "FLAGS")
+        .optopt("", "target-panic", "what panic strategy the target supports", "unwind | abort")
         .optflag("", "verbose", "run tests verbosely, showing all output")
         .optflag(
             "",
@@ -140,7 +144,8 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "enable this to generate a Rustfix coverage file, which is saved in \
                 `./<build_base>/rustfix_missing_coverage.txt`",
         )
-        .optflag("h", "help", "show this message");
+        .optflag("h", "help", "show this message")
+        .reqopt("", "channel", "current Rust channel", "CHANNEL");
 
     let (argv0, args_) = args.split_first().unwrap();
     if args.len() == 1 || args[1] == "-h" || args[1] == "--help" {
@@ -234,10 +239,21 @@ pub fn parse_config(args: Vec<String>) -> Config {
             mode.parse::<PassMode>()
                 .unwrap_or_else(|_| panic!("unknown `--pass` option `{}` given", mode))
         }),
+        run: matches.opt_str("run").and_then(|mode| match mode.as_str() {
+            "auto" => None,
+            "always" => Some(true),
+            "never" => Some(false),
+            _ => panic!("unknown `--run` option `{}` given", mode),
+        }),
         logfile: matches.opt_str("logfile").map(|s| PathBuf::from(&s)),
         runtool: matches.opt_str("runtool"),
-        host_rustcflags: matches.opt_str("host-rustcflags"),
-        target_rustcflags: matches.opt_str("target-rustcflags"),
+        host_rustcflags: Some(matches.opt_strs("host-rustcflags").join(" ")),
+        target_rustcflags: Some(matches.opt_strs("target-rustcflags").join(" ")),
+        target_panic: match matches.opt_str("target-panic").as_deref() {
+            Some("unwind") | None => PanicStrategy::Unwind,
+            Some("abort") => PanicStrategy::Abort,
+            _ => panic!("unknown `--target-panic` option `{}` given", mode),
+        },
         target,
         host: opt_str2(matches.opt_str("host")),
         cdb,
@@ -263,6 +279,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         compare_mode: matches.opt_str("compare-mode").map(CompareMode::parse),
         rustfix_coverage: matches.opt_present("rustfix-coverage"),
         has_tidy,
+        channel: matches.opt_str("channel").unwrap(),
 
         cc: matches.opt_str("cc").unwrap(),
         cxx: matches.opt_str("cxx").unwrap(),
@@ -603,26 +620,13 @@ pub fn is_test(file_name: &OsString) -> bool {
 }
 
 fn make_test(config: &Config, testpaths: &TestPaths, inputs: &Stamp) -> Vec<test::TestDescAndFn> {
-    let early_props = if config.mode == Mode::RunMake {
-        // Allow `ignore` directives to be in the Makefile.
-        EarlyProps::from_file(config, &testpaths.file.join("Makefile"))
+    let test_path = if config.mode == Mode::RunMake {
+        // Parse directives in the Makefile
+        testpaths.file.join("Makefile")
     } else {
-        EarlyProps::from_file(config, &testpaths.file)
+        PathBuf::from(&testpaths.file)
     };
-
-    // The `should-fail` annotation doesn't apply to pretty tests,
-    // since we run the pretty printer across all tests by default.
-    // If desired, we could add a `should-fail-pretty` annotation.
-    let should_panic = match config.mode {
-        Pretty => test::ShouldPanic::No,
-        _ => {
-            if early_props.should_fail {
-                test::ShouldPanic::Yes
-            } else {
-                test::ShouldPanic::No
-            }
-        }
-    };
+    let early_props = EarlyProps::from_file(config, &test_path);
 
     // Incremental tests are special, they inherently cannot be run in parallel.
     // `runtest::run` will be responsible for iterating over revisions.
@@ -634,25 +638,20 @@ fn make_test(config: &Config, testpaths: &TestPaths, inputs: &Stamp) -> Vec<test
     revisions
         .into_iter()
         .map(|revision| {
-            let ignore = early_props.ignore
-                // Ignore tests that already run and are up to date with respect to inputs.
-                || is_up_to_date(
-                    config,
-                    testpaths,
-                    &early_props,
-                    revision.map(|s| s.as_str()),
-                    inputs,
-                );
-            test::TestDescAndFn {
-                desc: test::TestDesc {
-                    name: make_test_name(config, testpaths, revision),
-                    ignore,
-                    should_panic,
-                    allow_fail: false,
-                    test_type: test::TestType::Unknown,
-                },
-                testfn: make_test_closure(config, testpaths, revision),
-            }
+            let src_file =
+                std::fs::File::open(&test_path).expect("open test file to parse ignores");
+            let cfg = revision.map(|v| &**v);
+            let test_name = crate::make_test_name(config, testpaths, revision);
+            let mut desc = make_test_description(config, test_name, &test_path, src_file, cfg);
+            // Ignore tests that already run and are up to date with respect to inputs.
+            desc.ignore |= is_up_to_date(
+                config,
+                testpaths,
+                &early_props,
+                revision.map(|s| s.as_str()),
+                inputs,
+            );
+            test::TestDescAndFn { desc, testfn: make_test_closure(config, testpaths, revision) }
         })
         .collect()
 }
@@ -975,7 +974,7 @@ fn extract_lldb_version(full_version_line: &str) -> Option<(u32, bool)> {
         }
     } else if let Some(lldb_ver) = full_version_line.strip_prefix("lldb version ") {
         if let Some(idx) = lldb_ver.find(not_a_digit) {
-            let version: u32 = lldb_ver[..idx].parse().unwrap();
+            let version: u32 = lldb_ver[..idx].parse().ok()?;
             return Some((version * 100, full_version_line.contains("rust-enabled")));
         }
     }

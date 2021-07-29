@@ -11,14 +11,16 @@ use crate::mbe::transcribe::transcribe;
 use rustc_ast as ast;
 use rustc_ast::token::{self, NonterminalKind, NtTT, Token, TokenKind::*};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream};
-use rustc_ast::NodeId;
+use rustc_ast::{NodeId, DUMMY_NODE_ID};
 use rustc_ast_pretty::pprust;
 use rustc_attr::{self as attr, TransparencyError};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_feature::Features;
-use rustc_lint_defs::builtin::{OR_PATTERNS_BACK_COMPAT, SEMICOLON_IN_EXPRESSIONS_FROM_MACROS};
+use rustc_lint_defs::builtin::{
+    RUST_2021_INCOMPATIBLE_OR_PATTERNS, SEMICOLON_IN_EXPRESSIONS_FROM_MACROS,
+};
 use rustc_lint_defs::BuiltinLintDiagnostics;
 use rustc_parse::parser::Parser;
 use rustc_session::parse::ParseSess;
@@ -245,7 +247,7 @@ fn generic_extension<'cx>(
         // are not recorded. On the first `Success(..)`ful matcher, the spans are merged.
         let mut gated_spans_snapshot = mem::take(&mut *sess.gated_spans.spans.borrow_mut());
 
-        match parse_tt(&mut Cow::Borrowed(&parser), lhs_tt) {
+        match parse_tt(&mut Cow::Borrowed(&parser), lhs_tt, name) {
             Success(named_matches) => {
                 // The matcher was `Success(..)`ful.
                 // Merge the gated spans from parsing the matcher with the pre-existing ones.
@@ -287,7 +289,6 @@ fn generic_extension<'cx>(
 
                 let mut p = Parser::new(sess, tts, false, None);
                 p.last_type_ascription = cx.current_expansion.prior_type_ascription;
-                let lint_node_id = cx.resolver.lint_node_id(cx.current_expansion.id);
 
                 // Let the context choose how to interpret the result.
                 // Weird, but useful for X-macros.
@@ -299,7 +300,7 @@ fn generic_extension<'cx>(
                     // macro leaves unparsed tokens.
                     site_span: sp,
                     macro_ident: name,
-                    lint_node_id,
+                    lint_node_id: cx.current_expansion.lint_node_id,
                     arm_span,
                 });
             }
@@ -338,7 +339,7 @@ fn generic_extension<'cx>(
                 _ => continue,
             };
             if let Success(_) =
-                parse_tt(&mut Cow::Borrowed(&parser_from_cx(sess, arg.clone())), lhs_tt)
+                parse_tt(&mut Cow::Borrowed(&parser_from_cx(sess, arg.clone())), lhs_tt, name)
             {
                 if comma_span.is_dummy() {
                     err.note("you might be missing a comma");
@@ -432,7 +433,7 @@ pub fn compile_declarative_macro(
     ];
 
     let parser = Parser::new(&sess.parse_sess, body, true, rustc_parse::MACRO_ARGUMENTS);
-    let argument_map = match parse_tt(&mut Cow::Borrowed(&parser), &argument_gram) {
+    let argument_map = match parse_tt(&mut Cow::Borrowed(&parser), &argument_gram, def.ident) {
         Success(m) => m,
         Failure(token, msg) => {
             let s = parse_failure_msg(&token);
@@ -467,10 +468,11 @@ pub fn compile_declarative_macro(
                             &sess.parse_sess,
                             def.id,
                             features,
+                            edition,
                         )
                         .pop()
                         .unwrap();
-                        valid &= check_lhs_nt_follows(&sess.parse_sess, features, &def.attrs, &tt);
+                        valid &= check_lhs_nt_follows(&sess.parse_sess, features, &def, &tt);
                         return tt;
                     }
                 }
@@ -492,6 +494,7 @@ pub fn compile_declarative_macro(
                             &sess.parse_sess,
                             def.id,
                             features,
+                            edition,
                         )
                         .pop()
                         .unwrap();
@@ -538,13 +541,13 @@ pub fn compile_declarative_macro(
 fn check_lhs_nt_follows(
     sess: &ParseSess,
     features: &Features,
-    attrs: &[ast::Attribute],
+    def: &ast::Item,
     lhs: &mbe::TokenTree,
 ) -> bool {
     // lhs is going to be like TokenTree::Delimited(...), where the
     // entire lhs is those tts. Or, it can be a "bare sequence", not wrapped in parens.
     if let mbe::TokenTree::Delimited(_, ref tts) = *lhs {
-        check_matcher(sess, features, attrs, &tts.tts)
+        check_matcher(sess, features, def, &tts.tts)
     } else {
         let msg = "invalid macro matcher; matchers must be contained in balanced delimiters";
         sess.span_diagnostic.span_err(lhs.span(), msg);
@@ -602,13 +605,13 @@ fn check_rhs(sess: &ParseSess, rhs: &mbe::TokenTree) -> bool {
 fn check_matcher(
     sess: &ParseSess,
     features: &Features,
-    attrs: &[ast::Attribute],
+    def: &ast::Item,
     matcher: &[mbe::TokenTree],
 ) -> bool {
     let first_sets = FirstSets::new(matcher);
     let empty_suffix = TokenSet::empty();
     let err = sess.span_diagnostic.err_count();
-    check_matcher_core(sess, features, attrs, &first_sets, matcher, &empty_suffix);
+    check_matcher_core(sess, features, def, &first_sets, matcher, &empty_suffix);
     err == sess.span_diagnostic.err_count()
 }
 
@@ -855,7 +858,7 @@ impl TokenSet {
 fn check_matcher_core(
     sess: &ParseSess,
     features: &Features,
-    attrs: &[ast::Attribute],
+    def: &ast::Item,
     first_sets: &FirstSets,
     matcher: &[mbe::TokenTree],
     follow: &TokenSet,
@@ -901,7 +904,7 @@ fn check_matcher_core(
             }
             TokenTree::Delimited(span, ref d) => {
                 let my_suffix = TokenSet::singleton(d.close_tt(span));
-                check_matcher_core(sess, features, attrs, first_sets, &d.tts, &my_suffix);
+                check_matcher_core(sess, features, def, first_sets, &d.tts, &my_suffix);
                 // don't track non NT tokens
                 last.replace_with_irrelevant();
 
@@ -934,7 +937,7 @@ fn check_matcher_core(
                 // `my_suffix` is some TokenSet that we can use
                 // for checking the interior of `seq_rep`.
                 let next =
-                    check_matcher_core(sess, features, attrs, first_sets, &seq_rep.tts, my_suffix);
+                    check_matcher_core(sess, features, def, first_sets, &seq_rep.tts, my_suffix);
                 if next.maybe_empty {
                     last.add_all(&next);
                 } else {
@@ -954,29 +957,31 @@ fn check_matcher_core(
         for token in &last.tokens {
             if let TokenTree::MetaVarDecl(span, name, Some(kind)) = *token {
                 for next_token in &suffix_first.tokens {
-                    // Check if the old pat is used and the next token is `|`.
-                    if let NonterminalKind::Pat2015 { inferred: true } = kind {
-                        if let TokenTree::Token(token) = next_token {
-                            if let BinOp(token) = token.kind {
-                                if let token::BinOpToken::Or = token {
-                                    // It is suggestion to use pat2015, for example: $x:pat -> $x:pat2015.
-                                    let suggestion = quoted_tt_to_string(&TokenTree::MetaVarDecl(
-                                        span,
-                                        name,
-                                        Some(NonterminalKind::Pat2015 { inferred: false }),
-                                    ));
-                                    sess.buffer_lint_with_diagnostic(
-                                        &OR_PATTERNS_BACK_COMPAT,
-                                        span,
-                                        ast::CRATE_NODE_ID,
-                                        &*format!("the meaning of the `pat` fragment specifier is changing in Rust 2021, which may affect this macro",),
-                                        BuiltinLintDiagnostics::OrPatternsBackCompat(
-                                            span, suggestion,
-                                        ),
-                                    );
-                                }
-                            }
-                        }
+                    // Check if the old pat is used and the next token is `|`
+                    // to warn about incompatibility with Rust 2021.
+                    // We only emit this lint if we're parsing the original
+                    // definition of this macro_rules, not while (re)parsing
+                    // the macro when compiling another crate that is using the
+                    // macro. (See #86567.)
+                    // Macros defined in the current crate have a real node id,
+                    // whereas macros from an external crate have a dummy id.
+                    if def.id != DUMMY_NODE_ID
+                        && matches!(kind, NonterminalKind::PatParam { inferred: true })
+                        && matches!(next_token, TokenTree::Token(token) if token.kind == BinOp(token::BinOpToken::Or))
+                    {
+                        // It is suggestion to use pat_param, for example: $x:pat -> $x:pat_param.
+                        let suggestion = quoted_tt_to_string(&TokenTree::MetaVarDecl(
+                            span,
+                            name,
+                            Some(NonterminalKind::PatParam { inferred: false }),
+                        ));
+                        sess.buffer_lint_with_diagnostic(
+                            &RUST_2021_INCOMPATIBLE_OR_PATTERNS,
+                            span,
+                            ast::CRATE_NODE_ID,
+                            "the meaning of the `pat` fragment specifier is changing in Rust 2021, which may affect this macro",
+                            BuiltinLintDiagnostics::OrPatternsBackCompat(span, suggestion),
+                        );
                     }
                     match is_in_follow(next_token, kind) {
                         IsInFollow::Yes => {}
@@ -1105,7 +1110,7 @@ fn is_in_follow(tok: &mbe::TokenTree, kind: NonterminalKind) -> IsInFollow {
                     _ => IsInFollow::No(TOKENS),
                 }
             }
-            NonterminalKind::Pat2015 { .. } => {
+            NonterminalKind::PatParam { .. } => {
                 const TOKENS: &[&str] = &["`=>`", "`,`", "`=`", "`|`", "`if`", "`in`"];
                 match tok {
                     TokenTree::Token(token) => match token.kind {
@@ -1116,7 +1121,7 @@ fn is_in_follow(tok: &mbe::TokenTree, kind: NonterminalKind) -> IsInFollow {
                     _ => IsInFollow::No(TOKENS),
                 }
             }
-            NonterminalKind::Pat2021 { .. } => {
+            NonterminalKind::PatWithOr { .. } => {
                 const TOKENS: &[&str] = &["`=>`", "`,`", "`=`", "`if`", "`in`"];
                 match tok {
                     TokenTree::Token(token) => match token.kind {

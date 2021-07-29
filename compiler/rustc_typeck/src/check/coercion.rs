@@ -640,7 +640,13 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
 
                 // Object safety violations or miscellaneous.
                 Err(err) => {
-                    self.report_selection_error(&obligation, &err, false, false);
+                    self.report_selection_error(
+                        obligation.clone(),
+                        &obligation,
+                        &err,
+                        false,
+                        false,
+                    );
                     // Treat this like an obligation and follow through
                     // with the unsizing - the lack of a coercion should
                     // be silent, as it causes a type mismatch later.
@@ -973,6 +979,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         };
         if let (Some(a_sig), Some(b_sig)) = (a_sig, b_sig) {
+            // Intrinsics are not coercible to function pointers.
+            if a_sig.abi() == Abi::RustIntrinsic
+                || a_sig.abi() == Abi::PlatformIntrinsic
+                || b_sig.abi() == Abi::RustIntrinsic
+                || b_sig.abi() == Abi::PlatformIntrinsic
+            {
+                return Err(TypeError::IntrinsicCast);
+            }
             // The signature must match.
             let a_sig = self.normalize_associated_types_in(new.span, a_sig);
             let b_sig = self.normalize_associated_types_in(new.span, b_sig);
@@ -1448,11 +1462,15 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
                 expected.is_unit(),
                 pointing_at_return_type,
             ) {
-                // If the block is from an external macro, then do not suggest
-                // adding a semicolon, because there's nowhere to put it.
-                // See issue #81943.
+                // If the block is from an external macro or try (`?`) desugaring, then
+                // do not suggest adding a semicolon, because there's nowhere to put it.
+                // See issues #81943 and #87051.
                 if cond_expr.span.desugaring_kind().is_none()
                     && !in_external_macro(fcx.tcx.sess, cond_expr.span)
+                    && !matches!(
+                        cond_expr.kind,
+                        hir::ExprKind::Match(.., hir::MatchSource::TryDesugar)
+                    )
                 {
                     err.span_label(cond_expr.span, "expected this to be `()`");
                     if expr.can_have_side_effects() {
@@ -1473,6 +1491,7 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
                     expected,
                     found,
                     can_suggest,
+                    fcx.tcx.hir().get_parent_item(id),
                 );
             }
             if !pointing_at_return_type {
@@ -1486,7 +1505,9 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
         if let (Some((expr, _)), Some((fn_decl, _, _))) =
             (expression, fcx.get_node_fn_decl(parent_item))
         {
-            fcx.suggest_missing_return_expr(&mut err, expr, fn_decl, expected, found, parent_id);
+            fcx.suggest_missing_break_or_return_expr(
+                &mut err, expr, fn_decl, expected, found, id, parent_id,
+            );
         }
 
         if let (Some(sp), Some(fn_output)) = (fcx.ret_coercion_span.get(), fn_output) {

@@ -1,4 +1,4 @@
-use crate::consts::{constant, Constant};
+use clippy_utils::consts::{constant, Constant};
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::source::snippet_opt;
 use clippy_utils::{is_direct_expn_of, is_expn_of, match_panic_call};
@@ -63,7 +63,7 @@ impl<'tcx> LateLintPass<'tcx> for AssertionsOnConstants {
                 &format!("`assert!(false, {})` should probably be replaced", panic_message),
                 None,
                 &format!("use `panic!({})` or `unreachable!({})`", panic_message, panic_message),
-            )
+            );
         };
 
         if let Some(debug_assert_span) = is_expn_of(e.span, "debug_assert") {
@@ -127,10 +127,9 @@ fn match_assert_with_message<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>)
             _ => &block.expr,
         };
         // function call
-        if let Some(args) = match_panic_call(cx, begin_panic_call);
-        if args.len() == 1;
+        if let Some(arg) = match_panic_call(cx, begin_panic_call);
         // bind the second argument of the `assert!` macro if it exists
-        if let panic_message = snippet_opt(cx, args[0].span);
+        if let panic_message = snippet_opt(cx, arg.span);
         // second argument of begin_panic is irrelevant
         // as is the second match arm
         then {

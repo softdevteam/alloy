@@ -226,7 +226,7 @@ use rustc_session::config::{self, CrateType};
 use rustc_session::filesearch::{FileDoesntMatch, FileMatches, FileSearch};
 use rustc_session::search_paths::PathKind;
 use rustc_session::utils::CanonicalizedPath;
-use rustc_session::{CrateDisambiguator, Session};
+use rustc_session::{Session, StableCrateId};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
 use rustc_target::spec::{Target, TargetTriple};
@@ -787,10 +787,11 @@ pub fn find_plugin_registrar(
     metadata_loader: &dyn MetadataLoader,
     span: Span,
     name: Symbol,
-) -> (PathBuf, CrateDisambiguator) {
+) -> (PathBuf, StableCrateId) {
     match find_plugin_registrar_impl(sess, metadata_loader, name) {
         Ok(res) => res,
-        Err(err) => err.report(sess, span),
+        // `core` is always available if we got as far as loading plugins.
+        Err(err) => err.report(sess, span, false),
     }
 }
 
@@ -798,7 +799,7 @@ fn find_plugin_registrar_impl<'a>(
     sess: &'a Session,
     metadata_loader: &dyn MetadataLoader,
     name: Symbol,
-) -> Result<(PathBuf, CrateDisambiguator), CrateError> {
+) -> Result<(PathBuf, StableCrateId), CrateError> {
     info!("find plugin registrar `{}`", name);
     let mut locator = CrateLocator::new(
         sess,
@@ -815,7 +816,7 @@ fn find_plugin_registrar_impl<'a>(
 
     match locator.maybe_load_library_crate()? {
         Some(library) => match library.source.dylib {
-            Some(dylib) => Ok((dylib.0, library.metadata.get_root().disambiguator())),
+            Some(dylib) => Ok((dylib.0, library.metadata.get_root().stable_crate_id())),
             None => Err(CrateError::NonDylibPlugin(name)),
         },
         None => Err(locator.into_error()),
@@ -883,7 +884,7 @@ crate enum CrateError {
 }
 
 impl CrateError {
-    crate fn report(self, sess: &Session, span: Span) -> ! {
+    crate fn report(self, sess: &Session, span: Span, missing_core: bool) -> ! {
         let mut err = match self {
             CrateError::NonAsciiName(crate_name) => sess.struct_span_err(
                 span,
@@ -1068,8 +1069,40 @@ impl CrateError {
                     if (crate_name == sym::std || crate_name == sym::core)
                         && locator.triple != TargetTriple::from_triple(config::host_triple())
                     {
-                        err.note(&format!("the `{}` target may not be installed", locator.triple));
-                    } else if crate_name == sym::profiler_builtins {
+                        if missing_core {
+                            err.note(&format!(
+                                "the `{}` target may not be installed",
+                                locator.triple
+                            ));
+                        } else {
+                            err.note(&format!(
+                                "the `{}` target may not support the standard library",
+                                locator.triple
+                            ));
+                        }
+                        if missing_core && std::env::var("RUSTUP_HOME").is_ok() {
+                            err.help(&format!(
+                                "consider downloading the target with `rustup target add {}`",
+                                locator.triple
+                            ));
+                        }
+                        // Suggest using #![no_std]. #[no_core] is unstable and not really supported anyway.
+                        // NOTE: this is a dummy span if `extern crate std` was injected by the compiler.
+                        // If it's not a dummy, that means someone added `extern crate std` explicitly and `#![no_std]` won't help.
+                        if !missing_core && span.is_dummy() {
+                            let current_crate =
+                                sess.opts.crate_name.as_deref().unwrap_or("<unknown>");
+                            err.note(&format!(
+                                "`std` is required by `{}` because it does not declare `#![no_std]`",
+                                current_crate
+                            ));
+                        }
+                        if sess.is_nightly_build() && std::env::var("CARGO").is_ok() {
+                            err.help("consider building the standard library from source with `cargo build -Zbuild-std`");
+                        }
+                    } else if Some(crate_name)
+                        == sess.opts.debugging_opts.profiler_runtime.as_deref().map(Symbol::intern)
+                    {
                         err.note(&"the compiler may have been built without the profiler runtime");
                     }
                     err.span_label(span, "can't find crate");

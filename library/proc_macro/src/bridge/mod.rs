@@ -55,6 +55,7 @@ macro_rules! with_api {
             FreeFunctions {
                 fn drop($self: $S::FreeFunctions);
                 fn track_env_var(var: &str, value: Option<&str>);
+                fn track_path(path: &str);
             },
             TokenStream {
                 fn drop($self: $S::TokenStream);
@@ -107,6 +108,7 @@ macro_rules! with_api {
             Literal {
                 fn drop($self: $S::Literal);
                 fn clone($self: &$S::Literal) -> $S::Literal;
+                fn from_str(s: &str) -> Result<$S::Literal, ()>;
                 fn debug_kind($self: &$S::Literal) -> String;
                 fn symbol($self: &$S::Literal) -> String;
                 fn suffix($self: &$S::Literal) -> Option<String>;
@@ -162,6 +164,8 @@ macro_rules! with_api {
                 fn join($self: $S::Span, other: $S::Span) -> Option<$S::Span>;
                 fn resolved_at($self: $S::Span, at: $S::Span) -> $S::Span;
                 fn source_text($self: $S::Span) -> Option<String>;
+                fn save_span($self: $S::Span) -> usize;
+                fn recover_proc_macro_span(id: usize) -> $S::Span;
             },
         }
     };
@@ -313,6 +317,19 @@ impl<T: Unmark> Unmark for Option<T> {
     }
 }
 
+impl<T: Mark, E: Mark> Mark for Result<T, E> {
+    type Unmarked = Result<T::Unmarked, E::Unmarked>;
+    fn mark(unmarked: Self::Unmarked) -> Self {
+        unmarked.map(T::mark).map_err(E::mark)
+    }
+}
+impl<T: Unmark, E: Unmark> Unmark for Result<T, E> {
+    type Unmarked = Result<T::Unmarked, E::Unmarked>;
+    fn unmark(self) -> Self::Unmarked {
+        self.map(T::unmark).map_err(E::unmark)
+    }
+}
+
 macro_rules! mark_noop {
     ($($ty:ty),* $(,)?) => {
         $(
@@ -338,6 +355,7 @@ mark_noop! {
     &'a [u8],
     &'a str,
     String,
+    usize,
     Delimiter,
     Level,
     LineColumn,

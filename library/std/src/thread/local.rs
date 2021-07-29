@@ -100,7 +100,7 @@ pub struct LocalKey<T: 'static> {
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl<T: 'static> fmt::Debug for LocalKey<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("LocalKey { .. }")
+        f.debug_struct("LocalKey").finish_non_exhaustive()
     }
 }
 
@@ -162,6 +162,7 @@ macro_rules! thread_local {
 macro_rules! __thread_local_inner {
     // used to generate the `LocalKey` value for const-initialized thread locals
     (@key $t:ty, const $init:expr) => {{
+        #[cfg_attr(not(windows), inline)] // see comments below
         unsafe fn __getit() -> $crate::option::Option<&'static $t> {
             const _REQUIRE_UNSTABLE: () = $crate::thread::require_unstable_const_init_thread_local();
 
@@ -260,6 +261,29 @@ macro_rules! __thread_local_inner {
             #[inline]
             fn __init() -> $t { $init }
 
+            // When reading this function you might ask "why is this inlined
+            // everywhere other than Windows?", and that's a very reasonable
+            // question to ask. The short story is that it segfaults rustc if
+            // this function is inlined. The longer story is that Windows looks
+            // to not support `extern` references to thread locals across DLL
+            // boundaries. This appears to at least not be supported in the ABI
+            // that LLVM implements.
+            //
+            // Because of this we never inline on Windows, but we do inline on
+            // other platforms (where external references to thread locals
+            // across DLLs are supported). A better fix for this would be to
+            // inline this function on Windows, but only for "statically linked"
+            // components. For example if two separately compiled rlibs end up
+            // getting linked into a DLL then it's fine to inline this function
+            // across that boundary. It's only not fine to inline this function
+            // across a DLL boundary. Unfortunately rustc doesn't currently
+            // have this sort of logic available in an attribute, and it's not
+            // clear that rustc is even equipped to answer this (it's more of a
+            // Cargo question kinda). This means that, unfortunately, Windows
+            // gets the pessimistic path for now where it's never inlined.
+            //
+            // The issue of "should enable on Windows sometimes" is #84933
+            #[cfg_attr(not(windows), inline)]
             unsafe fn __getit() -> $crate::option::Option<&'static $t> {
                 #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
                 static __KEY: $crate::thread::__StaticLocalKeyInner<$t> =
@@ -300,10 +324,9 @@ macro_rules! __thread_local_inner {
 
 /// An error returned by [`LocalKey::try_with`](struct.LocalKey.html#method.try_with).
 #[stable(feature = "thread_local_try_with", since = "1.26.0")]
+#[non_exhaustive]
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct AccessError {
-    _private: (),
-}
+pub struct AccessError;
 
 #[stable(feature = "thread_local_try_with", since = "1.26.0")]
 impl fmt::Debug for AccessError {
@@ -372,7 +395,7 @@ impl<T: 'static> LocalKey<T> {
         F: FnOnce(&T) -> R,
     {
         unsafe {
-            let thread_local = (self.inner)().ok_or(AccessError { _private: () })?;
+            let thread_local = (self.inner)().ok_or(AccessError)?;
             Ok(f(thread_local))
         }
     }
@@ -472,7 +495,7 @@ pub mod statik {
 
     impl<T> fmt::Debug for Key<T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.pad("Key { .. }")
+            f.debug_struct("Key").finish_non_exhaustive()
         }
     }
 
@@ -537,7 +560,7 @@ pub mod fast {
 
     impl<T> fmt::Debug for Key<T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.pad("Key { .. }")
+            f.debug_struct("Key").finish_non_exhaustive()
         }
     }
 
@@ -651,7 +674,7 @@ pub mod os {
 
     impl<T> fmt::Debug for Key<T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.pad("Key { .. }")
+            f.debug_struct("Key").finish_non_exhaustive()
         }
     }
 
@@ -722,7 +745,7 @@ pub mod os {
     unsafe extern "C" fn destroy_value<T: 'static>(ptr: *mut u8) {
         // SAFETY:
         //
-        // The OS TLS ensures that this key contains a NULL value when this
+        // The OS TLS ensures that this key contains a null value when this
         // destructor starts to run. We set it back to a sentinel value of 1 to
         // ensure that any future calls to `get` for this thread will return
         // `None`.

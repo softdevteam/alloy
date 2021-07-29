@@ -66,7 +66,7 @@ impl<'tcx> LateLintPass<'tcx> for NonminimalBool {
         _: Span,
         _: HirId,
     ) {
-        NonminimalBoolVisitor { cx }.visit_body(body)
+        NonminimalBoolVisitor { cx }.visit_body(body);
     }
 }
 
@@ -184,7 +184,7 @@ impl<'a, 'tcx, 'v> SuggestContext<'a, 'tcx, 'v> {
                 Term(n) => {
                     let terminal = self.terminals[n as usize];
                     if let Some(str) = simplify_not(self.cx, terminal) {
-                        self.output.push_str(&str)
+                        self.output.push_str(&str);
                     } else {
                         self.output.push('!');
                         let snip = snippet_opt(self.cx, terminal.span)?;
@@ -261,7 +261,7 @@ fn simplify_not(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<String> {
             }
             METHODS_WITH_NEGATION
                 .iter()
-                .cloned()
+                .copied()
                 .flat_map(|(a, b)| vec![(a, b), (b, a)])
                 .find(|&(a, _)| {
                     let path: &str = &path.ident.name.as_str();
@@ -452,7 +452,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NonminimalBoolVisitor<'a, 'tcx> {
         }
         match &e.kind {
             ExprKind::Binary(binop, _, _) if binop.node == BinOpKind::Or || binop.node == BinOpKind::And => {
-                self.bool_expr(e)
+                self.bool_expr(e);
             },
             ExprKind::Unary(UnOp::Not, inner) => {
                 if self.cx.typeck_results().node_types()[inner.hir_id].is_bool() {

@@ -175,6 +175,21 @@ pub trait Hash {
 
     /// Feeds a slice of this type into the given [`Hasher`].
     ///
+    /// This method is meant as a convenience, but its implementation is
+    /// also explicitly left unspecified. It isn't guaranteed to be
+    /// equivalent to repeated calls of [`hash`] and implementations of
+    /// [`Hash`] should keep that in mind and call [`hash`] themselves
+    /// if the slice isn't treated as a whole unit in the [`PartialEq`]
+    /// implementation.
+    ///
+    /// For example, a [`VecDeque`] implementation might naïvely call
+    /// [`as_slices`] and then [`hash_slice`] on each slice, but this
+    /// is wrong since the two slices can change with a call to
+    /// [`make_contiguous`] without affecting the [`PartialEq`]
+    /// result. Since these slices aren't treated as singular
+    /// units, and instead part of a larger deque, this method cannot
+    /// be used.
+    ///
     /// # Examples
     ///
     /// ```
@@ -186,6 +201,12 @@ pub trait Hash {
     /// Hash::hash_slice(&numbers, &mut hasher);
     /// println!("Hash is {:x}!", hasher.finish());
     /// ```
+    ///
+    /// [`VecDeque`]: ../../std/collections/struct.VecDeque.html
+    /// [`as_slices`]: ../../std/collections/struct.VecDeque.html#method.as_slices
+    /// [`make_contiguous`]: ../../std/collections/struct.VecDeque.html#method.make_contiguous
+    /// [`hash`]: Hash::hash
+    /// [`hash_slice`]: Hash::hash_slice
     #[stable(feature = "hash_slice", since = "1.3.0")]
     fn hash_slice<H: Hasher>(data: &[Self], state: &mut H)
     where
@@ -221,6 +242,11 @@ pub use macros::Hash;
 /// instance (with [`write`] and [`write_u8`] etc.). Most of the time, `Hasher`
 /// instances are used in conjunction with the [`Hash`] trait.
 ///
+/// This trait makes no assumptions about how the various `write_*` methods are
+/// defined and implementations of [`Hash`] should not assume that they work one
+/// way or another. You cannot assume, for example, that a [`write_u32`] call is
+/// equivalent to four calls of [`write_u8`].
+///
 /// # Examples
 ///
 /// ```
@@ -240,6 +266,7 @@ pub use macros::Hash;
 /// [`finish`]: Hasher::finish
 /// [`write`]: Hasher::write
 /// [`write_u8`]: Hasher::write_u8
+/// [`write_u32`]: Hasher::write_u32
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Hasher {
     /// Returns the hash value for the values written so far.
@@ -454,6 +481,50 @@ pub trait BuildHasher {
     /// ```
     #[stable(since = "1.7.0", feature = "build_hasher")]
     fn build_hasher(&self) -> Self::Hasher;
+
+    /// Calculates the hash of a single value.
+    ///
+    /// This is intended as a convenience for code which *consumes* hashes, such
+    /// as the implementation of a hash table or in unit tests that check
+    /// whether a custom [`Hash`] implementation behaves as expected.
+    ///
+    /// This must not be used in any code which *creates* hashes, such as in an
+    /// implementation of [`Hash`].  The way to create a combined hash of
+    /// multiple values is to call [`Hash::hash`] multiple times using the same
+    /// [`Hasher`], not to call this method repeatedly and combine the results.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// #![feature(build_hasher_simple_hash_one)]
+    ///
+    /// use std::cmp::{max, min};
+    /// use std::hash::{BuildHasher, Hash, Hasher};
+    /// struct OrderAmbivalentPair<T: Ord>(T, T);
+    /// impl<T: Ord + Hash> Hash for OrderAmbivalentPair<T> {
+    ///     fn hash<H: Hasher>(&self, hasher: &mut H) {
+    ///         min(&self.0, &self.1).hash(hasher);
+    ///         max(&self.0, &self.1).hash(hasher);
+    ///     }
+    /// }
+    ///
+    /// // Then later, in a `#[test]` for the type...
+    /// let bh = std::collections::hash_map::RandomState::new();
+    /// assert_eq!(
+    ///     bh.hash_one(OrderAmbivalentPair(1, 2)),
+    ///     bh.hash_one(OrderAmbivalentPair(2, 1))
+    /// );
+    /// assert_eq!(
+    ///     bh.hash_one(OrderAmbivalentPair(10, 2)),
+    ///     bh.hash_one(&OrderAmbivalentPair(2, 10))
+    /// );
+    /// ```
+    #[unstable(feature = "build_hasher_simple_hash_one", issue = "86161")]
+    fn hash_one<T: Hash>(&self, x: T) -> u64 {
+        let mut hasher = self.build_hasher();
+        x.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// Used to create a default [`BuildHasher`] instance for types that implement
@@ -507,7 +578,7 @@ pub struct BuildHasherDefault<H>(marker::PhantomData<H>);
 #[stable(since = "1.9.0", feature = "core_impl_debug")]
 impl<H> fmt::Debug for BuildHasherDefault<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("BuildHasherDefault")
+        f.debug_struct("BuildHasherDefault").finish()
     }
 }
 

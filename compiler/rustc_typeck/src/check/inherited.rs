@@ -2,17 +2,18 @@ use super::callee::DeferredCallResolution;
 use super::MaybeInProgressTables;
 
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::vec_map::VecMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefIdMap, LocalDefId};
 use rustc_hir::HirIdMap;
 use rustc_infer::infer;
 use rustc_infer::infer::{InferCtxt, InferOk, TyCtxtInferExt};
 use rustc_middle::ty::fold::TypeFoldable;
-use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{self, OpaqueTypeKey, Ty, TyCtxt};
 use rustc_span::{self, Span};
 use rustc_trait_selection::infer::InferCtxtExt as _;
 use rustc_trait_selection::opaque_types::OpaqueTypeDecl;
-use rustc_trait_selection::traits::{self, TraitEngine, TraitEngineExt};
+use rustc_trait_selection::traits::{self, ObligationCause, TraitEngine, TraitEngineExt};
 
 use std::cell::RefCell;
 use std::ops::Deref;
@@ -58,7 +59,7 @@ pub struct Inherited<'a, 'tcx> {
     // associated fresh inference variable. Writeback resolves these
     // variables to get the concrete type, which can be used to
     // 'de-opaque' OpaqueTypeDecl, after typeck is done with all functions.
-    pub(super) opaque_types: RefCell<DefIdMap<OpaqueTypeDecl<'tcx>>>,
+    pub(super) opaque_types: RefCell<VecMap<OpaqueTypeKey<'tcx>, OpaqueTypeDecl<'tcx>>>,
 
     /// A map from inference variables created from opaque
     /// type instantiations (`ty::Infer`) to the actual opaque
@@ -161,7 +162,24 @@ impl Inherited<'a, 'tcx> {
     where
         T: TypeFoldable<'tcx>,
     {
-        let ok = self.partially_normalize_associated_types_in(span, body_id, param_env, value);
+        self.normalize_associated_types_in_with_cause(
+            ObligationCause::misc(span, body_id),
+            param_env,
+            value,
+        )
+    }
+
+    pub(super) fn normalize_associated_types_in_with_cause<T>(
+        &self,
+        cause: ObligationCause<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+        value: T,
+    ) -> T
+    where
+        T: TypeFoldable<'tcx>,
+    {
+        let ok = self.partially_normalize_associated_types_in(cause, param_env, value);
+        debug!(?ok);
         self.register_infer_ok_obligations(ok)
     }
 }

@@ -42,7 +42,7 @@
 //!   of the `try` intrinsic.
 //!
 //! [win64]: https://docs.microsoft.com/en-us/cpp/build/exception-handling-x64
-//! [llvm]: http://llvm.org/docs/ExceptionHandling.html#background-on-windows-exceptions
+//! [llvm]: https://llvm.org/docs/ExceptionHandling.html#background-on-windows-exceptions
 
 #![allow(nonstandard_style)]
 
@@ -100,7 +100,7 @@ struct Exception {
 // In any case, these structures are all constructed in a similar manner, and
 // it's just somewhat verbose for us.
 //
-// [1]: http://www.geoffchappell.com/studies/msvc/language/predefined/
+// [1]: https://www.geoffchappell.com/studies/msvc/language/predefined/
 
 #[cfg(target_arch = "x86")]
 #[macro_use]
@@ -316,7 +316,7 @@ pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
 }
 
 pub unsafe fn cleanup(payload: *mut u8) -> Box<dyn Any + Send> {
-    // A NULL payload here means that we got here from the catch (...) of
+    // A null payload here means that we got here from the catch (...) of
     // __rust_try. This happens when a non-Rust foreign exception is caught.
     if payload.is_null() {
         super::__rust_foreign_exception();

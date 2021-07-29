@@ -1,7 +1,7 @@
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
-use rustc_hir::def_id::{DefId, LocalDefId, LOCAL_CRATE};
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::lint;
@@ -77,7 +77,7 @@ fn unused_crates_lint(tcx: TyCtxt<'_>) {
     // can always suggest removing (no matter which edition we are
     // in).
     let unused_extern_crates: FxHashMap<LocalDefId, Span> = tcx
-        .maybe_unused_extern_crates(LOCAL_CRATE)
+        .maybe_unused_extern_crates(())
         .iter()
         .filter(|&&(def_id, _)| {
             // The `def_id` here actually was calculated during resolution (at least
@@ -115,6 +115,8 @@ fn unused_crates_lint(tcx: TyCtxt<'_>) {
     tcx.hir().krate().visit_all_item_likes(&mut CollectExternCrateVisitor {
         crates_to_lint: &mut crates_to_lint,
     });
+
+    let extern_prelude = &tcx.resolutions(()).extern_prelude;
 
     for extern_crate in &crates_to_lint {
         let def_id = extern_crate.def_id.expect_local();
@@ -155,7 +157,7 @@ fn unused_crates_lint(tcx: TyCtxt<'_>) {
         // If the extern crate isn't in the extern prelude,
         // there is no way it can be written as an `use`.
         let orig_name = extern_crate.orig_name.unwrap_or(item.ident.name);
-        if !tcx.extern_prelude.get(&orig_name).map_or(false, |from_item| !from_item) {
+        if !extern_prelude.get(&orig_name).map_or(false, |from_item| !from_item) {
             continue;
         }
 

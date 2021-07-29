@@ -4,16 +4,12 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rustc_hir::def_id::CrateNum;
-use rustc_middle::middle::cstore::LibSource;
-
 pub struct RPathConfig<'a> {
-    pub used_crates: &'a [(CrateNum, LibSource)],
+    pub libs: &'a [&'a Path],
     pub out_filename: PathBuf,
     pub is_like_osx: bool,
     pub has_rpath: bool,
     pub linker_is_gnu: bool,
-    pub get_install_prefix_lib_path: &'a mut dyn FnMut() -> PathBuf,
 }
 
 pub fn get_rpath_flags(config: &mut RPathConfig<'_>) -> Vec<String> {
@@ -24,9 +20,7 @@ pub fn get_rpath_flags(config: &mut RPathConfig<'_>) -> Vec<String> {
 
     debug!("preparing the RPATH!");
 
-    let libs = config.used_crates;
-    let libs = libs.iter().filter_map(|&(_, ref l)| l.option()).collect::<Vec<_>>();
-    let rpaths = get_rpaths(config, &libs);
+    let rpaths = get_rpaths(config);
     let mut flags = rpaths_to_flags(&rpaths);
 
     // Use DT_RUNPATH instead of DT_RPATH if available
@@ -53,40 +47,29 @@ fn rpaths_to_flags(rpaths: &[String]) -> Vec<String> {
     ret
 }
 
-fn get_rpaths(config: &mut RPathConfig<'_>, libs: &[PathBuf]) -> Vec<String> {
+fn get_rpaths(config: &mut RPathConfig<'_>) -> Vec<String> {
     debug!("output: {:?}", config.out_filename.display());
     debug!("libs:");
-    for libpath in libs {
+    for libpath in config.libs {
         debug!("    {:?}", libpath.display());
     }
 
     // Use relative paths to the libraries. Binaries can be moved
     // as long as they maintain the relative relationship to the
     // crates they depend on.
-    let rel_rpaths = get_rpaths_relative_to_output(config, libs);
+    let rpaths = get_rpaths_relative_to_output(config);
 
-    // And a final backup rpath to the global library location.
-    let fallback_rpaths = vec![get_install_prefix_rpath(config)];
-
-    fn log_rpaths(desc: &str, rpaths: &[String]) {
-        debug!("{} rpaths:", desc);
-        for rpath in rpaths {
-            debug!("    {}", *rpath);
-        }
+    debug!("rpaths:");
+    for rpath in &rpaths {
+        debug!("    {}", rpath);
     }
-
-    log_rpaths("relative", &rel_rpaths);
-    log_rpaths("fallback", &fallback_rpaths);
-
-    let mut rpaths = rel_rpaths;
-    rpaths.extend_from_slice(&fallback_rpaths);
 
     // Remove duplicates
     minimize_rpaths(&rpaths)
 }
 
-fn get_rpaths_relative_to_output(config: &mut RPathConfig<'_>, libs: &[PathBuf]) -> Vec<String> {
-    libs.iter().map(|a| get_rpath_relative_to_output(config, a)).collect()
+fn get_rpaths_relative_to_output(config: &mut RPathConfig<'_>) -> Vec<String> {
+    config.libs.iter().map(|a| get_rpath_relative_to_output(config, a)).collect()
 }
 
 fn get_rpath_relative_to_output(config: &mut RPathConfig<'_>, lib: &Path) -> String {
@@ -111,13 +94,6 @@ fn get_rpath_relative_to_output(config: &mut RPathConfig<'_>, lib: &Path) -> Str
 // absolute but with only the root as the common directory.
 fn path_relative_from(path: &Path, base: &Path) -> Option<PathBuf> {
     diff_paths(path, base)
-}
-
-fn get_install_prefix_rpath(config: &mut RPathConfig<'_>) -> String {
-    let path = (config.get_install_prefix_lib_path)();
-    let path = env::current_dir().unwrap().join(&path);
-    // FIXME (#9639): This needs to handle non-utf8 paths
-    path.to_str().expect("non-utf8 component in rpath").to_owned()
 }
 
 fn minimize_rpaths(rpaths: &[String]) -> Vec<String> {

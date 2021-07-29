@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::source::snippet_opt;
-use clippy_utils::{fn_def_id, in_macro, match_qpath};
+use clippy_utils::{fn_def_id, in_macro, path_to_local_id};
 use if_chain::if_chain;
 use rustc_ast::ast::Attribute;
 use rustc_errors::Applicability;
@@ -84,9 +84,8 @@ impl<'tcx> LateLintPass<'tcx> for Return {
             if local.ty.is_none();
             if cx.tcx.hir().attrs(local.hir_id).is_empty();
             if let Some(initexpr) = &local.init;
-            if let PatKind::Binding(.., ident, _) = local.pat.kind;
-            if let ExprKind::Path(qpath) = &retexpr.kind;
-            if match_qpath(qpath, &[&*ident.name.as_str()]);
+            if let PatKind::Binding(_, local_id, _, _) = local.pat.kind;
+            if path_to_local_id(retexpr, local_id);
             if !last_statement_borrows(cx, initexpr);
             if !in_external_macro(cx.sess(), initexpr.span);
             if !in_external_macro(cx.sess(), retexpr.span);
@@ -140,7 +139,7 @@ impl<'tcx> LateLintPass<'tcx> for Return {
                 } else {
                     RetReplacement::Empty
                 };
-                check_final_expr(cx, &body.value, Some(body.value.span), replacement)
+                check_final_expr(cx, &body.value, Some(body.value.span), replacement);
             },
             FnKind::ItemFn(..) | FnKind::Method(..) => {
                 if let ExprKind::Block(block, _) = body.value.kind {
@@ -223,6 +222,7 @@ fn check_final_expr<'tcx>(
             },
             _ => (),
         },
+        ExprKind::DropTemps(expr) => check_final_expr(cx, expr, None, RetReplacement::Empty),
         _ => (),
     }
 }
@@ -241,7 +241,7 @@ fn emit_return_lint(cx: &LateContext<'_>, ret_span: Span, inner_span: Option<Spa
                 if let Some(snippet) = snippet_opt(cx, inner_span) {
                     diag.span_suggestion(ret_span, "remove `return`", snippet, Applicability::MachineApplicable);
                 }
-            })
+            });
         },
         None => match replacement {
             RetReplacement::Empty => {

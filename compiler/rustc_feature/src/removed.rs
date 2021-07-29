@@ -134,6 +134,23 @@ declare_features! (
            which is available from cargo build scripts with `cargo:rustc-link-arg` now")),
     /// Allows using `#[main]` to replace the entrypoint `#[lang = "start"]` calls.
     (removed, main, "1.53.0", Some(29634), None, None),
+    (removed, pub_macro_rules, "1.53.0", Some(78855), None,
+     Some("removed due to being incomplete, in particular it does not work across crates")),
+     /// Allows the definition of `const` functions with some advanced features.
+    (removed, const_fn, "1.54.0", Some(57563), None,
+     Some("split into finer-grained feature gates")),
+
+    /// Allows `#[doc(include = "some-file")]`.
+    (removed, external_doc, "1.54.0", Some(44732), None,
+     Some("use #[doc = include_str!(\"filename\")] instead, which handles macro invocations")),
+
+     /// Allows casting raw pointers to `usize` during const eval.
+    (removed, const_raw_ptr_to_usize_cast, "1.55.0", Some(51910), None,
+     Some("at compile-time, pointers do not have an integer value, so these casts cannot be properly supported")),
+
+    /// Allows `impl Trait` in bindings (`let`, `const`, `static`).
+    (removed, impl_trait_in_bindings, "1.55.0", Some(63065), None,
+     Some("the implementation was not maintainable, the feature may get reintroduced once the current refactorings are done")),
 
     // -------------------------------------------------------------------------
     // feature-group-end: removed features

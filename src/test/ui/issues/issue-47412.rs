@@ -1,3 +1,6 @@
+// revisions: mir thir
+// [thir]compile-flags: -Z thir-unsafeck
+
 #[derive(Copy, Clone)]
 enum Void {}
 

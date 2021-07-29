@@ -1,6 +1,10 @@
 //! This crate hosts a selection of "unit tests" for components of the `InstrumentCoverage` MIR
 //! pass.
 //!
+//! ```shell
+//! ./x.py test --keep-stage 1 compiler/rustc_mir --test-args '--show-output coverage'
+//! ```
+//!
 //! The tests construct a few "mock" objects, as needed, to support the `InstrumentCoverage`
 //! functions and algorithms. Mocked objects include instances of `mir::Body`; including
 //! `Terminator`s of various `kind`s, and `Span` objects. Some functions used by or used on
@@ -18,7 +22,7 @@
 //! are unrelated to the `TyCtxt` global. Without initializing the `Span` session globals, some
 //! basic, coverage-specific features would be impossible to test, but thankfully initializing these
 //! globals is comparatively simpler. The easiest way is to wrap the test in a closure argument
-//! to: `rustc_span::with_default_session_globals(|| { test_here(); })`.
+//! to: `rustc_span::create_default_session_globals_then(|| { test_here(); })`.
 
 use super::counters;
 use super::debug;
@@ -673,16 +677,19 @@ fn synthesize_body_span_from_terminators(mir_body: &Body<'_>) -> Span {
 
 #[test]
 fn test_make_bcb_counters() {
-    rustc_span::with_default_session_globals(|| {
+    rustc_span::create_default_session_globals_then(|| {
         let mir_body = goto_switchint();
         let body_span = synthesize_body_span_from_terminators(&mir_body);
         let mut basic_coverage_blocks = graph::CoverageGraph::from_mir(&mir_body);
         let mut coverage_spans = Vec::new();
         for (bcb, data) in basic_coverage_blocks.iter_enumerated() {
-            if let Some(span) =
-                spans::filtered_terminator_span(data.terminator(&mir_body), body_span)
-            {
-                coverage_spans.push(spans::CoverageSpan::for_terminator(span, bcb, data.last_bb()));
+            if let Some(span) = spans::filtered_terminator_span(data.terminator(&mir_body)) {
+                coverage_spans.push(spans::CoverageSpan::for_terminator(
+                    spans::function_source_span(span, body_span),
+                    span,
+                    bcb,
+                    data.last_bb(),
+                ));
             }
         }
         let mut coverage_counters = counters::CoverageCounters::new(0);

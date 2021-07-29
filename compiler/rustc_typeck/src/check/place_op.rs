@@ -1,5 +1,5 @@
 use crate::check::method::MethodCallee;
-use crate::check::{FnCtxt, PlaceOp};
+use crate::check::{has_expected_num_generic_args, FnCtxt, PlaceOp};
 use rustc_hir as hir;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_infer::infer::InferOk;
@@ -82,7 +82,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             expr, base_expr, adjusted_ty, index_ty
         );
 
-        for &unsize in &[false, true] {
+        for unsize in [false, true] {
             let mut self_ty = adjusted_ty;
             if unsize {
                 // We only unsize arrays here.
@@ -153,6 +153,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             PlaceOp::Deref => (self.tcx.lang_items().deref_trait(), sym::deref),
             PlaceOp::Index => (self.tcx.lang_items().index_trait(), sym::index),
         };
+
+        // If the lang item was declared incorrectly, stop here so that we don't
+        // run into an ICE (#83893). The error is reported where the lang item is
+        // declared.
+        if !has_expected_num_generic_args(
+            self.tcx,
+            imm_tr,
+            match op {
+                PlaceOp::Deref => 0,
+                PlaceOp::Index => 1,
+            },
+        ) {
+            return None;
+        }
+
         imm_tr.and_then(|trait_did| {
             self.lookup_method_in_trait(
                 span,
@@ -177,6 +192,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             PlaceOp::Deref => (self.tcx.lang_items().deref_mut_trait(), sym::deref_mut),
             PlaceOp::Index => (self.tcx.lang_items().index_mut_trait(), sym::index_mut),
         };
+
+        // If the lang item was declared incorrectly, stop here so that we don't
+        // run into an ICE (#83893). The error is reported where the lang item is
+        // declared.
+        if !has_expected_num_generic_args(
+            self.tcx,
+            mut_tr,
+            match op {
+                PlaceOp::Deref => 0,
+                PlaceOp::Index => 1,
+            },
+        ) {
+            return None;
+        }
+
         mut_tr.and_then(|trait_did| {
             self.lookup_method_in_trait(
                 span,
@@ -218,7 +248,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // Clear previous flag; after a pointer indirection it does not apply any more.
                 inside_union = false;
             }
-            if source.ty_adt_def().map_or(false, |adt| adt.is_union()) {
+            if source.is_union() {
                 inside_union = true;
             }
             // Fix up the autoderefs. Autorefs can only occur immediately preceding

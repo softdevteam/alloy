@@ -1,9 +1,10 @@
-use super::{unsupported, Void};
+use super::unsupported;
 use crate::ffi::CStr;
 use crate::io;
+use crate::num::NonZeroUsize;
 use crate::time::Duration;
 
-pub struct Thread(Void);
+pub struct Thread(!);
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 4096;
 
@@ -26,8 +27,12 @@ impl Thread {
     }
 
     pub fn join(self) {
-        match self.0 {}
+        self.0
     }
+}
+
+pub fn available_concurrency() -> io::Result<NonZeroUsize> {
+    unsupported()
 }
 
 pub mod guard {

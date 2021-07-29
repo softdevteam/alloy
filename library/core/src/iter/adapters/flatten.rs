@@ -1,5 +1,5 @@
 use crate::fmt;
-use crate::iter::{DoubleEndedIterator, Fuse, FusedIterator, Iterator, Map};
+use crate::iter::{DoubleEndedIterator, Fuse, FusedIterator, Iterator, Map, TrustedLen};
 use crate::ops::Try;
 
 /// An iterator that maps each element to an iterator, and yields the elements
@@ -61,7 +61,7 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         self.inner.try_fold(init, fold)
     }
@@ -91,7 +91,7 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         self.inner.try_rfold(init, fold)
     }
@@ -111,6 +111,30 @@ where
     I: FusedIterator,
     U: IntoIterator,
     F: FnMut(I::Item) -> U,
+{
+}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<T, I, F, const N: usize> TrustedLen for FlatMap<I, [T; N], F>
+where
+    I: TrustedLen,
+    F: FnMut(I::Item) -> [T; N],
+{
+}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<'a, T, I, F, const N: usize> TrustedLen for FlatMap<I, &'a [T; N], F>
+where
+    I: TrustedLen,
+    F: FnMut(I::Item) -> &'a [T; N],
+{
+}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<'a, T, I, F, const N: usize> TrustedLen for FlatMap<I, &'a mut [T; N], F>
+where
+    I: TrustedLen,
+    F: FnMut(I::Item) -> &'a mut [T; N],
 {
 }
 
@@ -178,7 +202,7 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         self.inner.try_fold(init, fold)
     }
@@ -208,7 +232,7 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         self.inner.try_rfold(init, fold)
     }
@@ -227,6 +251,14 @@ impl<I, U> FusedIterator for Flatten<I>
 where
     I: FusedIterator<Item: IntoIterator<IntoIter = U, Item = U::Item>>,
     U: Iterator,
+{
+}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<I> TrustedLen for Flatten<I>
+where
+    I: TrustedLen,
+    <I as Iterator>::Item: TrustedConstSize,
 {
 }
 
@@ -282,6 +314,17 @@ where
         let (flo, fhi) = self.frontiter.as_ref().map_or((0, Some(0)), U::size_hint);
         let (blo, bhi) = self.backiter.as_ref().map_or((0, Some(0)), U::size_hint);
         let lo = flo.saturating_add(blo);
+
+        if let Some(fixed_size) = <<I as Iterator>::Item as ConstSizeIntoIterator>::size() {
+            let (lower, upper) = self.iter.size_hint();
+
+            let lower = lower.saturating_mul(fixed_size).saturating_add(lo);
+            let upper =
+                try { fhi?.checked_add(bhi?)?.checked_add(fixed_size.checked_mul(upper?)?)? };
+
+            return (lower, upper);
+        }
+
         match (self.iter.size_hint(), fhi, bhi) {
             ((0, Some(0)), Some(a), Some(b)) => (lo, a.checked_add(b)),
             _ => (lo, None),
@@ -293,10 +336,10 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         #[inline]
-        fn flatten<'a, T: IntoIterator, Acc, R: Try<Ok = Acc>>(
+        fn flatten<'a, T: IntoIterator, Acc, R: Try<Output = Acc>>(
             frontiter: &'a mut Option<T::IntoIter>,
             fold: &'a mut impl FnMut(Acc, T::Item) -> R,
         ) -> impl FnMut(Acc, T) -> R + 'a {
@@ -382,10 +425,10 @@ where
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
+        R: Try<Output = Acc>,
     {
         #[inline]
-        fn flatten<'a, T: IntoIterator, Acc, R: Try<Ok = Acc>>(
+        fn flatten<'a, T: IntoIterator, Acc, R: Try<Output = Acc>>(
             backiter: &'a mut Option<T::IntoIter>,
             fold: &'a mut impl FnMut(Acc, T::Item) -> R,
         ) -> impl FnMut(Acc, T) -> R + 'a
@@ -444,3 +487,52 @@ where
         init
     }
 }
+
+trait ConstSizeIntoIterator: IntoIterator {
+    // FIXME(#31844): convert to an associated const once specialization supports that
+    fn size() -> Option<usize>;
+}
+
+impl<T> ConstSizeIntoIterator for T
+where
+    T: IntoIterator,
+{
+    #[inline]
+    default fn size() -> Option<usize> {
+        None
+    }
+}
+
+impl<T, const N: usize> ConstSizeIntoIterator for [T; N] {
+    #[inline]
+    fn size() -> Option<usize> {
+        Some(N)
+    }
+}
+
+impl<T, const N: usize> ConstSizeIntoIterator for &[T; N] {
+    #[inline]
+    fn size() -> Option<usize> {
+        Some(N)
+    }
+}
+
+impl<T, const N: usize> ConstSizeIntoIterator for &mut [T; N] {
+    #[inline]
+    fn size() -> Option<usize> {
+        Some(N)
+    }
+}
+
+#[doc(hidden)]
+#[unstable(feature = "std_internals", issue = "none")]
+// FIXME(#20400): Instead of this helper trait there should be multiple impl TrustedLen for Flatten<>
+//   blocks with different bounds on Iterator::Item but the compiler erroneously considers them overlapping
+pub unsafe trait TrustedConstSize: IntoIterator {}
+
+#[unstable(feature = "std_internals", issue = "none")]
+unsafe impl<T, const N: usize> TrustedConstSize for [T; N] {}
+#[unstable(feature = "std_internals", issue = "none")]
+unsafe impl<T, const N: usize> TrustedConstSize for &'_ [T; N] {}
+#[unstable(feature = "std_internals", issue = "none")]
+unsafe impl<T, const N: usize> TrustedConstSize for &'_ mut [T; N] {}

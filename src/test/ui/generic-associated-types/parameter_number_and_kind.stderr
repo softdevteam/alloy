@@ -1,43 +1,43 @@
 error[E0107]: this associated type takes 1 lifetime argument but 2 lifetime arguments were supplied
-  --> $DIR/parameter_number_and_kind.rs:13:24
+  --> $DIR/parameter_number_and_kind.rs:12:24
    |
 LL |     type FErr1 = Self::E<'static, 'static>;
-   |                        ^        --------- help: remove this lifetime argument
+   |                        ^          ------- help: remove this lifetime argument
    |                        |
    |                        expected 1 lifetime argument
    |
 note: associated type defined here, with 1 lifetime parameter: `'a`
-  --> $DIR/parameter_number_and_kind.rs:10:10
+  --> $DIR/parameter_number_and_kind.rs:9:10
    |
 LL |     type E<'a, T>;
    |          ^ --
 
-error[E0107]: this associated type takes 1 type argument but 0 type arguments were supplied
-  --> $DIR/parameter_number_and_kind.rs:13:24
+error[E0107]: this associated type takes 1 generic argument but 0 generic arguments were supplied
+  --> $DIR/parameter_number_and_kind.rs:12:24
    |
 LL |     type FErr1 = Self::E<'static, 'static>;
-   |                        ^ expected 1 type argument
+   |                        ^ expected 1 generic argument
    |
-note: associated type defined here, with 1 type parameter: `T`
-  --> $DIR/parameter_number_and_kind.rs:10:10
+note: associated type defined here, with 1 generic parameter: `T`
+  --> $DIR/parameter_number_and_kind.rs:9:10
    |
 LL |     type E<'a, T>;
    |          ^     -
-help: add missing type argument
+help: add missing generic argument
    |
 LL |     type FErr1 = Self::E<'static, 'static, T>;
    |                                          ^^^
 
-error[E0107]: this associated type takes 1 type argument but 2 type arguments were supplied
-  --> $DIR/parameter_number_and_kind.rs:16:27
+error[E0107]: this associated type takes 1 generic argument but 2 generic arguments were supplied
+  --> $DIR/parameter_number_and_kind.rs:15:27
    |
 LL |     type FErr2<T> = Self::E<'static, T, u32>;
-   |                           ^           ----- help: remove this type argument
+   |                           ^             --- help: remove this generic argument
    |                           |
-   |                           expected 1 type argument
+   |                           expected 1 generic argument
    |
-note: associated type defined here, with 1 type parameter: `T`
-  --> $DIR/parameter_number_and_kind.rs:10:10
+note: associated type defined here, with 1 generic parameter: `T`
+  --> $DIR/parameter_number_and_kind.rs:9:10
    |
 LL |     type E<'a, T>;
    |          ^     -

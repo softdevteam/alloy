@@ -226,18 +226,19 @@ fn late_report_deprecation(
     suggestion: Option<Symbol>,
     lint: &'static Lint,
     span: Span,
+    method_span: Option<Span>,
     hir_id: HirId,
     def_id: DefId,
 ) {
     if span.in_derive_expansion() {
         return;
     }
-
-    tcx.struct_span_lint_hir(lint, hir_id, span, |lint| {
+    let method_span = method_span.unwrap_or(span);
+    tcx.struct_span_lint_hir(lint, hir_id, method_span, |lint| {
         let mut diag = lint.build(message);
         if let hir::Node::Expr(_) = tcx.hir().get(hir_id) {
             let kind = tcx.def_kind(def_id).descr(def_id);
-            deprecation_suggestion(&mut diag, kind, suggestion, span);
+            deprecation_suggestion(&mut diag, kind, suggestion, method_span);
         }
         diag.emit()
     });
@@ -281,7 +282,13 @@ impl<'tcx> TyCtxt<'tcx> {
     /// If `id` is `Some(_)`, this function will also check if the item at `def_id` has been
     /// deprecated. If the item is indeed deprecated, we will emit a deprecation lint attached to
     /// `id`.
-    pub fn eval_stability(self, def_id: DefId, id: Option<HirId>, span: Span) -> EvalResult {
+    pub fn eval_stability(
+        self,
+        def_id: DefId,
+        id: Option<HirId>,
+        span: Span,
+        method_span: Option<Span>,
+    ) -> EvalResult {
         // Deprecated attributes apply in-crate and cross-crate.
         if let Some(id) = id {
             if let Some(depr_entry) = self.lookup_deprecation_entry(def_id) {
@@ -306,6 +313,7 @@ impl<'tcx> TyCtxt<'tcx> {
                         depr_entry.attr.suggestion,
                         lint,
                         span,
+                        method_span,
                         id,
                         def_id,
                     );
@@ -382,8 +390,14 @@ impl<'tcx> TyCtxt<'tcx> {
     ///
     /// This function will also check if the item is deprecated.
     /// If so, and `id` is not `None`, a deprecated lint attached to `id` will be emitted.
-    pub fn check_stability(self, def_id: DefId, id: Option<HirId>, span: Span) {
-        self.check_optional_stability(def_id, id, span, |span, def_id| {
+    pub fn check_stability(
+        self,
+        def_id: DefId,
+        id: Option<HirId>,
+        span: Span,
+        method_span: Option<Span>,
+    ) {
+        self.check_optional_stability(def_id, id, span, method_span, |span, def_id| {
             // The API could be uncallable for other reasons, for example when a private module
             // was referenced.
             self.sess.delay_span_bug(span, &format!("encountered unmarked API: {:?}", def_id));
@@ -399,6 +413,7 @@ impl<'tcx> TyCtxt<'tcx> {
         def_id: DefId,
         id: Option<HirId>,
         span: Span,
+        method_span: Option<Span>,
         unmarked: impl FnOnce(Span, DefId),
     ) {
         let soft_handler = |lint, span, msg: &_| {
@@ -406,7 +421,7 @@ impl<'tcx> TyCtxt<'tcx> {
                 lint.build(msg).emit()
             })
         };
-        match self.eval_stability(def_id, id, span) {
+        match self.eval_stability(def_id, id, span, method_span) {
             EvalResult::Allow => {}
             EvalResult::Deny { feature, reason, issue, is_soft } => {
                 report_unstable(self.sess, feature, reason, issue, is_soft, span, soft_handler)

@@ -16,6 +16,7 @@ use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{self, subst::Subst, TyCtxt};
 use rustc_span::source_map::Span;
 use rustc_target::abi::{Abi, LayoutOf};
+use std::borrow::Cow;
 use std::convert::TryInto;
 
 pub fn note_on_undefined_behavior_error() -> &'static str {
@@ -47,7 +48,7 @@ fn eval_body_using_ecx<'mir, 'tcx>(
     );
     let layout = ecx.layout_of(body.return_ty().subst(tcx, cid.instance.substs))?;
     assert!(!layout.is_unsized());
-    let ret = ecx.allocate(layout, MemoryKind::Stack);
+    let ret = ecx.allocate(layout, MemoryKind::Stack)?;
 
     let name =
         with_no_trimmed_paths(|| ty::tls::with(|tcx| tcx.def_path_str(cid.instance.def_id())));
@@ -97,7 +98,7 @@ pub(super) fn mk_eval_cx<'mir, 'tcx>(
         tcx,
         root_span,
         param_env,
-        CompileTimeInterpreter::new(tcx.sess.const_eval_limit()),
+        CompileTimeInterpreter::new(tcx.const_eval_limit()),
         MemoryExtra { can_access_statics },
     )
 }
@@ -135,19 +136,19 @@ pub(super) fn op_to_const<'tcx>(
         // by-val is if we are in destructure_const, i.e., if this is (a field of) something that we
         // "tried to make immediate" before. We wouldn't do that for non-slice scalar pairs or
         // structs containing such.
-        op.try_as_mplace(ecx)
+        op.try_as_mplace()
     };
 
-    let to_const_value = |mplace: &MPlaceTy<'_>| match mplace.ptr {
-        Scalar::Ptr(ptr) => {
-            let alloc = ecx.tcx.global_alloc(ptr.alloc_id).unwrap_memory();
-            ConstValue::ByRef { alloc, offset: ptr.offset }
+    // We know `offset` is relative to the allocation, so we can use `into_parts`.
+    let to_const_value = |mplace: &MPlaceTy<'_>| match mplace.ptr.into_parts() {
+        (Some(alloc_id), offset) => {
+            let alloc = ecx.tcx.global_alloc(alloc_id).unwrap_memory();
+            ConstValue::ByRef { alloc, offset }
         }
-        Scalar::Int(int) => {
+        (None, offset) => {
             assert!(mplace.layout.is_zst());
             assert_eq!(
-                int.assert_bits(ecx.tcx.data_layout.pointer_size)
-                    % u128::from(mplace.layout.align.abi.bytes()),
+                offset.bytes() % mplace.layout.align.abi.bytes(),
                 0,
                 "this MPlaceTy must come from a validated constant, thus we can assume the \
                 alignment is correct",
@@ -161,16 +162,18 @@ pub(super) fn op_to_const<'tcx>(
         Err(imm) => match *imm {
             Immediate::Scalar(x) => match x {
                 ScalarMaybeUninit::Scalar(s) => ConstValue::Scalar(s),
-                ScalarMaybeUninit::Uninit => to_const_value(&op.assert_mem_place(ecx)),
+                ScalarMaybeUninit::Uninit => to_const_value(&op.assert_mem_place()),
             },
             Immediate::ScalarPair(a, b) => {
-                let (data, start) = match a.check_init().unwrap() {
-                    Scalar::Ptr(ptr) => {
-                        (ecx.tcx.global_alloc(ptr.alloc_id).unwrap_memory(), ptr.offset.bytes())
+                // We know `offset` is relative to the allocation, so we can use `into_parts`.
+                let (data, start) = match ecx.scalar_to_ptr(a.check_init().unwrap()).into_parts() {
+                    (Some(alloc_id), offset) => {
+                        (ecx.tcx.global_alloc(alloc_id).unwrap_memory(), offset.bytes())
                     }
-                    Scalar::Int { .. } => (
-                        ecx.tcx
-                            .intern_const_alloc(Allocation::from_byte_aligned_bytes(b"" as &[u8])),
+                    (None, _offset) => (
+                        ecx.tcx.intern_const_alloc(Allocation::from_bytes_byte_aligned_immutable(
+                            b"" as &[u8],
+                        )),
                         0,
                     ),
                 };
@@ -298,7 +301,7 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
         tcx,
         tcx.def_span(def.did),
         key.param_env,
-        CompileTimeInterpreter::new(tcx.sess.const_eval_limit()),
+        CompileTimeInterpreter::new(tcx.const_eval_limit()),
         // Statics (and promoteds inside statics) may access other statics, because unlike consts
         // they do not have to behave "as if" they were evaluated at runtime.
         MemoryExtra { can_access_statics: is_static },
@@ -310,14 +313,35 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
             let err = ConstEvalErr::new(&ecx, error, None);
             // Some CTFE errors raise just a lint, not a hard error; see
             // <https://github.com/rust-lang/rust/issues/71800>.
-            let emit_as_lint = if let Some(def) = def.as_local() {
+            let is_hard_err = if let Some(def) = def.as_local() {
                 // (Associated) consts only emit a lint, since they might be unused.
-                matches!(tcx.def_kind(def.did.to_def_id()), DefKind::Const | DefKind::AssocConst)
+                !matches!(tcx.def_kind(def.did.to_def_id()), DefKind::Const | DefKind::AssocConst)
+                    // check if the inner InterpError is hard
+                    || err.error.is_hard_err()
             } else {
                 // use of broken constant from other crate: always an error
-                false
+                true
             };
-            if emit_as_lint {
+
+            if is_hard_err {
+                let msg = if is_static {
+                    Cow::from("could not evaluate static initializer")
+                } else {
+                    // If the current item has generics, we'd like to enrich the message with the
+                    // instance and its substs: to show the actual compile-time values, in addition to
+                    // the expression, leading to the const eval error.
+                    let instance = &key.value.instance;
+                    if !instance.substs.is_empty() {
+                        let instance = with_no_trimmed_paths(|| instance.to_string());
+                        let msg = format!("evaluation of `{}` failed", instance);
+                        Cow::from(msg)
+                    } else {
+                        Cow::from("evaluation of constant value failed")
+                    }
+                };
+
+                Err(err.report_as_error(ecx.tcx.at(ecx.cur_span()), &msg))
+            } else {
                 let hir_id = tcx.hir().local_def_id_to_hir_id(def.as_local().unwrap().did);
                 Err(err.report_as_lint(
                     tcx.at(tcx.def_span(def.did)),
@@ -325,13 +349,6 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
                     hir_id,
                     Some(err.span),
                 ))
-            } else {
-                let msg = if is_static {
-                    "could not evaluate static initializer"
-                } else {
-                    "evaluation of constant value failed"
-                };
-                Err(err.report_as_error(ecx.tcx.at(ecx.cur_span()), msg))
             }
         }
         Ok(mplace) => {
@@ -353,6 +370,7 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
                     inner = true;
                 }
             };
+            let alloc_id = mplace.ptr.provenance.unwrap();
             if let Err(error) = validation {
                 // Validation failed, report an error. This is always a hard error.
                 let err = ConstEvalErr::new(&ecx, error, None);
@@ -365,9 +383,7 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
                             "the raw bytes of the constant ({}",
                             display_allocation(
                                 *ecx.tcx,
-                                ecx.tcx
-                                    .global_alloc(mplace.ptr.assert_ptr().alloc_id)
-                                    .unwrap_memory()
+                                ecx.tcx.global_alloc(alloc_id).unwrap_memory()
                             )
                         ));
                         diag.emit();
@@ -375,7 +391,7 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
                 ))
             } else {
                 // Convert to raw constant
-                Ok(ConstAlloc { alloc_id: mplace.ptr.assert_ptr().alloc_id, ty: mplace.layout.ty })
+                Ok(ConstAlloc { alloc_id, ty: mplace.layout.ty })
             }
         }
     }

@@ -4,17 +4,15 @@ use std::ffi::CString;
 
 use cstr::cstr;
 use rustc_codegen_ssa::traits::*;
-use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_hir::def_id::DefId;
 use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use rustc_middle::ty::layout::HasTyCtxt;
-use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::config::OptLevel;
 use rustc_session::Session;
 use rustc_target::spec::abi::Abi;
-use rustc_target::spec::{SanitizerSet, StackProbeType};
+use rustc_target::spec::{FramePointer, SanitizerSet, StackProbeType};
 
 use crate::attributes;
 use crate::llvm::AttributePlace::Function;
@@ -71,15 +69,25 @@ fn naked(val: &'ll Value, is_naked: bool) {
     Attribute::Naked.toggle_llfn(Function, val, is_naked);
 }
 
-pub fn set_frame_pointer_elimination(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
-    if cx.sess().must_not_eliminate_frame_pointers() {
-        llvm::AddFunctionAttrStringValue(
-            llfn,
-            llvm::AttributePlace::Function,
-            cstr!("frame-pointer"),
-            cstr!("all"),
-        );
+pub fn set_frame_pointer_type(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
+    let mut fp = cx.sess().target.frame_pointer;
+    // "mcount" function relies on stack pointer.
+    // See <https://sourceware.org/binutils/docs/gprof/Implementation.html>.
+    if cx.sess().instrument_mcount() || matches!(cx.sess().opts.cg.force_frame_pointers, Some(true))
+    {
+        fp = FramePointer::Always;
     }
+    let attr_value = match fp {
+        FramePointer::Always => cstr!("all"),
+        FramePointer::NonLeaf => cstr!("non-leaf"),
+        FramePointer::MayOmit => return,
+    };
+    llvm::AddFunctionAttrStringValue(
+        llfn,
+        llvm::AttributePlace::Function,
+        cstr!("frame-pointer"),
+        attr_value,
+    );
 }
 
 /// Tell LLVM what instrument function to insert.
@@ -256,7 +264,7 @@ pub fn from_fn_attrs(cx: &CodegenCx<'ll, 'tcx>, llfn: &'ll Value, instance: ty::
     }
 
     // FIXME: none of these three functions interact with source level attributes.
-    set_frame_pointer_elimination(cx, llfn);
+    set_frame_pointer_type(cx, llfn);
     set_instrument_function(cx, llfn);
     set_probestack(cx, llfn);
 
@@ -353,35 +361,6 @@ pub fn from_fn_attrs(cx: &CodegenCx<'ll, 'tcx>, llfn: &'ll Value, instance: ty::
             &val,
         );
     }
-}
-
-pub fn provide_both(providers: &mut Providers) {
-    providers.wasm_import_module_map = |tcx, cnum| {
-        // Build up a map from DefId to a `NativeLib` structure, where
-        // `NativeLib` internally contains information about
-        // `#[link(wasm_import_module = "...")]` for example.
-        let native_libs = tcx.native_libraries(cnum);
-
-        let def_id_to_native_lib = native_libs
-            .iter()
-            .filter_map(|lib| lib.foreign_module.map(|id| (id, lib)))
-            .collect::<FxHashMap<_, _>>();
-
-        let mut ret = FxHashMap::default();
-        for (def_id, lib) in tcx.foreign_modules(cnum).iter() {
-            let module = def_id_to_native_lib.get(&def_id).and_then(|s| s.wasm_import_module);
-            let module = match module {
-                Some(s) => s,
-                None => continue,
-            };
-            ret.extend(lib.foreign_items.iter().map(|id| {
-                assert_eq!(id.krate, cnum);
-                (*id, module.to_string())
-            }));
-        }
-
-        ret
-    };
 }
 
 fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<CString> {

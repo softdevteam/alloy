@@ -10,10 +10,10 @@ use super::{
     cli::TestOpts,
     event::{CompletedTest, TestEvent},
     filter_tests,
-    formatters::{JsonFormatter, OutputFormatter, PrettyFormatter, TerseFormatter},
+    formatters::{JsonFormatter, JunitFormatter, OutputFormatter, PrettyFormatter, TerseFormatter},
     helpers::{concurrency::get_concurrency, metrics::MetricMap},
     options::{Options, OutputFormat},
-    run_tests,
+    run_tests, term,
     test_result::TestResult,
     time::{TestExecTime, TestSuiteExecTime},
     types::{NamePadding, TestDesc, TestDescAndFn},
@@ -277,6 +277,7 @@ pub fn run_tests_console(opts: &TestOpts, tests: Vec<TestDescAndFn>) -> io::Resu
             Box::new(TerseFormatter::new(output, opts.use_color(), max_name_len, is_multithreaded))
         }
         OutputFormat::Json => Box::new(JsonFormatter::new(output)),
+        OutputFormat::Junit => Box::new(JunitFormatter::new(output)),
     };
     let mut st = ConsoleTestState::new(opts)?;
 

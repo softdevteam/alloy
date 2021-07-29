@@ -190,7 +190,6 @@
 #![cfg_attr(not(feature = "restricted-std"), stable(feature = "rust1", since = "1.0.0"))]
 #![cfg_attr(feature = "restricted-std", unstable(feature = "restricted_std", issue = "none"))]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(deny(warnings))),
@@ -226,13 +225,15 @@
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
-#![feature(async_stream)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
 #![feature(assert_matches)]
 #![feature(associated_type_bounds)]
+#![feature(async_stream)]
 #![feature(atomic_mut_ptr)]
+#![feature(auto_traits)]
+#![feature(bench_black_box)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_accessible)]
@@ -244,15 +245,14 @@
 #![feature(concat_idents)]
 #![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
-#![feature(const_fn_transmute)]
-#![feature(const_fn)]
 #![feature(const_fn_fn_ptr_basics)]
+#![feature(const_fn_transmute)]
 #![feature(const_io_structs)]
 #![feature(const_ip)]
+#![feature(const_ipv4)]
 #![feature(const_ipv6)]
 #![feature(const_raw_ptr_deref)]
 #![feature(const_socketaddr)]
-#![feature(const_ipv4)]
 #![feature(container_error_extra)]
 #![feature(core_intrinsics)]
 #![feature(custom_test_frameworks)]
@@ -260,15 +260,15 @@
 #![feature(doc_cfg)]
 #![feature(doc_keyword)]
 #![feature(doc_masked)]
-#![cfg_attr(bootstrap, feature(doc_spotlight))]
-#![cfg_attr(not(bootstrap), feature(doc_notable_trait))]
+#![feature(doc_notable_trait)]
 #![feature(dropck_eyepatch)]
+#![feature(duration_checked_float)]
 #![feature(duration_constants)]
 #![feature(edition_panic)]
 #![feature(exact_size_is_empty)]
 #![feature(exhaustive_patterns)]
 #![feature(extend_one)]
-#![feature(extended_key_value_attributes)]
+#![feature(float_interpolation)]
 #![feature(fn_traits)]
 #![feature(format_args_nl)]
 #![feature(gen_future)]
@@ -277,8 +277,8 @@
 #![feature(global_asm)]
 #![feature(hashmap_internals)]
 #![feature(int_error_internals)]
-#![feature(int_error_matching)]
 #![feature(integer_atomics)]
+#![feature(int_log)]
 #![feature(into_future)]
 #![feature(intra_doc_pointers)]
 #![feature(iter_zip)]
@@ -288,7 +288,6 @@
 #![feature(log_syntax)]
 #![feature(map_try_insert)]
 #![feature(maybe_uninit_extra)]
-#![feature(maybe_uninit_ref)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(min_specialization)]
@@ -299,16 +298,12 @@
 #![feature(nll)]
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(once_cell)]
-#![feature(auto_traits)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(panic_info_message)]
 #![feature(panic_internals)]
 #![feature(panic_unwind)]
 #![feature(pin_static_ref)]
-#![feature(prelude_2021)]
 #![feature(prelude_import)]
 #![feature(ptr_internals)]
-#![feature(raw)]
 #![feature(ready_macro)]
 #![feature(rustc_attrs)]
 #![feature(rustc_private)]
@@ -333,6 +328,7 @@
 #![feature(unboxed_closures)]
 #![feature(unsafe_cell_raw_get)]
 #![feature(unwind_attributes)]
+#![feature(unwrap_infallible)]
 #![feature(vec_into_raw_parts)]
 #![feature(gc)]
 #![feature(vec_spare_capacity)]
@@ -460,9 +456,6 @@ pub use core::pin;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::ptr;
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow(deprecated, deprecated_in_future)]
-pub use core::raw;
-#[stable(feature = "rust1", since = "1.0.0")]
 pub use core::result;
 #[unstable(feature = "async_stream", issue = "79024")]
 pub use core::stream;
@@ -533,7 +526,6 @@ mod sys;
 pub mod alloc;
 
 // Private support modules
-mod memchr;
 mod panicking;
 
 // The runtime entry point and a few unstable public functions used by the
@@ -559,16 +551,16 @@ pub use std_detect::{
 #[stable(feature = "rust1", since = "1.0.0")]
 #[allow(deprecated, deprecated_in_future)]
 pub use core::{
-    assert_eq, assert_matches, assert_ne, debug_assert, debug_assert_eq, debug_assert_matches,
-    debug_assert_ne, matches, r#try, todo, unimplemented, unreachable, write, writeln,
+    assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, matches, r#try, todo,
+    unimplemented, unreachable, write, writeln,
 };
 
 // Re-export built-in macros defined through libcore.
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 #[allow(deprecated)]
 pub use core::{
-    asm, assert, cfg, column, compile_error, concat, concat_idents, env, file, format_args,
-    format_args_nl, global_asm, include, include_bytes, include_str, line, llvm_asm, log_syntax,
+    assert, assert_matches, cfg, column, compile_error, concat, concat_idents, env, file,
+    format_args, format_args_nl, include, include_bytes, include_str, line, llvm_asm, log_syntax,
     module_path, option_env, stringify, trace_macros,
 };
 

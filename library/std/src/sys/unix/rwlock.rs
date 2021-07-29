@@ -7,6 +7,8 @@ pub struct RWLock {
     num_readers: AtomicUsize,
 }
 
+pub type MovableRWLock = Box<RWLock>;
+
 unsafe impl Send for RWLock {}
 unsafe impl Sync for RWLock {}
 

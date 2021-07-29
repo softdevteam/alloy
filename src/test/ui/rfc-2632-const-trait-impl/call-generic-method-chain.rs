@@ -2,15 +2,17 @@
 
 // check-pass
 
-#![feature(const_fn)]
 #![feature(const_trait_impl)]
-#![allow(incomplete_features)]
+#![feature(const_fn_trait_bound)]
 
 struct S;
 
 impl const PartialEq for S {
     fn eq(&self, _: &S) -> bool {
         true
+    }
+    fn ne(&self, other: &S) -> bool {
+        !self.eq(other)
     }
 }
 

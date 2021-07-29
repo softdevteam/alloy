@@ -1,3 +1,4 @@
+// compile-flags: -Zunstable-options
 // check-pass
 #![warn(rustc::internal)]
 
@@ -11,6 +12,5 @@
 //~| SUGGESTION rustc::default_hash_types
 fn main() {
     let _ = std::collections::HashMap::<String, String>::new();
-    //~^ WARN Prefer FxHashMap over HashMap, it has better performance
-    //~| HELP use
+    //~^ WARN prefer `FxHashMap` over `HashMap`, it has better performance
 }

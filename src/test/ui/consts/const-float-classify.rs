@@ -5,7 +5,6 @@
 #![feature(const_float_bits_conv)]
 #![feature(const_float_classify)]
 #![feature(const_trait_impl)]
-#![allow(incomplete_features)]
 
 // Don't promote
 const fn nop<T>(x: T) -> T { x }
@@ -52,6 +51,9 @@ struct NonDet;
 impl const PartialEq<NonDet> for bool {
     fn eq(&self, _: &NonDet) -> bool {
         true
+    }
+    fn ne(&self, _: &NonDet) -> bool {
+        false
     }
 }
 

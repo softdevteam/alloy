@@ -18,21 +18,29 @@ use crate::docfs::PathError;
 use crate::error::Error;
 use crate::html::{layout, static_files};
 
-crate static FILES_UNVERSIONED: Lazy<FxHashMap<&str, &[u8]>> = Lazy::new(|| {
+static FILES_UNVERSIONED: Lazy<FxHashMap<&str, &[u8]>> = Lazy::new(|| {
     map! {
         "FiraSans-Regular.woff2" => static_files::fira_sans::REGULAR2,
         "FiraSans-Medium.woff2" => static_files::fira_sans::MEDIUM2,
         "FiraSans-Regular.woff" => static_files::fira_sans::REGULAR,
         "FiraSans-Medium.woff" => static_files::fira_sans::MEDIUM,
         "FiraSans-LICENSE.txt" => static_files::fira_sans::LICENSE,
+        "SourceSerif4-Regular.ttf.woff2" => static_files::source_serif_4::REGULAR2,
+        "SourceSerif4-Bold.ttf.woff2" => static_files::source_serif_4::BOLD2,
+        "SourceSerif4-It.ttf.woff2" => static_files::source_serif_4::ITALIC2,
         "SourceSerif4-Regular.ttf.woff" => static_files::source_serif_4::REGULAR,
         "SourceSerif4-Bold.ttf.woff" => static_files::source_serif_4::BOLD,
         "SourceSerif4-It.ttf.woff" => static_files::source_serif_4::ITALIC,
         "SourceSerif4-LICENSE.md" => static_files::source_serif_4::LICENSE,
+        "SourceCodePro-Regular.ttf.woff2" => static_files::source_code_pro::REGULAR2,
+        "SourceCodePro-Semibold.ttf.woff2" => static_files::source_code_pro::SEMIBOLD2,
+        "SourceCodePro-It.ttf.woff2" => static_files::source_code_pro::ITALIC2,
         "SourceCodePro-Regular.ttf.woff" => static_files::source_code_pro::REGULAR,
         "SourceCodePro-Semibold.ttf.woff" => static_files::source_code_pro::SEMIBOLD,
         "SourceCodePro-It.ttf.woff" => static_files::source_code_pro::ITALIC,
         "SourceCodePro-LICENSE.txt" => static_files::source_code_pro::LICENSE,
+        "noto-sans-kr-v13-korean-regular.woff" => static_files::noto_sans_kr::REGULAR,
+        "noto-sans-kr-v13-korean-regular-LICENSE.txt" => static_files::noto_sans_kr::LICENSE,
         "LICENSE-MIT.txt" => static_files::LICENSE_MIT,
         "LICENSE-APACHE.txt" => static_files::LICENSE_APACHE,
         "COPYRIGHT.txt" => static_files::COPYRIGHT,
@@ -207,6 +215,7 @@ pub(super) fn write_shared(
     }
     write_toolchain("brush.svg", static_files::BRUSH_SVG)?;
     write_toolchain("wheel.svg", static_files::WHEEL_SVG)?;
+    write_toolchain("clipboard.svg", static_files::CLIPBOARD_SVG)?;
     write_toolchain("down-arrow.svg", static_files::DOWN_ARROW_SVG)?;
 
     let mut themes: Vec<&String> = themes.iter().collect();
@@ -224,6 +233,7 @@ pub(super) fn write_shared(
     )?;
     write_minify("search.js", static_files::SEARCH_JS)?;
     write_minify("settings.js", static_files::SETTINGS_JS)?;
+
     if cx.shared.include_sources {
         write_minify("source-script.js", static_files::sidebar::SOURCE_SCRIPT)?;
     }
@@ -425,7 +435,7 @@ pub(super) fn write_shared(
             md_opts.output = cx.dst.clone();
             md_opts.external_html = (*cx.shared).layout.external_html.clone();
 
-            crate::markdown::render(&index_page, md_opts, cx.shared.edition)
+            crate::markdown::render(&index_page, md_opts, cx.shared.edition())
                 .map_err(|e| Error::new(e, &index_page))?;
         } else {
             let dst = cx.dst.join("index.html");
@@ -456,7 +466,14 @@ pub(super) fn write_shared(
                     })
                     .collect::<String>()
             );
-            let v = layout::render(&cx.shared.layout, &page, "", content, &cx.shared.style_files);
+            let v = layout::render(
+                &cx.shared.templates,
+                &cx.shared.layout,
+                &page,
+                "",
+                content,
+                &cx.shared.style_files,
+            );
             cx.shared.fs.write(&dst, v.as_bytes())?;
         }
     }
@@ -496,7 +513,7 @@ pub(super) fn write_shared(
                 //
                 // If the implementation is from another crate then that crate
                 // should add it.
-                if imp.impl_item.def_id.krate == did.krate || !imp.impl_item.def_id.is_local() {
+                if imp.impl_item.def_id.krate() == did.krate || !imp.impl_item.def_id.is_local() {
                     None
                 } else {
                     Some(Implementor {

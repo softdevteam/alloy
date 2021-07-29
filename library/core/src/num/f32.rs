@@ -727,8 +727,8 @@ impl f32 {
     ///
     /// This is currently identical to `transmute::<f32, u32>(self)` on all platforms.
     ///
-    /// See `from_bits` for some discussion of the portability of this operation
-    /// (there are almost no issues).
+    /// See [`from_bits`](Self::from_bits) for some discussion of the
+    /// portability of this operation (there are almost no issues).
     ///
     /// Note that this function is distinct from `as` casting, which attempts to
     /// preserve the *numeric* value, and not the bitwise value.
@@ -852,35 +852,6 @@ impl f32 {
     #[inline]
     pub const fn to_ne_bytes(self) -> [u8; 4] {
         self.to_bits().to_ne_bytes()
-    }
-
-    /// Return the memory representation of this floating point number as a byte array in
-    /// native byte order.
-    ///
-    /// [`to_ne_bytes`] should be preferred over this whenever possible.
-    ///
-    /// [`to_ne_bytes`]: f32::to_ne_bytes
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(num_as_ne_bytes)]
-    /// let num = 12.5f32;
-    /// let bytes = num.as_ne_bytes();
-    /// assert_eq!(
-    ///     bytes,
-    ///     if cfg!(target_endian = "big") {
-    ///         &[0x41, 0x48, 0x00, 0x00]
-    ///     } else {
-    ///         &[0x00, 0x00, 0x48, 0x41]
-    ///     }
-    /// );
-    /// ```
-    #[unstable(feature = "num_as_ne_bytes", issue = "76976")]
-    #[inline]
-    pub fn as_ne_bytes(&self) -> &[u8; 4] {
-        // SAFETY: `f32` is a plain old datatype so we can always transmute to it
-        unsafe { &*(self as *const Self as *const _) }
     }
 
     /// Create a floating point value from its representation as a byte array in big endian.

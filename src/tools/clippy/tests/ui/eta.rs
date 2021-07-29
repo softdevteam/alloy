@@ -48,6 +48,9 @@ fn main() {
     // See #515
     let a: Option<Box<dyn (::std::ops::Deref<Target = [i32]>)>> =
         Some(vec![1i32, 2]).map(|v| -> Box<dyn (::std::ops::Deref<Target = [i32]>)> { Box::new(v) });
+
+    // issue #7224
+    let _: Option<Vec<u32>> = Some(0).map(|_| vec![]);
 }
 
 trait TestTrait {
@@ -216,4 +219,20 @@ impl std::ops::Deref for Bar {
 
 fn test_deref_with_trait_method() {
     let _ = [Bar].iter().map(|s| s.to_string()).collect::<Vec<_>>();
+}
+
+fn mutable_closure_used_again(x: Vec<i32>, y: Vec<i32>, z: Vec<i32>) {
+    let mut res = Vec::new();
+    let mut add_to_res = |n| res.push(n);
+    x.into_iter().for_each(|x| add_to_res(x));
+    y.into_iter().for_each(|x| add_to_res(x));
+    z.into_iter().for_each(|x| add_to_res(x));
+}
+
+fn mutable_closure_in_loop() {
+    let mut value = 0;
+    let mut closure = |n| value += n;
+    for _ in 0..5 {
+        Some(1).map(|n| closure(n));
+    }
 }

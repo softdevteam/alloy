@@ -17,11 +17,11 @@ use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::{ExpnKind, Span};
 use rustc_span::symbol::sym;
 
-use crate::consts::{constant, Constant};
+use clippy_utils::consts::{constant, Constant};
 use clippy_utils::sugg::Sugg;
 use clippy_utils::{
-    get_item_name, get_parent_expr, higher, in_constant, is_diagnostic_assoc_item, is_integer_const, iter_input_pats,
-    last_path_segment, match_qpath, unsext, SpanlessEq,
+    expr_path_res, get_item_name, get_parent_expr, higher, in_constant, is_diag_trait_item, is_integer_const,
+    iter_input_pats, last_path_segment, match_any_def_paths, paths, unsext, SpanlessEq,
 };
 
 declare_clippy_lint! {
@@ -355,8 +355,10 @@ impl<'tcx> LateLintPass<'tcx> for MiscLints {
             if binop.node == BinOpKind::And || binop.node == BinOpKind::Or;
             if let Some(sugg) = Sugg::hir_opt(cx, a);
             then {
-                span_lint_and_then(cx,
+                span_lint_hir_and_then(
+                    cx,
                     SHORT_CIRCUIT_STATEMENT,
+                    expr.hir_id,
                     stmt.span,
                     "boolean short circuit operator in statement may be clearer using an explicit test",
                     |diag| {
@@ -555,8 +557,8 @@ fn check_to_owned(cx: &LateContext<'_>, expr: &Expr<'_>, other: &Expr<'_>, left:
         ExprKind::MethodCall(.., args, _) if args.len() == 1 => {
             if_chain!(
                 if let Some(expr_def_id) = cx.typeck_results().type_dependent_def_id(expr.hir_id);
-                if is_diagnostic_assoc_item(cx, expr_def_id, sym::ToString)
-                    || is_diagnostic_assoc_item(cx, expr_def_id, sym::ToOwned);
+                if is_diag_trait_item(cx, expr_def_id, sym::ToString)
+                    || is_diag_trait_item(cx, expr_def_id, sym::ToOwned);
                 then {
                     (cx.typeck_results().expr_ty(&args[0]), snippet(cx, args[0].span, ".."))
                 } else {
@@ -564,13 +566,13 @@ fn check_to_owned(cx: &LateContext<'_>, expr: &Expr<'_>, other: &Expr<'_>, left:
                 }
             )
         },
-        ExprKind::Call(path, v) if v.len() == 1 => {
-            if let ExprKind::Path(ref path) = path.kind {
-                if match_qpath(path, &["String", "from_str"]) || match_qpath(path, &["String", "from"]) {
-                    (cx.typeck_results().expr_ty(&v[0]), snippet(cx, v[0].span, ".."))
-                } else {
-                    return;
-                }
+        ExprKind::Call(path, [arg]) => {
+            if expr_path_res(cx, path)
+                .opt_def_id()
+                .and_then(|id| match_any_def_paths(cx, id, &[&paths::FROM_STR_METHOD, &paths::FROM_FROM]))
+                .is_some()
+            {
+                (cx.typeck_results().expr_ty(arg), snippet(cx, arg.span, ".."))
             } else {
                 return;
             }

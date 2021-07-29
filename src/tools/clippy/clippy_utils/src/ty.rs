@@ -2,9 +2,8 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
-
 use rustc_ast::ast::Mutability;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::{TyKind, Unsafety};
@@ -13,8 +12,9 @@ use rustc_lint::LateContext;
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
 use rustc_middle::ty::{self, AdtDef, IntTy, Ty, TypeFoldable, UintTy};
 use rustc_span::sym;
-use rustc_span::symbol::Symbol;
+use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::DUMMY_SP;
+use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_trait_selection::traits::query::normalize::AtExt;
 
 use crate::{match_def_path, must_use_attr};
@@ -50,6 +50,25 @@ pub fn contains_adt_constructor(ty: Ty<'_>, adt: &AdtDef) -> bool {
         GenericArgKind::Type(inner_ty) => inner_ty.ty_adt_def() == Some(adt),
         GenericArgKind::Lifetime(_) | GenericArgKind::Const(_) => false,
     })
+}
+
+/// Resolves `<T as Iterator>::Item` for `T`
+/// Do not invoke without first verifying that the type implements `Iterator`
+pub fn get_iterator_item_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'tcx>> {
+    cx.tcx
+        .get_diagnostic_item(sym::Iterator)
+        .and_then(|iter_did| {
+            cx.tcx.associated_items(iter_did).find_by_name_and_kind(
+                cx.tcx,
+                Ident::from_str("Item"),
+                ty::AssocKind::Type,
+                iter_did,
+            )
+        })
+        .map(|assoc| {
+            let proj = cx.tcx.mk_projection(assoc.def_id, cx.tcx.mk_substs_trait(ty, &[]));
+            cx.tcx.normalize_erasing_regions(cx.param_env, proj)
+        })
 }
 
 /// Returns true if ty has `iter` or `iter_mut` methods
@@ -94,6 +113,7 @@ pub fn has_iter_method(cx: &LateContext<'_>, probably_ref_ty: Ty<'_>) -> Option<
 }
 
 /// Checks whether a type implements a trait.
+/// The function returns false in case the type contains an inference variable.
 /// See also `get_trait_def_id`.
 pub fn implements_trait<'tcx>(
     cx: &LateContext<'tcx>,
@@ -101,16 +121,19 @@ pub fn implements_trait<'tcx>(
     trait_id: DefId,
     ty_params: &[GenericArg<'tcx>],
 ) -> bool {
-    // Do not check on infer_types to avoid panic in evaluate_obligation.
-    if ty.has_infer_types() {
-        return false;
-    }
+    // Clippy shouldn't have infer types
+    assert!(!ty.needs_infer());
+
     let ty = cx.tcx.erase_regions(ty);
     if ty.has_escaping_bound_vars() {
         return false;
     }
     let ty_params = cx.tcx.mk_substs(ty_params.iter());
-    cx.tcx.type_implements_trait((trait_id, ty, ty_params, cx.param_env))
+    cx.tcx.infer_ctxt().enter(|infcx| {
+        infcx
+            .type_implements_trait(trait_id, ty, ty_params, cx.param_env)
+            .must_apply_modulo_regions()
+    })
 }
 
 /// Checks whether this type implements `Drop`.
@@ -124,21 +147,18 @@ pub fn has_drop<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 // Returns whether the type has #[must_use] attribute
 pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        ty::Adt(ref adt, _) => must_use_attr(&cx.tcx.get_attrs(adt.did)).is_some(),
-        ty::Foreign(ref did) => must_use_attr(&cx.tcx.get_attrs(*did)).is_some(),
-        ty::Slice(ref ty)
-        | ty::Array(ref ty, _)
-        | ty::RawPtr(ty::TypeAndMut { ref ty, .. })
-        | ty::Ref(_, ref ty, _) => {
+        ty::Adt(adt, _) => must_use_attr(cx.tcx.get_attrs(adt.did)).is_some(),
+        ty::Foreign(ref did) => must_use_attr(cx.tcx.get_attrs(*did)).is_some(),
+        ty::Slice(ty) | ty::Array(ty, _) | ty::RawPtr(ty::TypeAndMut { ty, .. }) | ty::Ref(_, ty, _) => {
             // for the Array case we don't need to care for the len == 0 case
             // because we don't want to lint functions returning empty arrays
             is_must_use_ty(cx, *ty)
         },
-        ty::Tuple(ref substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
+        ty::Tuple(substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
         ty::Opaque(ref def_id, _) => {
             for (predicate, _) in cx.tcx.explicit_item_bounds(*def_id) {
                 if let ty::PredicateKind::Trait(trait_predicate, _) = predicate.kind().skip_binder() {
-                    if must_use_attr(&cx.tcx.get_attrs(trait_predicate.trait_ref.def_id)).is_some() {
+                    if must_use_attr(cx.tcx.get_attrs(trait_predicate.trait_ref.def_id)).is_some() {
                         return true;
                     }
                 }
@@ -148,7 +168,7 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
         ty::Dynamic(binder, _) => {
             for predicate in binder.iter() {
                 if let ty::ExistentialPredicate::Trait(ref trait_ref) = predicate.skip_binder() {
-                    if must_use_attr(&cx.tcx.get_attrs(trait_ref.def_id)).is_some() {
+                    if must_use_attr(cx.tcx.get_attrs(trait_ref.def_id)).is_some() {
                         return true;
                     }
                 }
@@ -165,14 +185,14 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 /// Checks if `Ty` is normalizable. This function is useful
 /// to avoid crashes on `layout_of`.
 pub fn is_normalizable<'tcx>(cx: &LateContext<'tcx>, param_env: ty::ParamEnv<'tcx>, ty: Ty<'tcx>) -> bool {
-    is_normalizable_helper(cx, param_env, ty, &mut HashMap::new())
+    is_normalizable_helper(cx, param_env, ty, &mut FxHashMap::default())
 }
 
 fn is_normalizable_helper<'tcx>(
     cx: &LateContext<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     ty: Ty<'tcx>,
-    cache: &mut HashMap<Ty<'tcx>, bool>,
+    cache: &mut FxHashMap<Ty<'tcx>, bool>,
 ) -> bool {
     if let Some(&cached_result) = cache.get(ty) {
         return cached_result;
@@ -216,6 +236,17 @@ pub fn is_recursively_primitive_type(ty: Ty<'_>) -> bool {
     }
 }
 
+/// Checks if the type is a reference equals to a diagnostic item
+pub fn is_type_ref_to_diagnostic_item(cx: &LateContext<'_>, ty: Ty<'_>, diag_item: Symbol) -> bool {
+    match ty.kind() {
+        ty::Ref(_, ref_ty, _) => match ref_ty.kind() {
+            ty::Adt(adt, _) => cx.tcx.is_diagnostic_item(diag_item, adt.did),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Checks if the type is equal to a diagnostic item
 ///
 /// If you change the signature, remember to update the internal lint `MatchTypeOnDiagItem`
@@ -226,10 +257,12 @@ pub fn is_type_diagnostic_item(cx: &LateContext<'_>, ty: Ty<'_>, diag_item: Symb
     }
 }
 
-/// Checks if the type is equal to a lang item
+/// Checks if the type is equal to a lang item.
+///
+/// Returns `false` if the `LangItem` is not defined.
 pub fn is_type_lang_item(cx: &LateContext<'_>, ty: Ty<'_>, lang_item: hir::LangItem) -> bool {
     match ty.kind() {
-        ty::Adt(adt, _) => cx.tcx.lang_items().require(lang_item).unwrap() == adt.did,
+        ty::Adt(adt, _) => cx.tcx.lang_items().require(lang_item).map_or(false, |li| li == adt.did),
         _ => false,
     }
 }
@@ -287,7 +320,7 @@ pub fn type_is_unsafe_function<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bo
 /// Returns the base type for HIR references and pointers.
 pub fn walk_ptrs_hir_ty<'tcx>(ty: &'tcx hir::Ty<'tcx>) -> &'tcx hir::Ty<'tcx> {
     match ty.kind {
-        TyKind::Ptr(ref mut_ty) | TyKind::Rptr(_, ref mut_ty) => walk_ptrs_hir_ty(&mut_ty.ty),
+        TyKind::Ptr(ref mut_ty) | TyKind::Rptr(_, ref mut_ty) => walk_ptrs_hir_ty(mut_ty.ty),
         _ => ty,
     }
 }
@@ -302,4 +335,28 @@ pub fn walk_ptrs_ty_depth(ty: Ty<'_>) -> (Ty<'_>, usize) {
         }
     }
     inner(ty, 0)
+}
+
+/// Returns `true` if types `a` and `b` are same types having same `Const` generic args,
+/// otherwise returns `false`
+pub fn same_type_and_consts(a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
+    match (&a.kind(), &b.kind()) {
+        (&ty::Adt(did_a, substs_a), &ty::Adt(did_b, substs_b)) => {
+            if did_a != did_b {
+                return false;
+            }
+
+            substs_a
+                .iter()
+                .zip(substs_b.iter())
+                .all(|(arg_a, arg_b)| match (arg_a.unpack(), arg_b.unpack()) {
+                    (GenericArgKind::Const(inner_a), GenericArgKind::Const(inner_b)) => inner_a == inner_b,
+                    (GenericArgKind::Type(type_a), GenericArgKind::Type(type_b)) => {
+                        same_type_and_consts(type_a, type_b)
+                    },
+                    _ => true,
+                })
+        },
+        _ => a == b,
+    }
 }

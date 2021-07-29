@@ -1,5 +1,5 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::is_allowed;
+use clippy_utils::is_lint_allowed;
 use clippy_utils::source::snippet;
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
@@ -71,7 +71,7 @@ impl LateLintPass<'_> for Unicode {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &'_ Expr<'_>) {
         if let ExprKind::Lit(ref lit) = expr.kind {
             if let LitKind::Str(_, _) = lit.node {
-                check_str(cx, lit.span, expr.hir_id)
+                check_str(cx, lit.span, expr.hir_id);
             }
         }
     }
@@ -82,7 +82,7 @@ fn escape<T: Iterator<Item = char>>(s: T) -> String {
     for c in s {
         if c as u32 > 0x7F {
             for d in c.escape_unicode() {
-                result.push(d)
+                result.push(d);
             }
         } else {
             result.push(c);
@@ -114,7 +114,7 @@ fn check_str(cx: &LateContext<'_>, span: Span, id: HirId) {
             span,
             "literal non-ASCII character detected",
             "consider replacing the string with",
-            if is_allowed(cx, UNICODE_NOT_NFC, id) {
+            if is_lint_allowed(cx, UNICODE_NOT_NFC, id) {
                 escape(string.chars())
             } else {
                 escape(string.nfc())
@@ -122,7 +122,7 @@ fn check_str(cx: &LateContext<'_>, span: Span, id: HirId) {
             Applicability::MachineApplicable,
         );
     }
-    if is_allowed(cx, NON_ASCII_LITERAL, id) && string.chars().zip(string.nfc()).any(|(a, b)| a != b) {
+    if is_lint_allowed(cx, NON_ASCII_LITERAL, id) && string.chars().zip(string.nfc()).any(|(a, b)| a != b) {
         span_lint_and_sugg(
             cx,
             UNICODE_NOT_NFC,

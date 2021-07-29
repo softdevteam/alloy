@@ -5,14 +5,14 @@ pub use crate::options::*;
 
 use crate::lint;
 use crate::search_paths::SearchPath;
-use crate::utils::{CanonicalizedPath, NativeLibKind};
+use crate::utils::{CanonicalizedPath, NativeLib, NativeLibKind};
 use crate::{early_error, early_warn, Session};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::impl_stable_hash_via_hash;
 
 use rustc_target::abi::{Align, TargetDataLayout};
-use rustc_target::spec::{SplitDebuginfo, Target, TargetTriple};
+use rustc_target::spec::{SplitDebuginfo, Target, TargetTriple, TargetWarnings};
 
 use rustc_serialize::json;
 
@@ -31,6 +31,7 @@ use std::collections::btree_map::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::hash::Hash;
 use std::iter::{self, FromIterator};
 use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
@@ -75,19 +76,21 @@ impl_stable_hash_via_hash!(OptLevel);
 
 /// This is what the `LtoCli` values get mapped to after resolving defaults and
 /// and taking other command line options into account.
+///
+/// Note that linker plugin-based LTO is a different mechanism entirely.
 #[derive(Clone, PartialEq)]
 pub enum Lto {
-    /// Don't do any LTO whatsoever
+    /// Don't do any LTO whatsoever.
     No,
 
-    /// Do a full crate graph LTO with ThinLTO
+    /// Do a full-crate-graph (inter-crate) LTO with ThinLTO.
     Thin,
 
-    /// Do a local graph LTO with ThinLTO (only relevant for multiple codegen
-    /// units).
+    /// Do a local ThinLTO (intra-crate, over the CodeGen Units of the local crate only). This is
+    /// only relevant if multiple CGUs are used.
     ThinLocal,
 
-    /// Do a full crate graph LTO with "fat" LTO
+    /// Do a full-crate-graph (inter-crate) LTO with "fat" LTO.
     Fat,
 }
 
@@ -154,7 +157,7 @@ pub enum InstrumentCoverage {
     Off,
 }
 
-#[derive(Clone, PartialEq, Hash)]
+#[derive(Clone, PartialEq, Hash, Debug)]
 pub enum LinkerPluginLto {
     LinkerPlugin(PathBuf),
     LinkerPluginAuto,
@@ -170,7 +173,7 @@ impl LinkerPluginLto {
     }
 }
 
-#[derive(Clone, PartialEq, Hash)]
+#[derive(Clone, PartialEq, Hash, Debug)]
 pub enum SwitchWithOptPath {
     Enabled(Option<PathBuf>),
     Disabled,
@@ -323,11 +326,10 @@ impl Default for TrimmedDefPaths {
 
 /// Use tree-based collections to cheaply get a deterministic `Hash` implementation.
 /// *Do not* switch `BTreeMap` out for an unsorted container type! That would break
-/// dependency tracking for command-line arguments.
-#[derive(Clone, Hash, Debug)]
+/// dependency tracking for command-line arguments. Also only hash keys, since tracking
+/// should only depend on the output types, not the paths they're written to.
+#[derive(Clone, Debug, Hash)]
 pub struct OutputTypes(BTreeMap<OutputType, Option<PathBuf>>);
-
-impl_stable_hash_via_hash!(OutputTypes);
 
 impl OutputTypes {
     pub fn new(entries: &[(OutputType, Option<PathBuf>)]) -> OutputTypes {
@@ -683,10 +685,10 @@ impl Default for Options {
             target_triple: TargetTriple::from_triple(host_triple()),
             test: false,
             incremental: None,
-            debugging_opts: basic_debugging_options(),
+            debugging_opts: Default::default(),
             prints: Vec::new(),
             borrowck_mode: BorrowckMode::Migrate,
-            cg: basic_codegen_options(),
+            cg: Default::default(),
             error_format: ErrorOutputType::default(),
             externs: Externs(BTreeMap::new()),
             extern_dep_specs: ExternDepSpecs(BTreeMap::new()),
@@ -700,6 +702,7 @@ impl Default for Options {
             cli_forced_codegen_units: None,
             cli_forced_thinlto_off: false,
             remap_path_prefix: Vec::new(),
+            real_rust_source_base_dir: None,
             edition: DEFAULT_EDITION,
             json_artifact_notifications: false,
             json_unused_externs: false,
@@ -776,7 +779,7 @@ pub enum CrateType {
 
 impl_stable_hash_via_hash!(CrateType);
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, Debug, PartialEq, Eq)]
 pub enum Passes {
     Some(Vec<String>),
     All,
@@ -795,12 +798,13 @@ pub const fn default_lib_output() -> CrateType {
     CrateType::Rlib
 }
 
-pub fn default_configuration(sess: &Session) -> CrateConfig {
+fn default_configuration(sess: &Session) -> CrateConfig {
     let end = &sess.target.endian;
     let arch = &sess.target.arch;
     let wordsz = sess.target.pointer_width.to_string();
     let os = &sess.target.os;
     let env = &sess.target.env;
+    let abi = &sess.target.abi;
     let vendor = &sess.target.vendor;
     let min_atomic_width = sess.target.min_atomic_width();
     let max_atomic_width = sess.target.max_atomic_width();
@@ -810,10 +814,10 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     });
 
     let mut ret = FxHashSet::default();
-    ret.reserve(6); // the minimum number of insertions
+    ret.reserve(7); // the minimum number of insertions
     // Target bindings.
     ret.insert((sym::target_os, Some(Symbol::intern(os))));
-    if let Some(ref fam) = sess.target.os_family {
+    for fam in &sess.target.families {
         ret.insert((sym::target_family, Some(Symbol::intern(fam))));
         if fam == "windows" {
             ret.insert((sym::windows, None));
@@ -825,11 +829,12 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     ret.insert((sym::target_endian, Some(Symbol::intern(end.as_str()))));
     ret.insert((sym::target_pointer_width, Some(Symbol::intern(&wordsz))));
     ret.insert((sym::target_env, Some(Symbol::intern(env))));
+    ret.insert((sym::target_abi, Some(Symbol::intern(abi))));
     ret.insert((sym::target_vendor, Some(Symbol::intern(vendor))));
     if sess.target.has_elf_tls {
         ret.insert((sym::target_thread_local, None));
     }
-    for &(i, align) in &[
+    for (i, align) in [
         (8, layout.i8_align.abi),
         (16, layout.i16_align.abi),
         (32, layout.i32_align.abi),
@@ -890,9 +895,16 @@ pub fn build_configuration(sess: &Session, mut user_cfg: CrateConfig) -> CrateCo
     user_cfg
 }
 
-pub fn build_target_config(opts: &Options, target_override: Option<Target>) -> Target {
-    let target_result = target_override.map_or_else(|| Target::search(&opts.target_triple), Ok);
-    let target = target_result.unwrap_or_else(|e| {
+pub(super) fn build_target_config(
+    opts: &Options,
+    target_override: Option<Target>,
+    sysroot: &PathBuf,
+) -> Target {
+    let target_result = target_override.map_or_else(
+        || Target::search(&opts.target_triple, sysroot),
+        |t| Ok((t, TargetWarnings::empty())),
+    );
+    let (target, target_warnings) = target_result.unwrap_or_else(|e| {
         early_error(
             opts.error_format,
             &format!(
@@ -902,6 +914,9 @@ pub fn build_target_config(opts: &Options, target_override: Option<Target>) -> T
             ),
         )
     });
+    for warning in target_warnings.warning_messages() {
+        early_warn(opts.error_format, &warning)
+    }
 
     if !matches!(target.pointer_width, 16 | 32 | 64) {
         early_error(
@@ -1024,8 +1039,11 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
             "",
             "Link the generated crate(s) to the specified native
                              library NAME. The optional KIND can be one of
-                             static, framework, or dylib (the default).",
-            "[KIND=]NAME",
+                             static, framework, or dylib (the default).
+                             Optional comma separated MODIFIERS (bundle|verbatim|whole-archive|as-needed)
+                             may be specified each with a prefix of either '+' to
+                             enable or '-' to disable.",
+            "[KIND[:MODIFIERS]=]NAME[:RENAME]",
         ),
         make_crate_type_option(),
         opt::opt_s("", "crate-name", "Specify the name of the crate being built", "NAME"),
@@ -1080,6 +1098,13 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
              More restrictive lints are capped at this \
              level",
             "LEVEL",
+        ),
+        opt::multi_s(
+            "",
+            "force-warn",
+            "Specifiy lints that should warn even if \
+             they are allowed somewhere else",
+            "LINT",
         ),
         opt::multi_s("C", "codegen", "Set a codegen option", "OPT[=VALUE]"),
         opt::flag_s("V", "version", "Print version info and exit"),
@@ -1145,20 +1170,21 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
 pub fn get_cmd_lint_options(
     matches: &getopts::Matches,
     error_format: ErrorOutputType,
+    debugging_opts: &DebuggingOptions,
 ) -> (Vec<(String, lint::Level)>, bool, Option<lint::Level>) {
     let mut lint_opts_with_position = vec![];
     let mut describe_lints = false;
 
-    for &level in &[lint::Allow, lint::Warn, lint::Deny, lint::Forbid] {
-        for (passed_arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
-            let arg_pos = if let lint::Forbid = level {
-                // HACK: forbid is always specified last, so it can't be overridden.
-                // FIXME: remove this once <https://github.com/rust-lang/rust/issues/70819> is
-                // fixed and `forbid` works as expected.
-                usize::MAX
-            } else {
-                passed_arg_pos
-            };
+    if !debugging_opts.unstable_options && matches.opt_present("force-warn") {
+        early_error(
+            error_format,
+            "the `-Z unstable-options` flag must also be passed to enable \
+            the flag `--force-warn=lints`",
+        );
+    }
+
+    for level in [lint::Allow, lint::Warn, lint::ForceWarn, lint::Deny, lint::Forbid] {
+        for (arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
             if lint_name == "help" {
                 describe_lints = true;
             } else {
@@ -1178,6 +1204,7 @@ pub fn get_cmd_lint_options(
         lint::Level::from_str(&cap)
             .unwrap_or_else(|| early_error(error_format, &format!("unknown lint level: `{}`", cap)))
     });
+
     (lint_opts, describe_lints, lint_cap)
 }
 
@@ -1496,7 +1523,10 @@ fn collect_print_requests(
     prints
 }
 
-fn parse_target_triple(matches: &getopts::Matches, error_format: ErrorOutputType) -> TargetTriple {
+pub fn parse_target_triple(
+    matches: &getopts::Matches,
+    error_format: ErrorOutputType,
+) -> TargetTriple {
     match matches.opt_str("target") {
         Some(target) if target.ends_with(".json") => {
             let path = Path::new(&target);
@@ -1588,52 +1618,127 @@ fn select_debuginfo(
     }
 }
 
-fn parse_libs(
-    matches: &getopts::Matches,
+fn parse_native_lib_kind(kind: &str, error_format: ErrorOutputType) -> NativeLibKind {
+    match kind {
+        "dylib" => NativeLibKind::Dylib { as_needed: None },
+        "framework" => NativeLibKind::Framework { as_needed: None },
+        "static" => NativeLibKind::Static { bundle: None, whole_archive: None },
+        "static-nobundle" => {
+            early_warn(
+                error_format,
+                "library kind `static-nobundle` has been superseded by specifying \
+                `-bundle` on library kind `static`. Try `static:-bundle`",
+            );
+            NativeLibKind::Static { bundle: Some(false), whole_archive: None }
+        }
+        s => early_error(
+            error_format,
+            &format!("unknown library kind `{}`, expected one of dylib, framework, or static", s),
+        ),
+    }
+}
+
+fn parse_native_lib_modifiers(
+    is_nightly: bool,
+    mut kind: NativeLibKind,
+    modifiers: &str,
     error_format: ErrorOutputType,
-) -> Vec<(String, Option<String>, NativeLibKind)> {
+) -> (NativeLibKind, Option<bool>) {
+    let mut verbatim = None;
+    for modifier in modifiers.split(',') {
+        let (modifier, value) = match modifier.strip_prefix(&['+', '-'][..]) {
+            Some(m) => (m, modifier.starts_with('+')),
+            None => early_error(
+                error_format,
+                "invalid linking modifier syntax, expected '+' or '-' prefix \
+                    before one of: bundle, verbatim, whole-archive, as-needed",
+            ),
+        };
+
+        if !is_nightly {
+            early_error(
+                error_format,
+                "linking modifiers are currently unstable and only accepted on \
+                the nightly compiler",
+            );
+        }
+
+        match (modifier, &mut kind) {
+            ("bundle", NativeLibKind::Static { bundle, .. }) => {
+                *bundle = Some(value);
+            }
+            ("bundle", _) => early_error(
+                error_format,
+                "bundle linking modifier is only compatible with \
+                    `static` linking kind",
+            ),
+
+            ("verbatim", _) => verbatim = Some(value),
+
+            ("whole-archive", NativeLibKind::Static { whole_archive, .. }) => {
+                *whole_archive = Some(value);
+            }
+            ("whole-archive", _) => early_error(
+                error_format,
+                "whole-archive linking modifier is only compatible with \
+                    `static` linking kind",
+            ),
+
+            ("as-needed", NativeLibKind::Dylib { as_needed })
+            | ("as-needed", NativeLibKind::Framework { as_needed }) => {
+                *as_needed = Some(value);
+            }
+            ("as-needed", _) => early_error(
+                error_format,
+                "as-needed linking modifier is only compatible with \
+                    `dylib` and `framework` linking kinds",
+            ),
+
+            _ => early_error(
+                error_format,
+                &format!(
+                    "unrecognized linking modifier `{}`, expected one \
+                    of: bundle, verbatim, whole-archive, as-needed",
+                    modifier
+                ),
+            ),
+        }
+    }
+
+    (kind, verbatim)
+}
+
+fn parse_libs(matches: &getopts::Matches, error_format: ErrorOutputType) -> Vec<NativeLib> {
+    let is_nightly = nightly_options::match_is_nightly_build(matches);
     matches
         .opt_strs("l")
         .into_iter()
         .map(|s| {
-            // Parse string of the form "[KIND=]lib[:new_name]",
-            // where KIND is one of "dylib", "framework", "static".
-            let (name, kind) = match s.split_once('=') {
-                None => (s, NativeLibKind::Unspecified),
+            // Parse string of the form "[KIND[:MODIFIERS]=]lib[:new_name]",
+            // where KIND is one of "dylib", "framework", "static" and
+            // where MODIFIERS are  a comma separated list of supported modifiers
+            // (bundle, verbatim, whole-archive, as-needed). Each modifier is prefixed
+            // with either + or - to indicate whether it is enabled or disabled.
+            // The last value specified for a given modifier wins.
+            let (name, kind, verbatim) = match s.split_once('=') {
+                None => (s, NativeLibKind::Unspecified, None),
                 Some((kind, name)) => {
-                    let kind = match kind {
-                        "dylib" => NativeLibKind::Dylib,
-                        "framework" => NativeLibKind::Framework,
-                        "static" => NativeLibKind::StaticBundle,
-                        "static-nobundle" => NativeLibKind::StaticNoBundle,
-                        s => {
-                            early_error(
-                                error_format,
-                                &format!(
-                                    "unknown library kind `{}`, expected \
-                                     one of dylib, framework, or static",
-                                    s
-                                ),
-                            );
+                    let (kind, verbatim) = match kind.split_once(':') {
+                        None => (parse_native_lib_kind(kind, error_format), None),
+                        Some((kind, modifiers)) => {
+                            let kind = parse_native_lib_kind(kind, error_format);
+                            parse_native_lib_modifiers(is_nightly, kind, modifiers, error_format)
                         }
                     };
-                    (name.to_string(), kind)
+                    (name.to_string(), kind, verbatim)
                 }
             };
-            if kind == NativeLibKind::StaticNoBundle
-                && !nightly_options::match_is_nightly_build(matches)
-            {
-                early_error(
-                    error_format,
-                    "the library kind 'static-nobundle' is only \
-                     accepted on the nightly compiler",
-                );
-            }
+
             let (name, new_name) = match name.split_once(':') {
                 None => (name, None),
                 Some((name, new_name)) => (name.to_string(), Some(new_name.to_owned())),
             };
-            (name, new_name, kind)
+            NativeLib { name, new_name, kind, verbatim }
         })
         .collect()
 }
@@ -1837,9 +1942,10 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     let crate_types = parse_crate_types_from_list(unparsed_crate_types)
         .unwrap_or_else(|e| early_error(error_format, &e[..]));
 
-    let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
+    let mut debugging_opts = DebuggingOptions::build(matches, error_format);
+    let (lint_opts, describe_lints, lint_cap) =
+        get_cmd_lint_options(matches, error_format, &debugging_opts);
 
-    let mut debugging_opts = build_debugging_options(matches, error_format);
     check_debug_option_stability(&debugging_opts, error_format, json_rendered);
 
     if !debugging_opts.unstable_options && json_unused_externs {
@@ -1852,7 +1958,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
 
     let output_types = parse_output_types(&debugging_opts, matches, error_format);
 
-    let mut cg = build_codegen_options(matches, error_format);
+    let mut cg = CodegenOptions::build(matches, error_format);
     let (disable_thinlto, mut codegen_units) = should_override_cgus_and_disable_thinlto(
         &output_types,
         matches,
@@ -1978,6 +2084,34 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         }
     }
 
+    // Try to find a directory containing the Rust `src`, for more details see
+    // the doc comment on the `real_rust_source_base_dir` field.
+    let tmp_buf;
+    let sysroot = match &sysroot_opt {
+        Some(s) => s,
+        None => {
+            tmp_buf = crate::filesearch::get_or_default_sysroot();
+            &tmp_buf
+        }
+    };
+    let real_rust_source_base_dir = {
+        // This is the location used by the `rust-src` `rustup` component.
+        let mut candidate = sysroot.join("lib/rustlib/src/rust");
+        if let Ok(metadata) = candidate.symlink_metadata() {
+            // Replace the symlink rustbuild creates, with its destination.
+            // We could try to use `fs::canonicalize` instead, but that might
+            // produce unnecessarily verbose path.
+            if metadata.file_type().is_symlink() {
+                if let Ok(symlink_dest) = std::fs::read_link(&candidate) {
+                    candidate = symlink_dest;
+                }
+            }
+        }
+
+        // Only use this directory if it has a file we can expect to always find.
+        if candidate.join("library/std/src/lib.rs").is_file() { Some(candidate) } else { None }
+    };
+
     Options {
         crate_types,
         optimize: opt_level,
@@ -2008,6 +2142,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         cli_forced_codegen_units: codegen_units,
         cli_forced_thinlto_off: disable_thinlto,
         remap_path_prefix,
+        real_rust_source_base_dir,
         edition,
         json_artifact_notifications,
         json_unused_externs,
@@ -2277,14 +2412,15 @@ impl PpMode {
 /// we have an opt-in scheme here, so one is hopefully forced to think about
 /// how the hash should be calculated when adding a new command-line argument.
 crate mod dep_tracking {
+    use super::LdImpl;
     use super::{
         CFGuard, CrateType, DebugInfo, ErrorOutputType, InstrumentCoverage, LinkerPluginLto,
-        LtoCli, OptLevel, OutputTypes, Passes, SourceFileHashAlgorithm, SwitchWithOptPath,
-        SymbolManglingVersion, TrimmedDefPaths,
+        LtoCli, OptLevel, OutputType, OutputTypes, Passes, SourceFileHashAlgorithm,
+        SwitchWithOptPath, SymbolManglingVersion, TrimmedDefPaths,
     };
     use crate::lint;
     use crate::options::WasiExecModel;
-    use crate::utils::NativeLibKind;
+    use crate::utils::{NativeLib, NativeLibKind};
     use rustc_feature::UnstableFeatures;
     use rustc_span::edition::Edition;
     use rustc_target::spec::{CodeModel, MergeFunctions, PanicStrategy, RelocModel};
@@ -2296,97 +2432,95 @@ crate mod dep_tracking {
     use std::path::PathBuf;
 
     pub trait DepTrackingHash {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType);
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        );
     }
 
     macro_rules! impl_dep_tracking_hash_via_hash {
-        ($t:ty) => {
+        ($($t:ty),+ $(,)?) => {$(
             impl DepTrackingHash for $t {
-                fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType) {
+                fn hash(&self, hasher: &mut DefaultHasher, _: ErrorOutputType, _for_crate_hash: bool) {
                     Hash::hash(self, hasher);
                 }
             }
-        };
+        )+};
     }
 
-    macro_rules! impl_dep_tracking_hash_for_sortable_vec_of {
-        ($t:ty) => {
-            impl DepTrackingHash for Vec<$t> {
-                fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
-                    let mut elems: Vec<&$t> = self.iter().collect();
-                    elems.sort();
-                    Hash::hash(&elems.len(), hasher);
-                    for (index, elem) in elems.iter().enumerate() {
-                        Hash::hash(&index, hasher);
-                        DepTrackingHash::hash(*elem, hasher, error_format);
-                    }
+    impl<T: DepTrackingHash> DepTrackingHash for Option<T> {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            match self {
+                Some(x) => {
+                    Hash::hash(&1, hasher);
+                    DepTrackingHash::hash(x, hasher, error_format, for_crate_hash);
                 }
+                None => Hash::hash(&0, hasher),
             }
-        };
+        }
     }
 
-    impl_dep_tracking_hash_via_hash!(bool);
-    impl_dep_tracking_hash_via_hash!(usize);
-    impl_dep_tracking_hash_via_hash!(u64);
-    impl_dep_tracking_hash_via_hash!(String);
-    impl_dep_tracking_hash_via_hash!(PathBuf);
-    impl_dep_tracking_hash_via_hash!(lint::Level);
-    impl_dep_tracking_hash_via_hash!(Option<bool>);
-    impl_dep_tracking_hash_via_hash!(Option<u32>);
-    impl_dep_tracking_hash_via_hash!(Option<usize>);
-    impl_dep_tracking_hash_via_hash!(Option<NonZeroUsize>);
-    impl_dep_tracking_hash_via_hash!(Option<String>);
-    impl_dep_tracking_hash_via_hash!(Option<(String, u64)>);
-    impl_dep_tracking_hash_via_hash!(Option<Vec<String>>);
-    impl_dep_tracking_hash_via_hash!(Option<MergeFunctions>);
-    impl_dep_tracking_hash_via_hash!(Option<RelocModel>);
-    impl_dep_tracking_hash_via_hash!(Option<CodeModel>);
-    impl_dep_tracking_hash_via_hash!(Option<TlsModel>);
-    impl_dep_tracking_hash_via_hash!(Option<WasiExecModel>);
-    impl_dep_tracking_hash_via_hash!(Option<PanicStrategy>);
-    impl_dep_tracking_hash_via_hash!(Option<RelroLevel>);
-    impl_dep_tracking_hash_via_hash!(Option<InstrumentCoverage>);
-    impl_dep_tracking_hash_via_hash!(Option<lint::Level>);
-    impl_dep_tracking_hash_via_hash!(Option<PathBuf>);
-    impl_dep_tracking_hash_via_hash!(CrateType);
-    impl_dep_tracking_hash_via_hash!(MergeFunctions);
-    impl_dep_tracking_hash_via_hash!(PanicStrategy);
-    impl_dep_tracking_hash_via_hash!(RelroLevel);
-    impl_dep_tracking_hash_via_hash!(Passes);
-    impl_dep_tracking_hash_via_hash!(OptLevel);
-    impl_dep_tracking_hash_via_hash!(LtoCli);
-    impl_dep_tracking_hash_via_hash!(DebugInfo);
-    impl_dep_tracking_hash_via_hash!(UnstableFeatures);
-    impl_dep_tracking_hash_via_hash!(OutputTypes);
-    impl_dep_tracking_hash_via_hash!(NativeLibKind);
-    impl_dep_tracking_hash_via_hash!(SanitizerSet);
-    impl_dep_tracking_hash_via_hash!(CFGuard);
-    impl_dep_tracking_hash_via_hash!(TargetTriple);
-    impl_dep_tracking_hash_via_hash!(Edition);
-    impl_dep_tracking_hash_via_hash!(LinkerPluginLto);
-    impl_dep_tracking_hash_via_hash!(Option<SplitDebuginfo>);
-    impl_dep_tracking_hash_via_hash!(SwitchWithOptPath);
-    impl_dep_tracking_hash_via_hash!(Option<SymbolManglingVersion>);
-    impl_dep_tracking_hash_via_hash!(Option<SourceFileHashAlgorithm>);
-    impl_dep_tracking_hash_via_hash!(TrimmedDefPaths);
-
-    impl_dep_tracking_hash_for_sortable_vec_of!(String);
-    impl_dep_tracking_hash_for_sortable_vec_of!(PathBuf);
-    impl_dep_tracking_hash_for_sortable_vec_of!(CrateType);
-    impl_dep_tracking_hash_for_sortable_vec_of!((String, lint::Level));
-    impl_dep_tracking_hash_for_sortable_vec_of!((String, Option<String>, NativeLibKind));
-    impl_dep_tracking_hash_for_sortable_vec_of!((String, u64));
+    impl_dep_tracking_hash_via_hash!(
+        bool,
+        usize,
+        NonZeroUsize,
+        u64,
+        String,
+        PathBuf,
+        lint::Level,
+        WasiExecModel,
+        u32,
+        RelocModel,
+        CodeModel,
+        TlsModel,
+        InstrumentCoverage,
+        CrateType,
+        MergeFunctions,
+        PanicStrategy,
+        RelroLevel,
+        Passes,
+        OptLevel,
+        LtoCli,
+        DebugInfo,
+        UnstableFeatures,
+        NativeLib,
+        NativeLibKind,
+        SanitizerSet,
+        CFGuard,
+        TargetTriple,
+        Edition,
+        LinkerPluginLto,
+        SplitDebuginfo,
+        SwitchWithOptPath,
+        SymbolManglingVersion,
+        SourceFileHashAlgorithm,
+        TrimmedDefPaths,
+        Option<LdImpl>,
+        OutputType,
+    );
 
     impl<T1, T2> DepTrackingHash for (T1, T2)
     where
         T1: DepTrackingHash,
         T2: DepTrackingHash,
     {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
             Hash::hash(&0, hasher);
-            DepTrackingHash::hash(&self.0, hasher, error_format);
+            DepTrackingHash::hash(&self.0, hasher, error_format, for_crate_hash);
             Hash::hash(&1, hasher);
-            DepTrackingHash::hash(&self.1, hasher, error_format);
+            DepTrackingHash::hash(&self.1, hasher, error_format, for_crate_hash);
         }
     }
 
@@ -2396,13 +2530,50 @@ crate mod dep_tracking {
         T2: DepTrackingHash,
         T3: DepTrackingHash,
     {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
             Hash::hash(&0, hasher);
-            DepTrackingHash::hash(&self.0, hasher, error_format);
+            DepTrackingHash::hash(&self.0, hasher, error_format, for_crate_hash);
             Hash::hash(&1, hasher);
-            DepTrackingHash::hash(&self.1, hasher, error_format);
+            DepTrackingHash::hash(&self.1, hasher, error_format, for_crate_hash);
             Hash::hash(&2, hasher);
-            DepTrackingHash::hash(&self.2, hasher, error_format);
+            DepTrackingHash::hash(&self.2, hasher, error_format, for_crate_hash);
+        }
+    }
+
+    impl<T: DepTrackingHash> DepTrackingHash for Vec<T> {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            Hash::hash(&self.len(), hasher);
+            for (index, elem) in self.iter().enumerate() {
+                Hash::hash(&index, hasher);
+                DepTrackingHash::hash(elem, hasher, error_format, for_crate_hash);
+            }
+        }
+    }
+
+    impl DepTrackingHash for OutputTypes {
+        fn hash(
+            &self,
+            hasher: &mut DefaultHasher,
+            error_format: ErrorOutputType,
+            for_crate_hash: bool,
+        ) {
+            Hash::hash(&self.0.len(), hasher);
+            for (key, val) in &self.0 {
+                DepTrackingHash::hash(key, hasher, error_format, for_crate_hash);
+                if !for_crate_hash {
+                    DepTrackingHash::hash(val, hasher, error_format, for_crate_hash);
+                }
+            }
         }
     }
 
@@ -2411,13 +2582,14 @@ crate mod dep_tracking {
         sub_hashes: BTreeMap<&'static str, &dyn DepTrackingHash>,
         hasher: &mut DefaultHasher,
         error_format: ErrorOutputType,
+        for_crate_hash: bool,
     ) {
         for (key, sub_hash) in sub_hashes {
             // Using Hash::hash() instead of DepTrackingHash::hash() is fine for
             // the keys, as they are just plain strings
             Hash::hash(&key.len(), hasher);
             Hash::hash(key, hasher);
-            sub_hash.hash(hasher, error_format);
+            sub_hash.hash(hasher, error_format, for_crate_hash);
         }
     }
 }

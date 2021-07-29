@@ -157,6 +157,18 @@ declare_rustdoc_lint! {
     "detects URLs that are not hyperlinks"
 }
 
+declare_rustdoc_lint! {
+   /// The `invalid_rust_codeblocks` lint detects Rust code blocks in
+   /// documentation examples that are invalid (e.g. empty, not parsable as
+   /// Rust code). This is a `rustdoc` only lint, see the documentation in the
+   /// [rustdoc book].
+   ///
+   /// [rustdoc book]: ../../../rustdoc/lints.html#invalid_rust_codeblocks
+   INVALID_RUST_CODEBLOCKS,
+   Warn,
+   "codeblock could not be parsed as valid Rust or is empty"
+}
+
 crate static RUSTDOC_LINTS: Lazy<Vec<&'static Lint>> = Lazy::new(|| {
     vec![
         BROKEN_INTRA_DOC_LINKS,
@@ -164,6 +176,7 @@ crate static RUSTDOC_LINTS: Lazy<Vec<&'static Lint>> = Lazy::new(|| {
         MISSING_DOC_CODE_EXAMPLES,
         PRIVATE_DOC_TESTS,
         INVALID_CODEBLOCK_ATTRIBUTES,
+        INVALID_RUST_CODEBLOCKS,
         INVALID_HTML_TAGS,
         BARE_URLS,
         MISSING_CRATE_LEVEL_DOCS,
@@ -180,7 +193,7 @@ crate fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
     );
     for lint in &*RUSTDOC_LINTS {
         let name = lint.name_lower();
-        lint_store.register_alias(&name.replace("rustdoc::", ""), &name);
+        lint_store.register_renamed(&name.replace("rustdoc::", ""), &name);
     }
     lint_store
         .register_renamed("intra_doc_link_resolution_failure", "rustdoc::broken_intra_doc_links");

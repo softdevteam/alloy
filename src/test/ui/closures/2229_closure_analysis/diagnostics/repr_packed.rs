@@ -1,8 +1,6 @@
 // check-pass
+// edition:2021
 #![allow(misaligned_gc_pointers)]
-
-#![feature(capture_disjoint_fields)]
-//~^ WARNING: the feature `capture_disjoint_fields` is incomplete
 
 // Given how the closure desugaring is implemented (at least at the time of writing this test),
 // we don't need to truncate the captured path to a reference into a packed-struct if the field

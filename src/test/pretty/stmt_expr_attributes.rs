@@ -71,14 +71,14 @@ fn _5() {
 fn _6() {
 
     #[rustc_dummy]
-    [#![rustc_dummy] 1, 2, 3];
+    [1, 2, 3];
 
-    let _ = #[rustc_dummy] [#![rustc_dummy] 1, 2, 3];
+    let _ = #[rustc_dummy] [1, 2, 3];
 
     #[rustc_dummy]
-    [#![rustc_dummy] 1; 4];
+    [1; 4];
 
-    let _ = #[rustc_dummy] [#![rustc_dummy] 1; 4];
+    let _ = #[rustc_dummy] [1; 4];
 }
 
 struct Foo {
@@ -90,24 +90,24 @@ struct Bar(());
 fn _7() {
 
     #[rustc_dummy]
-    Foo{#![rustc_dummy] data: (),};
+    Foo{data: (),};
 
-    let _ = #[rustc_dummy] Foo{#![rustc_dummy] data: (),};
+    let _ = #[rustc_dummy] Foo{data: (),};
 }
 
 fn _8() {
 
     #[rustc_dummy]
-    (#![rustc_dummy] );
+    ();
 
     #[rustc_dummy]
-    (#![rustc_dummy] 0);
+    (0);
 
     #[rustc_dummy]
-    (#![rustc_dummy] 0,);
+    (0,);
 
     #[rustc_dummy]
-    (#![rustc_dummy] 0, 1);
+    (0, 1);
 }
 
 fn _9() {
@@ -138,15 +138,15 @@ fn _10() {
 
 fn _11() {
     let _ = #[rustc_dummy] box 0;
-    let _: [(); 0] = #[rustc_dummy] [#![rustc_dummy] ];
-    let _ = #[rustc_dummy] [#![rustc_dummy] 0, 0];
-    let _ = #[rustc_dummy] [#![rustc_dummy] 0; 0];
+    let _: [(); 0] = #[rustc_dummy] [];
+    let _ = #[rustc_dummy] [0, 0];
+    let _ = #[rustc_dummy] [0; 0];
     let _ = #[rustc_dummy] foo();
     let _ = #[rustc_dummy] 1i32.clone();
-    let _ = #[rustc_dummy] (#![rustc_dummy] );
-    let _ = #[rustc_dummy] (#![rustc_dummy] 0);
-    let _ = #[rustc_dummy] (#![rustc_dummy] 0,);
-    let _ = #[rustc_dummy] (#![rustc_dummy] 0, 0);
+    let _ = #[rustc_dummy] ();
+    let _ = #[rustc_dummy] (0);
+    let _ = #[rustc_dummy] (0,);
+    let _ = #[rustc_dummy] (0, 0);
     let _ = #[rustc_dummy] 0 + #[rustc_dummy] 0;
     let _ = #[rustc_dummy] !0;
     let _ = #[rustc_dummy] -0i32;
@@ -166,9 +166,8 @@ fn _11() {
         #[rustc_dummy] for _ in 0..0 {
                            #![rustc_dummy]
                        };
-    // FIXME: pp bug, two spaces after the loop
     let _ =
-        #[rustc_dummy] loop  {
+        #[rustc_dummy] loop {
                            #![rustc_dummy]
                        };
     let _ =
@@ -237,10 +236,10 @@ fn _11() {
     let _ = #[rustc_dummy] expr_mac!();
     let _ = #[rustc_dummy] expr_mac![];
     let _ = #[rustc_dummy] expr_mac! { };
-    let _ = #[rustc_dummy] Foo{#![rustc_dummy] data: (),};
-    let _ = #[rustc_dummy] Foo{#![rustc_dummy] ..s};
-    let _ = #[rustc_dummy] Foo{#![rustc_dummy] data: (), ..s};
-    let _ = #[rustc_dummy] (#![rustc_dummy] 0);
+    let _ = #[rustc_dummy] Foo{data: (),};
+    let _ = #[rustc_dummy] Foo{..s};
+    let _ = #[rustc_dummy] Foo{data: (), ..s};
+    let _ = #[rustc_dummy] (0);
 }
 
 fn _12() {

@@ -5,6 +5,7 @@
 #![allow(clippy::similar_names, clippy::wildcard_imports, clippy::enum_glob_use)]
 
 use crate::{both, over};
+use if_chain::if_chain;
 use rustc_ast::ptr::P;
 use rustc_ast::{self as ast, *};
 use rustc_span::symbol::Ident;
@@ -46,9 +47,14 @@ pub fn eq_pat(l: &Pat, r: &Pat) -> bool {
         | (Ref(l, Mutability::Mut), Ref(r, Mutability::Mut)) => eq_pat(l, r),
         (Tuple(l), Tuple(r)) | (Slice(l), Slice(r)) => over(l, r, |l, r| eq_pat(l, r)),
         (Path(lq, lp), Path(rq, rp)) => both(lq, rq, |l, r| eq_qself(l, r)) && eq_path(lp, rp),
-        (TupleStruct(lp, lfs), TupleStruct(rp, rfs)) => eq_path(lp, rp) && over(lfs, rfs, |l, r| eq_pat(l, r)),
-        (Struct(lp, lfs, lr), Struct(rp, rfs, rr)) => {
-            lr == rr && eq_path(lp, rp) && unordered_over(lfs, rfs, |lf, rf| eq_field_pat(lf, rf))
+        (TupleStruct(lqself, lp, lfs), TupleStruct(rqself, rp, rfs)) => {
+            eq_maybe_qself(lqself, rqself) && eq_path(lp, rp) && over(lfs, rfs, |l, r| eq_pat(l, r))
+        },
+        (Struct(lqself, lp, lfs, lr), Struct(rqself, rp, rfs, rr)) => {
+            lr == rr
+                && eq_maybe_qself(lqself, rqself)
+                && eq_path(lp, rp)
+                && unordered_over(lfs, rfs, |lf, rf| eq_field_pat(lf, rf))
         },
         (Or(ls), Or(rs)) => unordered_over(ls, rs, |l, r| eq_pat(l, r)),
         (MacCall(l), MacCall(r)) => eq_mac_call(l, r),
@@ -75,6 +81,14 @@ pub fn eq_field_pat(l: &PatField, r: &PatField) -> bool {
 
 pub fn eq_qself(l: &QSelf, r: &QSelf) -> bool {
     l.position == r.position && eq_ty(&l.ty, &r.ty)
+}
+
+pub fn eq_maybe_qself(l: &Option<QSelf>, r: &Option<QSelf>) -> bool {
+    match (l, r) {
+        (Some(l), Some(r)) => eq_qself(l, r),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 pub fn eq_path(l: &Path, r: &Path) -> bool {
@@ -169,7 +183,8 @@ pub fn eq_expr(l: &Expr, r: &Expr) -> bool {
         (Path(lq, lp), Path(rq, rp)) => both(lq, rq, |l, r| eq_qself(l, r)) && eq_path(lp, rp),
         (MacCall(l), MacCall(r)) => eq_mac_call(l, r),
         (Struct(lse), Struct(rse)) => {
-            eq_path(&lse.path, &rse.path)
+            eq_maybe_qself(&lse.qself, &rse.qself)
+                && eq_path(&lse.path, &rse.path)
                 && eq_struct_rest(&lse.rest, &rse.rest)
                 && unordered_over(&lse.fields, &rse.fields, |l, r| eq_field(l, r))
         },
@@ -570,4 +585,35 @@ pub fn eq_mac_args(l: &MacArgs, r: &MacArgs) -> bool {
         (Eq(_, lt), Eq(_, rt)) => lt.kind == rt.kind,
         _ => false,
     }
+}
+
+/// Extract args from an assert-like macro.
+///
+/// Currently working with:
+/// - `assert_eq!` and `assert_ne!`
+/// - `debug_assert_eq!` and `debug_assert_ne!`
+///
+/// For example:
+///
+/// `debug_assert_eq!(a, b)` will return Some([a, b])
+pub fn extract_assert_macro_args(mut expr: &Expr) -> Option<[&Expr; 2]> {
+    if_chain! {
+        if let ExprKind::If(_, ref block, _) = expr.kind;
+        if let StmtKind::Semi(ref e) = block.stmts.get(0)?.kind;
+        then {
+            expr = e;
+        }
+    }
+    if_chain! {
+        if let ExprKind::Block(ref block, _) = expr.kind;
+        if let StmtKind::Expr(ref expr) = block.stmts.get(0)?.kind;
+        if let ExprKind::Match(ref match_expr, _) = expr.kind;
+        if let ExprKind::Tup(ref tup) = match_expr.kind;
+        if let [a, b, ..] = tup.as_slice();
+        if let (&ExprKind::AddrOf(_, _, ref a), &ExprKind::AddrOf(_, _, ref b)) = (&a.kind, &b.kind);
+        then {
+            return Some([&*a, &*b]);
+        }
+    }
+    None
 }

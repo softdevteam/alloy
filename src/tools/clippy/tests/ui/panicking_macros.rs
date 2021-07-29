@@ -1,5 +1,5 @@
 #![warn(clippy::unimplemented, clippy::unreachable, clippy::todo, clippy::panic)]
-#![allow(clippy::assertions_on_constants)]
+#![allow(clippy::assertions_on_constants, clippy::eq_op)]
 
 extern crate core;
 
@@ -43,10 +43,38 @@ fn core_versions() {
     unreachable!();
 }
 
+fn assert() {
+    assert!(true);
+    assert_eq!(true, true);
+    assert_ne!(true, false);
+}
+
+fn assert_msg() {
+    assert!(true, "this should not panic");
+    assert_eq!(true, true, "this should not panic");
+    assert_ne!(true, false, "this should not panic");
+}
+
+fn debug_assert() {
+    debug_assert!(true);
+    debug_assert_eq!(true, true);
+    debug_assert_ne!(true, false);
+}
+
+fn debug_assert_msg() {
+    debug_assert!(true, "test");
+    debug_assert_eq!(true, true, "test");
+    debug_assert_ne!(true, false, "test");
+}
+
 fn main() {
     panic();
     todo();
     unimplemented();
     unreachable();
     core_versions();
+    assert();
+    assert_msg();
+    debug_assert();
+    debug_assert_msg();
 }

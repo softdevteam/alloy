@@ -420,7 +420,7 @@ pub fn noop_visit_use_tree<T: MutVisitor>(use_tree: &mut UseTree, vis: &mut T) {
 
 pub fn noop_flat_map_arm<T: MutVisitor>(mut arm: Arm, vis: &mut T) -> SmallVec<[Arm; 1]> {
     let Arm { attrs, pat, guard, body, span, id, is_placeholder: _ } = &mut arm;
-    visit_attrs(attrs, vis);
+    visit_thin_attrs(attrs, vis);
     vis.visit_id(id);
     vis.visit_pat(pat);
     visit_opt(guard, |guard| vis.visit_expr(guard));
@@ -484,6 +484,9 @@ pub fn noop_visit_ty<T: MutVisitor>(ty: &mut P<Ty>, vis: &mut T) {
             visit_vec(bounds, |bound| vis.visit_param_bound(bound));
         }
         TyKind::MacCall(mac) => vis.visit_mac_call(mac),
+        TyKind::AnonymousStruct(fields, ..) | TyKind::AnonymousUnion(fields, ..) => {
+            fields.flat_map_in_place(|field| vis.flat_map_field_def(field));
+        }
     }
     vis.visit_span(span);
     visit_lazy_tts(tokens, vis);
@@ -501,7 +504,7 @@ pub fn noop_flat_map_variant<T: MutVisitor>(
     let Variant { ident, vis, attrs, id, data, disr_expr, span, is_placeholder: _ } = &mut variant;
     visitor.visit_ident(ident);
     visitor.visit_vis(vis);
-    visit_attrs(attrs, visitor);
+    visit_thin_attrs(attrs, visitor);
     visitor.visit_id(id);
     visitor.visit_variant_data(data);
     visit_opt(disr_expr, |disr_expr| visitor.visit_anon_const(disr_expr));
@@ -915,7 +918,7 @@ pub fn noop_flat_map_field_def<T: MutVisitor>(
     visitor.visit_vis(vis);
     visitor.visit_id(id);
     visitor.visit_ty(ty);
-    visit_attrs(attrs, visitor);
+    visit_thin_attrs(attrs, visitor);
     smallvec![fd]
 }
 
@@ -965,7 +968,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
             ModKind::Unloaded => {}
         },
         ItemKind::ForeignMod(nm) => vis.visit_foreign_mod(nm),
-        ItemKind::GlobalAsm(_ga) => {}
+        ItemKind::GlobalAsm(asm) => noop_visit_inline_asm(asm, vis),
         ItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
             vis.visit_generics(generics);
             visit_bounds(bounds, vis);
@@ -1136,7 +1139,8 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
             visit_opt(sub, |sub| vis.visit_pat(sub));
         }
         PatKind::Lit(e) => vis.visit_expr(e),
-        PatKind::TupleStruct(path, elems) => {
+        PatKind::TupleStruct(qself, path, elems) => {
+            vis.visit_qself(qself);
             vis.visit_path(path);
             visit_vec(elems, |elem| vis.visit_pat(elem));
         }
@@ -1144,7 +1148,8 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
             vis.visit_qself(qself);
             vis.visit_path(path);
         }
-        PatKind::Struct(path, fields, _etc) => {
+        PatKind::Struct(qself, path, fields, _etc) => {
+            vis.visit_qself(qself);
             vis.visit_path(path);
             fields.flat_map_in_place(|field| vis.flat_map_pat_field(field));
         }
@@ -1168,6 +1173,28 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
 pub fn noop_visit_anon_const<T: MutVisitor>(AnonConst { id, value }: &mut AnonConst, vis: &mut T) {
     vis.visit_id(id);
     vis.visit_expr(value);
+}
+
+fn noop_visit_inline_asm<T: MutVisitor>(asm: &mut InlineAsm, vis: &mut T) {
+    for (op, _) in &mut asm.operands {
+        match op {
+            InlineAsmOperand::In { expr, .. }
+            | InlineAsmOperand::InOut { expr, .. }
+            | InlineAsmOperand::Sym { expr, .. } => vis.visit_expr(expr),
+            InlineAsmOperand::Out { expr, .. } => {
+                if let Some(expr) = expr {
+                    vis.visit_expr(expr);
+                }
+            }
+            InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
+                vis.visit_expr(in_expr);
+                if let Some(out_expr) = out_expr {
+                    vis.visit_expr(out_expr);
+                }
+            }
+            InlineAsmOperand::Const { anon_const, .. } => vis.visit_anon_const(anon_const),
+        }
+    }
 }
 
 pub fn noop_visit_expr<T: MutVisitor>(
@@ -1288,27 +1315,7 @@ pub fn noop_visit_expr<T: MutVisitor>(
         ExprKind::Ret(expr) => {
             visit_opt(expr, |expr| vis.visit_expr(expr));
         }
-        ExprKind::InlineAsm(asm) => {
-            for (op, _) in &mut asm.operands {
-                match op {
-                    InlineAsmOperand::In { expr, .. }
-                    | InlineAsmOperand::InOut { expr, .. }
-                    | InlineAsmOperand::Sym { expr, .. } => vis.visit_expr(expr),
-                    InlineAsmOperand::Out { expr, .. } => {
-                        if let Some(expr) = expr {
-                            vis.visit_expr(expr);
-                        }
-                    }
-                    InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
-                        vis.visit_expr(in_expr);
-                        if let Some(out_expr) = out_expr {
-                            vis.visit_expr(out_expr);
-                        }
-                    }
-                    InlineAsmOperand::Const { anon_const, .. } => vis.visit_anon_const(anon_const),
-                }
-            }
-        }
+        ExprKind::InlineAsm(asm) => noop_visit_inline_asm(asm, vis),
         ExprKind::LlvmInlineAsm(asm) => {
             let LlvmInlineAsm {
                 asm: _,
@@ -1328,7 +1335,8 @@ pub fn noop_visit_expr<T: MutVisitor>(
         }
         ExprKind::MacCall(mac) => vis.visit_mac_call(mac),
         ExprKind::Struct(se) => {
-            let StructExpr { path, fields, rest } = se.deref_mut();
+            let StructExpr { qself, path, fields, rest } = se.deref_mut();
+            vis.visit_qself(qself);
             vis.visit_path(path);
             fields.flat_map_in_place(|field| vis.flat_map_expr_field(field));
             match rest {
@@ -1339,12 +1347,6 @@ pub fn noop_visit_expr<T: MutVisitor>(
         }
         ExprKind::Paren(expr) => {
             vis.visit_expr(expr);
-
-            // Nodes that are equal modulo `Paren` sugar no-ops should have the same IDs.
-            *id = expr.id;
-            vis.visit_span(span);
-            visit_thin_attrs(attrs, vis);
-            return;
         }
         ExprKind::Yield(expr) => {
             visit_opt(expr, |expr| vis.visit_expr(expr));

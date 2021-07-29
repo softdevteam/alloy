@@ -26,6 +26,8 @@ impl MultiItemModifier for Expander {
             return ExpandResult::Ready(vec![item]);
         }
 
+        let item = cfg_eval(ecx, item);
+
         let result =
             ecx.resolver.resolve_derives(ecx.current_expansion.id, ecx.force_mode, &|| {
                 let template =
@@ -54,12 +56,12 @@ impl MultiItemModifier for Expander {
                         report_path_args(sess, &meta);
                         meta.path
                     })
-                    .map(|path| (path, None))
+                    .map(|path| (path, item.clone(), None))
                     .collect()
             });
 
         match result {
-            Ok(()) => ExpandResult::Ready(cfg_eval(ecx, item)),
+            Ok(()) => ExpandResult::Ready(vec![item]),
             Err(Indeterminate) => ExpandResult::Retry(item),
         }
     }
@@ -82,8 +84,10 @@ fn report_bad_target(sess: &Session, item: &Annotatable, span: Span) -> bool {
             sess,
             span,
             E0774,
-            "`derive` may only be applied to structs, enums and unions",
+            "`derive` may only be applied to `struct`s, `enum`s and `union`s",
         )
+        .span_label(span, "not applicable here")
+        .span_label(item.span(), "not a `struct`, `enum` or `union`")
         .emit();
     }
     bad_target
@@ -97,6 +101,7 @@ fn report_unexpected_literal(sess: &Session, lit: &ast::Lit) {
         _ => "for example, write `#[derive(Debug)]` for `Debug`".to_string(),
     };
     struct_span_err!(sess, lit.span, E0777, "expected path to a trait, found literal",)
+        .span_label(lit.span, "not a trait")
         .help(&help_msg)
         .emit();
 }

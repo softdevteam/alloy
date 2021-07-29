@@ -1,4 +1,12 @@
 //! Clippy wrappers around rustc's diagnostic functions.
+//!
+//! These functions are used by the `INTERNAL_METADATA_COLLECTOR` lint to collect the corresponding
+//! lint applicability. Please make sure that you update the `LINT_EMISSION_FUNCTIONS` variable in
+//! `clippy_lints::utils::internal_lints::metadata_collector` when a new function is added
+//! or renamed.
+//!
+//! Thank you!
+//! ~The `INTERNAL_METADATA_COLLECTOR` lint
 
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir::HirId;
@@ -159,7 +167,7 @@ pub fn span_lint_hir_and_then(
     cx: &LateContext<'_>,
     lint: &'static Lint,
     hir_id: HirId,
-    sp: Span,
+    sp: impl Into<MultiSpan>,
     msg: &str,
     f: impl FnOnce(&mut DiagnosticBuilder<'_>),
 ) {
@@ -215,7 +223,7 @@ pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: &str, sugg:
 where
     I: IntoIterator<Item = (Span, String)>,
 {
-    multispan_sugg_with_applicability(diag, help_msg, Applicability::Unspecified, sugg)
+    multispan_sugg_with_applicability(diag, help_msg, Applicability::Unspecified, sugg);
 }
 
 /// Create a suggestion made from several `span → replacement`.

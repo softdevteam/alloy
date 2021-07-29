@@ -1,4 +1,3 @@
-use crate::spec::abi::Abi;
 use crate::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, Target, TargetOptions};
 
 pub fn target() -> Target {
@@ -14,6 +13,7 @@ pub fn target() -> Target {
             linker_flavor: LinkerFlavor::PtxLinker,
             // The linker can be installed from `crates.io`.
             linker: Some("rust-ptx-linker".to_string()),
+            linker_is_gnu: false,
 
             // With `ptx-linker` approach, it can be later overridden via link flags.
             cpu: "sm_30".to_string(),
@@ -44,25 +44,6 @@ pub fn target() -> Target {
             // produce kernel functions that call other kernel functions.
             // This behavior is not supported by PTX ISA.
             merge_functions: MergeFunctions::Disabled,
-
-            // FIXME: enable compilation tests for the target and
-            // create the tests for this.
-            unsupported_abis: vec![
-                Abi::Cdecl,
-                Abi::Stdcall { unwind: false },
-                Abi::Stdcall { unwind: true },
-                Abi::Fastcall,
-                Abi::Vectorcall,
-                Abi::Thiscall { unwind: false },
-                Abi::Thiscall { unwind: true },
-                Abi::Aapcs,
-                Abi::Win64,
-                Abi::SysV64,
-                Abi::Msp430Interrupt,
-                Abi::X86Interrupt,
-                Abi::AmdGpuKernel,
-            ],
-
             ..Default::default()
         },
     }

@@ -1,8 +1,8 @@
 use crate::build::matches::ArmHasGuard;
 use crate::build::ForGuard::OutsideGuard;
 use crate::build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
-use crate::thir::*;
 use rustc_middle::mir::*;
+use rustc_middle::thir::*;
 use rustc_session::lint::builtin::UNSAFE_OP_IN_UNSAFE_FN;
 use rustc_session::lint::Level;
 use rustc_span::Span;
@@ -12,18 +12,19 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         &mut self,
         destination: Place<'tcx>,
         block: BasicBlock,
-        ast_block: &Block<'_, 'tcx>,
+        ast_block: &Block,
         source_info: SourceInfo,
     ) -> BlockAnd<()> {
         let Block {
             region_scope,
             opt_destruction_scope,
             span,
-            stmts,
+            ref stmts,
             expr,
             targeted_by_break,
             safety_mode,
         } = *ast_block;
+        let expr = expr.map(|expr| &self.thir[expr]);
         self.in_opt_scope(opt_destruction_scope.map(|de| (de, source_info)), move |this| {
             this.in_scope((region_scope, source_info), LintLevel::Inherited, move |this| {
                 if targeted_by_break {
@@ -32,13 +33,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                             destination,
                             block,
                             span,
-                            stmts,
+                            &stmts,
                             expr,
                             safety_mode,
                         ))
                     })
                 } else {
-                    this.ast_block_stmts(destination, block, span, stmts, expr, safety_mode)
+                    this.ast_block_stmts(destination, block, span, &stmts, expr, safety_mode)
                 }
             })
         })
@@ -49,8 +50,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         destination: Place<'tcx>,
         mut block: BasicBlock,
         span: Span,
-        stmts: &[Stmt<'_, 'tcx>],
-        expr: Option<&Expr<'_, 'tcx>>,
+        stmts: &[StmtId],
+        expr: Option<&Expr<'tcx>>,
         safety_mode: BlockSafety,
     ) -> BlockAnd<()> {
         let this = self;
@@ -73,28 +74,34 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // First we build all the statements in the block.
         let mut let_scope_stack = Vec::with_capacity(8);
         let outer_source_scope = this.source_scope;
-        let outer_push_unsafe_count = this.push_unsafe_count;
-        let outer_unpushed_unsafe = this.unpushed_unsafe;
+        let outer_in_scope_unsafe = this.in_scope_unsafe;
         this.update_source_scope_for_safety_mode(span, safety_mode);
 
         let source_info = this.source_info(span);
-        for Stmt { kind, opt_destruction_scope } in stmts {
+        for stmt in stmts {
+            let Stmt { ref kind, opt_destruction_scope } = this.thir[*stmt];
             match kind {
-                &StmtKind::Expr { scope, expr } => {
+                StmtKind::Expr { scope, expr } => {
                     this.block_context.push(BlockFrame::Statement { ignores_expr_result: true });
                     unpack!(
                         block = this.in_opt_scope(
                             opt_destruction_scope.map(|de| (de, source_info)),
                             |this| {
-                                let si = (scope, source_info);
+                                let si = (*scope, source_info);
                                 this.in_scope(si, LintLevel::Inherited, |this| {
-                                    this.stmt_expr(block, expr, Some(scope))
+                                    this.stmt_expr(block, &this.thir[*expr], Some(*scope))
                                 })
                             }
                         )
                     );
                 }
-                StmtKind::Let { remainder_scope, init_scope, pattern, initializer, lint_level } => {
+                StmtKind::Let {
+                    remainder_scope,
+                    init_scope,
+                    ref pattern,
+                    initializer,
+                    lint_level,
+                } => {
                     let ignores_expr_result = matches!(*pattern.kind, PatKind::Wild);
                     this.block_context.push(BlockFrame::Statement { ignores_expr_result });
 
@@ -110,6 +117,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                     // Evaluate the initializer, if present.
                     if let Some(init) = initializer {
+                        let init = &this.thir[*init];
                         let initializer_span = init.span;
 
                         unpack!(
@@ -145,7 +153,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                         debug!("ast_block_stmts: pattern={:?}", pattern);
                         this.visit_primary_bindings(
-                            &pattern,
+                            pattern,
                             UserTypeProjections::none(),
                             &mut |this, _, _, _, node, span, _, _| {
                                 this.storage_live_binding(block, node, span, OutsideGuard, true);
@@ -197,8 +205,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
         // Restore the original source scope.
         this.source_scope = outer_source_scope;
-        this.push_unsafe_count = outer_push_unsafe_count;
-        this.unpushed_unsafe = outer_unpushed_unsafe;
+        this.in_scope_unsafe = outer_in_scope_unsafe;
         block.unit()
     }
 
@@ -207,9 +214,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         debug!("update_source_scope_for({:?}, {:?})", span, safety_mode);
         let new_unsafety = match safety_mode {
             BlockSafety::Safe => None,
+            BlockSafety::BuiltinUnsafe => Some(Safety::BuiltinUnsafe),
             BlockSafety::ExplicitUnsafe(hir_id) => {
-                assert_eq!(self.push_unsafe_count, 0);
-                match self.unpushed_unsafe {
+                match self.in_scope_unsafe {
                     Safety::Safe => {}
                     // no longer treat `unsafe fn`s as `unsafe` contexts (see RFC #2585)
                     Safety::FnUnsafe
@@ -217,19 +224,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                             != Level::Allow => {}
                     _ => return,
                 }
-                self.unpushed_unsafe = Safety::ExplicitUnsafe(hir_id);
+                self.in_scope_unsafe = Safety::ExplicitUnsafe(hir_id);
                 Some(Safety::ExplicitUnsafe(hir_id))
-            }
-            BlockSafety::PushUnsafe => {
-                self.push_unsafe_count += 1;
-                Some(Safety::BuiltinUnsafe)
-            }
-            BlockSafety::PopUnsafe => {
-                self.push_unsafe_count = self
-                    .push_unsafe_count
-                    .checked_sub(1)
-                    .unwrap_or_else(|| span_bug!(span, "unsafe count underflow"));
-                if self.push_unsafe_count == 0 { Some(self.unpushed_unsafe) } else { None }
             }
         };
 

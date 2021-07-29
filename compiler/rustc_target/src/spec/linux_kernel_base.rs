@@ -1,13 +1,14 @@
-use crate::spec::{PanicStrategy, RelocModel, RelroLevel, StackProbeType, TargetOptions};
+use crate::spec::TargetOptions;
+use crate::spec::{FramePointer, PanicStrategy, RelocModel, RelroLevel, StackProbeType};
 
 pub fn opts() -> TargetOptions {
     TargetOptions {
         env: "gnu".to_string(),
         disable_redzone: true,
         panic_strategy: PanicStrategy::Abort,
-        stack_probes: StackProbeType::InlineOrCall { min_llvm_version_for_inline: (11, 0, 1) },
-        eliminate_frame_pointer: false,
-        linker_is_gnu: true,
+        // don't use probe-stack=inline-asm until rust#83139 and rust#84667 are resolved
+        stack_probes: StackProbeType::Call,
+        frame_pointer: FramePointer::Always,
         position_independent_executables: true,
         needs_plt: true,
         relro_level: RelroLevel::Full,

@@ -8,21 +8,19 @@ use rustc_middle::hir::map::Map;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 
-use rustc_ast::{Attribute, Lit, LitKind, NestedMetaItem};
+use rustc_ast::{AttrStyle, Attribute, Lit, LitKind, NestedMetaItem};
 use rustc_errors::{pluralize, struct_span_err, Applicability};
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
-use rustc_hir::{
-    self, FnSig, ForeignItem, ForeignItemKind, HirId, Item, ItemKind, TraitItem, CRATE_HIR_ID,
-};
+use rustc_hir::{self, FnSig, ForeignItem, HirId, Item, ItemKind, TraitItem, CRATE_HIR_ID};
 use rustc_hir::{MethodKind, Target};
 use rustc_session::lint::builtin::{
     CONFLICTING_REPR_HINTS, INVALID_DOC_ATTRIBUTES, UNUSED_ATTRIBUTES,
 };
 use rustc_session::parse::feature_err;
 use rustc_span::symbol::{sym, Symbol};
-use rustc_span::{Span, DUMMY_SP};
+use rustc_span::{MultiSpan, Span, DUMMY_SP};
 
 pub(crate) fn target_from_impl_item<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -67,6 +65,7 @@ impl CheckAttrVisitor<'tcx> {
         item: Option<ItemLike<'_>>,
     ) {
         let mut is_valid = true;
+        let mut specified_inline = None;
         let attrs = self.tcx.hir().attrs(hir_id);
         for attr in attrs {
             is_valid &= match attr.name_or_empty() {
@@ -77,12 +76,9 @@ impl CheckAttrVisitor<'tcx> {
                 sym::track_caller => {
                     self.check_track_caller(hir_id, &attr.span, attrs, span, target)
                 }
-                sym::doc => self.check_doc_attrs(attr, hir_id, target),
+                sym::doc => self.check_doc_attrs(attr, hir_id, target, &mut specified_inline),
                 sym::no_link => self.check_no_link(hir_id, &attr, span, target),
                 sym::export_name => self.check_export_name(hir_id, &attr, span, target),
-                sym::rustc_args_required_const => {
-                    self.check_rustc_args_required_const(&attr, span, target, item)
-                }
                 sym::rustc_layout_scalar_valid_range_start
                 | sym::rustc_layout_scalar_valid_range_end => {
                     self.check_rustc_layout_scalar_valid_range(&attr, span, target)
@@ -101,6 +97,10 @@ impl CheckAttrVisitor<'tcx> {
                 | sym::rustc_dirty
                 | sym::rustc_if_this_changed
                 | sym::rustc_then_this_would_need => self.check_rustc_dirty_clean(&attr),
+                sym::cmse_nonsecure_entry => self.check_cmse_nonsecure_entry(attr, span, target),
+                sym::default_method_body_is_const => {
+                    self.check_default_method_body_is_const(attr, span, target)
+                }
                 _ => true,
             };
             // lint-only checks
@@ -224,6 +224,25 @@ impl CheckAttrVisitor<'tcx> {
                 self.inline_attr_str_error_with_macro_def(hir_id, attr, "naked");
                 true
             }
+            _ => {
+                self.tcx
+                    .sess
+                    .struct_span_err(
+                        attr.span,
+                        "attribute should be applied to a function definition",
+                    )
+                    .span_label(*span, "not a function definition")
+                    .emit();
+                false
+            }
+        }
+    }
+
+    /// Checks if `#[cmse_nonsecure_entry]` is applied to a function definition.
+    fn check_cmse_nonsecure_entry(&self, attr: &Attribute, span: &Span, target: Target) -> bool {
+        match target {
+            Target::Fn
+            | Target::Method(MethodKind::Trait { body: true } | MethodKind::Inherent) => true,
             _ => {
                 self.tcx
                     .sess
@@ -460,6 +479,8 @@ impl CheckAttrVisitor<'tcx> {
                     _ => None,
                 }
             }
+            // we check the validity of params elsewhere
+            Target::Param => return false,
             _ => None,
         } {
             return err_fn(meta.span(), &format!("isn't allowed on {}", err));
@@ -527,8 +548,11 @@ impl CheckAttrVisitor<'tcx> {
             self.doc_attr_str_error(meta, "keyword");
             return false;
         }
-        match self.tcx.hir().expect_item(hir_id).kind {
-            ItemKind::Mod(ref module) => {
+        match self.tcx.hir().find(hir_id).and_then(|node| match node {
+            hir::Node::Item(item) => Some(&item.kind),
+            _ => None,
+        }) {
+            Some(ItemKind::Mod(ref module)) => {
                 if !module.item_ids.is_empty() {
                     self.tcx
                         .sess
@@ -564,7 +588,71 @@ impl CheckAttrVisitor<'tcx> {
         true
     }
 
-    fn check_attr_crate_level(
+    /// Checks `#[doc(inline)]`/`#[doc(no_inline)]` attributes. Returns `true` if valid.
+    ///
+    /// A doc inlining attribute is invalid if it is applied to a non-`use` item, or
+    /// if there are conflicting attributes for one item.
+    ///
+    /// `specified_inline` is used to keep track of whether we have
+    /// already seen an inlining attribute for this item.
+    /// If so, `specified_inline` holds the value and the span of
+    /// the first `inline`/`no_inline` attribute.
+    fn check_doc_inline(
+        &self,
+        attr: &Attribute,
+        meta: &NestedMetaItem,
+        hir_id: HirId,
+        target: Target,
+        specified_inline: &mut Option<(bool, Span)>,
+    ) -> bool {
+        if target == Target::Use || target == Target::ExternCrate {
+            let do_inline = meta.name_or_empty() == sym::inline;
+            if let Some((prev_inline, prev_span)) = *specified_inline {
+                if do_inline != prev_inline {
+                    let mut spans = MultiSpan::from_spans(vec![prev_span, meta.span()]);
+                    spans.push_span_label(prev_span, String::from("this attribute..."));
+                    spans.push_span_label(
+                        meta.span(),
+                        String::from("...conflicts with this attribute"),
+                    );
+                    self.tcx
+                        .sess
+                        .struct_span_err(spans, "conflicting doc inlining attributes")
+                        .help("remove one of the conflicting attributes")
+                        .emit();
+                    return false;
+                }
+                true
+            } else {
+                *specified_inline = Some((do_inline, meta.span()));
+                true
+            }
+        } else {
+            self.tcx.struct_span_lint_hir(
+                INVALID_DOC_ATTRIBUTES,
+                hir_id,
+                meta.span(),
+                |lint| {
+                    let mut err = lint.build(
+                        "this attribute can only be applied to a `use` item",
+                    );
+                    err.span_label(meta.span(), "only applicable on `use` items");
+                    if attr.style == AttrStyle::Outer {
+                        err.span_label(
+                            self.tcx.hir().span(hir_id),
+                            "not a `use` item",
+                        );
+                    }
+                    err.note("read https://doc.rust-lang.org/nightly/rustdoc/the-doc-attribute.html#docno_inlinedocinline for more information")
+                        .emit();
+                },
+            );
+            false
+        }
+    }
+
+    /// Checks that an attribute is *not* used at the crate level. Returns `true` if valid.
+    fn check_attr_not_crate_level(
         &self,
         meta: &NestedMetaItem,
         hir_id: HirId,
@@ -586,40 +674,103 @@ impl CheckAttrVisitor<'tcx> {
         true
     }
 
-    fn check_doc_attrs(&self, attr: &Attribute, hir_id: HirId, target: Target) -> bool {
+    /// Checks that an attribute is used at the crate level. Returns `true` if valid.
+    fn check_attr_crate_level(
+        &self,
+        attr: &Attribute,
+        meta: &NestedMetaItem,
+        hir_id: HirId,
+    ) -> bool {
+        if hir_id != CRATE_HIR_ID {
+            self.tcx.struct_span_lint_hir(
+                INVALID_DOC_ATTRIBUTES,
+                hir_id,
+                meta.span(),
+                |lint| {
+                    let mut err = lint.build(
+                        "this attribute can only be applied at the crate level",
+                    );
+                    if attr.style == AttrStyle::Outer && self.tcx.hir().get_parent_item(hir_id) == CRATE_HIR_ID {
+                        if let Ok(mut src) =
+                            self.tcx.sess.source_map().span_to_snippet(attr.span)
+                        {
+                            src.insert(1, '!');
+                            err.span_suggestion_verbose(
+                                attr.span,
+                                "to apply to the crate, use an inner attribute",
+                                src,
+                                Applicability::MaybeIncorrect,
+                            );
+                        } else {
+                            err.span_help(
+                                attr.span,
+                                "to apply to the crate, use an inner attribute",
+                            );
+                        }
+                    }
+                    err.note("read https://doc.rust-lang.org/nightly/rustdoc/the-doc-attribute.html#at-the-crate-level for more information")
+                        .emit();
+                },
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Runs various checks on `#[doc]` attributes. Returns `true` if valid.
+    ///
+    /// `specified_inline` should be initialized to `None` and kept for the scope
+    /// of one item. Read the documentation of [`check_doc_inline`] for more information.
+    ///
+    /// [`check_doc_inline`]: Self::check_doc_inline
+    fn check_doc_attrs(
+        &self,
+        attr: &Attribute,
+        hir_id: HirId,
+        target: Target,
+        specified_inline: &mut Option<(bool, Span)>,
+    ) -> bool {
         let mut is_valid = true;
 
         if let Some(list) = attr.meta().and_then(|mi| mi.meta_item_list().map(|l| l.to_vec())) {
-            for meta in list {
+            for meta in &list {
                 if let Some(i_meta) = meta.meta_item() {
                     match i_meta.name_or_empty() {
                         sym::alias
-                            if !self.check_attr_crate_level(&meta, hir_id, "alias")
+                            if !self.check_attr_not_crate_level(&meta, hir_id, "alias")
                                 || !self.check_doc_alias(&meta, hir_id, target) =>
                         {
                             is_valid = false
                         }
 
                         sym::keyword
-                            if !self.check_attr_crate_level(&meta, hir_id, "keyword")
+                            if !self.check_attr_not_crate_level(&meta, hir_id, "keyword")
                                 || !self.check_doc_keyword(&meta, hir_id) =>
                         {
                             is_valid = false
                         }
 
-                        sym::test if CRATE_HIR_ID != hir_id => {
-                            self.tcx.struct_span_lint_hir(
-                                INVALID_DOC_ATTRIBUTES,
+                        sym::html_favicon_url
+                        | sym::html_logo_url
+                        | sym::html_playground_url
+                        | sym::issue_tracker_base_url
+                        | sym::html_root_url
+                        | sym::html_no_source
+                        | sym::test
+                            if !self.check_attr_crate_level(&attr, &meta, hir_id) =>
+                        {
+                            is_valid = false;
+                        }
+
+                        sym::inline | sym::no_inline
+                            if !self.check_doc_inline(
+                                &attr,
+                                &meta,
                                 hir_id,
-                                meta.span(),
-                                |lint| {
-                                    lint.build(
-                                        "`#![doc(test(...)]` is only allowed \
-                                         as a crate-level attribute",
-                                    )
-                                    .emit();
-                                },
-                            );
+                                target,
+                                specified_inline,
+                            ) =>
+                        {
                             is_valid = false;
                         }
 
@@ -634,7 +785,6 @@ impl CheckAttrVisitor<'tcx> {
                         | sym::html_no_source
                         | sym::html_playground_url
                         | sym::html_root_url
-                        | sym::include
                         | sym::inline
                         | sym::issue_tracker_base_url
                         | sym::keyword
@@ -668,6 +818,30 @@ impl CheckAttrVisitor<'tcx> {
                                             Applicability::MachineApplicable,
                                         );
                                         diag.note("`doc(spotlight)` is now a no-op");
+                                    }
+                                    if i_meta.has_name(sym::include) {
+                                        if let Some(value) = i_meta.value_str() {
+                                            // if there are multiple attributes, the suggestion would suggest deleting all of them, which is incorrect
+                                            let applicability = if list.len() == 1 {
+                                                Applicability::MachineApplicable
+                                            } else {
+                                                Applicability::MaybeIncorrect
+                                            };
+                                            let inner = if attr.style == AttrStyle::Inner {
+                                                "!"
+                                            } else {
+                                                ""
+                                            };
+                                            diag.span_suggestion(
+                                                attr.meta().unwrap().span,
+                                                "use `doc = include_str!` instead",
+                                                format!(
+                                                    "#{}[doc = include_str!(\"{}\")]",
+                                                    inner, value
+                                                ),
+                                                applicability,
+                                            );
+                                        }
                                     }
                                     diag.emit();
                                 },
@@ -817,79 +991,6 @@ impl CheckAttrVisitor<'tcx> {
                     .emit();
                 false
             }
-        }
-    }
-
-    /// Checks if `#[rustc_args_required_const]` is applied to a function and has a valid argument.
-    fn check_rustc_args_required_const(
-        &self,
-        attr: &Attribute,
-        span: &Span,
-        target: Target,
-        item: Option<ItemLike<'_>>,
-    ) -> bool {
-        let is_function = matches!(target, Target::Fn | Target::Method(..) | Target::ForeignFn);
-        if !is_function {
-            self.tcx
-                .sess
-                .struct_span_err(attr.span, "attribute should be applied to a function")
-                .span_label(*span, "not a function")
-                .emit();
-            return false;
-        }
-
-        let list = match attr.meta_item_list() {
-            // The attribute form is validated on AST.
-            None => return false,
-            Some(it) => it,
-        };
-
-        let mut invalid_args = vec![];
-        for meta in list {
-            if let Some(LitKind::Int(val, _)) = meta.literal().map(|lit| &lit.kind) {
-                if let Some(ItemLike::Item(Item {
-                    kind: ItemKind::Fn(FnSig { decl, .. }, ..),
-                    ..
-                }))
-                | Some(ItemLike::ForeignItem(ForeignItem {
-                    kind: ForeignItemKind::Fn(decl, ..),
-                    ..
-                })) = item
-                {
-                    let arg_count = decl.inputs.len() as u128;
-                    if *val >= arg_count {
-                        let span = meta.span();
-                        self.tcx
-                            .sess
-                            .struct_span_err(span, "index exceeds number of arguments")
-                            .span_label(
-                                span,
-                                format!(
-                                    "there {} only {} argument{}",
-                                    if arg_count != 1 { "are" } else { "is" },
-                                    arg_count,
-                                    pluralize!(arg_count)
-                                ),
-                            )
-                            .emit();
-                        return false;
-                    }
-                } else {
-                    bug!("should be a function item");
-                }
-            } else {
-                invalid_args.push(meta.span());
-            }
-        }
-
-        if !invalid_args.is_empty() {
-            self.tcx
-                .sess
-                .struct_span_err(invalid_args, "arguments should be non-negative integers")
-                .emit();
-            false
-        } else {
-            true
         }
     }
 
@@ -1362,6 +1463,29 @@ impl CheckAttrVisitor<'tcx> {
                     .sess
                     .struct_span_err(attr.span, "attribute should be applied to `const fn`")
                     .span_label(*span, "not a `const fn`")
+                    .emit();
+                false
+            }
+        }
+    }
+
+    /// default_method_body_is_const should only be applied to trait methods with default bodies.
+    fn check_default_method_body_is_const(
+        &self,
+        attr: &Attribute,
+        span: &Span,
+        target: Target,
+    ) -> bool {
+        match target {
+            Target::Method(MethodKind::Trait { body: true }) => true,
+            _ => {
+                self.tcx
+                    .sess
+                    .struct_span_err(
+                        attr.span,
+                        "attribute should be applied to a trait method with body",
+                    )
+                    .span_label(*span, "not a trait method or missing a body")
                     .emit();
                 false
             }

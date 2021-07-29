@@ -11,15 +11,15 @@ use rustc_span::symbol::sym;
 pub(crate) fn codegen(
     tcx: TyCtxt<'_>,
     module: &mut impl Module,
-    unwind_context: &mut UnwindContext<'_>,
+    unwind_context: &mut UnwindContext,
 ) -> bool {
-    let any_dynamic_crate = tcx.dependency_formats(LOCAL_CRATE).iter().any(|(_, list)| {
+    let any_dynamic_crate = tcx.dependency_formats(()).iter().any(|(_, list)| {
         use rustc_middle::middle::dependency_format::Linkage;
         list.iter().any(|&linkage| linkage == Linkage::Dynamic)
     });
     if any_dynamic_crate {
         false
-    } else if let Some(kind) = tcx.allocator_kind() {
+    } else if let Some(kind) = tcx.allocator_kind(()) {
         codegen_inner(module, unwind_context, kind);
         true
     } else {
@@ -29,7 +29,7 @@ pub(crate) fn codegen(
 
 fn codegen_inner(
     module: &mut impl Module,
-    unwind_context: &mut UnwindContext<'_>,
+    unwind_context: &mut UnwindContext,
     kind: AllocatorKind,
 ) {
     let usize_ty = module.target_config().pointer_type();

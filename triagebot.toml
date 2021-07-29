@@ -4,6 +4,7 @@ allow-unauthenticated = [
     "D-*",
     "requires-nightly",
     "regression-*",
+    "perf-*",
     # I-* without I-nominated
     "I-*", "!I-nominated",
     "AsyncAwait-OnDeck",
@@ -79,7 +80,7 @@ trigger_labels = [
     "regression-from-stable-to-stable",
     "regression-from-stable-to-beta",
     "regression-from-stable-to-nightly",
-    "I-unsound 💥",
+    "I-unsound",
 ]
 exclude_labels = [
     "P-*",
@@ -116,3 +117,5 @@ format = "rustc"
 project-name = "Rust"
 changelog-path = "RELEASES.md"
 changelog-branch = "master"
+
+[shortcut]

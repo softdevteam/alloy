@@ -13,9 +13,9 @@ use rustc_middle::mir::visit::{
     MutVisitor, MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor,
 };
 use rustc_middle::mir::{
-    AssertKind, BasicBlock, BinOp, Body, ClearCrossCrate, Constant, ConstantKind, Local, LocalDecl,
-    LocalKind, Location, Operand, Place, Rvalue, SourceInfo, SourceScope, SourceScopeData,
-    Statement, StatementKind, Terminator, TerminatorKind, UnOp, RETURN_PLACE,
+    AssertKind, BasicBlock, BinOp, Body, Constant, ConstantKind, Local, LocalDecl, LocalKind,
+    Location, Operand, Place, Rvalue, SourceInfo, SourceScope, SourceScopeData, Statement,
+    StatementKind, Terminator, TerminatorKind, UnOp, RETURN_PLACE,
 };
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutError, TyAndLayout};
 use rustc_middle::ty::subst::{InternalSubsts, Subst};
@@ -31,8 +31,8 @@ use rustc_trait_selection::traits;
 use crate::const_eval::ConstEvalErr;
 use crate::interpret::{
     self, compile_time_machine, AllocId, Allocation, ConstValue, CtfeValidationMode, Frame, ImmTy,
-    Immediate, InterpCx, InterpResult, LocalState, LocalValue, MemPlace, Memory, MemoryKind, OpTy,
-    Operand as InterpOperand, PlaceTy, Pointer, Scalar, ScalarMaybeUninit, StackPopCleanup,
+    Immediate, InterpCx, InterpResult, LocalState, LocalValue, MemPlace, MemoryKind, OpTy,
+    Operand as InterpOperand, PlaceTy, Scalar, ScalarMaybeUninit, StackPopCleanup, StackPopUnwind,
 };
 use crate::transform::MirPass;
 
@@ -156,7 +156,7 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
 
 struct ConstPropMachine<'mir, 'tcx> {
     /// The virtual call stack.
-    stack: Vec<Frame<'mir, 'tcx, (), ()>>,
+    stack: Vec<Frame<'mir, 'tcx>>,
     /// `OnlyInsideOwnBlock` locals that were written in the current block get erased at the end.
     written_only_inside_own_block_locals: FxHashSet<Local>,
     /// Locals that need to be cleared after every block terminates.
@@ -180,6 +180,7 @@ impl<'mir, 'tcx> ConstPropMachine<'mir, 'tcx> {
 
 impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for ConstPropMachine<'mir, 'tcx> {
     compile_time_machine!(<'mir, 'tcx>);
+    const PANIC_ON_ALLOC_FAIL: bool = true; // all allocations are small (see `MAX_ALLOC_LIMIT`)
 
     type MemoryKind = !;
 
@@ -198,7 +199,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for ConstPropMachine<'mir, 'tcx>
         _abi: Abi,
         _args: &[OpTy<'tcx>],
         _ret: Option<(&PlaceTy<'tcx>, BasicBlock)>,
-        _unwind: Option<BasicBlock>,
+        _unwind: StackPopUnwind,
     ) -> InterpResult<'tcx, Option<&'mir Body<'tcx>>> {
         Ok(None)
     }
@@ -208,7 +209,7 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for ConstPropMachine<'mir, 'tcx>
         _instance: ty::Instance<'tcx>,
         _args: &[OpTy<'tcx>],
         _ret: Option<(&PlaceTy<'tcx>, BasicBlock)>,
-        _unwind: Option<BasicBlock>,
+        _unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
         throw_machine_stop_str!("calling intrinsics isn't supported in ConstProp")
     }
@@ -219,10 +220,6 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for ConstPropMachine<'mir, 'tcx>
         _unwind: Option<rustc_middle::mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         bug!("panics terminators are not evaluated in ConstProp")
-    }
-
-    fn ptr_to_int(_mem: &Memory<'mir, 'tcx, Self>, _ptr: Pointer) -> InterpResult<'tcx, u64> {
-        throw_unsup!(ReadPointerAsBytes)
     }
 
     fn binary_ptr_op(
@@ -392,7 +389,11 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             .filter(|ret_layout| {
                 !ret_layout.is_zst() && ret_layout.size < Size::from_bytes(MAX_ALLOC_LIMIT)
             })
-            .map(|ret_layout| ecx.allocate(ret_layout, MemoryKind::Stack).into());
+            .map(|ret_layout| {
+                ecx.allocate(ret_layout, MemoryKind::Stack)
+                    .expect("couldn't perform small allocation")
+                    .into()
+            });
 
         ecx.push_stack_frame(
             Instance::new(def_id, substs),
@@ -440,18 +441,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
     }
 
     fn lint_root(&self, source_info: SourceInfo) -> Option<HirId> {
-        let mut data = &self.source_scopes[source_info.scope];
-        // FIXME(oli-obk): we should be able to just walk the `inlined_parent_scope`, but it
-        // does not work as I thought it would. Needs more investigation and documentation.
-        while data.inlined.is_some() {
-            trace!(?data);
-            data = &self.source_scopes[data.parent_scope.unwrap()];
-        }
-        trace!(?data);
-        match &data.local_data {
-            ClearCrossCrate::Set(data) => Some(data.lint_root),
-            ClearCrossCrate::Clear => None,
-        }
+        source_info.scope.lint_root(&self.source_scopes)
     }
 
     fn use_ecx<F, T>(&mut self, f: F) -> Option<T>
@@ -538,14 +528,14 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
         source_info: SourceInfo,
         message: &'static str,
         panic: AssertKind<impl std::fmt::Debug>,
-    ) -> Option<()> {
-        let lint_root = self.lint_root(source_info)?;
-        self.tcx.struct_span_lint_hir(lint, lint_root, source_info.span, |lint| {
-            let mut err = lint.build(message);
-            err.span_label(source_info.span, format!("{:?}", panic));
-            err.emit()
-        });
-        None
+    ) {
+        if let Some(lint_root) = self.lint_root(source_info) {
+            self.tcx.struct_span_lint_hir(lint, lint_root, source_info.span, |lint| {
+                let mut err = lint.build(message);
+                err.span_label(source_info.span, format!("{:?}", panic));
+                err.emit()
+            });
+        }
     }
 
     fn check_unary_op(
@@ -567,7 +557,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                 source_info,
                 "this arithmetic operation will overflow",
                 AssertKind::OverflowNeg(val.to_const_int()),
-            )?;
+            );
+            return None;
         }
 
         Some(())
@@ -591,8 +582,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             let left_size = self.ecx.layout_of(left_ty).ok()?.size;
             let right_size = r.layout.size;
             let r_bits = r.to_scalar().ok();
-            // This is basically `force_bits`.
-            let r_bits = r_bits.and_then(|r| r.to_bits_or_ptr(right_size, &self.tcx).ok());
+            let r_bits = r_bits.and_then(|r| r.to_bits(right_size).ok());
             if r_bits.map_or(false, |b| b >= left_size.bits() as u128) {
                 debug!("check_binary_op: reporting assert for {:?}", source_info);
                 self.report_assert_as_lint(
@@ -612,7 +602,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                         },
                         r.to_const_int(),
                     ),
-                )?;
+                );
+                return None;
             }
         }
 
@@ -627,7 +618,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                     source_info,
                     "this arithmetic operation will overflow",
                     AssertKind::Overflow(op, l.to_const_int(), r.to_const_int()),
-                )?;
+                );
+                return None;
             }
         }
         Some(())
@@ -761,8 +753,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                         }
                     };
 
-                    let arg_value =
-                        this.ecx.force_bits(const_arg.to_scalar()?, const_arg.layout.size)?;
+                    let arg_value = const_arg.to_scalar()?.to_bits(const_arg.layout.size)?;
                     let dest = this.ecx.eval_place(place)?;
 
                     match op {
@@ -878,7 +869,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                                     let alloc = this
                                         .ecx
                                         .intern_with_temp_alloc(value.layout, |ecx, dest| {
-                                            ecx.write_immediate_to_mplace(*imm, dest)
+                                            ecx.write_immediate(*imm, dest)
                                         })
                                         .unwrap();
                                     Ok(Some(alloc))
@@ -930,12 +921,12 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
 
         match **op {
             interpret::Operand::Immediate(Immediate::Scalar(ScalarMaybeUninit::Scalar(s))) => {
-                s.is_bits()
+                s.try_to_int().is_ok()
             }
             interpret::Operand::Immediate(Immediate::ScalarPair(
                 ScalarMaybeUninit::Scalar(l),
                 ScalarMaybeUninit::Scalar(r),
-            )) => l.is_bits() && r.is_bits(),
+            )) => l.try_to_int().is_ok() && r.try_to_int().is_ok(),
             _ => false,
         }
     }
@@ -1212,12 +1203,9 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
                         let mut eval_to_int = |op| {
                             // This can be `None` if the lhs wasn't const propagated and we just
                             // triggered the assert on the value of the rhs.
-                            match self.eval_operand(op, source_info) {
-                                Some(op) => DbgVal::Val(
-                                    self.ecx.read_immediate(&op).unwrap().to_const_int(),
-                                ),
-                                None => DbgVal::Underscore,
-                            }
+                            self.eval_operand(op, source_info).map_or(DbgVal::Underscore, |op| {
+                                DbgVal::Val(self.ecx.read_immediate(&op).unwrap().to_const_int())
+                            })
                         };
                         let msg = match msg {
                             AssertKind::DivisionByZero(op) => {

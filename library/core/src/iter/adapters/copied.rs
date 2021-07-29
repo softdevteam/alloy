@@ -50,7 +50,7 @@ where
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         self.it.try_fold(init, copy_try_fold(f))
     }
@@ -74,6 +74,7 @@ where
         self.it.count()
     }
 
+    #[doc(hidden)]
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> T
     where
         Self: TrustedRandomAccess,
@@ -98,7 +99,7 @@ where
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         self.it.try_rfold(init, copy_try_fold(f))
     }

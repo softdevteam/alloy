@@ -4,7 +4,12 @@
 
 #![warn(clippy::use_self)]
 #![allow(dead_code)]
-#![allow(clippy::should_implement_trait, clippy::upper_case_acronyms, clippy::from_over_into)]
+#![allow(
+    clippy::should_implement_trait,
+    clippy::upper_case_acronyms,
+    clippy::from_over_into,
+    clippy::self_named_constructor
+)]
 
 #[macro_use]
 extern crate proc_macro_derive;
@@ -460,5 +465,58 @@ mod issue6818 {
     #[derive(serde::Deserialize)]
     struct A {
         a: i32,
+    }
+}
+
+mod issue7206 {
+    struct MyStruct<const C: char>;
+    impl From<MyStruct<'a'>> for MyStruct<'b'> {
+        fn from(_s: MyStruct<'a'>) -> Self {
+            Self
+        }
+    }
+
+    // keep linting non-`Const` generic args
+    struct S<'a> {
+        inner: &'a str,
+    }
+
+    struct S2<T> {
+        inner: T,
+    }
+
+    impl<T> S2<T> {
+        fn new() -> Self {
+            unimplemented!();
+        }
+    }
+
+    impl<'a> S2<S<'a>> {
+        fn new_again() -> Self {
+            Self::new()
+        }
+    }
+}
+
+mod self_is_ty_param {
+    trait Trait {
+        type Type;
+        type Hi;
+
+        fn test();
+    }
+
+    impl<I> Trait for I
+    where
+        I: Iterator,
+        I::Item: Trait, // changing this to Self would require <Self as Iterator>
+    {
+        type Type = I;
+        type Hi = I::Item;
+
+        fn test() {
+            let _: I::Item;
+            let _: I; // this could lint, but is questionable
+        }
     }
 }

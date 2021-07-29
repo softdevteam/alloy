@@ -14,10 +14,8 @@ use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::Symbol;
 use rustc_span::{BytePos, CachingSourceMapView, SourceFile, SpanData};
 
-use rustc_span::def_id::{CrateNum, CRATE_DEF_INDEX};
 use smallvec::SmallVec;
 use std::cmp::Ord;
-use std::thread::LocalKey;
 
 fn compute_ignored_attr_names() -> FxHashSet<Symbol> {
     debug_assert!(!ich::IGNORED_ATTRIBUTES.is_empty());
@@ -227,22 +225,8 @@ impl<'a> rustc_span::HashStableContext for StableHashingContext<'a> {
     }
 
     #[inline]
-    fn hash_crate_num(&mut self, cnum: CrateNum, hasher: &mut StableHasher) {
-        let hcx = self;
-        hcx.def_path_hash(DefId { krate: cnum, index: CRATE_DEF_INDEX }).hash_stable(hcx, hasher);
-    }
-
-    #[inline]
-    fn hash_def_id(&mut self, def_id: DefId, hasher: &mut StableHasher) {
-        let hcx = self;
-        hcx.def_path_hash(def_id).hash_stable(hcx, hasher);
-    }
-
-    fn expn_id_cache() -> &'static LocalKey<rustc_span::ExpnIdCache> {
-        thread_local! {
-            static CACHE: rustc_span::ExpnIdCache = Default::default();
-        }
-        &CACHE
+    fn def_path_hash(&self, def_id: DefId) -> DefPathHash {
+        self.def_path_hash(def_id)
     }
 
     fn span_data_to_lines_and_cols(
@@ -252,6 +236,8 @@ impl<'a> rustc_span::HashStableContext for StableHashingContext<'a> {
         self.source_map().span_data_to_lines_and_cols(span)
     }
 }
+
+impl rustc_session::HashStableContext for StableHashingContext<'a> {}
 
 pub fn hash_stable_trait_impls<'a>(
     hcx: &mut StableHashingContext<'a>,

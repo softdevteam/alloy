@@ -6,8 +6,14 @@ use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def::{Namespace, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
-use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
-use rustc_infer::{infer, traits};
+use rustc_infer::{
+    infer,
+    traits::{self, Obligation},
+};
+use rustc_infer::{
+    infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind},
+    traits::ObligationCause,
+};
 use rustc_middle::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability,
 };
@@ -17,6 +23,7 @@ use rustc_span::symbol::{sym, Ident};
 use rustc_span::Span;
 use rustc_target::spec::abi;
 use rustc_trait_selection::autoderef::Autoderef;
+use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use std::iter;
 
 /// Checks that it is legal to call methods of the trait corresponding
@@ -198,7 +205,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         opt_arg_exprs: Option<&'tcx [hir::Expr<'tcx>]>,
     ) -> Option<(Option<Adjustment<'tcx>>, MethodCallee<'tcx>)> {
         // Try the options that are least restrictive on the caller first.
-        for &(opt_trait_def_id, method_name, borrow) in &[
+        for (opt_trait_def_id, method_name, borrow) in [
             (self.tcx.lang_items().fn_trait(), Ident::with_dummy_span(sym::call), true),
             (self.tcx.lang_items().fn_mut_trait(), Ident::with_dummy_span(sym::call_mut), true),
             (self.tcx.lang_items().fn_once_trait(), Ident::with_dummy_span(sym::call_once), false),
@@ -294,7 +301,34 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expected: Expectation<'tcx>,
     ) -> Ty<'tcx> {
         let (fn_sig, def_id) = match *callee_ty.kind() {
-            ty::FnDef(def_id, _) => (callee_ty.fn_sig(self.tcx), Some(def_id)),
+            ty::FnDef(def_id, subst) => {
+                // Unit testing: function items annotated with
+                // `#[rustc_evaluate_where_clauses]` trigger special output
+                // to let us test the trait evaluation system.
+                if self.tcx.has_attr(def_id, sym::rustc_evaluate_where_clauses) {
+                    let predicates = self.tcx.predicates_of(def_id);
+                    let predicates = predicates.instantiate(self.tcx, subst);
+                    for (predicate, predicate_span) in
+                        predicates.predicates.iter().zip(&predicates.spans)
+                    {
+                        let obligation = Obligation::new(
+                            ObligationCause::dummy_with_span(callee_expr.span),
+                            self.param_env,
+                            predicate.clone(),
+                        );
+                        let result = self.infcx.evaluate_obligation(&obligation);
+                        self.tcx
+                            .sess
+                            .struct_span_err(
+                                callee_expr.span,
+                                &format!("evaluate({:?}) = {:?}", predicate, result),
+                            )
+                            .span_label(*predicate_span, "predicate")
+                            .emit();
+                    }
+                }
+                (callee_ty.fn_sig(self.tcx), Some(def_id))
+            }
             ty::FnPtr(sig) => (sig, None),
             ref t => {
                 let mut unit_variant = None;
@@ -554,10 +588,17 @@ impl<'a, 'tcx> DeferredCallResolution<'tcx> {
                 fcx.write_method_call(self.call_expr.hir_id, method_callee);
             }
             None => {
-                span_bug!(
+                // This can happen if `#![no_core]` is used and the `fn/fn_mut/fn_once`
+                // lang items are not defined (issue #86238).
+                let mut err = fcx.inh.tcx.sess.struct_span_err(
                     self.call_expr.span,
-                    "failed to find an overloaded call trait for closure call"
+                    "failed to find an overloaded call trait for closure call",
                 );
+                err.help(
+                    "make sure the `fn`/`fn_mut`/`fn_once` lang items are defined \
+                     and have associated `call`/`call_mut`/`call_once` functions",
+                );
+                err.emit();
             }
         }
     }

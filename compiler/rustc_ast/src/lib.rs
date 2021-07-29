@@ -10,14 +10,12 @@
 )]
 #![feature(box_syntax)]
 #![feature(box_patterns)]
-#![feature(const_fn)] // For the `transmute` in `P::new`
 #![feature(const_fn_transmute)]
-#![feature(const_panic)]
 #![feature(crate_visibility_modifier)]
 #![feature(iter_zip)]
 #![feature(label_break_value)]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
+#![feature(min_specialization)]
 #![recursion_limit = "256"]
 
 #[macro_use]

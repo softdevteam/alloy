@@ -26,40 +26,6 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_on_unimplemented(
     on(
-        _Self = "[std::ops::Range<Idx>; 1]",
-        label = "if you meant to iterate between two values, remove the square brackets",
-        note = "`[start..end]` is an array of one `Range`; you might have meant to have a `Range` \
-                without the brackets: `start..end`"
-    ),
-    on(
-        _Self = "[std::ops::RangeFrom<Idx>; 1]",
-        label = "if you meant to iterate from a value onwards, remove the square brackets",
-        note = "`[start..]` is an array of one `RangeFrom`; you might have meant to have a \
-              `RangeFrom` without the brackets: `start..`, keeping in mind that iterating over an \
-              unbounded iterator will run forever unless you `break` or `return` from within the \
-              loop"
-    ),
-    on(
-        _Self = "[std::ops::RangeTo<Idx>; 1]",
-        label = "if you meant to iterate until a value, remove the square brackets and add a \
-                 starting value",
-        note = "`[..end]` is an array of one `RangeTo`; you might have meant to have a bounded \
-                `Range` without the brackets: `0..end`"
-    ),
-    on(
-        _Self = "[std::ops::RangeInclusive<Idx>; 1]",
-        label = "if you meant to iterate between two values, remove the square brackets",
-        note = "`[start..=end]` is an array of one `RangeInclusive`; you might have meant to have a \
-              `RangeInclusive` without the brackets: `start..=end`"
-    ),
-    on(
-        _Self = "[std::ops::RangeToInclusive<Idx>; 1]",
-        label = "if you meant to iterate until a value (including it), remove the square brackets \
-                 and add a starting value",
-        note = "`[..=end]` is an array of one `RangeToInclusive`; you might have meant to have a \
-                bounded `RangeInclusive` without the brackets: `0..=end`"
-    ),
-    on(
         _Self = "std::ops::RangeTo<Idx>",
         label = "if you meant to iterate until a value, add a starting value",
         note = "`..end` is a `RangeTo`, which cannot be iterated on; you might have meant to have a \
@@ -80,11 +46,6 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
         label = "`{Self}` is not an iterator; try calling `.chars()` or `.bytes()`"
     ),
     on(
-        _Self = "[]",
-        label = "arrays do not yet implement `IntoIterator`; try using `std::array::IntoIter::new(arr)`",
-        note = "see <https://github.com/rust-lang/rust/pull/65819> for more details"
-    ),
-    on(
         _Self = "{integral}",
         note = "if you want to iterate between `start` until a value `end`, use the exclusive range \
               syntax `start..end` or the inclusive range syntax `start..=end`"
@@ -92,8 +53,7 @@ fn _assert_is_object_safe(_: &dyn Iterator<Item = ()>) {}
     label = "`{Self}` is not an iterator",
     message = "`{Self}` is not an iterator"
 )]
-#[cfg_attr(bootstrap, doc(spotlight))]
-#[cfg_attr(not(bootstrap), doc(notable_trait))]
+#[doc(notable_trait)]
 #[rustc_diagnostic_item = "Iterator"]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 pub trait Iterator {
@@ -178,7 +138,7 @@ pub trait Iterator {
     /// A more complex example:
     ///
     /// ```
-    /// // The even numbers from zero to ten.
+    /// // The even numbers in the range of zero to nine.
     /// let iter = (0..10).filter(|x| x % 2 == 0);
     ///
     /// // We might iterate from zero to ten times. Knowing that it's five
@@ -1495,7 +1455,12 @@ pub trait Iterator {
     /// [`Some(T)`] again. `fuse()` adapts an iterator, ensuring that after a
     /// [`None`] is given, it will always return [`None`] forever.
     ///
+    /// Note that the [`Fuse`] wrapper is a no-op on iterators that implement
+    /// the [`FusedIterator`] trait. `fuse()` may therefore behave incorrectly
+    /// if the [`FusedIterator`] trait is improperly implemented.
+    ///
     /// [`Some(T)`]: Some
+    /// [`FusedIterator`]: crate::iter::FusedIterator
     ///
     /// # Examples
     ///
@@ -1646,31 +1611,16 @@ pub trait Iterator {
     /// Basic usage:
     ///
     /// ```
-    /// let a = [1, 2, 3];
+    /// let mut words = vec!["hello", "world", "of", "Rust"].into_iter();
     ///
-    /// let iter = a.iter();
+    /// // Take the first two words.
+    /// let hello_world: Vec<_> = words.by_ref().take(2).collect();
+    /// assert_eq!(hello_world, vec!["hello", "world"]);
     ///
-    /// let sum: i32 = iter.take(5).fold(0, |acc, i| acc + i);
-    ///
-    /// assert_eq!(sum, 6);
-    ///
-    /// // if we try to use iter again, it won't work. The following line
-    /// // gives "error: use of moved value: `iter`
-    /// // assert_eq!(iter.next(), None);
-    ///
-    /// // let's try that again
-    /// let a = [1, 2, 3];
-    ///
-    /// let mut iter = a.iter();
-    ///
-    /// // instead, we add in a .by_ref()
-    /// let sum: i32 = iter.by_ref().take(2).fold(0, |acc, i| acc + i);
-    ///
-    /// assert_eq!(sum, 3);
-    ///
-    /// // now this is just fine:
-    /// assert_eq!(iter.next(), Some(&3));
-    /// assert_eq!(iter.next(), None);
+    /// // Collect the rest of the words.
+    /// // We can only do this because we used `by_ref` earlier.
+    /// let of_rust: Vec<_> = words.collect();
+    /// assert_eq!(of_rust, vec!["of", "Rust"]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn by_ref(&mut self) -> &mut Self
@@ -1859,6 +1809,12 @@ pub trait Iterator {
     ///
     /// The relative order of partitioned items is not maintained.
     ///
+    /// # Current implementation
+    /// Current algorithms tries finding the first element for which the predicate evaluates
+    /// to false, and the last element for which it evaluates to true and repeatedly swaps them.
+    ///
+    /// Time Complexity: *O*(*N*)
+    ///
     /// See also [`is_partitioned()`] and [`partition()`].
     ///
     /// [`is_partitioned()`]: Iterator::is_partitioned
@@ -2003,13 +1959,38 @@ pub trait Iterator {
     /// assert_eq!(it.len(), 2);
     /// assert_eq!(it.next(), Some(&40));
     /// ```
+    ///
+    /// While you cannot `break` from a closure, the [`crate::ops::ControlFlow`]
+    /// type allows a similar idea:
+    ///
+    /// ```
+    /// use std::ops::ControlFlow;
+    ///
+    /// let triangular = (1..30).try_fold(0_i8, |prev, x| {
+    ///     if let Some(next) = prev.checked_add(x) {
+    ///         ControlFlow::Continue(next)
+    ///     } else {
+    ///         ControlFlow::Break(prev)
+    ///     }
+    /// });
+    /// assert_eq!(triangular, ControlFlow::Break(120));
+    ///
+    /// let triangular = (1..30).try_fold(0_u64, |prev, x| {
+    ///     if let Some(next) = prev.checked_add(x) {
+    ///         ControlFlow::Continue(next)
+    ///     } else {
+    ///         ControlFlow::Break(prev)
+    ///     }
+    /// });
+    /// assert_eq!(triangular, ControlFlow::Continue(435));
+    /// ```
     #[inline]
     #[stable(feature = "iterator_try_fold", since = "1.27.0")]
     fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
     where
         Self: Sized,
         F: FnMut(B, Self::Item) -> R,
-        R: Try<Ok = B>,
+        R: Try<Output = B>,
     {
         let mut accum = init;
         while let Some(x) = self.next() {
@@ -2045,13 +2026,29 @@ pub trait Iterator {
     /// // It short-circuited, so the remaining items are still in the iterator:
     /// assert_eq!(it.next(), Some("stale_bread.json"));
     /// ```
+    ///
+    /// The [`crate::ops::ControlFlow`] type can be used with this method for the
+    /// situations in which you'd use `break` and `continue` in a normal loop:
+    ///
+    /// ```
+    /// use std::ops::ControlFlow;
+    ///
+    /// let r = (2..100).try_for_each(|x| {
+    ///     if 323 % x == 0 {
+    ///         return ControlFlow::Break(x)
+    ///     }
+    ///
+    ///     ControlFlow::Continue(())
+    /// });
+    /// assert_eq!(r, ControlFlow::Break(17));
+    /// ```
     #[inline]
     #[stable(feature = "iterator_try_fold", since = "1.27.0")]
     fn try_for_each<F, R>(&mut self, f: F) -> R
     where
         Self: Sized,
         F: FnMut(Self::Item) -> R,
-        R: Try<Ok = ()>,
+        R: Try<Output = ()>,
     {
         #[inline]
         fn call<T, R>(mut f: impl FnMut(T) -> R) -> impl FnMut((), T) -> R {
@@ -2086,6 +2083,11 @@ pub trait Iterator {
     /// Note: [`reduce()`] can be used to use the first element as the initial
     /// value, if the accumulator type and item type is the same.
     ///
+    /// Note: `fold()` combines elements in a *left-associative* fashion. For associative
+    /// operators like `+`, the order the elements are combined in is not important, but for non-associative
+    /// operators like `-` the order will affect the final result.
+    /// For a *right-associative* version of `fold()`, see [`DoubleEndedIterator::rfold()`].
+    ///
     /// # Note to Implementors
     ///
     /// Several of the other (forward) methods have default implementations in
@@ -2119,6 +2121,21 @@ pub trait Iterator {
     ///
     /// And so, our final result, `6`.
     ///
+    /// This example demonstrates the left-associative nature of `fold()`:
+    /// it builds a string, starting with an initial value
+    /// and continuing with each element from the front until the back:
+    ///
+    /// ```
+    /// let numbers = [1, 2, 3, 4, 5];
+    ///
+    /// let zero = "0".to_string();
+    ///
+    /// let result = numbers.iter().fold(zero, |acc, &x| {
+    ///     format!("({} + {})", acc, x)
+    /// });
+    ///
+    /// assert_eq!(result, "(((((0 + 1) + 2) + 3) + 4) + 5)");
+    /// ```
     /// It's common for people who haven't used iterators a lot to
     /// use a `for` loop with a list of things to build up a result. Those
     /// can be turned into `fold()`s:
@@ -2143,8 +2160,7 @@ pub trait Iterator {
     /// ```
     ///
     /// [`reduce()`]: Iterator::reduce
-    #[doc(alias = "reduce")]
-    #[doc(alias = "inject")]
+    #[doc(alias = "inject", alias = "foldl")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fold<B, F>(mut self, init: B, mut f: F) -> B
@@ -2238,7 +2254,6 @@ pub trait Iterator {
     /// // we can still use `iter`, as there are more elements.
     /// assert_eq!(iter.next(), Some(&3));
     /// ```
-    #[doc(alias = "every")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn all<F>(&mut self, f: F) -> bool
@@ -2423,22 +2438,26 @@ pub trait Iterator {
     /// ```
     #[inline]
     #[unstable(feature = "try_find", reason = "new API", issue = "63178")]
-    fn try_find<F, R>(&mut self, f: F) -> Result<Option<Self::Item>, R::Error>
+    fn try_find<F, R, E>(&mut self, f: F) -> Result<Option<Self::Item>, E>
     where
         Self: Sized,
         F: FnMut(&Self::Item) -> R,
-        R: Try<Ok = bool>,
+        R: Try<Output = bool>,
+        // FIXME: This bound is rather strange, but means minimal breakage on nightly.
+        // See #85115 for the issue tracking a holistic solution for this and try_map.
+        R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
     {
         #[inline]
-        fn check<F, T, R>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, R::Error>>
+        fn check<F, T, R, E>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, E>>
         where
             F: FnMut(&T) -> R,
-            R: Try<Ok = bool>,
+            R: Try<Output = bool>,
+            R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
         {
-            move |(), x| match f(&x).into_result() {
-                Ok(false) => ControlFlow::CONTINUE,
-                Ok(true) => ControlFlow::Break(Ok(x)),
-                Err(x) => ControlFlow::Break(Err(x)),
+            move |(), x| match f(&x).branch() {
+                ControlFlow::Continue(false) => ControlFlow::CONTINUE,
+                ControlFlow::Continue(true) => ControlFlow::Break(Ok(x)),
+                ControlFlow::Break(Err(x)) => ControlFlow::Break(Err(x)),
             }
         }
 
@@ -2582,6 +2601,18 @@ pub trait Iterator {
     /// If several elements are equally maximum, the last element is
     /// returned. If the iterator is empty, [`None`] is returned.
     ///
+    /// Note that [`f32`]/[`f64`] doesn't implement [`Ord`] due to NaN being
+    /// incomparable. You can work around this by using [`Iterator::reduce`]:
+    /// ```
+    /// assert_eq!(
+    ///     vec![2.4, f32::NAN, 1.3]
+    ///         .into_iter()
+    ///         .reduce(f32::max)
+    ///         .unwrap(),
+    ///     2.4
+    /// );
+    /// ```
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -2605,8 +2636,20 @@ pub trait Iterator {
 
     /// Returns the minimum element of an iterator.
     ///
-    /// If several elements are equally minimum, the first element is
-    /// returned. If the iterator is empty, [`None`] is returned.
+    /// If several elements are equally minimum, the first element is returned.
+    /// If the iterator is empty, [`None`] is returned.
+    ///
+    /// Note that [`f32`]/[`f64`] doesn't implement [`Ord`] due to NaN being
+    /// incomparable. You can work around this by using [`Iterator::reduce`]:
+    /// ```
+    /// assert_eq!(
+    ///     vec![2.4, f32::NAN, 1.3]
+    ///         .into_iter()
+    ///         .reduce(f32::min)
+    ///         .unwrap(),
+    ///     1.3
+    /// );
+    /// ```
     ///
     /// # Examples
     ///

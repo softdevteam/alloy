@@ -18,11 +18,10 @@ use rustc_middle::mir;
 use rustc_middle::ty::{self, ReprOptions, Ty};
 use rustc_serialize::opaque::Encoder;
 use rustc_session::config::SymbolManglingVersion;
-use rustc_session::CrateDisambiguator;
 use rustc_span::edition::Edition;
-use rustc_span::hygiene::MacroKind;
+use rustc_span::hygiene::{ExpnIndex, MacroKind};
 use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::{self, ExpnData, ExpnId, Span};
+use rustc_span::{self, ExpnData, ExpnHash, ExpnId, Span};
 use rustc_target::spec::{PanicStrategy, TargetTriple};
 
 use std::marker::PhantomData;
@@ -52,7 +51,7 @@ const METADATA_VERSION: u8 = 5;
 /// This header is followed by the position of the `CrateRoot`,
 /// which is encoded as a 32-bit big-endian unsigned integer,
 /// and further followed by the rustc version string.
-crate const METADATA_HEADER: &[u8; 8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
+pub const METADATA_HEADER: &[u8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
 
 /// Additional metadata for a `Lazy<T>` where `T` may not be `Sized`,
 /// e.g. for `Lazy<[T]>`, this is the length (count of `T` values).
@@ -171,7 +170,8 @@ macro_rules! Lazy {
 }
 
 type SyntaxContextTable = Lazy<Table<u32, Lazy<SyntaxContextData>>>;
-type ExpnDataTable = Lazy<Table<u32, Lazy<ExpnData>>>;
+type ExpnDataTable = Lazy<Table<ExpnIndex, Lazy<ExpnData>>>;
+type ExpnHashTable = Lazy<Table<ExpnIndex, Lazy<ExpnHash>>>;
 
 #[derive(MetadataEncodable, MetadataDecodable)]
 crate struct ProcMacroData {
@@ -202,14 +202,12 @@ crate struct CrateRoot<'tcx> {
     triple: TargetTriple,
     extra_filename: String,
     hash: Svh,
-    disambiguator: CrateDisambiguator,
     stable_crate_id: StableCrateId,
     panic_strategy: PanicStrategy,
     edition: Edition,
     has_global_allocator: bool,
     has_panic_handler: bool,
     has_default_lib_allocator: bool,
-    plugin_registrar_fn: Option<DefIndex>,
 
     crate_deps: Lazy<[CrateDep]>,
     dylib_dependency_formats: Lazy<[Option<LinkagePreference>]>,
@@ -229,6 +227,7 @@ crate struct CrateRoot<'tcx> {
 
     syntax_contexts: SyntaxContextTable,
     expn_data: ExpnDataTable,
+    expn_hashes: ExpnHashTable,
 
     source_map: Lazy<[rustc_span::SourceFile]>,
 
@@ -258,15 +257,15 @@ crate struct TraitImpls {
 
 /// Define `LazyTables` and `TableBuilders` at the same time.
 macro_rules! define_tables {
-    ($($name:ident: Table<DefIndex, $T:ty>),+ $(,)?) => {
+    ($($name:ident: Table<$IDX:ty, $T:ty>),+ $(,)?) => {
         #[derive(MetadataEncodable, MetadataDecodable)]
         crate struct LazyTables<'tcx> {
-            $($name: Lazy!(Table<DefIndex, $T>)),+
+            $($name: Lazy!(Table<$IDX, $T>)),+
         }
 
         #[derive(Default)]
         struct TableBuilders<'tcx> {
-            $($name: TableBuilder<DefIndex, $T>),+
+            $($name: TableBuilder<$IDX, $T>),+
         }
 
         impl TableBuilders<'tcx> {
@@ -315,6 +314,7 @@ define_tables! {
     // definitions from any given crate.
     def_keys: Table<DefIndex, Lazy<DefKey>>,
     def_path_hashes: Table<DefIndex, Lazy<DefPathHash>>,
+    proc_macro_quoted_spans: Table<usize, Lazy<Span>>,
 }
 
 #[derive(Copy, Clone, MetadataEncodable, MetadataDecodable)]
@@ -385,12 +385,14 @@ struct TraitData {
     paren_sugar: bool,
     has_auto_impl: bool,
     is_marker: bool,
+    skip_array_during_method_dispatch: bool,
     specialization_kind: ty::trait_def::TraitSpecializationKind,
 }
 
 #[derive(TyEncodable, TyDecodable)]
 struct ImplData {
     polarity: ty::ImplPolarity,
+    constness: hir::Constness,
     defaultness: hir::Defaultness,
     parent_impl: Option<DefId>,
 
@@ -449,4 +451,4 @@ struct GeneratorData<'tcx> {
 // Tags used for encoding Spans:
 const TAG_VALID_SPAN_LOCAL: u8 = 0;
 const TAG_VALID_SPAN_FOREIGN: u8 = 1;
-const TAG_INVALID_SPAN: u8 = 2;
+const TAG_PARTIAL_SPAN: u8 = 2;

@@ -6,11 +6,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use rustc_data_structures::fx::FxHashMap;
-use rustc_session::config::{self, parse_crate_types_from_list, parse_externs, CrateType};
 use rustc_session::config::{
-    build_codegen_options, build_debugging_options, get_cmd_lint_options, host_triple,
-    nightly_options,
+    self, parse_crate_types_from_list, parse_externs, parse_target_triple, CrateType,
 };
+use rustc_session::config::{get_cmd_lint_options, nightly_options};
 use rustc_session::config::{CodegenOptions, DebuggingOptions, ErrorOutputType, Externs};
 use rustc_session::getopts;
 use rustc_session::lint::Level;
@@ -120,6 +119,8 @@ crate struct Options {
     /// For example, using ignore-foo to ignore running the doctest on any target that
     /// contains "foo" as a substring
     crate enable_per_target_ignores: bool,
+    /// Do not run doctests, compile them if should_test is active.
+    crate no_run: bool,
 
     /// The path to a rustc-like binary to build tests with. If not set, we
     /// default to loading from `$sysroot/bin/rustc`.
@@ -155,6 +156,8 @@ crate struct Options {
     crate run_check: bool,
     /// Whether doctests should emit unused externs
     crate json_unused_externs: bool,
+    /// Whether to skip capturing stdout and stderr of tests.
+    crate nocapture: bool,
 }
 
 impl fmt::Debug for Options {
@@ -197,6 +200,8 @@ impl fmt::Debug for Options {
             .field("runtool_args", &self.runtool_args)
             .field("enable-per-target-ignores", &self.enable_per_target_ignores)
             .field("run_check", &self.run_check)
+            .field("no_run", &self.no_run)
+            .field("nocapture", &self.nocapture)
             .finish()
     }
 }
@@ -267,6 +272,8 @@ crate struct RenderOptions {
     crate document_hidden: bool,
     /// If `true`, generate a JSON file in the crate folder instead of HTML redirection files.
     crate generate_redirect_map: bool,
+    /// Show the memory layout of types in the docs.
+    crate show_type_layout: bool,
     crate unstable_features: rustc_feature::UnstableFeatures,
     crate emit: Vec<EmitType>,
 }
@@ -345,20 +352,13 @@ impl Options {
             return Err(0);
         }
 
-        if matches.opt_strs("print").iter().any(|opt| opt == "unversioned-files") {
-            for file in crate::html::render::FILES_UNVERSIONED.keys() {
-                println!("{}", file);
-            }
-            return Err(0);
-        }
-
         let color = config::parse_color(&matches);
         let config::JsonConfig { json_rendered, json_unused_externs, .. } =
             config::parse_json(&matches);
         let error_format = config::parse_error_format(&matches, color, json_rendered);
 
-        let codegen_options = build_codegen_options(matches, error_format);
-        let debugging_opts = build_debugging_options(matches, error_format);
+        let codegen_options = CodegenOptions::build(matches, error_format);
+        let debugging_opts = DebuggingOptions::build(matches, error_format);
 
         let diag = new_handler(error_format, None, &debugging_opts);
 
@@ -459,13 +459,43 @@ impl Options {
                 })
                 .collect(),
         ];
-        let default_settings = default_settings.into_iter().flatten().collect();
+        let default_settings = default_settings
+            .into_iter()
+            .flatten()
+            .map(
+                // The keys here become part of `data-` attribute names in the generated HTML.  The
+                // browser does a strange mapping when converting them into attributes on the
+                // `dataset` property on the DOM HTML Node:
+                //   https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/dataset
+                //
+                // The original key values we have are the same as the DOM storage API keys and the
+                // command line options, so contain `-`.  Our Javascript needs to be able to look
+                // these values up both in `dataset` and in the storage API, so it needs to be able
+                // to convert the names back and forth.  Despite doing this kebab-case to
+                // StudlyCaps transformation automatically, the JS DOM API does not provide a
+                // mechanism for doing the just transformation on a string.  So we want to avoid
+                // the StudlyCaps representation in the `dataset` property.
+                //
+                // We solve this by replacing all the `-`s with `_`s.  We do that here, when we
+                // generate the `data-` attributes, and in the JS, when we look them up.  (See
+                // `getSettingValue` in `storage.js.`) Converting `-` to `_` is simple in JS.
+                //
+                // The values will be HTML-escaped by the default Tera escaping.
+                |(k, v)| (k.replace('-', "_"), v),
+            )
+            .collect();
 
         let test_args = matches.opt_strs("test-args");
         let test_args: Vec<String> =
             test_args.iter().flat_map(|s| s.split_whitespace()).map(|s| s.to_string()).collect();
 
         let should_test = matches.opt_present("test");
+        let no_run = matches.opt_present("no-run");
+
+        if !should_test && no_run {
+            diag.err("the `--test` flag must be passed to enable `--no-run`");
+            return Err(1);
+        }
 
         let output =
             matches.opt_str("o").map(|s| PathBuf::from(&s)).unwrap_or_else(|| PathBuf::from("doc"));
@@ -510,7 +540,7 @@ impl Options {
                     ))
                     .warn("the theme may appear incorrect when loaded")
                     .help(&format!(
-                        "to see what rules are missing, call `rustdoc  --check-theme \"{}\"`",
+                        "to see what rules are missing, call `rustdoc --check-theme \"{}\"`",
                         theme_s
                     ))
                     .emit();
@@ -554,14 +584,7 @@ impl Options {
             }
         }
 
-        let target =
-            matches.opt_str("target").map_or(TargetTriple::from_triple(host_triple()), |target| {
-                if target.ends_with(".json") {
-                    TargetTriple::TargetPath(PathBuf::from(target))
-                } else {
-                    TargetTriple::TargetTriple(target)
-                }
-            });
+        let target = parse_target_triple(matches, error_format);
 
         let show_coverage = matches.opt_present("show-coverage");
 
@@ -630,8 +653,11 @@ impl Options {
         let document_hidden = matches.opt_present("document-hidden-items");
         let run_check = matches.opt_present("check");
         let generate_redirect_map = matches.opt_present("generate-redirect-map");
+        let show_type_layout = matches.opt_present("show-type-layout");
+        let nocapture = matches.opt_present("nocapture");
 
-        let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
+        let (lint_opts, describe_lints, lint_cap) =
+            get_cmd_lint_options(matches, error_format, &debugging_opts);
 
         Ok(Options {
             input,
@@ -666,6 +692,8 @@ impl Options {
             enable_per_target_ignores,
             test_builder,
             run_check,
+            no_run,
+            nocapture,
             render_options: RenderOptions {
                 output,
                 external_html,
@@ -688,6 +716,7 @@ impl Options {
                 document_private,
                 document_hidden,
                 generate_redirect_map,
+                show_type_layout,
                 unstable_features: rustc_feature::UnstableFeatures::from_environment(
                     crate_name.as_deref(),
                 ),

@@ -1,6 +1,5 @@
 #![feature(allow_internal_unstable)]
-#![feature(const_fn)]
-#![feature(const_panic)]
+#![feature(bench_black_box)]
 #![feature(extend_one)]
 #![feature(iter_zip)]
 #![feature(unboxed_closures)]

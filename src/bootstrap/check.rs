@@ -7,7 +7,7 @@ use crate::config::TargetSelection;
 use crate::tool::{prepare_tool_cargo, SourceType};
 use crate::INTERNER;
 use crate::{Compiler, Mode, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Std {
@@ -72,6 +72,8 @@ impl Step for Std {
     }
 
     fn run(self, builder: &Builder<'_>) {
+        builder.update_submodule(&Path::new("library").join("stdarch"));
+
         let target = self.target;
         let compiler = builder.compiler(builder.top_stage, builder.config.build);
 
@@ -280,7 +282,7 @@ impl Step for CodegenBackend {
 }
 
 macro_rules! tool_check_step {
-    ($name:ident, $path:expr, $source_type:expr) => {
+    ($name:ident, $path:literal, $($alias:literal, )* $source_type:path $(, $default:literal )?) => {
         #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
         pub struct $name {
             pub target: TargetSelection,
@@ -289,10 +291,11 @@ macro_rules! tool_check_step {
         impl Step for $name {
             type Output = ();
             const ONLY_HOSTS: bool = true;
-            const DEFAULT: bool = true;
+            // don't ever check out-of-tree tools by default, they'll fail when toolstate is broken
+            const DEFAULT: bool = matches!($source_type, SourceType::InTree) $( && $default )?;
 
             fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-                run.path($path)
+                run.paths(&[ $path, $($alias),* ])
             }
 
             fn make_run(run: RunConfig<'_>) {
@@ -321,11 +324,9 @@ macro_rules! tool_check_step {
                 }
 
                 // Enable internal lints for clippy and rustdoc
-                // NOTE: this intentionally doesn't enable lints for any other tools,
-                // see https://github.com/rust-lang/rust/pull/80573#issuecomment-754010776
-                if $path == "src/tools/rustdoc" || $path == "src/tools/clippy" {
-                    cargo.rustflag("-Zunstable-options");
-                }
+                // NOTE: this doesn't enable lints for any other tools unless they explicitly add `#![warn(rustc::internal)]`
+                // See https://github.com/rust-lang/rust/pull/80573#issuecomment-754010776
+                cargo.rustflag("-Zunstable-options");
 
                 builder.info(&format!(
                     "Checking stage{} {} artifacts ({} -> {})",
@@ -343,10 +344,6 @@ macro_rules! tool_check_step {
                     true,
                 );
 
-                let libdir = builder.sysroot_libdir(compiler, target);
-                let hostdir = builder.sysroot_libdir(compiler, compiler.host);
-                add_to_sysroot(&builder, &libdir, &hostdir, &stamp(builder, compiler, target));
-
                 /// Cargo's output path in a given stage, compiled by a particular
                 /// compiler for the specified target.
                 fn stamp(
@@ -363,14 +360,17 @@ macro_rules! tool_check_step {
     };
 }
 
-tool_check_step!(Rustdoc, "src/tools/rustdoc", SourceType::InTree);
-// Clippy is a hybrid. It is an external tool, but uses a git subtree instead
+tool_check_step!(Rustdoc, "src/tools/rustdoc", "src/librustdoc", SourceType::InTree);
+// Clippy and Rustfmt are hybrids. They are external tools, but use a git subtree instead
 // of a submodule. Since the SourceType only drives the deny-warnings
 // behavior, treat it as in-tree so that any new warnings in clippy will be
 // rejected.
 tool_check_step!(Clippy, "src/tools/clippy", SourceType::InTree);
+tool_check_step!(Miri, "src/tools/miri", SourceType::Submodule);
+tool_check_step!(Rls, "src/tools/rls", SourceType::Submodule);
+tool_check_step!(Rustfmt, "src/tools/rustfmt", SourceType::InTree);
 
-tool_check_step!(Bootstrap, "src/bootstrap", SourceType::InTree);
+tool_check_step!(Bootstrap, "src/bootstrap", SourceType::InTree, false);
 
 /// Cargo's output path for the standard library in a given stage, compiled
 /// by a particular compiler for the specified target.

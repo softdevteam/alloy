@@ -115,7 +115,7 @@ fn parse_attrs<F: FnMut(u64)>(sess: &Session, attrs: &[ast::Attribute], name: &'
     for attr in get_attr(sess, attrs, name) {
         if let Some(ref value) = attr.value_str() {
             if let Ok(value) = FromStr::from_str(&value.as_str()) {
-                f(value)
+                f(value);
             } else {
                 sess.span_err(attr.span, "not a number");
             }
@@ -151,10 +151,14 @@ pub fn is_proc_macro(sess: &Session, attrs: &[ast::Attribute]) -> bool {
 
 /// Return true if the attributes contain `#[doc(hidden)]`
 pub fn is_doc_hidden(attrs: &[ast::Attribute]) -> bool {
-    #[allow(clippy::filter_map)]
     attrs
         .iter()
         .filter(|attr| attr.has_name(sym::doc))
-        .flat_map(ast::Attribute::meta_item_list)
+        .filter_map(ast::Attribute::meta_item_list)
         .any(|l| attr::list_contains_name(&l, sym::hidden))
+}
+
+/// Return true if the attributes contain `#[unstable]`
+pub fn is_unstable(attrs: &[ast::Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.has_name(sym::unstable))
 }

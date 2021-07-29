@@ -194,11 +194,15 @@ use rustc_middle::mir::mono::{InstantiationMode, MonoItem};
 use rustc_middle::mir::visit::Visitor as MirVisitor;
 use rustc_middle::mir::{self, Local, Location};
 use rustc_middle::ty::adjustment::{CustomCoerceUnsized, PointerCast};
+use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::subst::{GenericArgKind, InternalSubsts};
-use rustc_middle::ty::{self, GenericParamDefKind, Instance, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{self, GenericParamDefKind, Instance, Ty, TyCtxt, TypeFoldable, VtblEntry};
 use rustc_middle::{middle::codegen_fn_attrs::CodegenFnAttrFlags, mir::visit::TyContext};
 use rustc_session::config::EntryFnType;
+use rustc_session::lint::builtin::LARGE_ASSIGNMENTS;
+use rustc_session::Limit;
 use rustc_span::source_map::{dummy_spanned, respan, Span, Spanned, DUMMY_SP};
+use rustc_target::abi::Size;
 use smallvec::SmallVec;
 use std::iter;
 use std::ops::Range;
@@ -291,6 +295,7 @@ pub fn collect_crate_mono_items(
 
     let mut visited = MTLock::new(FxHashSet::default());
     let mut inlining_map = MTLock::new(InliningMap::new());
+    let recursion_limit = tcx.recursion_limit();
 
     {
         let visited: MTRef<'_, _> = &mut visited;
@@ -304,6 +309,7 @@ pub fn collect_crate_mono_items(
                     dummy_spanned(root),
                     visited,
                     &mut recursion_depths,
+                    recursion_limit,
                     inlining_map,
                 );
             });
@@ -320,7 +326,7 @@ fn collect_roots(tcx: TyCtxt<'_>, mode: MonoItemCollectionMode) -> Vec<MonoItem<
     let mut roots = Vec::new();
 
     {
-        let entry_fn = tcx.entry_fn(LOCAL_CRATE);
+        let entry_fn = tcx.entry_fn(());
 
         debug!("collect_roots: entry_fn = {:?}", entry_fn);
 
@@ -340,12 +346,14 @@ fn collect_roots(tcx: TyCtxt<'_>, mode: MonoItemCollectionMode) -> Vec<MonoItem<
         .collect()
 }
 
-// Collect all monomorphized items reachable from `starting_point`
+/// Collect all monomorphized items reachable from `starting_point`, and emit a note diagnostic if a
+/// post-monorphization error is encountered during a collection step.
 fn collect_items_rec<'tcx>(
     tcx: TyCtxt<'tcx>,
     starting_point: Spanned<MonoItem<'tcx>>,
     visited: MTRef<'_, MTLock<FxHashSet<MonoItem<'tcx>>>>,
     recursion_depths: &mut DefIdMap<usize>,
+    recursion_limit: Limit,
     inlining_map: MTRef<'_, MTLock<InliningMap<'tcx>>>,
 ) {
     if !visited.lock_mut().insert(starting_point.node) {
@@ -356,6 +364,31 @@ fn collect_items_rec<'tcx>(
 
     let mut neighbors = Vec::new();
     let recursion_depth_reset;
+
+    //
+    // Post-monomorphization errors MVP
+    //
+    // We can encounter errors while monomorphizing an item, but we don't have a good way of
+    // showing a complete stack of spans ultimately leading to collecting the erroneous one yet.
+    // (It's also currently unclear exactly which diagnostics and information would be interesting
+    // to report in such cases)
+    //
+    // This leads to suboptimal error reporting: a post-monomorphization error (PME) will be
+    // shown with just a spanned piece of code causing the error, without information on where
+    // it was called from. This is especially obscure if the erroneous mono item is in a
+    // dependency. See for example issue #85155, where, before minimization, a PME happened two
+    // crates downstream from libcore's stdarch, without a way to know which dependency was the
+    // cause.
+    //
+    // If such an error occurs in the current crate, its span will be enough to locate the
+    // source. If the cause is in another crate, the goal here is to quickly locate which mono
+    // item in the current crate is ultimately responsible for causing the error.
+    //
+    // To give at least _some_ context to the user: while collecting mono items, we check the
+    // error count. If it has changed, a PME occurred, and we trigger some diagnostics about the
+    // current step of mono items collection.
+    //
+    let error_count = tcx.sess.diagnostic().err_count();
 
     match starting_point.node {
         MonoItem::Static(def_id) => {
@@ -370,7 +403,7 @@ fn collect_items_rec<'tcx>(
             recursion_depth_reset = None;
 
             if let Ok(alloc) = tcx.eval_static_initializer(def_id) {
-                for &((), id) in alloc.relocations().values() {
+                for &id in alloc.relocations().values() {
                     collect_miri(tcx, id, &mut neighbors);
                 }
             }
@@ -380,23 +413,58 @@ fn collect_items_rec<'tcx>(
             debug_assert!(should_codegen_locally(tcx, &instance));
 
             // Keep track of the monomorphization recursion depth
-            recursion_depth_reset =
-                Some(check_recursion_limit(tcx, instance, starting_point.span, recursion_depths));
+            recursion_depth_reset = Some(check_recursion_limit(
+                tcx,
+                instance,
+                starting_point.span,
+                recursion_depths,
+                recursion_limit,
+            ));
             check_type_length_limit(tcx, instance);
 
             rustc_data_structures::stack::ensure_sufficient_stack(|| {
                 collect_neighbours(tcx, instance, &mut neighbors);
             });
         }
-        MonoItem::GlobalAsm(..) => {
+        MonoItem::GlobalAsm(item_id) => {
             recursion_depth_reset = None;
+
+            let item = tcx.hir().item(item_id);
+            if let hir::ItemKind::GlobalAsm(asm) = item.kind {
+                for (op, op_sp) in asm.operands {
+                    match op {
+                        hir::InlineAsmOperand::Const { .. } => {
+                            // Only constants which resolve to a plain integer
+                            // are supported. Therefore the value should not
+                            // depend on any other items.
+                        }
+                        _ => span_bug!(*op_sp, "invalid operand type for global_asm!"),
+                    }
+                }
+            } else {
+                span_bug!(item.span, "Mismatch between hir::Item type and MonoItem type")
+            }
         }
+    }
+
+    // Check for PMEs and emit a diagnostic if one happened. To try to show relevant edges of the
+    // mono item graph where the PME diagnostics are currently the most problematic (e.g. ones
+    // involving a dependency, and the lack of context is confusing) in this MVP, we focus on
+    // diagnostics on edges crossing a crate boundary: the collected mono items which are not
+    // defined in the local crate.
+    if tcx.sess.diagnostic().err_count() > error_count && starting_point.node.krate() != LOCAL_CRATE
+    {
+        let formatted_item = with_no_trimmed_paths(|| starting_point.node.to_string());
+        tcx.sess.span_note_without_error(
+            starting_point.span,
+            &format!("the above error was encountered while instantiating `{}`", formatted_item),
+        );
     }
 
     record_accesses(tcx, starting_point.node, neighbors.iter().map(|i| &i.node), inlining_map);
 
     for neighbour in neighbors {
-        collect_items_rec(tcx, neighbour, visited, recursion_depths, inlining_map);
+        collect_items_rec(tcx, neighbour, visited, recursion_depths, recursion_limit, inlining_map);
     }
 
     if let Some((def_id, depth)) = recursion_depth_reset {
@@ -450,7 +518,7 @@ fn shrunk_instance_name(
             after = &s[positions().rev().nth(after).unwrap_or(0)..],
         );
 
-        let path = tcx.output_filenames(LOCAL_CRATE).temp_path_ext("long-type.txt", None);
+        let path = tcx.output_filenames(()).temp_path_ext("long-type.txt", None);
         let written_to_path = std::fs::write(&path, s).ok().map(|_| path);
 
         (shrunk, written_to_path)
@@ -464,6 +532,7 @@ fn check_recursion_limit<'tcx>(
     instance: Instance<'tcx>,
     span: Span,
     recursion_depths: &mut DefIdMap<usize>,
+    recursion_limit: Limit,
 ) -> (DefId, usize) {
     let def_id = instance.def_id();
     let recursion_depth = recursion_depths.get(&def_id).cloned().unwrap_or(0);
@@ -480,7 +549,7 @@ fn check_recursion_limit<'tcx>(
     // Code that needs to instantiate the same function recursively
     // more than the recursion limit is assumed to be causing an
     // infinite expansion.
-    if !tcx.sess.recursion_limit().value_within_limit(adjusted_recursion_depth) {
+    if !recursion_limit.value_within_limit(adjusted_recursion_depth) {
         let (shrunk, written_to_path) = shrunk_instance_name(tcx, &instance, 32, 32);
         let error = format!("reached the recursion limit while instantiating `{}`", shrunk);
         let mut err = tcx.sess.struct_span_fatal(span, &error);
@@ -518,7 +587,7 @@ fn check_type_length_limit<'tcx>(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) {
     // which means that rustc basically hangs.
     //
     // Bail out in these cases to avoid that bad user experience.
-    if !tcx.sess.type_length_limit().value_within_limit(type_length) {
+    if !tcx.type_length_limit().value_within_limit(type_length) {
         let (shrunk, written_to_path) = shrunk_instance_name(tcx, &instance, 32, 32);
         let msg = format!("reached the type-length limit while instantiating `{}`", shrunk);
         let mut diag = tcx.sess.struct_span_fatal(tcx.def_span(instance.def_id()), &msg);
@@ -762,6 +831,46 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
         self.super_terminator(terminator, location);
     }
 
+    fn visit_operand(&mut self, operand: &mir::Operand<'tcx>, location: Location) {
+        self.super_operand(operand, location);
+        let limit = self.tcx.move_size_limit().0;
+        if limit == 0 {
+            return;
+        }
+        let limit = Size::from_bytes(limit);
+        let ty = operand.ty(self.body, self.tcx);
+        let ty = self.monomorphize(ty);
+        let layout = self.tcx.layout_of(ty::ParamEnv::reveal_all().and(ty));
+        if let Ok(layout) = layout {
+            if layout.size > limit {
+                debug!(?layout);
+                let source_info = self.body.source_info(location);
+                debug!(?source_info);
+                let lint_root = source_info.scope.lint_root(&self.body.source_scopes);
+                debug!(?lint_root);
+                let lint_root = match lint_root {
+                    Some(lint_root) => lint_root,
+                    // This happens when the issue is in a function from a foreign crate that
+                    // we monomorphized in the current crate. We can't get a `HirId` for things
+                    // in other crates.
+                    // FIXME: Find out where to report the lint on. Maybe simply crate-level lint root
+                    // but correct span? This would make the lint at least accept crate-level lint attributes.
+                    None => return,
+                };
+                self.tcx.struct_span_lint_hir(
+                    LARGE_ASSIGNMENTS,
+                    lint_root,
+                    source_info.span,
+                    |lint| {
+                        let mut err = lint.build(&format!("moving {} bytes", layout.size.bytes()));
+                        err.span_label(source_info.span, "value moved from here");
+                        err.emit()
+                    },
+                );
+            }
+        }
+    }
+
     fn visit_local(
         &mut self,
         _place_local: &Local,
@@ -981,6 +1090,13 @@ fn create_fn_mono_item<'tcx>(
     source: Span,
 ) -> Spanned<MonoItem<'tcx>> {
     debug!("create_fn_mono_item(instance={})", instance);
+
+    let def_id = instance.def_id();
+    if tcx.sess.opts.debugging_opts.profile_closures && def_id.is_local() && tcx.is_closure(def_id)
+    {
+        monomorphize::util::dump_closure_profile(tcx, instance);
+    }
+
     respan(source, MonoItem::Fn(instance.polymorphize(tcx)))
 }
 
@@ -1001,21 +1117,22 @@ fn create_mono_items_for_vtable_methods<'tcx>(
             assert!(!poly_trait_ref.has_escaping_bound_vars());
 
             // Walk all methods of the trait, including those of its supertraits
-            let methods = tcx.vtable_methods(poly_trait_ref);
-            let methods = methods
+            let entries = tcx.vtable_entries(poly_trait_ref);
+            let methods = entries
                 .iter()
-                .cloned()
-                .filter_map(|method| method)
-                .map(|(def_id, substs)| {
-                    ty::Instance::resolve_for_vtable(
+                .filter_map(|entry| match entry {
+                    VtblEntry::MetadataDropInPlace
+                    | VtblEntry::MetadataSize
+                    | VtblEntry::MetadataAlign
+                    | VtblEntry::Vacant => None,
+                    VtblEntry::Method(def_id, substs) => ty::Instance::resolve_for_vtable(
                         tcx,
                         ty::ParamEnv::reveal_all(),
-                        def_id,
+                        *def_id,
                         substs,
                     )
-                    .unwrap()
+                    .filter(|instance| should_codegen_locally(tcx, instance)),
                 })
-                .filter(|&instance| should_codegen_locally(tcx, &instance))
                 .map(|item| create_fn_mono_item(tcx, item, source));
             output.extend(methods);
         }
@@ -1033,7 +1150,7 @@ struct RootCollector<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     mode: MonoItemCollectionMode,
     output: &'a mut Vec<Spanned<MonoItem<'tcx>>>,
-    entry_fn: Option<(LocalDefId, EntryFnType)>,
+    entry_fn: Option<(DefId, EntryFnType)>,
 }
 
 impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
@@ -1121,7 +1238,7 @@ impl RootCollector<'_, 'v> {
             && match self.mode {
                 MonoItemCollectionMode::Eager => true,
                 MonoItemCollectionMode::Lazy => {
-                    self.entry_fn.map(|(id, _)| id) == Some(def_id)
+                    self.entry_fn.and_then(|(id, _)| id.as_local()) == Some(def_id)
                         || self.tcx.is_reachable_non_generic(def_id)
                         || self
                             .tcx
@@ -1261,7 +1378,7 @@ fn collect_miri<'tcx>(
         }
         GlobalAlloc::Memory(alloc) => {
             trace!("collecting {:?} with {:#?}", alloc_id, alloc);
-            for &((), inner) in alloc.relocations().values() {
+            for &inner in alloc.relocations().values() {
                 rustc_data_structures::stack::ensure_sufficient_stack(|| {
                     collect_miri(tcx, inner, output);
                 });
@@ -1294,9 +1411,9 @@ fn collect_const_value<'tcx>(
     output: &mut Vec<Spanned<MonoItem<'tcx>>>,
 ) {
     match value {
-        ConstValue::Scalar(Scalar::Ptr(ptr)) => collect_miri(tcx, ptr.alloc_id, output),
+        ConstValue::Scalar(Scalar::Ptr(ptr, _size)) => collect_miri(tcx, ptr.provenance, output),
         ConstValue::Slice { data: alloc, start: _, end: _ } | ConstValue::ByRef { alloc, .. } => {
-            for &((), id) in alloc.relocations().values() {
+            for &id in alloc.relocations().values() {
                 collect_miri(tcx, id, output);
             }
         }

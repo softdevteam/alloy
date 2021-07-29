@@ -126,6 +126,10 @@ x--expand-yaml-anchors--remove:
         run: src/ci/scripts/should-skip-this.sh
         <<: *step
 
+      - name: ensure the channel matches the target branch
+        run: src/ci/scripts/verify-channel.sh
+        <<: *step
+
       - name: configure GitHub Actions to kill the build when outdated
         uses: rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master
         with:
@@ -401,6 +405,17 @@ jobs:
             <<: *job-linux-xl
 
           - name: x86_64-gnu
+            <<: *job-linux-xl
+
+          # This job ensures commits landing on nightly still pass the full
+          # test suite on the stable channel. There are some UI tests that
+          # depend on the channel being built (for example if they include the
+          # channel name on the output), and this builder prevents landing
+          # changes that would result in broken builds after a promotion.
+          - name: x86_64-gnu-stable
+            env:
+              IMAGE: x86_64-gnu
+              RUST_CI_OVERRIDE_RELEASE_CHANNEL: stable
             <<: *job-linux-xl
 
           - name: x86_64-gnu-aux

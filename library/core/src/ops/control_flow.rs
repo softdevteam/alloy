@@ -1,4 +1,4 @@
-use crate::ops::Try;
+use crate::{convert, ops};
 
 /// Used to tell an operation whether it should exit early or go on as usual.
 ///
@@ -11,7 +11,6 @@ use crate::ops::Try;
 ///
 /// Early-exiting from [`Iterator::try_for_each`]:
 /// ```
-/// #![feature(control_flow_enum)]
 /// use std::ops::ControlFlow;
 ///
 /// let r = (2..100).try_for_each(|x| {
@@ -26,7 +25,6 @@ use crate::ops::Try;
 ///
 /// A basic tree traversal:
 /// ```no_run
-/// #![feature(control_flow_enum)]
 /// use std::ops::ControlFlow;
 ///
 /// pub struct TreeNode<T> {
@@ -48,36 +46,48 @@ use crate::ops::Try;
 ///     }
 /// }
 /// ```
-#[unstable(feature = "control_flow_enum", reason = "new API", issue = "75744")]
+#[stable(feature = "control_flow_enum_type", since = "1.55.0")]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlFlow<B, C = ()> {
     /// Move on to the next phase of the operation as normal.
+    #[stable(feature = "control_flow_enum_type", since = "1.55.0")]
+    #[lang = "Continue"]
     Continue(C),
     /// Exit the operation without running subsequent phases.
+    #[stable(feature = "control_flow_enum_type", since = "1.55.0")]
+    #[lang = "Break"]
     Break(B),
     // Yes, the order of the variants doesn't match the type parameters.
     // They're in this order so that `ControlFlow<A, B>` <-> `Result<B, A>`
     // is a no-op conversion in the `Try` implementation.
 }
 
-#[unstable(feature = "control_flow_enum", reason = "new API", issue = "75744")]
-impl<B, C> Try for ControlFlow<B, C> {
-    type Ok = C;
-    type Error = B;
+#[unstable(feature = "try_trait_v2", issue = "84277")]
+impl<B, C> ops::TryV2 for ControlFlow<B, C> {
+    type Output = C;
+    type Residual = ControlFlow<B, convert::Infallible>;
+
     #[inline]
-    fn into_result(self) -> Result<Self::Ok, Self::Error> {
+    fn from_output(output: Self::Output) -> Self {
+        ControlFlow::Continue(output)
+    }
+
+    #[inline]
+    fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
         match self {
-            ControlFlow::Continue(y) => Ok(y),
-            ControlFlow::Break(x) => Err(x),
+            ControlFlow::Continue(c) => ControlFlow::Continue(c),
+            ControlFlow::Break(b) => ControlFlow::Break(ControlFlow::Break(b)),
         }
     }
+}
+
+#[unstable(feature = "try_trait_v2", issue = "84277")]
+impl<B, C> ops::FromResidual for ControlFlow<B, C> {
     #[inline]
-    fn from_error(v: Self::Error) -> Self {
-        ControlFlow::Break(v)
-    }
-    #[inline]
-    fn from_ok(v: Self::Ok) -> Self {
-        ControlFlow::Continue(v)
+    fn from_residual(residual: ControlFlow<B, convert::Infallible>) -> Self {
+        match residual {
+            ControlFlow::Break(b) => ControlFlow::Break(b),
+        }
     }
 }
 
@@ -152,23 +162,24 @@ impl<B, C> ControlFlow<B, C> {
     }
 }
 
-impl<R: Try> ControlFlow<R, R::Ok> {
+/// These are used only as part of implementing the iterator adapters.
+/// They have mediocre names and non-obvious semantics, so aren't
+/// currently on a path to potential stabilization.
+impl<R: ops::TryV2> ControlFlow<R, R::Output> {
     /// Create a `ControlFlow` from any type implementing `Try`.
-    #[unstable(feature = "control_flow_enum", reason = "new API", issue = "75744")]
     #[inline]
-    pub fn from_try(r: R) -> Self {
-        match Try::into_result(r) {
-            Ok(v) => ControlFlow::Continue(v),
-            Err(v) => ControlFlow::Break(Try::from_error(v)),
+    pub(crate) fn from_try(r: R) -> Self {
+        match R::branch(r) {
+            ControlFlow::Continue(v) => ControlFlow::Continue(v),
+            ControlFlow::Break(v) => ControlFlow::Break(R::from_residual(v)),
         }
     }
 
     /// Convert a `ControlFlow` into any type implementing `Try`;
-    #[unstable(feature = "control_flow_enum", reason = "new API", issue = "75744")]
     #[inline]
-    pub fn into_try(self) -> R {
+    pub(crate) fn into_try(self) -> R {
         match self {
-            ControlFlow::Continue(v) => Try::from_ok(v),
+            ControlFlow::Continue(v) => R::from_output(v),
             ControlFlow::Break(v) => v,
         }
     }

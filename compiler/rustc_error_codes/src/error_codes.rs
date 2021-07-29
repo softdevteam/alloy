@@ -157,6 +157,7 @@ E0308: include_str!("./error_codes/E0308.md"),
 E0309: include_str!("./error_codes/E0309.md"),
 E0310: include_str!("./error_codes/E0310.md"),
 E0312: include_str!("./error_codes/E0312.md"),
+E0316: include_str!("./error_codes/E0316.md"),
 E0317: include_str!("./error_codes/E0317.md"),
 E0321: include_str!("./error_codes/E0321.md"),
 E0322: include_str!("./error_codes/E0322.md"),
@@ -360,6 +361,7 @@ E0626: include_str!("./error_codes/E0626.md"),
 E0627: include_str!("./error_codes/E0627.md"),
 E0628: include_str!("./error_codes/E0628.md"),
 E0631: include_str!("./error_codes/E0631.md"),
+E0632: include_str!("./error_codes/E0632.md"),
 E0633: include_str!("./error_codes/E0633.md"),
 E0634: include_str!("./error_codes/E0634.md"),
 E0635: include_str!("./error_codes/E0635.md"),
@@ -416,7 +418,7 @@ E0716: include_str!("./error_codes/E0716.md"),
 E0718: include_str!("./error_codes/E0718.md"),
 E0719: include_str!("./error_codes/E0719.md"),
 E0720: include_str!("./error_codes/E0720.md"),
-E0723: include_str!("./error_codes/E0723.md"),
+E0722: include_str!("./error_codes/E0722.md"),
 E0724: include_str!("./error_codes/E0724.md"),
 E0725: include_str!("./error_codes/E0725.md"),
 E0727: include_str!("./error_codes/E0727.md"),
@@ -448,6 +450,7 @@ E0753: include_str!("./error_codes/E0753.md"),
 E0754: include_str!("./error_codes/E0754.md"),
 E0755: include_str!("./error_codes/E0755.md"),
 E0756: include_str!("./error_codes/E0756.md"),
+E0757: include_str!("./error_codes/E0757.md"),
 E0758: include_str!("./error_codes/E0758.md"),
 E0759: include_str!("./error_codes/E0759.md"),
 E0760: include_str!("./error_codes/E0760.md"),
@@ -471,6 +474,8 @@ E0778: include_str!("./error_codes/E0778.md"),
 E0779: include_str!("./error_codes/E0779.md"),
 E0780: include_str!("./error_codes/E0780.md"),
 E0781: include_str!("./error_codes/E0781.md"),
+E0782: include_str!("./error_codes/E0782.md"),
+E0783: include_str!("./error_codes/E0783.md"),
 ;
 //  E0006, // merged with E0005
 //  E0008, // cannot bind by-move into a pattern guard
@@ -552,9 +557,8 @@ E0781: include_str!("./error_codes/E0781.md"),
     E0311, // thing may not live long enough
     E0313, // lifetime of borrowed pointer outlives lifetime of captured
            // variable
-    E0314, // closure outlives stack frame
-    E0315, // cannot invoke closure outside of its lifetime
-    E0316, // nested quantification of lifetimes
+//  E0314, // closure outlives stack frame
+//  E0315, // cannot invoke closure outside of its lifetime
 //  E0319, // trait impls for defaulted traits allowed just for structs/enums
     E0320, // recursive overflow during dropck
 //  E0372, // coherence not object safe
@@ -583,21 +587,21 @@ E0781: include_str!("./error_codes/E0781.md"),
 //  E0470, removed
 //  E0471, // constant evaluation error (in pattern)
     E0472, // llvm_asm! is unsupported on this target
-    E0473, // dereference of reference outside its lifetime
-    E0474, // captured variable `..` does not outlive the enclosing closure
-    E0475, // index of slice outside its lifetime
+//  E0473, // dereference of reference outside its lifetime
+//  E0474, // captured variable `..` does not outlive the enclosing closure
+//  E0475, // index of slice outside its lifetime
     E0476, // lifetime of the source pointer does not outlive lifetime bound...
-    E0479, // the type `..` (provided as the value of a type parameter) is...
-    E0480, // lifetime of method receiver does not outlive the method call
-    E0481, // lifetime of function argument does not outlive the function call
+//  E0479, // the type `..` (provided as the value of a type parameter) is...
+//  E0480, // lifetime of method receiver does not outlive the method call
+//  E0481, // lifetime of function argument does not outlive the function call
     E0482, // lifetime of return value does not outlive the function call
-    E0483, // lifetime of operand does not outlive the operation
-    E0484, // reference is not valid at the time of borrow
-    E0485, // automatically reference is not valid at the time of borrow
-    E0486, // type of expression contains references that are not valid during..
-    E0487, // unsafe use of destructor: destructor might be called while...
-    E0488, // lifetime of variable does not enclose its declaration
-    E0489, // type/lifetime parameter not in scope here
+//  E0483, // lifetime of operand does not outlive the operation
+//  E0484, // reference is not valid at the time of borrow
+//  E0485, // automatically reference is not valid at the time of borrow
+//  E0486, // type of expression contains references that are not valid during..
+//  E0487, // unsafe use of destructor: destructor might be called while...
+//  E0488, // lifetime of variable does not enclose its declaration
+//  E0489, // type/lifetime parameter not in scope here
     E0490, // a value of type `..` is borrowed for too long
     E0498,  // malformed plugin attribute
     E0514, // metadata version mismatch
@@ -608,7 +612,7 @@ E0781: include_str!("./error_codes/E0781.md"),
 //  E0540, // multiple rustc_deprecated attributes
     E0544, // multiple stability levels
 //  E0548, // replaced with a generic attribute input check
-    E0553, // multiple rustc_const_unstable attributes
+//  E0553, // multiple rustc_const_unstable attributes
 //  E0555, // replaced with a generic attribute input check
 //  E0558, // replaced with a generic attribute input check
 //  E0563, // cannot determine a type for this `impl Trait` removed in 6383de15
@@ -619,12 +623,9 @@ E0781: include_str!("./error_codes/E0781.md"),
 //  E0612, // merged into E0609
 //  E0613, // Removed (merged with E0609)
     E0625, // thread-local statics cannot be accessed at compile-time
-    E0629, // missing 'feature' (rustc_const_unstable)
-    // rustc_const_unstable attribute must be paired with stable/unstable
-    // attribute
-    E0630,
-    E0632, // cannot provide explicit generic arguments when `impl Trait` is
-           // used in argument position
+//  E0629, // missing 'feature' (rustc_const_unstable)
+//  E0630, // rustc_const_unstable attribute must be paired with stable/unstable
+           // attribute
     E0640, // infer outlives requirements
 //  E0645, // trait aliases not finished
     E0667, // `impl Trait` in projections
@@ -635,9 +636,8 @@ E0781: include_str!("./error_codes/E0781.md"),
     E0711, // a feature has been declared with conflicting stability attributes
     E0717, // rustc_promotable without stability attribute
 //  E0721, // `await` keyword
-    E0722, // Malformed `#[optimize]` attribute
+//    E0723, unstable feature in `const` context
     E0726, // non-explicit (not `'_`) elided lifetime in unsupported position
 //  E0738, // Removed; errored on `#[track_caller] fn`s in `extern "Rust" { ... }`.
-    E0757, // `#[ffi_const]` functions cannot be `#[ffi_pure]`
     E0772, // `'static' obligation coming from `impl dyn Trait {}` or `impl Foo for dyn Bar {}`.
 }

@@ -66,6 +66,10 @@ crate fn compare_impl_method<'tcx>(
     {
         return;
     }
+
+    if let Err(ErrorReported) = compare_const_param_types(tcx, impl_m, trait_m, trait_item_span) {
+        return;
+    }
 }
 
 fn compare_predicate_entailment<'tcx>(
@@ -222,12 +226,7 @@ fn compare_predicate_entailment<'tcx>(
         let mut selcx = traits::SelectionContext::new(&infcx);
 
         let impl_m_own_bounds = impl_m_predicates.instantiate_own(tcx, impl_to_placeholder_substs);
-        let (impl_m_own_bounds, _) = infcx.replace_bound_vars_with_fresh_vars(
-            impl_m_span,
-            infer::HigherRankedType,
-            ty::Binder::bind(impl_m_own_bounds.predicates, tcx),
-        );
-        for predicate in impl_m_own_bounds {
+        for predicate in impl_m_own_bounds.predicates {
             let traits::Normalized { value: predicate, obligations } =
                 traits::normalize(&mut selcx, param_env, normalize_cause.clone(), predicate);
 
@@ -258,14 +257,14 @@ fn compare_predicate_entailment<'tcx>(
         );
         let impl_sig =
             inh.normalize_associated_types_in(impl_m_span, impl_m_hir_id, param_env, impl_sig);
-        let impl_fty = tcx.mk_fn_ptr(ty::Binder::bind(impl_sig, tcx));
+        let impl_fty = tcx.mk_fn_ptr(ty::Binder::dummy(impl_sig));
         debug!("compare_impl_method: impl_fty={:?}", impl_fty);
 
         let trait_sig = tcx.liberate_late_bound_regions(impl_m.def_id, tcx.fn_sig(trait_m.def_id));
         let trait_sig = trait_sig.subst(tcx, trait_to_placeholder_substs);
         let trait_sig =
             inh.normalize_associated_types_in(impl_m_span, impl_m_hir_id, param_env, trait_sig);
-        let trait_fty = tcx.mk_fn_ptr(ty::Binder::bind(trait_sig, tcx));
+        let trait_fty = tcx.mk_fn_ptr(ty::Binder::dummy(trait_sig));
 
         debug!("compare_impl_method: trait_fty={:?}", trait_fty);
 
@@ -579,7 +578,7 @@ fn compare_number_of_generics<'tcx>(
     let item_kind = assoc_item_kind_str(impl_);
 
     let mut err_occurred = false;
-    for &(kind, trait_count, impl_count) in &matchings {
+    for (kind, trait_count, impl_count) in matchings {
         if impl_count != trait_count {
             err_occurred = true;
 
@@ -932,6 +931,68 @@ fn compare_synthetic_generics<'tcx>(
         }
     }
     if error_found { Err(ErrorReported) } else { Ok(()) }
+}
+
+fn compare_const_param_types<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_m: &ty::AssocItem,
+    trait_m: &ty::AssocItem,
+    trait_item_span: Option<Span>,
+) -> Result<(), ErrorReported> {
+    let const_params_of = |def_id| {
+        tcx.generics_of(def_id).params.iter().filter_map(|param| match param.kind {
+            GenericParamDefKind::Const { .. } => Some(param.def_id),
+            _ => None,
+        })
+    };
+    let const_params_impl = const_params_of(impl_m.def_id);
+    let const_params_trait = const_params_of(trait_m.def_id);
+
+    for (const_param_impl, const_param_trait) in iter::zip(const_params_impl, const_params_trait) {
+        let impl_ty = tcx.type_of(const_param_impl);
+        let trait_ty = tcx.type_of(const_param_trait);
+        if impl_ty != trait_ty {
+            let (impl_span, impl_ident) = match tcx.hir().get_if_local(const_param_impl) {
+                Some(hir::Node::GenericParam(hir::GenericParam { span, name, .. })) => (
+                    span,
+                    match name {
+                        hir::ParamName::Plain(ident) => Some(ident),
+                        _ => None,
+                    },
+                ),
+                other => bug!(
+                    "expected GenericParam, found {:?}",
+                    other.map_or_else(|| "nothing".to_string(), |n| format!("{:?}", n))
+                ),
+            };
+            let trait_span = match tcx.hir().get_if_local(const_param_trait) {
+                Some(hir::Node::GenericParam(hir::GenericParam { span, .. })) => Some(span),
+                _ => None,
+            };
+            let mut err = struct_span_err!(
+                tcx.sess,
+                *impl_span,
+                E0053,
+                "method `{}` has an incompatible const parameter type for trait",
+                trait_m.ident
+            );
+            err.span_note(
+                trait_span.map_or_else(|| trait_item_span.unwrap_or(*impl_span), |span| *span),
+                &format!(
+                    "the const parameter{} has type `{}`, but the declaration \
+                              in trait `{}` has type `{}`",
+                    &impl_ident.map_or_else(|| "".to_string(), |ident| format!(" `{}`", ident)),
+                    impl_ty,
+                    tcx.def_path_str(trait_m.def_id),
+                    trait_ty
+                ),
+            );
+            err.emit();
+            return Err(ErrorReported);
+        }
+    }
+
+    Ok(())
 }
 
 crate fn compare_const_impl<'tcx>(

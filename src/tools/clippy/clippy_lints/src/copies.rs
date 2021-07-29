@@ -1,8 +1,8 @@
 use clippy_utils::diagnostics::{span_lint_and_note, span_lint_and_then};
 use clippy_utils::source::{first_line_of_span, indent_of, reindent_multiline, snippet, snippet_opt};
 use clippy_utils::{
-    both, count_eq, eq_expr_value, get_enclosing_block, get_parent_expr, if_sequence, in_macro, parent_node_is_if_expr,
-    run_lints, search_same, ContainsName, SpanlessEq, SpanlessHash,
+    both, count_eq, eq_expr_value, get_enclosing_block, get_parent_expr, if_sequence, in_macro, is_else_clause,
+    is_lint_allowed, search_same, ContainsName, SpanlessEq, SpanlessHash,
 };
 use if_chain::if_chain;
 use rustc_data_structures::fx::FxHashSet;
@@ -120,7 +120,10 @@ declare_clippy_lint! {
     ///
     /// **Why is this bad?** Duplicate code is less maintainable.
     ///
-    /// **Known problems:** Hopefully none.
+    /// **Known problems:**
+    /// * The lint doesn't check if the moved expressions modify values that are beeing used in
+    ///   the if condition. The suggestion can in that case modify the behavior of the program.
+    ///   See [rust-clippy#7452](https://github.com/rust-lang/rust-clippy/issues/7452)
     ///
     /// **Example:**
     /// ```ignore
@@ -188,13 +191,18 @@ fn lint_same_then_else<'tcx>(
     expr: &'tcx Expr<'_>,
 ) {
     // We only lint ifs with multiple blocks
-    if blocks.len() < 2 || parent_node_is_if_expr(expr, cx) {
+    if blocks.len() < 2 || is_else_clause(cx.tcx, expr) {
         return;
     }
 
     // Check if each block has shared code
     let has_expr = blocks[0].expr.is_some();
-    let (start_eq, mut end_eq, expr_eq) = scan_block_for_eq(cx, blocks);
+
+    let (start_eq, mut end_eq, expr_eq) = if let Some(block_eq) = scan_block_for_eq(cx, blocks) {
+        (block_eq.start_eq, block_eq.end_eq, block_eq.expr_eq)
+    } else {
+        return;
+    };
 
     // BRANCHES_SHARING_CODE prerequisites
     if has_conditional_else || (start_eq == 0 && end_eq == 0 && (has_expr && !expr_eq)) {
@@ -290,7 +298,19 @@ fn lint_same_then_else<'tcx>(
     }
 }
 
-fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> (usize, usize, bool) {
+struct BlockEqual {
+    /// The amount statements that are equal from the start
+    start_eq: usize,
+    /// The amount statements that are equal from the end
+    end_eq: usize,
+    ///  An indication if the block expressions are the same. This will also be true if both are
+    /// `None`
+    expr_eq: bool,
+}
+
+/// This function can also trigger the `IF_SAME_THEN_ELSE` in which case it'll return `None` to
+/// abort any further processing and avoid duplicate lint triggers.
+fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> Option<BlockEqual> {
     let mut start_eq = usize::MAX;
     let mut end_eq = usize::MAX;
     let mut expr_eq = true;
@@ -320,8 +340,8 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> (usize,
             if block_expr_eq;
             if l_stmts.len() == r_stmts.len();
             if l_stmts.len() == current_start_eq;
-            if run_lints(cx, &[IF_SAME_THEN_ELSE], win[0].hir_id);
-            if run_lints(cx, &[IF_SAME_THEN_ELSE], win[1].hir_id);
+            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win[0].hir_id);
+            if !is_lint_allowed(cx, IF_SAME_THEN_ELSE, win[1].hir_id);
             then {
                 span_lint_and_note(
                     cx,
@@ -332,7 +352,7 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> (usize,
                     "same as this",
                 );
 
-                return (0, 0, false);
+                return None;
             }
         }
 
@@ -341,8 +361,7 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> (usize,
         expr_eq &= block_expr_eq;
     }
 
-    let has_expr = blocks[0].expr.is_some();
-    if has_expr && !expr_eq {
+    if !expr_eq {
         end_eq = 0;
     }
 
@@ -352,7 +371,11 @@ fn scan_block_for_eq(cx: &LateContext<'tcx>, blocks: &[&Block<'tcx>]) -> (usize,
         end_eq = min_block_size - start_eq;
     }
 
-    (start_eq, end_eq, expr_eq)
+    Some(BlockEqual {
+        start_eq,
+        end_eq,
+        expr_eq,
+    })
 }
 
 fn check_for_warn_of_moved_symbol(
@@ -455,7 +478,7 @@ fn emit_branches_sharing_code_lint(
         }
 
         suggestions.push(("end", span, suggestion.to_string()));
-        add_expr_note = !cx.typeck_results().expr_ty(if_expr).is_unit()
+        add_expr_note = !cx.typeck_results().expr_ty(if_expr).is_unit();
     }
 
     let add_optional_msgs = |diag: &mut DiagnosticBuilder<'_>| {

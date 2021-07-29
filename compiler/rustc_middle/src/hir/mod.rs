@@ -13,28 +13,41 @@ use rustc_ast::Attribute;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
-use rustc_hir::def_id::{LocalDefId, LOCAL_CRATE};
+use rustc_hir::def_id::LocalDefId;
 use rustc_hir::*;
-use rustc_index::vec::IndexVec;
+use rustc_index::vec::{Idx, IndexVec};
 use rustc_span::DUMMY_SP;
 use std::collections::BTreeMap;
 
+/// Result of HIR indexing.
 #[derive(Debug)]
+pub struct IndexedHir<'hir> {
+    /// Contents of the HIR owned by each definition. None for definitions that are not HIR owners.
+    // The `mut` comes from construction time, and is harmless since we only ever hand out
+    // immutable refs to IndexedHir.
+    map: IndexVec<LocalDefId, Option<&'hir mut OwnerNodes<'hir>>>,
+    /// Map from each owner to its parent's HirId inside another owner.
+    // This map is separate from `map` to eventually allow for per-owner indexing.
+    parenting: FxHashMap<LocalDefId, HirId>,
+}
+
+/// Top-level HIR node for current owner. This only contains the node for which
+/// `HirId::local_id == 0`, and excludes bodies.
+#[derive(Copy, Clone, Debug)]
 pub struct Owner<'tcx> {
-    parent: HirId,
     node: Node<'tcx>,
 }
 
 impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for Owner<'tcx> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let Owner { parent, node } = self;
-        hcx.while_hashing_hir_bodies(false, |hcx| {
-            parent.hash_stable(hcx, hasher);
-            node.hash_stable(hcx, hasher);
-        });
+        let Owner { node } = self;
+        hcx.while_hashing_hir_bodies(false, |hcx| node.hash_stable(hcx, hasher));
     }
 }
 
+/// HIR node coupled with its parent's id in the same HIR owner.
+///
+/// The parent is trash when the node is a HIR owner.
 #[derive(Clone, Debug)]
 pub struct ParentedNode<'tcx> {
     parent: ItemLocalId,
@@ -43,8 +56,12 @@ pub struct ParentedNode<'tcx> {
 
 #[derive(Debug)]
 pub struct OwnerNodes<'tcx> {
+    /// Pre-computed hash of the full HIR.
     hash: Fingerprint,
+    /// Full HIR for the current owner.
+    // The zeroth node's parent is trash, but is never accessed.
     nodes: IndexVec<ItemLocalId, Option<ParentedNode<'tcx>>>,
+    /// Content of local bodies.
     bodies: FxHashMap<ItemLocalId, &'tcx Body<'tcx>>,
 }
 
@@ -57,6 +74,8 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for OwnerNodes<'tcx> {
     }
 }
 
+/// Attributes owner by a HIR owner. It is build as a slice inside the attributes map, restricted
+/// to the nodes whose `HirId::owner` is `prefix`.
 #[derive(Copy, Clone)]
 pub struct AttributeMap<'tcx> {
     map: &'tcx BTreeMap<HirId, &'tcx [Attribute]>,
@@ -115,11 +134,20 @@ pub fn provide(providers: &mut Providers) {
         let hir = tcx.hir();
         hir.local_def_id(hir.get_module_parent_node(hir.local_def_id_to_hir_id(id)))
     };
-    providers.hir_crate = |tcx, _| tcx.untracked_crate;
+    providers.hir_crate = |tcx, ()| tcx.untracked_crate;
     providers.index_hir = map::index_hir;
+    providers.crate_hash = map::crate_hash;
     providers.hir_module_items = |tcx, id| &tcx.untracked_crate.modules[&id];
-    providers.hir_owner = |tcx, id| tcx.index_hir(LOCAL_CRATE).map[id].signature;
-    providers.hir_owner_nodes = |tcx, id| tcx.index_hir(LOCAL_CRATE).map[id].with_bodies.as_deref();
+    providers.hir_owner = |tcx, id| {
+        let owner = tcx.index_hir(()).map[id].as_ref()?;
+        let node = owner.nodes[ItemLocalId::new(0)].as_ref()?.node;
+        Some(Owner { node })
+    };
+    providers.hir_owner_nodes = |tcx, id| tcx.index_hir(()).map[id].as_deref();
+    providers.hir_owner_parent = |tcx, id| {
+        let index = tcx.index_hir(());
+        index.parenting.get(&id).copied().unwrap_or(CRATE_HIR_ID)
+    };
     providers.hir_attrs = |tcx, id| AttributeMap { map: &tcx.untracked_crate.attrs, prefix: id };
     providers.def_span = |tcx, def_id| tcx.hir().span_if_local(def_id).unwrap_or(DUMMY_SP);
     providers.fn_arg_names = |tcx, id| {
@@ -138,4 +166,9 @@ pub fn provide(providers: &mut Providers) {
         }
     };
     providers.opt_def_kind = |tcx, def_id| tcx.hir().opt_def_kind(def_id.expect_local());
+    providers.all_local_trait_impls = |tcx, ()| &tcx.hir_crate(()).trait_impls;
+    providers.expn_that_defined = |tcx, id| {
+        let id = id.expect_local();
+        tcx.resolutions(()).definitions.expansion_that_defined(id)
+    };
 }

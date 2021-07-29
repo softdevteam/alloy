@@ -396,19 +396,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         let mut nested = vec![];
 
         let mut supertraits = util::supertraits(tcx, ty::Binder::dummy(object_trait_ref));
-
-        // For each of the non-matching predicates that
-        // we pass over, we sum up the set of number of vtable
-        // entries, so that we can compute the offset for the selected
-        // trait.
-        let vtable_base = supertraits
-            .by_ref()
-            .take(index)
-            .map(|t| super::util::count_own_vtable_entries(tcx, t))
-            .sum();
-
         let unnormalized_upcast_trait_ref =
-            supertraits.next().expect("supertraits iterator no longer has as many elements");
+            supertraits.nth(index).expect("supertraits iterator no longer has as many elements");
 
         let upcast_trait_ref = normalize_with_depth_to(
             self,
@@ -462,12 +451,11 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         for assoc_type in assoc_types {
             if !tcx.generics_of(assoc_type).params.is_empty() {
-                // FIXME(generic_associated_types) generate placeholders to
-                // extend the trait substs.
-                tcx.sess.span_fatal(
+                tcx.sess.delay_span_bug(
                     obligation.cause.span,
-                    "generic associated types in trait objects are not supported yet",
+                    "GATs in trait object shouldn't have been considered",
                 );
+                return Err(SelectionError::Unimplemented);
             }
             // This maybe belongs in wf, but that can't (doesn't) handle
             // higher-ranked things.
@@ -491,6 +479,12 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         }
 
         debug!(?nested, "object nested obligations");
+
+        let vtable_base = super::super::vtable_trait_first_method_offset(
+            tcx,
+            (unnormalized_upcast_trait_ref, ty::Binder::dummy(object_trait_ref)),
+        );
+
         Ok(ImplSourceObjectData { upcast_trait_ref, vtable_base, nested })
     }
 

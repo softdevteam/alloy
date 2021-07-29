@@ -1,3 +1,8 @@
+//! This test is a part of quality control and makes clippy eat what it produces. Awesome lints and
+//! long error messages
+//!
+//! See [Eating your own dog food](https://en.wikipedia.org/wiki/Eating_your_own_dog_food) for context
+
 // Dogfood cannot run on Windows
 #![cfg(not(windows))]
 #![feature(once_cell)]
@@ -150,10 +155,9 @@ fn dogfood_subprojects() {
     if cargo::is_rustc_test_suite() {
         return;
     }
-    let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     // NOTE: `path_dep` crate is omitted on purpose here
-    for d in &[
+    for project in &[
         "clippy_workspace_tests",
         "clippy_workspace_tests/src",
         "clippy_workspace_tests/subcrate",
@@ -163,34 +167,80 @@ fn dogfood_subprojects() {
         "clippy_utils",
         "rustc_tools_util",
     ] {
-        let mut command = Command::new(&*CLIPPY_PATH);
-        command
-            .current_dir(root_dir.join(d))
-            .env("CLIPPY_DOGFOOD", "1")
-            .env("CARGO_INCREMENTAL", "0")
-            .arg("clippy")
-            .arg("--all-targets")
-            .arg("--all-features")
-            .arg("--")
-            .args(&["-D", "clippy::all"])
-            .args(&["-D", "clippy::pedantic"])
-            .arg("-Cdebuginfo=0"); // disable debuginfo to generate less data in the target dir
-
-        // internal lints only exist if we build with the internal-lints feature
-        if cfg!(feature = "internal-lints") {
-            command.args(&["-D", "clippy::internal"]);
-        }
-
-        let output = command.output().unwrap();
-
-        println!("status: {}", output.status);
-        println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
-        println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-        assert!(output.status.success());
+        run_clippy_for_project(project);
     }
 
     // NOTE: Since tests run in parallel we can't run cargo commands on the same workspace at the
     // same time, so we test this immediately after the dogfood for workspaces.
     test_no_deps_ignores_path_deps_in_workspaces();
+}
+
+#[test]
+#[ignore]
+#[cfg(feature = "metadata-collector-lint")]
+fn run_metadata_collection_lint() {
+    use std::fs::File;
+    use std::time::SystemTime;
+
+    // Setup for validation
+    let metadata_output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("util/gh-pages/metadata_collection.json");
+    let start_time = SystemTime::now();
+
+    // Run collection as is
+    std::env::set_var("ENABLE_METADATA_COLLECTION", "1");
+    run_clippy_for_project("clippy_lints");
+
+    // Check if cargo caching got in the way
+    if let Ok(file) = File::open(metadata_output_path) {
+        if let Ok(metadata) = file.metadata() {
+            if let Ok(last_modification) = metadata.modified() {
+                if last_modification > start_time {
+                    // The output file has been modified. Most likely by a hungry
+                    // metadata collection monster. So We'll return.
+                    return;
+                }
+            }
+        }
+    }
+
+    // Force cargo to invalidate the caches
+    filetime::set_file_mtime(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("clippy_lints/src/lib.rs"),
+        filetime::FileTime::now(),
+    )
+    .unwrap();
+
+    // Running the collection again
+    run_clippy_for_project("clippy_lints");
+}
+
+fn run_clippy_for_project(project: &str) {
+    let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let mut command = Command::new(&*CLIPPY_PATH);
+
+    command
+        .current_dir(root_dir.join(project))
+        .env("CLIPPY_DOGFOOD", "1")
+        .env("CARGO_INCREMENTAL", "0")
+        .arg("clippy")
+        .arg("--all-targets")
+        .arg("--all-features")
+        .arg("--")
+        .args(&["-D", "clippy::all"])
+        .args(&["-D", "clippy::pedantic"])
+        .arg("-Cdebuginfo=0"); // disable debuginfo to generate less data in the target dir
+
+    // internal lints only exist if we build with the internal-lints feature
+    if cfg!(feature = "internal-lints") {
+        command.args(&["-D", "clippy::internal"]);
+    }
+
+    let output = command.output().unwrap();
+
+    println!("status: {}", output.status);
+    println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success());
 }

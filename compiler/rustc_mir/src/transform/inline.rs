@@ -57,7 +57,7 @@ impl<'tcx> MirPass<'tcx> for Inline {
         if inline(tcx, body) {
             debug!("running simplify cfg on {:?}", body.source);
             CfgSimplifier::new(body).simplify();
-            remove_dead_blocks(body);
+            remove_dead_blocks(tcx, body);
         }
     }
 }
@@ -284,7 +284,7 @@ impl Inliner<'tcx> {
         &self,
         callsite: &CallSite<'tcx>,
         callee_attrs: &CodegenFnAttrs,
-    ) -> Result<(), &'satic str> {
+    ) -> Result<(), &'static str> {
         if let InlineAttr::Never = callee_attrs.inline {
             return Err("never inline hint");
         }
@@ -836,10 +836,11 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
 
     fn visit_span(&mut self, span: &mut Span) {
         let mut expn_data =
-            ExpnData::default(ExpnKind::Inlined, *span, self.tcx.sess.edition(), None);
+            ExpnData::default(ExpnKind::Inlined, *span, self.tcx.sess.edition(), None, None);
         expn_data.def_site = self.body_span;
         // Make sure that all spans track the fact that they were inlined.
-        *span = self.callsite_span.fresh_expansion(expn_data);
+        *span =
+            self.callsite_span.fresh_expansion(expn_data, self.tcx.create_stable_hashing_context());
     }
 
     fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {

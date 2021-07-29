@@ -1,6 +1,5 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![recursion_limit = "256"]
 
 mod dump_visitor;
@@ -80,7 +79,7 @@ impl<'tcx> SaveContext<'tcx> {
         let end = sm.lookup_char_pos(span.hi());
 
         SpanData {
-            file_name: start.file.name.to_string().into(),
+            file_name: start.file.name.prefer_remapped().to_string().into(),
             byte_start: span.lo().0,
             byte_end: span.hi().0,
             line_start: Row::new_one_indexed(start.line as u32),
@@ -95,7 +94,7 @@ impl<'tcx> SaveContext<'tcx> {
         let sess = &self.tcx.sess;
         // Save-analysis is emitted per whole session, not per each crate type
         let crate_type = sess.crate_types()[0];
-        let outputs = &*self.tcx.output_filenames(LOCAL_CRATE);
+        let outputs = &*self.tcx.output_filenames(());
 
         if outputs.outputs.contains_key(&OutputType::Metadata) {
             filename_for_metadata(sess, crate_name, outputs)
@@ -110,9 +109,9 @@ impl<'tcx> SaveContext<'tcx> {
 
     // List external crates used by the current crate.
     pub fn get_external_crates(&self) -> Vec<ExternalCrateData> {
-        let mut result = Vec::with_capacity(self.tcx.crates().len());
+        let mut result = Vec::with_capacity(self.tcx.crates(()).len());
 
-        for &n in self.tcx.crates().iter() {
+        for &n in self.tcx.crates(()).iter() {
             let span = match self.tcx.extern_crate(n.as_def_id()) {
                 Some(&ExternCrate { span, .. }) => span,
                 None => {
@@ -128,7 +127,10 @@ impl<'tcx> SaveContext<'tcx> {
                 num: n.as_u32(),
                 id: GlobalCrateId {
                     name: self.tcx.crate_name(n).to_string(),
-                    disambiguator: self.tcx.crate_disambiguator(n).to_fingerprint().as_value(),
+                    disambiguator: (
+                        self.tcx.def_path_hash(n.as_def_id()).stable_crate_id().to_u64(),
+                        0,
+                    ),
                 },
             });
         }
@@ -290,7 +292,7 @@ impl<'tcx> SaveContext<'tcx> {
                     name: item.ident.to_string(),
                     qualname,
                     span: self.span_from_span(item.ident.span),
-                    value: filename.to_string(),
+                    value: filename.prefer_remapped().to_string(),
                     parent: None,
                     children: m
                         .item_ids
@@ -824,20 +826,6 @@ impl<'tcx> SaveContext<'tcx> {
                 // FIXME: Should save-analysis beautify doc strings itself or leave it to users?
                 result.push_str(&beautify_doc_string(val).as_str());
                 result.push('\n');
-            } else if self.tcx.sess.check_name(attr, sym::doc) {
-                if let Some(meta_list) = attr.meta_item_list() {
-                    meta_list
-                        .into_iter()
-                        .filter(|it| it.has_name(sym::include))
-                        .filter_map(|it| it.meta_item_list().map(|l| l.to_owned()))
-                        .flat_map(|it| it)
-                        .filter(|meta| meta.has_name(sym::contents))
-                        .filter_map(|meta| meta.value_str())
-                        .for_each(|val| {
-                            result.push_str(&val.as_str());
-                            result.push('\n');
-                        });
-                }
             }
         }
 
@@ -1000,7 +988,7 @@ pub fn process_crate<'l, 'tcx, H: SaveHandler>(
             // Privacy checking requires and is done after type checking; use a
             // fallback in case the access levels couldn't have been correctly computed.
             let access_levels = match tcx.sess.compile_status() {
-                Ok(..) => tcx.privacy_access_levels(LOCAL_CRATE),
+                Ok(..) => tcx.privacy_access_levels(()),
                 Err(..) => tcx.arena.alloc(AccessLevels::default()),
             };
 

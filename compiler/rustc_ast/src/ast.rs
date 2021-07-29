@@ -278,7 +278,7 @@ impl ParenthesizedArgs {
             .cloned()
             .map(|input| AngleBracketedArg::Arg(GenericArg::Type(input)))
             .collect();
-        AngleBracketedArgs { span: self.span, args }
+        AngleBracketedArgs { span: self.inputs_span, args }
     }
 }
 
@@ -623,12 +623,13 @@ impl Pat {
             PatKind::Ident(_, _, Some(p)) => p.walk(it),
 
             // Walk into each field of struct.
-            PatKind::Struct(_, fields, _) => fields.iter().for_each(|field| field.pat.walk(it)),
+            PatKind::Struct(_, _, fields, _) => fields.iter().for_each(|field| field.pat.walk(it)),
 
             // Sequence of patterns.
-            PatKind::TupleStruct(_, s) | PatKind::Tuple(s) | PatKind::Slice(s) | PatKind::Or(s) => {
-                s.iter().for_each(|p| p.walk(it))
-            }
+            PatKind::TupleStruct(_, _, s)
+            | PatKind::Tuple(s)
+            | PatKind::Slice(s)
+            | PatKind::Or(s) => s.iter().for_each(|p| p.walk(it)),
 
             // Trivial wrappers over inner patterns.
             PatKind::Box(s) | PatKind::Ref(s, _) | PatKind::Paren(s) => s.walk(it),
@@ -676,7 +677,9 @@ pub enum BindingMode {
 
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum RangeEnd {
+    /// `..=` or `...`
     Included(RangeSyntax),
+    /// `..`
     Excluded,
 }
 
@@ -688,6 +691,7 @@ pub enum RangeSyntax {
     DotDotEq,
 }
 
+/// All the different flavors of pattern that Rust recognizes.
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum PatKind {
     /// Represents a wildcard pattern (`_`).
@@ -701,10 +705,10 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The `bool` is `true` in the presence of a `..`.
-    Struct(Path, Vec<PatField>, /* recovered */ bool),
+    Struct(Option<QSelf>, Path, Vec<PatField>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
-    TupleStruct(Path, Vec<P<Pat>>),
+    TupleStruct(Option<QSelf>, Path, Vec<P<Pat>>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
@@ -728,7 +732,7 @@ pub enum PatKind {
     /// A literal.
     Lit(P<Expr>),
 
-    /// A range pattern (e.g., `1...2`, `1..=2` or `1..2`).
+    /// A range pattern (e.g., `1...2`, `1..2`, `1..`, `..2`, `1..=2`, `..=2`).
     Range(Option<P<Expr>>, Option<P<Expr>>, Spanned<RangeEnd>),
 
     /// A slice pattern `[a, b, c]`.
@@ -1016,7 +1020,7 @@ pub struct Local {
 /// ```
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct Arm {
-    pub attrs: Vec<Attribute>,
+    pub attrs: AttrVec,
     /// Match arm pattern, e.g. `10` in `match foo { 10 => {}, _ => {} }`
     pub pat: P<Pat>,
     /// Match arm guard, e.g. `n > 10` in `match foo { n if n > 10 => {}, _ => {} }`
@@ -1247,6 +1251,7 @@ pub enum StructRest {
 
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct StructExpr {
+    pub qself: Option<QSelf>,
     pub path: Path,
     pub fields: Vec<ExprField>,
     pub rest: StructRest,
@@ -1861,6 +1866,10 @@ pub enum TyKind {
     Never,
     /// A tuple (`(A, B, C, D,...)`).
     Tup(Vec<P<Ty>>),
+    /// An anonymous struct type i.e. `struct { foo: Type }`
+    AnonymousStruct(Vec<FieldDef>, bool),
+    /// An anonymous union type i.e. `union { bar: Type }`
+    AnonymousUnion(Vec<FieldDef>, bool),
     /// A path (`module::module::...::Type`), optionally
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///
@@ -1929,6 +1938,7 @@ bitflags::bitflags! {
         const NORETURN = 1 << 4;
         const NOSTACK = 1 << 5;
         const ATT_SYNTAX = 1 << 6;
+        const RAW = 1 << 7;
     }
 }
 
@@ -2279,14 +2289,6 @@ pub struct ForeignMod {
     pub items: Vec<P<ForeignItem>>,
 }
 
-/// Global inline assembly.
-///
-/// Also known as "module-level assembly" or "file-scoped assembly".
-#[derive(Clone, Encodable, Decodable, Debug, Copy)]
-pub struct GlobalAsm {
-    pub asm: Symbol,
-}
-
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct EnumDef {
     pub variants: Vec<Variant>,
@@ -2295,7 +2297,7 @@ pub struct EnumDef {
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct Variant {
     /// Attributes of the variant.
-    pub attrs: Vec<Attribute>,
+    pub attrs: AttrVec,
     /// Id of the variant (not the constructor, see `VariantData::ctor_id()`).
     pub id: NodeId,
     /// Span
@@ -2476,7 +2478,7 @@ impl VisibilityKind {
 /// E.g., `bar: usize` as in `struct Foo { bar: usize }`.
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct FieldDef {
-    pub attrs: Vec<Attribute>,
+    pub attrs: AttrVec,
     pub id: NodeId,
     pub span: Span,
     pub vis: Visibility,
@@ -2669,7 +2671,7 @@ pub enum ItemKind {
     /// E.g., `extern {}` or `extern "C" {}`.
     ForeignMod(ForeignMod),
     /// Module-level inline assembly (from `global_asm!()`).
-    GlobalAsm(GlobalAsm),
+    GlobalAsm(InlineAsm),
     /// A type alias (`type`).
     ///
     /// E.g., `type Foo = Bar<u8>;`.

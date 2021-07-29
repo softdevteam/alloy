@@ -1,12 +1,11 @@
-use crate::base::ExtCtxt;
+use crate::base::{ExtCtxt, ResolverExpand};
 
 use rustc_ast as ast;
-use rustc_ast::token;
-use rustc_ast::token::Nonterminal;
-use rustc_ast::token::NtIdent;
+use rustc_ast::token::{self, Nonterminal, NtIdent, TokenKind};
 use rustc_ast::tokenstream::{self, CanSynthesizeMissingTokens};
 use rustc_ast::tokenstream::{DelimSpan, Spacing::*, TokenStream, TreeAndSpacing};
 use rustc_ast_pretty::pprust;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::Diagnostic;
 use rustc_lint_defs::builtin::PROC_MACRO_BACK_COMPAT;
@@ -14,6 +13,7 @@ use rustc_lint_defs::BuiltinLintDiagnostics;
 use rustc_parse::lexer::nfc_normalize;
 use rustc_parse::{nt_to_tokenstream, parse_stream_from_source_str};
 use rustc_session::parse::ParseSess;
+use rustc_span::def_id::CrateNum;
 use rustc_span::hygiene::ExpnKind;
 use rustc_span::symbol::{self, kw, sym, Symbol};
 use rustc_span::{BytePos, FileName, MultiSpan, Pos, RealFileName, SourceFile, Span};
@@ -355,22 +355,28 @@ pub struct Literal {
 }
 
 pub(crate) struct Rustc<'a> {
+    resolver: &'a dyn ResolverExpand,
     sess: &'a ParseSess,
     def_site: Span,
     call_site: Span,
     mixed_site: Span,
     span_debug: bool,
+    krate: CrateNum,
+    rebased_spans: FxHashMap<usize, Span>,
 }
 
 impl<'a> Rustc<'a> {
     pub fn new(cx: &'a ExtCtxt<'_>) -> Self {
         let expn_data = cx.current_expansion.id.expn_data();
         Rustc {
-            sess: &cx.sess.parse_sess,
+            resolver: cx.resolver,
+            sess: cx.parse_sess(),
             def_site: cx.with_def_site_ctxt(expn_data.def_site),
             call_site: cx.with_call_site_ctxt(expn_data.call_site),
             mixed_site: cx.with_mixed_site_ctxt(expn_data.call_site),
             span_debug: cx.ecfg.span_debug,
+            krate: expn_data.macro_def_id.unwrap().krate,
+            rebased_spans: FxHashMap::default(),
         }
     }
 
@@ -397,6 +403,10 @@ impl server::Types for Rustc<'_> {
 impl server::FreeFunctions for Rustc<'_> {
     fn track_env_var(&mut self, var: &str, value: Option<&str>) {
         self.sess.env_depinfo.borrow_mut().insert((Symbol::intern(var), value.map(Symbol::intern)));
+    }
+
+    fn track_path(&mut self, path: &str) {
+        self.sess.file_depinfo.borrow_mut().insert(Symbol::intern(path));
     }
 }
 
@@ -526,6 +536,33 @@ impl server::Ident for Rustc<'_> {
 }
 
 impl server::Literal for Rustc<'_> {
+    fn from_str(&mut self, s: &str) -> Result<Self::Literal, ()> {
+        let override_span = None;
+        let stream = parse_stream_from_source_str(
+            FileName::proc_macro_source_code(s),
+            s.to_owned(),
+            self.sess,
+            override_span,
+        );
+        if stream.len() != 1 {
+            return Err(());
+        }
+        let tree = stream.into_trees().next().unwrap();
+        let token = match tree {
+            tokenstream::TokenTree::Token(token) => token,
+            tokenstream::TokenTree::Delimited { .. } => return Err(()),
+        };
+        let span_data = token.span.data();
+        if (span_data.hi.0 - span_data.lo.0) as usize != s.len() {
+            // There is a comment or whitespace adjacent to the literal.
+            return Err(());
+        }
+        let lit = match token.kind {
+            TokenKind::Literal(lit) => lit,
+            _ => return Err(()),
+        };
+        Ok(Literal { lit, span: self.call_site })
+    }
     fn debug_kind(&mut self, literal: &Self::Literal) -> String {
         format!("{:?}", literal.lit.kind)
     }
@@ -623,10 +660,11 @@ impl server::SourceFile for Rustc<'_> {
         match file.name {
             FileName::Real(ref name) => name
                 .local_path()
+                .expect("attempting to get a file path in an imported file in `proc_macro::SourceFile::path`")
                 .to_str()
                 .expect("non-UTF8 file path in `proc_macro::SourceFile::path`")
                 .to_string(),
-            _ => file.name.to_string(),
+            _ => file.name.prefer_local().to_string(),
         }
     }
     fn is_real(&mut self, file: &Self::SourceFile) -> bool {
@@ -713,6 +751,41 @@ impl server::Span for Rustc<'_> {
     fn source_text(&mut self, span: Self::Span) -> Option<String> {
         self.sess.source_map().span_to_snippet(span).ok()
     }
+    /// Saves the provided span into the metadata of
+    /// *the crate we are currently compiling*, which must
+    /// be a proc-macro crate. This id can be passed to
+    /// `recover_proc_macro_span` when our current crate
+    /// is *run* as a proc-macro.
+    ///
+    /// Let's suppose that we have two crates - `my_client`
+    /// and `my_proc_macro`. The `my_proc_macro` crate
+    /// contains a procedural macro `my_macro`, which
+    /// is implemented as: `quote! { "hello" }`
+    ///
+    /// When we *compile* `my_proc_macro`, we will execute
+    /// the `quote` proc-macro. This will save the span of
+    /// "hello" into the metadata of `my_proc_macro`. As a result,
+    /// the body of `my_proc_macro` (after expansion) will end
+    /// up containg a call that looks like this:
+    /// `proc_macro::Ident::new("hello", proc_macro::Span::recover_proc_macro_span(0))`
+    ///
+    /// where `0` is the id returned by this function.
+    /// When `my_proc_macro` *executes* (during the compilation of `my_client`),
+    /// the call to `recover_proc_macro_span` will load the corresponding
+    /// span from the metadata of `my_proc_macro` (which we have access to,
+    /// since we've loaded `my_proc_macro` from disk in order to execute it).
+    /// In this way, we have obtained a span pointing into `my_proc_macro`
+    fn save_span(&mut self, span: Self::Span) -> usize {
+        self.sess.save_proc_macro_span(span)
+    }
+    fn recover_proc_macro_span(&mut self, id: usize) -> Self::Span {
+        let (resolver, krate, def_site) = (self.resolver, self.krate, self.def_site);
+        *self.rebased_spans.entry(id).or_insert_with(|| {
+            // FIXME: `SyntaxContext` for spans from proc macro crates is lost during encoding,
+            // replace it with a def-site context until we are encoding it properly.
+            resolver.get_proc_macro_quoted_span(krate, id).with_ctxt(def_site.ctxt())
+        })
+    }
 }
 
 // See issue #74616 for details
@@ -725,7 +798,7 @@ fn ident_name_compatibility_hack(
         if let ExpnKind::Macro(_, macro_name) = orig_span.ctxt().outer_expn_data().kind {
             let source_map = rustc.sess.source_map();
             let filename = source_map.span_to_filename(orig_span);
-            if let FileName::Real(RealFileName::Named(path)) = filename {
+            if let FileName::Real(RealFileName::LocalPath(path)) = filename {
                 let matches_prefix = |prefix, filename| {
                     // Check for a path that ends with 'prefix*/src/<filename>'
                     let mut iter = path.components().rev();
@@ -788,7 +861,7 @@ fn ident_name_compatibility_hack(
                 if macro_name == sym::tuple_from_req && matches_prefix("actix-web", "extract.rs") {
                     let snippet = source_map.span_to_snippet(orig_span);
                     if snippet.as_deref() == Ok("$T") {
-                        if let FileName::Real(RealFileName::Named(macro_path)) =
+                        if let FileName::Real(RealFileName::LocalPath(macro_path)) =
                             source_map.span_to_filename(rustc.def_site)
                         {
                             if macro_path.to_string_lossy().contains("pin-project-internal-0.") {

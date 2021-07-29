@@ -6,7 +6,6 @@ use rustc_middle::ty::TyS;
 use rustc_span::source_map::Span;
 use std::fmt;
 
-use super::WRONG_PUB_SELF_CONVENTION;
 use super::WRONG_SELF_CONVENTION;
 
 #[rustfmt::skip]
@@ -21,9 +20,9 @@ const CONVENTIONS: [(&[Convention], &[SelfKind]); 9] = [
 
     // Conversion using `to_` can use borrowed (non-Copy types) or owned (Copy types).
     // Source: https://rust-lang.github.io/api-guidelines/naming.html#ad-hoc-conversions-follow-as_-to_-into_-conventions-c-conv
-    (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(false), 
-    Convention::IsTraitItem(false)], &[SelfKind::Ref]),
-    (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(true), 
+    (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(false),
+    Convention::IsTraitItem(false), Convention::ImplementsTrait(false)], &[SelfKind::Ref]),
+    (&[Convention::StartsWith("to_"), Convention::NotEndsWith("_mut"), Convention::IsSelfTypeCopy(true),
     Convention::IsTraitItem(false), Convention::ImplementsTrait(false)], &[SelfKind::Value]),
 ];
 
@@ -85,23 +84,25 @@ impl fmt::Display for Convention {
 pub(super) fn check<'tcx>(
     cx: &LateContext<'tcx>,
     item_name: &str,
-    is_pub: bool,
     self_ty: &'tcx TyS<'tcx>,
     first_arg_ty: &'tcx TyS<'tcx>,
     first_arg_span: Span,
     implements_trait: bool,
     is_trait_item: bool,
 ) {
-    let lint = if is_pub {
-        WRONG_PUB_SELF_CONVENTION
-    } else {
-        WRONG_SELF_CONVENTION
-    };
     if let Some((conventions, self_kinds)) = &CONVENTIONS.iter().find(|(convs, _)| {
         convs
             .iter()
             .all(|conv| conv.check(cx, self_ty, item_name, implements_trait, is_trait_item))
     }) {
+        // don't lint if it implements a trait but not willing to check `Copy` types conventions (see #7032)
+        if implements_trait
+            && !conventions
+                .iter()
+                .any(|conv| matches!(conv, Convention::IsSelfTypeCopy(_)))
+        {
+            return;
+        }
         if !self_kinds.iter().any(|k| k.matches(cx, self_ty, first_arg_ty)) {
             let suggestion = {
                 if conventions.len() > 1 {
@@ -134,7 +135,7 @@ pub(super) fn check<'tcx>(
 
             span_lint_and_help(
                 cx,
-                lint,
+                WRONG_SELF_CONVENTION,
                 first_arg_span,
                 &format!(
                     "{} usually take {}",

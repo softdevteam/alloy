@@ -6,7 +6,6 @@
 #![feature(in_band_lifetimes)]
 #![feature(iter_zip)]
 #![feature(once_cell)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(rustc_private)]
 #![feature(stmt_expr_attributes)]
 #![feature(control_flow_enum)]
@@ -17,7 +16,7 @@
 // warn on lints, that are included in `rust-lang/rust`s bootstrap
 #![warn(rust_2018_idioms, unused_lifetimes)]
 // warn on rustc internal lints
-#![deny(rustc::internal)]
+#![warn(rustc::internal)]
 
 // FIXME: switch to something more ergonomic here, once available.
 // (Currently there is no way to opt into sysroot crates without `extern crate`.)
@@ -42,6 +41,9 @@ extern crate rustc_target;
 extern crate rustc_trait_selection;
 extern crate rustc_typeck;
 
+#[macro_use]
+extern crate clippy_utils;
+
 use clippy_utils::parse_msrv;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_lint::LintId;
@@ -58,9 +60,9 @@ use rustc_session::Session;
 /// 4. The `description` that contains a short explanation on what's wrong with code where the
 ///    lint is triggered.
 ///
-/// Currently the categories `style`, `correctness`, `complexity` and `perf` are enabled by default.
-/// As said in the README.md of this repository, if the lint level mapping changes, please update
-/// README.md.
+/// Currently the categories `style`, `correctness`, `suspicious`, `complexity` and `perf` are
+/// enabled by default. As said in the README.md of this repository, if the lint level mapping
+/// changes, please update README.md.
 ///
 /// # Example
 ///
@@ -102,6 +104,11 @@ macro_rules! declare_clippy_lint {
     { $(#[$attr:meta])* pub $name:tt, correctness, $description:tt } => {
         declare_tool_lint! {
             $(#[$attr])* pub clippy::$name, Deny, $description, report_in_external_macro: true
+        }
+    };
+    { $(#[$attr:meta])* pub $name:tt, suspicious, $description:tt } => {
+        declare_tool_lint! {
+            $(#[$attr])* pub clippy::$name, Warn, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, complexity, $description:tt } => {
@@ -146,22 +153,8 @@ macro_rules! declare_clippy_lint {
     };
 }
 
-#[macro_export]
-macro_rules! sym {
-    ( $($x:tt)* ) => { clippy_utils::sym!($($x)*) }
-}
-
-#[macro_export]
-macro_rules! unwrap_cargo_metadata {
-    ( $($x:tt)* ) => { clippy_utils::unwrap_cargo_metadata!($($x)*) }
-}
-
-macro_rules! extract_msrv_attr {
-    ( $($x:tt)* ) => { clippy_utils::extract_msrv_attr!($($x)*); }
-}
-
-mod consts;
-#[macro_use]
+#[cfg(feature = "metadata-collector-lint")]
+mod deprecated_lints;
 mod utils;
 
 // begin lints modules, do not remove this comment, it’s used in `update_lints`
@@ -179,6 +172,7 @@ mod await_holding_invalid;
 mod bit_mask;
 mod blacklisted_name;
 mod blocks_in_if_conditions;
+mod bool_assert_comparison;
 mod booleans;
 mod bytecount;
 mod cargo_common_metadata;
@@ -198,6 +192,8 @@ mod default_numeric_fallback;
 mod dereference;
 mod derive;
 mod disallowed_method;
+mod disallowed_script_idents;
+mod disallowed_type;
 mod doc;
 mod double_comparison;
 mod double_parens;
@@ -265,7 +261,6 @@ mod manual_strip;
 mod manual_unwrap_or;
 mod map_clone;
 mod map_err_ignore;
-mod map_identity;
 mod map_unit_fn;
 mod match_on_vec_items;
 mod matches;
@@ -278,6 +273,7 @@ mod misc;
 mod misc_early;
 mod missing_const_for_fn;
 mod missing_doc;
+mod missing_enforced_import_rename;
 mod missing_inline;
 mod modulo_arithmetic;
 mod multiple_crate_versions;
@@ -288,6 +284,7 @@ mod mut_reference;
 mod mutable_debug_assertion;
 mod mutex_atomic;
 mod needless_arbitrary_self_type;
+mod needless_bitwise_bool;
 mod needless_bool;
 mod needless_borrow;
 mod needless_borrowed_ref;
@@ -303,6 +300,7 @@ mod no_effect;
 mod non_copy_const;
 mod non_expressive_names;
 mod non_octal_unix_permissions;
+mod nonstandard_macro_braces;
 mod open_options;
 mod option_env_unwrap;
 mod option_if_let_else;
@@ -332,6 +330,7 @@ mod regex;
 mod repeat_once;
 mod returns;
 mod self_assignment;
+mod self_named_constructor;
 mod semicolon_if_nothing_returned;
 mod serde_api;
 mod shadow;
@@ -340,6 +339,7 @@ mod size_of_in_element_count;
 mod slow_vector_initialization;
 mod stable_sort_primitive;
 mod strings;
+mod strlen_on_c_strings;
 mod suspicious_operation_groupings;
 mod suspicious_trait_impl;
 mod swap;
@@ -357,10 +357,12 @@ mod unicode;
 mod unit_return_expecting_ord;
 mod unit_types;
 mod unnamed_address;
+mod unnecessary_self_imports;
 mod unnecessary_sort_by;
 mod unnecessary_wraps;
 mod unnested_or_patterns;
 mod unsafe_removed_from_name;
+mod unused_async;
 mod unused_io_amount;
 mod unused_self;
 mod unused_unit;
@@ -381,6 +383,7 @@ mod zero_sized_map_values;
 // end lints modules, do not remove this comment, it’s used in `update_lints`
 
 pub use crate::utils::conf::Conf;
+use crate::utils::conf::TryConf;
 
 /// Register all pre expansion lints
 ///
@@ -391,62 +394,36 @@ pub use crate::utils::conf::Conf;
 ///
 /// Used in `./src/driver.rs`.
 pub fn register_pre_expansion_lints(store: &mut rustc_lint::LintStore) {
+    // NOTE: Do not add any more pre-expansion passes. These should be removed eventually.
     store.register_pre_expansion_pass(|| box write::Write::default());
     store.register_pre_expansion_pass(|| box attrs::EarlyAttributes);
     store.register_pre_expansion_pass(|| box dbg_macro::DbgMacro);
 }
 
 #[doc(hidden)]
-pub fn read_conf(args: &[rustc_ast::NestedMetaItem], sess: &Session) -> Conf {
-    use std::path::Path;
-    match utils::conf::file_from_args(args) {
-        Ok(file_name) => {
-            // if the user specified a file, it must exist, otherwise default to `clippy.toml` but
-            // do not require the file to exist
-            let file_name = match file_name {
-                Some(file_name) => file_name,
-                None => match utils::conf::lookup_conf_file() {
-                    Ok(Some(path)) => path,
-                    Ok(None) => return Conf::default(),
-                    Err(error) => {
-                        sess.struct_err(&format!("error finding Clippy's configuration file: {}", error))
-                            .emit();
-                        return Conf::default();
-                    },
-                },
-            };
-
-            let file_name = if file_name.is_relative() {
-                sess.local_crate_source_file
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .unwrap_or_else(|| Path::new(""))
-                    .join(file_name)
-            } else {
-                file_name
-            };
-
-            let (conf, errors) = utils::conf::read(&file_name);
-
-            // all conf errors are non-fatal, we just use the default conf in case of error
-            for error in errors {
-                sess.struct_err(&format!(
-                    "error reading Clippy's configuration file `{}`: {}",
-                    file_name.display(),
-                    error
-                ))
+pub fn read_conf(sess: &Session) -> Conf {
+    let file_name = match utils::conf::lookup_conf_file() {
+        Ok(Some(path)) => path,
+        Ok(None) => return Conf::default(),
+        Err(error) => {
+            sess.struct_err(&format!("error finding Clippy's configuration file: {}", error))
                 .emit();
-            }
+            return Conf::default();
+        },
+    };
 
-            conf
-        },
-        Err((err, span)) => {
-            sess.struct_span_err(span, err)
-                .span_note(span, "Clippy will use default configuration")
-                .emit();
-            Conf::default()
-        },
+    let TryConf { conf, errors } = utils::conf::read(&file_name);
+    // all conf errors are non-fatal, we just use the default conf in case of error
+    for error in errors {
+        sess.struct_err(&format!(
+            "error reading Clippy's configuration file `{}`: {}",
+            file_name.display(),
+            error
+        ))
+        .emit();
     }
+
+    conf
 }
 
 /// Register all lints and lint groups with the rustc plugin registry
@@ -495,20 +472,8 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         "the replacement suggested by this lint had substantially different behavior",
     );
     store.register_removed(
-        "clippy::invalid_ref",
-        "superseded by rustc lint `invalid_value`",
-    );
-    store.register_removed(
         "clippy::unused_collect",
         "`collect` has been marked as #[must_use] in rustc and that covers all cases of this lint",
-    );
-    store.register_removed(
-        "clippy::into_iter_on_array",
-        "this lint has been uplifted to rustc and is now called `array_into_iter`",
-    );
-    store.register_removed(
-        "clippy::unused_label",
-        "this lint has been uplifted to rustc and is now called `unused_labels`",
     );
     store.register_removed(
         "clippy::replace_consts",
@@ -519,24 +484,20 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         "the regex! macro has been removed from the regex crate in 2018",
     );
     store.register_removed(
-        "clippy::drop_bounds",
-        "this lint has been uplifted to rustc and is now called `drop_bounds`",
-    );
-    store.register_removed(
-        "clippy::temporary_cstring_as_ptr",
-        "this lint has been uplifted to rustc and is now called `temporary_cstring_as_ptr`",
-    );
-    store.register_removed(
-        "clippy::panic_params",
-        "this lint has been uplifted to rustc and is now called `panic_fmt`",
-    );
-    store.register_removed(
-        "clippy::unknown_clippy_lints",
-        "this lint has been integrated into the `unknown_lints` rustc lint",
-    );
-    store.register_removed(
         "clippy::find_map",
         "this lint has been replaced by `manual_find_map`, a more specific lint",
+    );
+    store.register_removed(
+        "clippy::filter_map",
+        "this lint has been replaced by `manual_filter_map`, a more specific lint",
+    );
+    store.register_removed(
+        "clippy::pub_enum_variant_names",
+        "set the `avoid-breaking-exported-api` config option to `false` to enable the `enum_variant_names` lint for public items",
+    );
+    store.register_removed(
+        "clippy::wrong_pub_self_convention",
+        "set the `avoid-breaking-exported-api` config option to `false` to enable the `wrong_self_convention` lint for public items",
     );
     // end deprecated lints, do not remove this comment, it’s used in `update_lints`
 
@@ -592,6 +553,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         bit_mask::VERBOSE_BIT_MASK,
         blacklisted_name::BLACKLISTED_NAME,
         blocks_in_if_conditions::BLOCKS_IN_IF_CONDITIONS,
+        bool_assert_comparison::BOOL_ASSERT_COMPARISON,
         booleans::LOGIC_BUG,
         booleans::NONMINIMAL_BOOL,
         bytecount::NAIVE_BYTECOUNT,
@@ -631,6 +593,8 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         derive::EXPL_IMPL_CLONE_ON_COPY,
         derive::UNSAFE_DERIVE_DESERIALIZE,
         disallowed_method::DISALLOWED_METHOD,
+        disallowed_script_idents::DISALLOWED_SCRIPT_IDENTS,
+        disallowed_type::DISALLOWED_TYPE,
         doc::DOC_MARKDOWN,
         doc::MISSING_ERRORS_DOC,
         doc::MISSING_PANICS_DOC,
@@ -650,7 +614,6 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         enum_variants::ENUM_VARIANT_NAMES,
         enum_variants::MODULE_INCEPTION,
         enum_variants::MODULE_NAME_REPETITIONS,
-        enum_variants::PUB_ENUM_VARIANT_NAMES,
         eq_op::EQ_OP,
         eq_op::OP_REF,
         erasing_op::ERASING_OP,
@@ -754,7 +717,6 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         manual_unwrap_or::MANUAL_UNWRAP_OR,
         map_clone::MAP_CLONE,
         map_err_ignore::MAP_ERR_IGNORE,
-        map_identity::MAP_IDENTITY,
         map_unit_fn::OPTION_MAP_UNIT_FN,
         map_unit_fn::RESULT_MAP_UNIT_FN,
         match_on_vec_items::MATCH_ON_VEC_ITEMS,
@@ -779,21 +741,23 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         mem_replace::MEM_REPLACE_OPTION_WITH_NONE,
         mem_replace::MEM_REPLACE_WITH_DEFAULT,
         mem_replace::MEM_REPLACE_WITH_UNINIT,
+        methods::APPEND_INSTEAD_OF_EXTEND,
         methods::BIND_INSTEAD_OF_MAP,
         methods::BYTES_NTH,
         methods::CHARS_LAST_CMP,
         methods::CHARS_NEXT_CMP,
+        methods::CLONED_INSTEAD_OF_COPIED,
         methods::CLONE_DOUBLE_REF,
         methods::CLONE_ON_COPY,
         methods::CLONE_ON_REF_PTR,
         methods::EXPECT_FUN_CALL,
         methods::EXPECT_USED,
         methods::FILETYPE_IS_FILE,
-        methods::FILTER_MAP,
         methods::FILTER_MAP_IDENTITY,
         methods::FILTER_MAP_NEXT,
         methods::FILTER_NEXT,
         methods::FLAT_MAP_IDENTITY,
+        methods::FLAT_MAP_OPTION,
         methods::FROM_ITER_INSTEAD_OF_COLLECT,
         methods::GET_UNWRAP,
         methods::IMPLICIT_CLONE,
@@ -810,8 +774,10 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         methods::MANUAL_FILTER_MAP,
         methods::MANUAL_FIND_MAP,
         methods::MANUAL_SATURATING_ARITHMETIC,
+        methods::MANUAL_STR_REPEAT,
         methods::MAP_COLLECT_RESULT_UNIT,
         methods::MAP_FLATTEN,
+        methods::MAP_IDENTITY,
         methods::MAP_UNWRAP_OR,
         methods::NEW_RET_NO_SELF,
         methods::OK_EXPECT,
@@ -827,13 +793,13 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         methods::SKIP_WHILE_NEXT,
         methods::STRING_EXTEND_CHARS,
         methods::SUSPICIOUS_MAP,
+        methods::SUSPICIOUS_SPLITN,
         methods::UNINIT_ASSUMED_INIT,
         methods::UNNECESSARY_FILTER_MAP,
         methods::UNNECESSARY_FOLD,
         methods::UNNECESSARY_LAZY_EVALUATIONS,
         methods::UNWRAP_USED,
         methods::USELESS_ASREF,
-        methods::WRONG_PUB_SELF_CONVENTION,
         methods::WRONG_SELF_CONVENTION,
         methods::ZST_OFFSET,
         minmax::MIN_MAX,
@@ -857,6 +823,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         misc_early::ZERO_PREFIXED_LITERAL,
         missing_const_for_fn::MISSING_CONST_FOR_FN,
         missing_doc::MISSING_DOCS_IN_PRIVATE_ITEMS,
+        missing_enforced_import_rename::MISSING_ENFORCED_IMPORT_RENAMES,
         missing_inline::MISSING_INLINE_IN_PUBLIC_ITEMS,
         modulo_arithmetic::MODULO_ARITHMETIC,
         multiple_crate_versions::MULTIPLE_CRATE_VERSIONS,
@@ -868,9 +835,11 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         mutex_atomic::MUTEX_ATOMIC,
         mutex_atomic::MUTEX_INTEGER,
         needless_arbitrary_self_type::NEEDLESS_ARBITRARY_SELF_TYPE,
+        needless_bitwise_bool::NEEDLESS_BITWISE_BOOL,
         needless_bool::BOOL_COMPARISON,
         needless_bool::NEEDLESS_BOOL,
         needless_borrow::NEEDLESS_BORROW,
+        needless_borrow::REF_BINDING_TO_REFERENCE,
         needless_borrowed_ref::NEEDLESS_BORROWED_REFERENCE,
         needless_continue::NEEDLESS_CONTINUE,
         needless_for_each::NEEDLESS_FOR_EACH,
@@ -888,6 +857,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         non_expressive_names::MANY_SINGLE_CHAR_NAMES,
         non_expressive_names::SIMILAR_NAMES,
         non_octal_unix_permissions::NON_OCTAL_UNIX_PERMISSIONS,
+        nonstandard_macro_braces::NONSTANDARD_MACRO_BRACES,
         open_options::NONSENSICAL_OPEN_OPTIONS,
         option_env_unwrap::OPTION_ENV_UNWRAP,
         option_if_let_else::OPTION_IF_LET_ELSE,
@@ -904,6 +874,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         pattern_type_mismatch::PATTERN_TYPE_MISMATCH,
         precedence::PRECEDENCE,
         ptr::CMP_NULL,
+        ptr::INVALID_NULL_PTR_USAGE,
         ptr::MUT_FROM_REF,
         ptr::PTR_ARG,
         ptr_eq::PTR_EQ,
@@ -930,6 +901,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         returns::LET_AND_RETURN,
         returns::NEEDLESS_RETURN,
         self_assignment::SELF_ASSIGNMENT,
+        self_named_constructor::SELF_NAMED_CONSTRUCTOR,
         semicolon_if_nothing_returned::SEMICOLON_IF_NOTHING_RETURNED,
         serde_api::SERDE_API_MISUSE,
         shadow::SHADOW_REUSE,
@@ -945,6 +917,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         strings::STRING_LIT_AS_BYTES,
         strings::STRING_TO_STRING,
         strings::STR_TO_STRING,
+        strlen_on_c_strings::STRLEN_ON_C_STRINGS,
         suspicious_operation_groupings::SUSPICIOUS_OPERATION_GROUPINGS,
         suspicious_trait_impl::SUSPICIOUS_ARITHMETIC_IMPL,
         suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL,
@@ -975,6 +948,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         types::LINKEDLIST,
         types::OPTION_OPTION,
         types::RC_BUFFER,
+        types::RC_MUTEX,
         types::REDUNDANT_ALLOCATION,
         types::TYPE_COMPLEXITY,
         types::VEC_BOX,
@@ -988,10 +962,12 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         unit_types::UNIT_CMP,
         unnamed_address::FN_ADDRESS_COMPARISONS,
         unnamed_address::VTABLE_ADDRESS_COMPARISONS,
+        unnecessary_self_imports::UNNECESSARY_SELF_IMPORTS,
         unnecessary_sort_by::UNNECESSARY_SORT_BY,
         unnecessary_wraps::UNNECESSARY_WRAPS,
         unnested_or_patterns::UNNESTED_OR_PATTERNS,
         unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME,
+        unused_async::UNUSED_ASYNC,
         unused_io_amount::UNUSED_IO_AMOUNT,
         unused_self::UNUSED_SELF,
         unused_unit::UNUSED_UNIT,
@@ -1022,6 +998,825 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     ]);
     // end register lints, do not remove this comment, it’s used in `update_lints`
 
+    store.register_group(true, "clippy::restriction", Some("clippy_restriction"), vec![
+        LintId::of(arithmetic::FLOAT_ARITHMETIC),
+        LintId::of(arithmetic::INTEGER_ARITHMETIC),
+        LintId::of(as_conversions::AS_CONVERSIONS),
+        LintId::of(asm_syntax::INLINE_ASM_X86_ATT_SYNTAX),
+        LintId::of(asm_syntax::INLINE_ASM_X86_INTEL_SYNTAX),
+        LintId::of(create_dir::CREATE_DIR),
+        LintId::of(dbg_macro::DBG_MACRO),
+        LintId::of(default_numeric_fallback::DEFAULT_NUMERIC_FALLBACK),
+        LintId::of(disallowed_script_idents::DISALLOWED_SCRIPT_IDENTS),
+        LintId::of(else_if_without_else::ELSE_IF_WITHOUT_ELSE),
+        LintId::of(exhaustive_items::EXHAUSTIVE_ENUMS),
+        LintId::of(exhaustive_items::EXHAUSTIVE_STRUCTS),
+        LintId::of(exit::EXIT),
+        LintId::of(float_literal::LOSSY_FLOAT_LITERAL),
+        LintId::of(if_then_some_else_none::IF_THEN_SOME_ELSE_NONE),
+        LintId::of(implicit_return::IMPLICIT_RETURN),
+        LintId::of(indexing_slicing::INDEXING_SLICING),
+        LintId::of(inherent_impl::MULTIPLE_INHERENT_IMPL),
+        LintId::of(integer_division::INTEGER_DIVISION),
+        LintId::of(let_underscore::LET_UNDERSCORE_MUST_USE),
+        LintId::of(literal_representation::DECIMAL_LITERAL_REPRESENTATION),
+        LintId::of(map_err_ignore::MAP_ERR_IGNORE),
+        LintId::of(matches::REST_PAT_IN_FULLY_BOUND_STRUCTS),
+        LintId::of(matches::WILDCARD_ENUM_MATCH_ARM),
+        LintId::of(mem_forget::MEM_FORGET),
+        LintId::of(methods::CLONE_ON_REF_PTR),
+        LintId::of(methods::EXPECT_USED),
+        LintId::of(methods::FILETYPE_IS_FILE),
+        LintId::of(methods::GET_UNWRAP),
+        LintId::of(methods::UNWRAP_USED),
+        LintId::of(misc::FLOAT_CMP_CONST),
+        LintId::of(misc_early::UNNEEDED_FIELD_PATTERN),
+        LintId::of(missing_doc::MISSING_DOCS_IN_PRIVATE_ITEMS),
+        LintId::of(missing_enforced_import_rename::MISSING_ENFORCED_IMPORT_RENAMES),
+        LintId::of(missing_inline::MISSING_INLINE_IN_PUBLIC_ITEMS),
+        LintId::of(modulo_arithmetic::MODULO_ARITHMETIC),
+        LintId::of(panic_in_result_fn::PANIC_IN_RESULT_FN),
+        LintId::of(panic_unimplemented::PANIC),
+        LintId::of(panic_unimplemented::TODO),
+        LintId::of(panic_unimplemented::UNIMPLEMENTED),
+        LintId::of(panic_unimplemented::UNREACHABLE),
+        LintId::of(pattern_type_mismatch::PATTERN_TYPE_MISMATCH),
+        LintId::of(shadow::SHADOW_REUSE),
+        LintId::of(shadow::SHADOW_SAME),
+        LintId::of(strings::STRING_ADD),
+        LintId::of(strings::STRING_TO_STRING),
+        LintId::of(strings::STR_TO_STRING),
+        LintId::of(types::RC_BUFFER),
+        LintId::of(types::RC_MUTEX),
+        LintId::of(unnecessary_self_imports::UNNECESSARY_SELF_IMPORTS),
+        LintId::of(unwrap_in_result::UNWRAP_IN_RESULT),
+        LintId::of(verbose_file_reads::VERBOSE_FILE_READS),
+        LintId::of(write::PRINT_STDERR),
+        LintId::of(write::PRINT_STDOUT),
+        LintId::of(write::USE_DEBUG),
+    ]);
+
+    store.register_group(true, "clippy::pedantic", Some("clippy_pedantic"), vec![
+        LintId::of(attrs::INLINE_ALWAYS),
+        LintId::of(await_holding_invalid::AWAIT_HOLDING_LOCK),
+        LintId::of(await_holding_invalid::AWAIT_HOLDING_REFCELL_REF),
+        LintId::of(bit_mask::VERBOSE_BIT_MASK),
+        LintId::of(bytecount::NAIVE_BYTECOUNT),
+        LintId::of(case_sensitive_file_extension_comparisons::CASE_SENSITIVE_FILE_EXTENSION_COMPARISONS),
+        LintId::of(casts::CAST_LOSSLESS),
+        LintId::of(casts::CAST_POSSIBLE_TRUNCATION),
+        LintId::of(casts::CAST_POSSIBLE_WRAP),
+        LintId::of(casts::CAST_PRECISION_LOSS),
+        LintId::of(casts::CAST_PTR_ALIGNMENT),
+        LintId::of(casts::CAST_SIGN_LOSS),
+        LintId::of(casts::PTR_AS_PTR),
+        LintId::of(checked_conversions::CHECKED_CONVERSIONS),
+        LintId::of(copies::SAME_FUNCTIONS_IN_IF_CONDITION),
+        LintId::of(copy_iterator::COPY_ITERATOR),
+        LintId::of(default::DEFAULT_TRAIT_ACCESS),
+        LintId::of(dereference::EXPLICIT_DEREF_METHODS),
+        LintId::of(derive::EXPL_IMPL_CLONE_ON_COPY),
+        LintId::of(derive::UNSAFE_DERIVE_DESERIALIZE),
+        LintId::of(doc::DOC_MARKDOWN),
+        LintId::of(doc::MISSING_ERRORS_DOC),
+        LintId::of(doc::MISSING_PANICS_DOC),
+        LintId::of(empty_enum::EMPTY_ENUM),
+        LintId::of(enum_variants::MODULE_NAME_REPETITIONS),
+        LintId::of(eta_reduction::REDUNDANT_CLOSURE_FOR_METHOD_CALLS),
+        LintId::of(excessive_bools::FN_PARAMS_EXCESSIVE_BOOLS),
+        LintId::of(excessive_bools::STRUCT_EXCESSIVE_BOOLS),
+        LintId::of(functions::MUST_USE_CANDIDATE),
+        LintId::of(functions::TOO_MANY_LINES),
+        LintId::of(if_not_else::IF_NOT_ELSE),
+        LintId::of(implicit_hasher::IMPLICIT_HASHER),
+        LintId::of(implicit_saturating_sub::IMPLICIT_SATURATING_SUB),
+        LintId::of(inconsistent_struct_constructor::INCONSISTENT_STRUCT_CONSTRUCTOR),
+        LintId::of(infinite_iter::MAYBE_INFINITE_ITER),
+        LintId::of(invalid_upcast_comparisons::INVALID_UPCAST_COMPARISONS),
+        LintId::of(items_after_statements::ITEMS_AFTER_STATEMENTS),
+        LintId::of(large_stack_arrays::LARGE_STACK_ARRAYS),
+        LintId::of(let_underscore::LET_UNDERSCORE_DROP),
+        LintId::of(literal_representation::LARGE_DIGIT_GROUPS),
+        LintId::of(literal_representation::UNREADABLE_LITERAL),
+        LintId::of(loops::EXPLICIT_INTO_ITER_LOOP),
+        LintId::of(loops::EXPLICIT_ITER_LOOP),
+        LintId::of(macro_use::MACRO_USE_IMPORTS),
+        LintId::of(manual_ok_or::MANUAL_OK_OR),
+        LintId::of(match_on_vec_items::MATCH_ON_VEC_ITEMS),
+        LintId::of(matches::MATCH_BOOL),
+        LintId::of(matches::MATCH_SAME_ARMS),
+        LintId::of(matches::MATCH_WILDCARD_FOR_SINGLE_VARIANTS),
+        LintId::of(matches::MATCH_WILD_ERR_ARM),
+        LintId::of(matches::SINGLE_MATCH_ELSE),
+        LintId::of(methods::CLONED_INSTEAD_OF_COPIED),
+        LintId::of(methods::FILTER_MAP_NEXT),
+        LintId::of(methods::FLAT_MAP_OPTION),
+        LintId::of(methods::FROM_ITER_INSTEAD_OF_COLLECT),
+        LintId::of(methods::IMPLICIT_CLONE),
+        LintId::of(methods::INEFFICIENT_TO_STRING),
+        LintId::of(methods::MAP_FLATTEN),
+        LintId::of(methods::MAP_UNWRAP_OR),
+        LintId::of(misc::USED_UNDERSCORE_BINDING),
+        LintId::of(misc_early::UNSEPARATED_LITERAL_SUFFIX),
+        LintId::of(mut_mut::MUT_MUT),
+        LintId::of(needless_bitwise_bool::NEEDLESS_BITWISE_BOOL),
+        LintId::of(needless_borrow::REF_BINDING_TO_REFERENCE),
+        LintId::of(needless_continue::NEEDLESS_CONTINUE),
+        LintId::of(needless_for_each::NEEDLESS_FOR_EACH),
+        LintId::of(needless_pass_by_value::NEEDLESS_PASS_BY_VALUE),
+        LintId::of(non_expressive_names::SIMILAR_NAMES),
+        LintId::of(option_if_let_else::OPTION_IF_LET_ELSE),
+        LintId::of(pass_by_ref_or_value::LARGE_TYPES_PASSED_BY_VALUE),
+        LintId::of(pass_by_ref_or_value::TRIVIALLY_COPY_PASS_BY_REF),
+        LintId::of(ranges::RANGE_MINUS_ONE),
+        LintId::of(ranges::RANGE_PLUS_ONE),
+        LintId::of(redundant_else::REDUNDANT_ELSE),
+        LintId::of(ref_option_ref::REF_OPTION_REF),
+        LintId::of(semicolon_if_nothing_returned::SEMICOLON_IF_NOTHING_RETURNED),
+        LintId::of(shadow::SHADOW_UNRELATED),
+        LintId::of(strings::STRING_ADD_ASSIGN),
+        LintId::of(trait_bounds::TRAIT_DUPLICATION_IN_BOUNDS),
+        LintId::of(trait_bounds::TYPE_REPETITION_IN_BOUNDS),
+        LintId::of(transmute::TRANSMUTE_PTR_TO_PTR),
+        LintId::of(types::LINKEDLIST),
+        LintId::of(types::OPTION_OPTION),
+        LintId::of(unicode::NON_ASCII_LITERAL),
+        LintId::of(unicode::UNICODE_NOT_NFC),
+        LintId::of(unit_types::LET_UNIT_VALUE),
+        LintId::of(unnecessary_wraps::UNNECESSARY_WRAPS),
+        LintId::of(unnested_or_patterns::UNNESTED_OR_PATTERNS),
+        LintId::of(unused_async::UNUSED_ASYNC),
+        LintId::of(unused_self::UNUSED_SELF),
+        LintId::of(wildcard_imports::ENUM_GLOB_USE),
+        LintId::of(wildcard_imports::WILDCARD_IMPORTS),
+        LintId::of(zero_sized_map_values::ZERO_SIZED_MAP_VALUES),
+    ]);
+
+    #[cfg(feature = "internal-lints")]
+    store.register_group(true, "clippy::internal", Some("clippy_internal"), vec![
+        LintId::of(utils::internal_lints::CLIPPY_LINTS_INTERNAL),
+        LintId::of(utils::internal_lints::COLLAPSIBLE_SPAN_LINT_CALLS),
+        LintId::of(utils::internal_lints::COMPILER_LINT_FUNCTIONS),
+        LintId::of(utils::internal_lints::DEFAULT_LINT),
+        LintId::of(utils::internal_lints::IF_CHAIN_STYLE),
+        LintId::of(utils::internal_lints::INTERNING_DEFINED_SYMBOL),
+        LintId::of(utils::internal_lints::INVALID_PATHS),
+        LintId::of(utils::internal_lints::LINT_WITHOUT_LINT_PASS),
+        LintId::of(utils::internal_lints::MATCH_TYPE_ON_DIAGNOSTIC_ITEM),
+        LintId::of(utils::internal_lints::OUTER_EXPN_EXPN_DATA),
+        LintId::of(utils::internal_lints::PRODUCE_ICE),
+        LintId::of(utils::internal_lints::UNNECESSARY_SYMBOL_STR),
+    ]);
+
+    store.register_group(true, "clippy::all", Some("clippy"), vec![
+        LintId::of(absurd_extreme_comparisons::ABSURD_EXTREME_COMPARISONS),
+        LintId::of(approx_const::APPROX_CONSTANT),
+        LintId::of(assertions_on_constants::ASSERTIONS_ON_CONSTANTS),
+        LintId::of(assign_ops::ASSIGN_OP_PATTERN),
+        LintId::of(assign_ops::MISREFACTORED_ASSIGN_OP),
+        LintId::of(async_yields_async::ASYNC_YIELDS_ASYNC),
+        LintId::of(atomic_ordering::INVALID_ATOMIC_ORDERING),
+        LintId::of(attrs::BLANKET_CLIPPY_RESTRICTION_LINTS),
+        LintId::of(attrs::DEPRECATED_CFG_ATTR),
+        LintId::of(attrs::DEPRECATED_SEMVER),
+        LintId::of(attrs::MISMATCHED_TARGET_OS),
+        LintId::of(attrs::USELESS_ATTRIBUTE),
+        LintId::of(bit_mask::BAD_BIT_MASK),
+        LintId::of(bit_mask::INEFFECTIVE_BIT_MASK),
+        LintId::of(blacklisted_name::BLACKLISTED_NAME),
+        LintId::of(blocks_in_if_conditions::BLOCKS_IN_IF_CONDITIONS),
+        LintId::of(bool_assert_comparison::BOOL_ASSERT_COMPARISON),
+        LintId::of(booleans::LOGIC_BUG),
+        LintId::of(booleans::NONMINIMAL_BOOL),
+        LintId::of(casts::CAST_REF_TO_MUT),
+        LintId::of(casts::CHAR_LIT_AS_U8),
+        LintId::of(casts::FN_TO_NUMERIC_CAST),
+        LintId::of(casts::FN_TO_NUMERIC_CAST_WITH_TRUNCATION),
+        LintId::of(casts::UNNECESSARY_CAST),
+        LintId::of(collapsible_if::COLLAPSIBLE_ELSE_IF),
+        LintId::of(collapsible_if::COLLAPSIBLE_IF),
+        LintId::of(collapsible_match::COLLAPSIBLE_MATCH),
+        LintId::of(comparison_chain::COMPARISON_CHAIN),
+        LintId::of(copies::BRANCHES_SHARING_CODE),
+        LintId::of(copies::IFS_SAME_COND),
+        LintId::of(copies::IF_SAME_THEN_ELSE),
+        LintId::of(default::FIELD_REASSIGN_WITH_DEFAULT),
+        LintId::of(derive::DERIVE_HASH_XOR_EQ),
+        LintId::of(derive::DERIVE_ORD_XOR_PARTIAL_ORD),
+        LintId::of(doc::MISSING_SAFETY_DOC),
+        LintId::of(doc::NEEDLESS_DOCTEST_MAIN),
+        LintId::of(double_comparison::DOUBLE_COMPARISONS),
+        LintId::of(double_parens::DOUBLE_PARENS),
+        LintId::of(drop_forget_ref::DROP_COPY),
+        LintId::of(drop_forget_ref::DROP_REF),
+        LintId::of(drop_forget_ref::FORGET_COPY),
+        LintId::of(drop_forget_ref::FORGET_REF),
+        LintId::of(duration_subsec::DURATION_SUBSEC),
+        LintId::of(entry::MAP_ENTRY),
+        LintId::of(enum_clike::ENUM_CLIKE_UNPORTABLE_VARIANT),
+        LintId::of(enum_variants::ENUM_VARIANT_NAMES),
+        LintId::of(enum_variants::MODULE_INCEPTION),
+        LintId::of(eq_op::EQ_OP),
+        LintId::of(eq_op::OP_REF),
+        LintId::of(erasing_op::ERASING_OP),
+        LintId::of(escape::BOXED_LOCAL),
+        LintId::of(eta_reduction::REDUNDANT_CLOSURE),
+        LintId::of(eval_order_dependence::DIVERGING_SUB_EXPRESSION),
+        LintId::of(eval_order_dependence::EVAL_ORDER_DEPENDENCE),
+        LintId::of(explicit_write::EXPLICIT_WRITE),
+        LintId::of(float_equality_without_abs::FLOAT_EQUALITY_WITHOUT_ABS),
+        LintId::of(float_literal::EXCESSIVE_PRECISION),
+        LintId::of(format::USELESS_FORMAT),
+        LintId::of(formatting::POSSIBLE_MISSING_COMMA),
+        LintId::of(formatting::SUSPICIOUS_ASSIGNMENT_FORMATTING),
+        LintId::of(formatting::SUSPICIOUS_ELSE_FORMATTING),
+        LintId::of(formatting::SUSPICIOUS_UNARY_OP_FORMATTING),
+        LintId::of(from_over_into::FROM_OVER_INTO),
+        LintId::of(from_str_radix_10::FROM_STR_RADIX_10),
+        LintId::of(functions::DOUBLE_MUST_USE),
+        LintId::of(functions::MUST_USE_UNIT),
+        LintId::of(functions::NOT_UNSAFE_PTR_ARG_DEREF),
+        LintId::of(functions::RESULT_UNIT_ERR),
+        LintId::of(functions::TOO_MANY_ARGUMENTS),
+        LintId::of(get_last_with_len::GET_LAST_WITH_LEN),
+        LintId::of(identity_op::IDENTITY_OP),
+        LintId::of(if_let_mutex::IF_LET_MUTEX),
+        LintId::of(if_let_some_result::IF_LET_SOME_RESULT),
+        LintId::of(indexing_slicing::OUT_OF_BOUNDS_INDEXING),
+        LintId::of(infinite_iter::INFINITE_ITER),
+        LintId::of(inherent_to_string::INHERENT_TO_STRING),
+        LintId::of(inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY),
+        LintId::of(inline_fn_without_body::INLINE_FN_WITHOUT_BODY),
+        LintId::of(int_plus_one::INT_PLUS_ONE),
+        LintId::of(large_const_arrays::LARGE_CONST_ARRAYS),
+        LintId::of(large_enum_variant::LARGE_ENUM_VARIANT),
+        LintId::of(len_zero::COMPARISON_TO_EMPTY),
+        LintId::of(len_zero::LEN_WITHOUT_IS_EMPTY),
+        LintId::of(len_zero::LEN_ZERO),
+        LintId::of(let_underscore::LET_UNDERSCORE_LOCK),
+        LintId::of(lifetimes::EXTRA_UNUSED_LIFETIMES),
+        LintId::of(lifetimes::NEEDLESS_LIFETIMES),
+        LintId::of(literal_representation::INCONSISTENT_DIGIT_GROUPING),
+        LintId::of(literal_representation::MISTYPED_LITERAL_SUFFIXES),
+        LintId::of(literal_representation::UNUSUAL_BYTE_GROUPINGS),
+        LintId::of(loops::EMPTY_LOOP),
+        LintId::of(loops::EXPLICIT_COUNTER_LOOP),
+        LintId::of(loops::FOR_KV_MAP),
+        LintId::of(loops::FOR_LOOPS_OVER_FALLIBLES),
+        LintId::of(loops::ITER_NEXT_LOOP),
+        LintId::of(loops::MANUAL_FLATTEN),
+        LintId::of(loops::MANUAL_MEMCPY),
+        LintId::of(loops::MUT_RANGE_BOUND),
+        LintId::of(loops::NEEDLESS_COLLECT),
+        LintId::of(loops::NEEDLESS_RANGE_LOOP),
+        LintId::of(loops::NEVER_LOOP),
+        LintId::of(loops::SAME_ITEM_PUSH),
+        LintId::of(loops::SINGLE_ELEMENT_LOOP),
+        LintId::of(loops::WHILE_IMMUTABLE_CONDITION),
+        LintId::of(loops::WHILE_LET_LOOP),
+        LintId::of(loops::WHILE_LET_ON_ITERATOR),
+        LintId::of(main_recursion::MAIN_RECURSION),
+        LintId::of(manual_async_fn::MANUAL_ASYNC_FN),
+        LintId::of(manual_map::MANUAL_MAP),
+        LintId::of(manual_non_exhaustive::MANUAL_NON_EXHAUSTIVE),
+        LintId::of(manual_strip::MANUAL_STRIP),
+        LintId::of(manual_unwrap_or::MANUAL_UNWRAP_OR),
+        LintId::of(map_clone::MAP_CLONE),
+        LintId::of(map_unit_fn::OPTION_MAP_UNIT_FN),
+        LintId::of(map_unit_fn::RESULT_MAP_UNIT_FN),
+        LintId::of(matches::INFALLIBLE_DESTRUCTURING_MATCH),
+        LintId::of(matches::MATCH_AS_REF),
+        LintId::of(matches::MATCH_LIKE_MATCHES_MACRO),
+        LintId::of(matches::MATCH_OVERLAPPING_ARM),
+        LintId::of(matches::MATCH_REF_PATS),
+        LintId::of(matches::MATCH_SINGLE_BINDING),
+        LintId::of(matches::REDUNDANT_PATTERN_MATCHING),
+        LintId::of(matches::SINGLE_MATCH),
+        LintId::of(matches::WILDCARD_IN_OR_PATTERNS),
+        LintId::of(mem_discriminant::MEM_DISCRIMINANT_NON_ENUM),
+        LintId::of(mem_replace::MEM_REPLACE_OPTION_WITH_NONE),
+        LintId::of(mem_replace::MEM_REPLACE_WITH_DEFAULT),
+        LintId::of(mem_replace::MEM_REPLACE_WITH_UNINIT),
+        LintId::of(methods::APPEND_INSTEAD_OF_EXTEND),
+        LintId::of(methods::BIND_INSTEAD_OF_MAP),
+        LintId::of(methods::BYTES_NTH),
+        LintId::of(methods::CHARS_LAST_CMP),
+        LintId::of(methods::CHARS_NEXT_CMP),
+        LintId::of(methods::CLONE_DOUBLE_REF),
+        LintId::of(methods::CLONE_ON_COPY),
+        LintId::of(methods::EXPECT_FUN_CALL),
+        LintId::of(methods::FILTER_MAP_IDENTITY),
+        LintId::of(methods::FILTER_NEXT),
+        LintId::of(methods::FLAT_MAP_IDENTITY),
+        LintId::of(methods::INSPECT_FOR_EACH),
+        LintId::of(methods::INTO_ITER_ON_REF),
+        LintId::of(methods::ITERATOR_STEP_BY_ZERO),
+        LintId::of(methods::ITER_CLONED_COLLECT),
+        LintId::of(methods::ITER_COUNT),
+        LintId::of(methods::ITER_NEXT_SLICE),
+        LintId::of(methods::ITER_NTH),
+        LintId::of(methods::ITER_NTH_ZERO),
+        LintId::of(methods::ITER_SKIP_NEXT),
+        LintId::of(methods::MANUAL_FILTER_MAP),
+        LintId::of(methods::MANUAL_FIND_MAP),
+        LintId::of(methods::MANUAL_SATURATING_ARITHMETIC),
+        LintId::of(methods::MANUAL_STR_REPEAT),
+        LintId::of(methods::MAP_COLLECT_RESULT_UNIT),
+        LintId::of(methods::MAP_IDENTITY),
+        LintId::of(methods::NEW_RET_NO_SELF),
+        LintId::of(methods::OK_EXPECT),
+        LintId::of(methods::OPTION_AS_REF_DEREF),
+        LintId::of(methods::OPTION_FILTER_MAP),
+        LintId::of(methods::OPTION_MAP_OR_NONE),
+        LintId::of(methods::OR_FUN_CALL),
+        LintId::of(methods::RESULT_MAP_OR_INTO_OPTION),
+        LintId::of(methods::SEARCH_IS_SOME),
+        LintId::of(methods::SHOULD_IMPLEMENT_TRAIT),
+        LintId::of(methods::SINGLE_CHAR_ADD_STR),
+        LintId::of(methods::SINGLE_CHAR_PATTERN),
+        LintId::of(methods::SKIP_WHILE_NEXT),
+        LintId::of(methods::STRING_EXTEND_CHARS),
+        LintId::of(methods::SUSPICIOUS_MAP),
+        LintId::of(methods::SUSPICIOUS_SPLITN),
+        LintId::of(methods::UNINIT_ASSUMED_INIT),
+        LintId::of(methods::UNNECESSARY_FILTER_MAP),
+        LintId::of(methods::UNNECESSARY_FOLD),
+        LintId::of(methods::UNNECESSARY_LAZY_EVALUATIONS),
+        LintId::of(methods::USELESS_ASREF),
+        LintId::of(methods::WRONG_SELF_CONVENTION),
+        LintId::of(methods::ZST_OFFSET),
+        LintId::of(minmax::MIN_MAX),
+        LintId::of(misc::CMP_NAN),
+        LintId::of(misc::CMP_OWNED),
+        LintId::of(misc::FLOAT_CMP),
+        LintId::of(misc::MODULO_ONE),
+        LintId::of(misc::SHORT_CIRCUIT_STATEMENT),
+        LintId::of(misc::TOPLEVEL_REF_ARG),
+        LintId::of(misc::ZERO_PTR),
+        LintId::of(misc_early::BUILTIN_TYPE_SHADOW),
+        LintId::of(misc_early::DOUBLE_NEG),
+        LintId::of(misc_early::DUPLICATE_UNDERSCORE_ARGUMENT),
+        LintId::of(misc_early::MIXED_CASE_HEX_LITERALS),
+        LintId::of(misc_early::REDUNDANT_PATTERN),
+        LintId::of(misc_early::UNNEEDED_WILDCARD_PATTERN),
+        LintId::of(misc_early::ZERO_PREFIXED_LITERAL),
+        LintId::of(mut_key::MUTABLE_KEY_TYPE),
+        LintId::of(mut_mutex_lock::MUT_MUTEX_LOCK),
+        LintId::of(mut_reference::UNNECESSARY_MUT_PASSED),
+        LintId::of(mutex_atomic::MUTEX_ATOMIC),
+        LintId::of(needless_arbitrary_self_type::NEEDLESS_ARBITRARY_SELF_TYPE),
+        LintId::of(needless_bool::BOOL_COMPARISON),
+        LintId::of(needless_bool::NEEDLESS_BOOL),
+        LintId::of(needless_borrow::NEEDLESS_BORROW),
+        LintId::of(needless_borrowed_ref::NEEDLESS_BORROWED_REFERENCE),
+        LintId::of(needless_question_mark::NEEDLESS_QUESTION_MARK),
+        LintId::of(needless_update::NEEDLESS_UPDATE),
+        LintId::of(neg_cmp_op_on_partial_ord::NEG_CMP_OP_ON_PARTIAL_ORD),
+        LintId::of(neg_multiply::NEG_MULTIPLY),
+        LintId::of(new_without_default::NEW_WITHOUT_DEFAULT),
+        LintId::of(no_effect::NO_EFFECT),
+        LintId::of(no_effect::UNNECESSARY_OPERATION),
+        LintId::of(non_copy_const::BORROW_INTERIOR_MUTABLE_CONST),
+        LintId::of(non_copy_const::DECLARE_INTERIOR_MUTABLE_CONST),
+        LintId::of(non_expressive_names::JUST_UNDERSCORES_AND_DIGITS),
+        LintId::of(non_expressive_names::MANY_SINGLE_CHAR_NAMES),
+        LintId::of(non_octal_unix_permissions::NON_OCTAL_UNIX_PERMISSIONS),
+        LintId::of(open_options::NONSENSICAL_OPEN_OPTIONS),
+        LintId::of(option_env_unwrap::OPTION_ENV_UNWRAP),
+        LintId::of(overflow_check_conditional::OVERFLOW_CHECK_CONDITIONAL),
+        LintId::of(partialeq_ne_impl::PARTIALEQ_NE_IMPL),
+        LintId::of(precedence::PRECEDENCE),
+        LintId::of(ptr::CMP_NULL),
+        LintId::of(ptr::INVALID_NULL_PTR_USAGE),
+        LintId::of(ptr::MUT_FROM_REF),
+        LintId::of(ptr::PTR_ARG),
+        LintId::of(ptr_eq::PTR_EQ),
+        LintId::of(ptr_offset_with_cast::PTR_OFFSET_WITH_CAST),
+        LintId::of(question_mark::QUESTION_MARK),
+        LintId::of(ranges::MANUAL_RANGE_CONTAINS),
+        LintId::of(ranges::RANGE_ZIP_WITH_LEN),
+        LintId::of(ranges::REVERSED_EMPTY_RANGES),
+        LintId::of(redundant_clone::REDUNDANT_CLONE),
+        LintId::of(redundant_closure_call::REDUNDANT_CLOSURE_CALL),
+        LintId::of(redundant_field_names::REDUNDANT_FIELD_NAMES),
+        LintId::of(redundant_slicing::REDUNDANT_SLICING),
+        LintId::of(redundant_static_lifetimes::REDUNDANT_STATIC_LIFETIMES),
+        LintId::of(reference::DEREF_ADDROF),
+        LintId::of(reference::REF_IN_DEREF),
+        LintId::of(regex::INVALID_REGEX),
+        LintId::of(repeat_once::REPEAT_ONCE),
+        LintId::of(returns::LET_AND_RETURN),
+        LintId::of(returns::NEEDLESS_RETURN),
+        LintId::of(self_assignment::SELF_ASSIGNMENT),
+        LintId::of(self_named_constructor::SELF_NAMED_CONSTRUCTOR),
+        LintId::of(serde_api::SERDE_API_MISUSE),
+        LintId::of(single_component_path_imports::SINGLE_COMPONENT_PATH_IMPORTS),
+        LintId::of(size_of_in_element_count::SIZE_OF_IN_ELEMENT_COUNT),
+        LintId::of(slow_vector_initialization::SLOW_VECTOR_INITIALIZATION),
+        LintId::of(stable_sort_primitive::STABLE_SORT_PRIMITIVE),
+        LintId::of(strings::STRING_FROM_UTF8_AS_BYTES),
+        LintId::of(strlen_on_c_strings::STRLEN_ON_C_STRINGS),
+        LintId::of(suspicious_trait_impl::SUSPICIOUS_ARITHMETIC_IMPL),
+        LintId::of(suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL),
+        LintId::of(swap::ALMOST_SWAPPED),
+        LintId::of(swap::MANUAL_SWAP),
+        LintId::of(tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
+        LintId::of(temporary_assignment::TEMPORARY_ASSIGNMENT),
+        LintId::of(to_digit_is_some::TO_DIGIT_IS_SOME),
+        LintId::of(to_string_in_display::TO_STRING_IN_DISPLAY),
+        LintId::of(transmute::CROSSPOINTER_TRANSMUTE),
+        LintId::of(transmute::TRANSMUTES_EXPRESSIBLE_AS_PTR_CASTS),
+        LintId::of(transmute::TRANSMUTE_BYTES_TO_STR),
+        LintId::of(transmute::TRANSMUTE_FLOAT_TO_INT),
+        LintId::of(transmute::TRANSMUTE_INT_TO_BOOL),
+        LintId::of(transmute::TRANSMUTE_INT_TO_CHAR),
+        LintId::of(transmute::TRANSMUTE_INT_TO_FLOAT),
+        LintId::of(transmute::TRANSMUTE_PTR_TO_REF),
+        LintId::of(transmute::UNSOUND_COLLECTION_TRANSMUTE),
+        LintId::of(transmute::WRONG_TRANSMUTE),
+        LintId::of(transmuting_null::TRANSMUTING_NULL),
+        LintId::of(try_err::TRY_ERR),
+        LintId::of(types::BORROWED_BOX),
+        LintId::of(types::BOX_VEC),
+        LintId::of(types::REDUNDANT_ALLOCATION),
+        LintId::of(types::TYPE_COMPLEXITY),
+        LintId::of(types::VEC_BOX),
+        LintId::of(undropped_manually_drops::UNDROPPED_MANUALLY_DROPS),
+        LintId::of(unicode::INVISIBLE_CHARACTERS),
+        LintId::of(unit_return_expecting_ord::UNIT_RETURN_EXPECTING_ORD),
+        LintId::of(unit_types::UNIT_ARG),
+        LintId::of(unit_types::UNIT_CMP),
+        LintId::of(unnamed_address::FN_ADDRESS_COMPARISONS),
+        LintId::of(unnamed_address::VTABLE_ADDRESS_COMPARISONS),
+        LintId::of(unnecessary_sort_by::UNNECESSARY_SORT_BY),
+        LintId::of(unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME),
+        LintId::of(unused_io_amount::UNUSED_IO_AMOUNT),
+        LintId::of(unused_unit::UNUSED_UNIT),
+        LintId::of(unwrap::PANICKING_UNWRAP),
+        LintId::of(unwrap::UNNECESSARY_UNWRAP),
+        LintId::of(upper_case_acronyms::UPPER_CASE_ACRONYMS),
+        LintId::of(useless_conversion::USELESS_CONVERSION),
+        LintId::of(vec::USELESS_VEC),
+        LintId::of(vec_init_then_push::VEC_INIT_THEN_PUSH),
+        LintId::of(vec_resize_to_zero::VEC_RESIZE_TO_ZERO),
+        LintId::of(write::PRINTLN_EMPTY_STRING),
+        LintId::of(write::PRINT_LITERAL),
+        LintId::of(write::PRINT_WITH_NEWLINE),
+        LintId::of(write::WRITELN_EMPTY_STRING),
+        LintId::of(write::WRITE_LITERAL),
+        LintId::of(write::WRITE_WITH_NEWLINE),
+        LintId::of(zero_div_zero::ZERO_DIVIDED_BY_ZERO),
+    ]);
+
+    store.register_group(true, "clippy::style", Some("clippy_style"), vec![
+        LintId::of(assertions_on_constants::ASSERTIONS_ON_CONSTANTS),
+        LintId::of(assign_ops::ASSIGN_OP_PATTERN),
+        LintId::of(blacklisted_name::BLACKLISTED_NAME),
+        LintId::of(blocks_in_if_conditions::BLOCKS_IN_IF_CONDITIONS),
+        LintId::of(bool_assert_comparison::BOOL_ASSERT_COMPARISON),
+        LintId::of(casts::FN_TO_NUMERIC_CAST),
+        LintId::of(casts::FN_TO_NUMERIC_CAST_WITH_TRUNCATION),
+        LintId::of(collapsible_if::COLLAPSIBLE_ELSE_IF),
+        LintId::of(collapsible_if::COLLAPSIBLE_IF),
+        LintId::of(collapsible_match::COLLAPSIBLE_MATCH),
+        LintId::of(comparison_chain::COMPARISON_CHAIN),
+        LintId::of(default::FIELD_REASSIGN_WITH_DEFAULT),
+        LintId::of(doc::MISSING_SAFETY_DOC),
+        LintId::of(doc::NEEDLESS_DOCTEST_MAIN),
+        LintId::of(enum_variants::ENUM_VARIANT_NAMES),
+        LintId::of(enum_variants::MODULE_INCEPTION),
+        LintId::of(eq_op::OP_REF),
+        LintId::of(eta_reduction::REDUNDANT_CLOSURE),
+        LintId::of(float_literal::EXCESSIVE_PRECISION),
+        LintId::of(from_over_into::FROM_OVER_INTO),
+        LintId::of(from_str_radix_10::FROM_STR_RADIX_10),
+        LintId::of(functions::DOUBLE_MUST_USE),
+        LintId::of(functions::MUST_USE_UNIT),
+        LintId::of(functions::RESULT_UNIT_ERR),
+        LintId::of(if_let_some_result::IF_LET_SOME_RESULT),
+        LintId::of(inherent_to_string::INHERENT_TO_STRING),
+        LintId::of(len_zero::COMPARISON_TO_EMPTY),
+        LintId::of(len_zero::LEN_WITHOUT_IS_EMPTY),
+        LintId::of(len_zero::LEN_ZERO),
+        LintId::of(literal_representation::INCONSISTENT_DIGIT_GROUPING),
+        LintId::of(literal_representation::UNUSUAL_BYTE_GROUPINGS),
+        LintId::of(loops::FOR_KV_MAP),
+        LintId::of(loops::NEEDLESS_RANGE_LOOP),
+        LintId::of(loops::SAME_ITEM_PUSH),
+        LintId::of(loops::WHILE_LET_ON_ITERATOR),
+        LintId::of(main_recursion::MAIN_RECURSION),
+        LintId::of(manual_async_fn::MANUAL_ASYNC_FN),
+        LintId::of(manual_map::MANUAL_MAP),
+        LintId::of(manual_non_exhaustive::MANUAL_NON_EXHAUSTIVE),
+        LintId::of(map_clone::MAP_CLONE),
+        LintId::of(matches::INFALLIBLE_DESTRUCTURING_MATCH),
+        LintId::of(matches::MATCH_LIKE_MATCHES_MACRO),
+        LintId::of(matches::MATCH_OVERLAPPING_ARM),
+        LintId::of(matches::MATCH_REF_PATS),
+        LintId::of(matches::REDUNDANT_PATTERN_MATCHING),
+        LintId::of(matches::SINGLE_MATCH),
+        LintId::of(mem_replace::MEM_REPLACE_OPTION_WITH_NONE),
+        LintId::of(mem_replace::MEM_REPLACE_WITH_DEFAULT),
+        LintId::of(methods::BYTES_NTH),
+        LintId::of(methods::CHARS_LAST_CMP),
+        LintId::of(methods::CHARS_NEXT_CMP),
+        LintId::of(methods::INTO_ITER_ON_REF),
+        LintId::of(methods::ITER_CLONED_COLLECT),
+        LintId::of(methods::ITER_NEXT_SLICE),
+        LintId::of(methods::ITER_NTH_ZERO),
+        LintId::of(methods::ITER_SKIP_NEXT),
+        LintId::of(methods::MANUAL_SATURATING_ARITHMETIC),
+        LintId::of(methods::MAP_COLLECT_RESULT_UNIT),
+        LintId::of(methods::NEW_RET_NO_SELF),
+        LintId::of(methods::OK_EXPECT),
+        LintId::of(methods::OPTION_MAP_OR_NONE),
+        LintId::of(methods::RESULT_MAP_OR_INTO_OPTION),
+        LintId::of(methods::SHOULD_IMPLEMENT_TRAIT),
+        LintId::of(methods::SINGLE_CHAR_ADD_STR),
+        LintId::of(methods::STRING_EXTEND_CHARS),
+        LintId::of(methods::UNNECESSARY_FOLD),
+        LintId::of(methods::UNNECESSARY_LAZY_EVALUATIONS),
+        LintId::of(methods::WRONG_SELF_CONVENTION),
+        LintId::of(misc::TOPLEVEL_REF_ARG),
+        LintId::of(misc::ZERO_PTR),
+        LintId::of(misc_early::BUILTIN_TYPE_SHADOW),
+        LintId::of(misc_early::DOUBLE_NEG),
+        LintId::of(misc_early::DUPLICATE_UNDERSCORE_ARGUMENT),
+        LintId::of(misc_early::MIXED_CASE_HEX_LITERALS),
+        LintId::of(misc_early::REDUNDANT_PATTERN),
+        LintId::of(mut_mutex_lock::MUT_MUTEX_LOCK),
+        LintId::of(mut_reference::UNNECESSARY_MUT_PASSED),
+        LintId::of(needless_borrow::NEEDLESS_BORROW),
+        LintId::of(neg_multiply::NEG_MULTIPLY),
+        LintId::of(new_without_default::NEW_WITHOUT_DEFAULT),
+        LintId::of(non_copy_const::BORROW_INTERIOR_MUTABLE_CONST),
+        LintId::of(non_copy_const::DECLARE_INTERIOR_MUTABLE_CONST),
+        LintId::of(non_expressive_names::JUST_UNDERSCORES_AND_DIGITS),
+        LintId::of(non_expressive_names::MANY_SINGLE_CHAR_NAMES),
+        LintId::of(ptr::CMP_NULL),
+        LintId::of(ptr::PTR_ARG),
+        LintId::of(ptr_eq::PTR_EQ),
+        LintId::of(question_mark::QUESTION_MARK),
+        LintId::of(ranges::MANUAL_RANGE_CONTAINS),
+        LintId::of(redundant_field_names::REDUNDANT_FIELD_NAMES),
+        LintId::of(redundant_static_lifetimes::REDUNDANT_STATIC_LIFETIMES),
+        LintId::of(returns::LET_AND_RETURN),
+        LintId::of(returns::NEEDLESS_RETURN),
+        LintId::of(self_named_constructor::SELF_NAMED_CONSTRUCTOR),
+        LintId::of(single_component_path_imports::SINGLE_COMPONENT_PATH_IMPORTS),
+        LintId::of(tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
+        LintId::of(to_digit_is_some::TO_DIGIT_IS_SOME),
+        LintId::of(try_err::TRY_ERR),
+        LintId::of(unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME),
+        LintId::of(unused_unit::UNUSED_UNIT),
+        LintId::of(upper_case_acronyms::UPPER_CASE_ACRONYMS),
+        LintId::of(write::PRINTLN_EMPTY_STRING),
+        LintId::of(write::PRINT_LITERAL),
+        LintId::of(write::PRINT_WITH_NEWLINE),
+        LintId::of(write::WRITELN_EMPTY_STRING),
+        LintId::of(write::WRITE_LITERAL),
+        LintId::of(write::WRITE_WITH_NEWLINE),
+    ]);
+
+    store.register_group(true, "clippy::complexity", Some("clippy_complexity"), vec![
+        LintId::of(attrs::DEPRECATED_CFG_ATTR),
+        LintId::of(booleans::NONMINIMAL_BOOL),
+        LintId::of(casts::CHAR_LIT_AS_U8),
+        LintId::of(casts::UNNECESSARY_CAST),
+        LintId::of(copies::BRANCHES_SHARING_CODE),
+        LintId::of(double_comparison::DOUBLE_COMPARISONS),
+        LintId::of(double_parens::DOUBLE_PARENS),
+        LintId::of(duration_subsec::DURATION_SUBSEC),
+        LintId::of(eval_order_dependence::DIVERGING_SUB_EXPRESSION),
+        LintId::of(explicit_write::EXPLICIT_WRITE),
+        LintId::of(format::USELESS_FORMAT),
+        LintId::of(functions::TOO_MANY_ARGUMENTS),
+        LintId::of(get_last_with_len::GET_LAST_WITH_LEN),
+        LintId::of(identity_op::IDENTITY_OP),
+        LintId::of(int_plus_one::INT_PLUS_ONE),
+        LintId::of(lifetimes::EXTRA_UNUSED_LIFETIMES),
+        LintId::of(lifetimes::NEEDLESS_LIFETIMES),
+        LintId::of(loops::EXPLICIT_COUNTER_LOOP),
+        LintId::of(loops::MANUAL_FLATTEN),
+        LintId::of(loops::SINGLE_ELEMENT_LOOP),
+        LintId::of(loops::WHILE_LET_LOOP),
+        LintId::of(manual_strip::MANUAL_STRIP),
+        LintId::of(manual_unwrap_or::MANUAL_UNWRAP_OR),
+        LintId::of(map_unit_fn::OPTION_MAP_UNIT_FN),
+        LintId::of(map_unit_fn::RESULT_MAP_UNIT_FN),
+        LintId::of(matches::MATCH_AS_REF),
+        LintId::of(matches::MATCH_SINGLE_BINDING),
+        LintId::of(matches::WILDCARD_IN_OR_PATTERNS),
+        LintId::of(methods::BIND_INSTEAD_OF_MAP),
+        LintId::of(methods::CLONE_ON_COPY),
+        LintId::of(methods::FILTER_MAP_IDENTITY),
+        LintId::of(methods::FILTER_NEXT),
+        LintId::of(methods::FLAT_MAP_IDENTITY),
+        LintId::of(methods::INSPECT_FOR_EACH),
+        LintId::of(methods::ITER_COUNT),
+        LintId::of(methods::MANUAL_FILTER_MAP),
+        LintId::of(methods::MANUAL_FIND_MAP),
+        LintId::of(methods::MAP_IDENTITY),
+        LintId::of(methods::OPTION_AS_REF_DEREF),
+        LintId::of(methods::OPTION_FILTER_MAP),
+        LintId::of(methods::SEARCH_IS_SOME),
+        LintId::of(methods::SKIP_WHILE_NEXT),
+        LintId::of(methods::UNNECESSARY_FILTER_MAP),
+        LintId::of(methods::USELESS_ASREF),
+        LintId::of(misc::SHORT_CIRCUIT_STATEMENT),
+        LintId::of(misc_early::UNNEEDED_WILDCARD_PATTERN),
+        LintId::of(misc_early::ZERO_PREFIXED_LITERAL),
+        LintId::of(needless_arbitrary_self_type::NEEDLESS_ARBITRARY_SELF_TYPE),
+        LintId::of(needless_bool::BOOL_COMPARISON),
+        LintId::of(needless_bool::NEEDLESS_BOOL),
+        LintId::of(needless_borrowed_ref::NEEDLESS_BORROWED_REFERENCE),
+        LintId::of(needless_question_mark::NEEDLESS_QUESTION_MARK),
+        LintId::of(needless_update::NEEDLESS_UPDATE),
+        LintId::of(neg_cmp_op_on_partial_ord::NEG_CMP_OP_ON_PARTIAL_ORD),
+        LintId::of(no_effect::NO_EFFECT),
+        LintId::of(no_effect::UNNECESSARY_OPERATION),
+        LintId::of(overflow_check_conditional::OVERFLOW_CHECK_CONDITIONAL),
+        LintId::of(partialeq_ne_impl::PARTIALEQ_NE_IMPL),
+        LintId::of(precedence::PRECEDENCE),
+        LintId::of(ptr_offset_with_cast::PTR_OFFSET_WITH_CAST),
+        LintId::of(ranges::RANGE_ZIP_WITH_LEN),
+        LintId::of(redundant_closure_call::REDUNDANT_CLOSURE_CALL),
+        LintId::of(redundant_slicing::REDUNDANT_SLICING),
+        LintId::of(reference::DEREF_ADDROF),
+        LintId::of(reference::REF_IN_DEREF),
+        LintId::of(repeat_once::REPEAT_ONCE),
+        LintId::of(strings::STRING_FROM_UTF8_AS_BYTES),
+        LintId::of(strlen_on_c_strings::STRLEN_ON_C_STRINGS),
+        LintId::of(swap::MANUAL_SWAP),
+        LintId::of(temporary_assignment::TEMPORARY_ASSIGNMENT),
+        LintId::of(transmute::CROSSPOINTER_TRANSMUTE),
+        LintId::of(transmute::TRANSMUTES_EXPRESSIBLE_AS_PTR_CASTS),
+        LintId::of(transmute::TRANSMUTE_BYTES_TO_STR),
+        LintId::of(transmute::TRANSMUTE_FLOAT_TO_INT),
+        LintId::of(transmute::TRANSMUTE_INT_TO_BOOL),
+        LintId::of(transmute::TRANSMUTE_INT_TO_CHAR),
+        LintId::of(transmute::TRANSMUTE_INT_TO_FLOAT),
+        LintId::of(transmute::TRANSMUTE_PTR_TO_REF),
+        LintId::of(types::BORROWED_BOX),
+        LintId::of(types::TYPE_COMPLEXITY),
+        LintId::of(types::VEC_BOX),
+        LintId::of(unit_types::UNIT_ARG),
+        LintId::of(unnecessary_sort_by::UNNECESSARY_SORT_BY),
+        LintId::of(unwrap::UNNECESSARY_UNWRAP),
+        LintId::of(useless_conversion::USELESS_CONVERSION),
+        LintId::of(zero_div_zero::ZERO_DIVIDED_BY_ZERO),
+    ]);
+
+    store.register_group(true, "clippy::correctness", Some("clippy_correctness"), vec![
+        LintId::of(absurd_extreme_comparisons::ABSURD_EXTREME_COMPARISONS),
+        LintId::of(approx_const::APPROX_CONSTANT),
+        LintId::of(async_yields_async::ASYNC_YIELDS_ASYNC),
+        LintId::of(atomic_ordering::INVALID_ATOMIC_ORDERING),
+        LintId::of(attrs::DEPRECATED_SEMVER),
+        LintId::of(attrs::MISMATCHED_TARGET_OS),
+        LintId::of(attrs::USELESS_ATTRIBUTE),
+        LintId::of(bit_mask::BAD_BIT_MASK),
+        LintId::of(bit_mask::INEFFECTIVE_BIT_MASK),
+        LintId::of(booleans::LOGIC_BUG),
+        LintId::of(casts::CAST_REF_TO_MUT),
+        LintId::of(copies::IFS_SAME_COND),
+        LintId::of(copies::IF_SAME_THEN_ELSE),
+        LintId::of(derive::DERIVE_HASH_XOR_EQ),
+        LintId::of(derive::DERIVE_ORD_XOR_PARTIAL_ORD),
+        LintId::of(drop_forget_ref::DROP_COPY),
+        LintId::of(drop_forget_ref::DROP_REF),
+        LintId::of(drop_forget_ref::FORGET_COPY),
+        LintId::of(drop_forget_ref::FORGET_REF),
+        LintId::of(enum_clike::ENUM_CLIKE_UNPORTABLE_VARIANT),
+        LintId::of(eq_op::EQ_OP),
+        LintId::of(erasing_op::ERASING_OP),
+        LintId::of(formatting::POSSIBLE_MISSING_COMMA),
+        LintId::of(functions::NOT_UNSAFE_PTR_ARG_DEREF),
+        LintId::of(if_let_mutex::IF_LET_MUTEX),
+        LintId::of(indexing_slicing::OUT_OF_BOUNDS_INDEXING),
+        LintId::of(infinite_iter::INFINITE_ITER),
+        LintId::of(inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY),
+        LintId::of(inline_fn_without_body::INLINE_FN_WITHOUT_BODY),
+        LintId::of(let_underscore::LET_UNDERSCORE_LOCK),
+        LintId::of(literal_representation::MISTYPED_LITERAL_SUFFIXES),
+        LintId::of(loops::ITER_NEXT_LOOP),
+        LintId::of(loops::NEVER_LOOP),
+        LintId::of(loops::WHILE_IMMUTABLE_CONDITION),
+        LintId::of(mem_discriminant::MEM_DISCRIMINANT_NON_ENUM),
+        LintId::of(mem_replace::MEM_REPLACE_WITH_UNINIT),
+        LintId::of(methods::CLONE_DOUBLE_REF),
+        LintId::of(methods::ITERATOR_STEP_BY_ZERO),
+        LintId::of(methods::SUSPICIOUS_SPLITN),
+        LintId::of(methods::UNINIT_ASSUMED_INIT),
+        LintId::of(methods::ZST_OFFSET),
+        LintId::of(minmax::MIN_MAX),
+        LintId::of(misc::CMP_NAN),
+        LintId::of(misc::FLOAT_CMP),
+        LintId::of(misc::MODULO_ONE),
+        LintId::of(non_octal_unix_permissions::NON_OCTAL_UNIX_PERMISSIONS),
+        LintId::of(open_options::NONSENSICAL_OPEN_OPTIONS),
+        LintId::of(option_env_unwrap::OPTION_ENV_UNWRAP),
+        LintId::of(ptr::INVALID_NULL_PTR_USAGE),
+        LintId::of(ptr::MUT_FROM_REF),
+        LintId::of(ranges::REVERSED_EMPTY_RANGES),
+        LintId::of(regex::INVALID_REGEX),
+        LintId::of(self_assignment::SELF_ASSIGNMENT),
+        LintId::of(serde_api::SERDE_API_MISUSE),
+        LintId::of(size_of_in_element_count::SIZE_OF_IN_ELEMENT_COUNT),
+        LintId::of(swap::ALMOST_SWAPPED),
+        LintId::of(to_string_in_display::TO_STRING_IN_DISPLAY),
+        LintId::of(transmute::UNSOUND_COLLECTION_TRANSMUTE),
+        LintId::of(transmute::WRONG_TRANSMUTE),
+        LintId::of(transmuting_null::TRANSMUTING_NULL),
+        LintId::of(undropped_manually_drops::UNDROPPED_MANUALLY_DROPS),
+        LintId::of(unicode::INVISIBLE_CHARACTERS),
+        LintId::of(unit_return_expecting_ord::UNIT_RETURN_EXPECTING_ORD),
+        LintId::of(unit_types::UNIT_CMP),
+        LintId::of(unnamed_address::FN_ADDRESS_COMPARISONS),
+        LintId::of(unnamed_address::VTABLE_ADDRESS_COMPARISONS),
+        LintId::of(unused_io_amount::UNUSED_IO_AMOUNT),
+        LintId::of(unwrap::PANICKING_UNWRAP),
+        LintId::of(vec_resize_to_zero::VEC_RESIZE_TO_ZERO),
+    ]);
+
+    store.register_group(true, "clippy::suspicious", None, vec![
+        LintId::of(assign_ops::MISREFACTORED_ASSIGN_OP),
+        LintId::of(attrs::BLANKET_CLIPPY_RESTRICTION_LINTS),
+        LintId::of(eval_order_dependence::EVAL_ORDER_DEPENDENCE),
+        LintId::of(float_equality_without_abs::FLOAT_EQUALITY_WITHOUT_ABS),
+        LintId::of(formatting::SUSPICIOUS_ASSIGNMENT_FORMATTING),
+        LintId::of(formatting::SUSPICIOUS_ELSE_FORMATTING),
+        LintId::of(formatting::SUSPICIOUS_UNARY_OP_FORMATTING),
+        LintId::of(loops::EMPTY_LOOP),
+        LintId::of(loops::FOR_LOOPS_OVER_FALLIBLES),
+        LintId::of(loops::MUT_RANGE_BOUND),
+        LintId::of(methods::SUSPICIOUS_MAP),
+        LintId::of(mut_key::MUTABLE_KEY_TYPE),
+        LintId::of(suspicious_trait_impl::SUSPICIOUS_ARITHMETIC_IMPL),
+        LintId::of(suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL),
+    ]);
+
+    store.register_group(true, "clippy::perf", Some("clippy_perf"), vec![
+        LintId::of(entry::MAP_ENTRY),
+        LintId::of(escape::BOXED_LOCAL),
+        LintId::of(large_const_arrays::LARGE_CONST_ARRAYS),
+        LintId::of(large_enum_variant::LARGE_ENUM_VARIANT),
+        LintId::of(loops::MANUAL_MEMCPY),
+        LintId::of(loops::NEEDLESS_COLLECT),
+        LintId::of(methods::APPEND_INSTEAD_OF_EXTEND),
+        LintId::of(methods::EXPECT_FUN_CALL),
+        LintId::of(methods::ITER_NTH),
+        LintId::of(methods::MANUAL_STR_REPEAT),
+        LintId::of(methods::OR_FUN_CALL),
+        LintId::of(methods::SINGLE_CHAR_PATTERN),
+        LintId::of(misc::CMP_OWNED),
+        LintId::of(mutex_atomic::MUTEX_ATOMIC),
+        LintId::of(redundant_clone::REDUNDANT_CLONE),
+        LintId::of(slow_vector_initialization::SLOW_VECTOR_INITIALIZATION),
+        LintId::of(stable_sort_primitive::STABLE_SORT_PRIMITIVE),
+        LintId::of(types::BOX_VEC),
+        LintId::of(types::REDUNDANT_ALLOCATION),
+        LintId::of(vec::USELESS_VEC),
+        LintId::of(vec_init_then_push::VEC_INIT_THEN_PUSH),
+    ]);
+
+    store.register_group(true, "clippy::cargo", Some("clippy_cargo"), vec![
+        LintId::of(cargo_common_metadata::CARGO_COMMON_METADATA),
+        LintId::of(multiple_crate_versions::MULTIPLE_CRATE_VERSIONS),
+        LintId::of(wildcard_dependencies::WILDCARD_DEPENDENCIES),
+    ]);
+
+    store.register_group(true, "clippy::nursery", Some("clippy_nursery"), vec![
+        LintId::of(attrs::EMPTY_LINE_AFTER_OUTER_ATTR),
+        LintId::of(cognitive_complexity::COGNITIVE_COMPLEXITY),
+        LintId::of(disallowed_method::DISALLOWED_METHOD),
+        LintId::of(disallowed_type::DISALLOWED_TYPE),
+        LintId::of(fallible_impl_from::FALLIBLE_IMPL_FROM),
+        LintId::of(floating_point_arithmetic::IMPRECISE_FLOPS),
+        LintId::of(floating_point_arithmetic::SUBOPTIMAL_FLOPS),
+        LintId::of(future_not_send::FUTURE_NOT_SEND),
+        LintId::of(let_if_seq::USELESS_LET_IF_SEQ),
+        LintId::of(missing_const_for_fn::MISSING_CONST_FOR_FN),
+        LintId::of(mutable_debug_assertion::DEBUG_ASSERT_WITH_MUT_CALL),
+        LintId::of(mutex_atomic::MUTEX_INTEGER),
+        LintId::of(nonstandard_macro_braces::NONSTANDARD_MACRO_BRACES),
+        LintId::of(path_buf_push_overwrite::PATH_BUF_PUSH_OVERWRITE),
+        LintId::of(redundant_pub_crate::REDUNDANT_PUB_CRATE),
+        LintId::of(regex::TRIVIAL_REGEX),
+        LintId::of(strings::STRING_LIT_AS_BYTES),
+        LintId::of(suspicious_operation_groupings::SUSPICIOUS_OPERATION_GROUPINGS),
+        LintId::of(transmute::USELESS_TRANSMUTE),
+        LintId::of(use_self::USE_SELF),
+    ]);
+
+    #[cfg(feature = "metadata-collector-lint")]
+    {
+        if std::env::var("ENABLE_METADATA_COLLECTION").eq(&Ok("1".to_string())) {
+            store.register_late_pass(|| box utils::internal_lints::metadata_collector::MetadataCollector::new());
+            return;
+        }
+    }
+
     // all the internal lints
     #[cfg(feature = "internal-lints")]
     {
@@ -1037,6 +1832,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         store.register_late_pass(|| box utils::internal_lints::MatchTypeOnDiagItem);
         store.register_late_pass(|| box utils::internal_lints::OuterExpnDataPass);
     }
+
     store.register_late_pass(|| box utils::author::Author);
     store.register_late_pass(|| box await_holding_invalid::AwaitHolding);
     store.register_late_pass(|| box serde_api::SerdeApi);
@@ -1044,6 +1840,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     let type_complexity_threshold = conf.type_complexity_threshold;
     store.register_late_pass(move || box types::Types::new(vec_box_size_threshold, type_complexity_threshold));
     store.register_late_pass(|| box booleans::NonminimalBool);
+    store.register_late_pass(|| box needless_bitwise_bool::NeedlessBitwiseBool);
     store.register_late_pass(|| box eq_op::EqOp);
     store.register_late_pass(|| box enum_clike::UnportableVariant);
     store.register_late_pass(|| box float_literal::FloatLiteral);
@@ -1073,6 +1870,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_late_pass(|| box default_numeric_fallback::DefaultNumericFallback);
     store.register_late_pass(|| box inconsistent_struct_constructor::InconsistentStructConstructor);
     store.register_late_pass(|| box non_octal_unix_permissions::NonOctalUnixPermissions);
+    store.register_early_pass(|| box unnecessary_self_imports::UnnecessarySelfImports);
 
     let msrv = conf.msrv.as_ref().and_then(|s| {
         parse_msrv(s, None, None).or_else(|| {
@@ -1081,7 +1879,8 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
         })
     });
 
-    store.register_late_pass(move || box methods::Methods::new(msrv));
+    let avoid_breaking_exported_api = conf.avoid_breaking_exported_api;
+    store.register_late_pass(move || box methods::Methods::new(avoid_breaking_exported_api, msrv));
     store.register_late_pass(move || box matches::Matches::new(msrv));
     store.register_early_pass(move || box manual_non_exhaustive::ManualNonExhaustive::new(msrv));
     store.register_late_pass(move || box manual_strip::ManualStrip::new(msrv));
@@ -1093,7 +1892,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_late_pass(move || box from_over_into::FromOverInto::new(msrv));
     store.register_late_pass(move || box use_self::UseSelf::new(msrv));
     store.register_late_pass(move || box missing_const_for_fn::MissingConstForFn::new(msrv));
-    store.register_late_pass(move || box needless_question_mark::NeedlessQuestionMark::new(msrv));
+    store.register_late_pass(move || box needless_question_mark::NeedlessQuestionMark);
     store.register_late_pass(move || box casts::Casts::new(msrv));
     store.register_early_pass(move || box unnested_or_patterns::UnnestedOrPatterns::new(msrv));
 
@@ -1163,6 +1962,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     let pass_by_ref_or_value = pass_by_ref_or_value::PassByRefOrValue::new(
         conf.trivial_copy_size_limit,
         conf.pass_by_value_size_limit,
+        conf.avoid_breaking_exported_api,
         &sess.target,
     );
     store.register_late_pass(move || box pass_by_ref_or_value);
@@ -1179,7 +1979,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_early_pass(|| box suspicious_operation_groupings::SuspiciousOperationGroupings);
     store.register_late_pass(|| box suspicious_trait_impl::SuspiciousImpl);
     store.register_late_pass(|| box map_unit_fn::MapUnit);
-    store.register_late_pass(|| box inherent_impl::MultipleInherentImpl::default());
+    store.register_late_pass(|| box inherent_impl::MultipleInherentImpl);
     store.register_late_pass(|| box neg_cmp_op_on_partial_ord::NoNegCompOpForPartialOrd);
     store.register_late_pass(|| box unwrap::Unwrap);
     store.register_late_pass(|| box duration_subsec::DurationSubsec);
@@ -1189,7 +1989,7 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_late_pass(|| box redundant_clone::RedundantClone);
     store.register_late_pass(|| box slow_vector_initialization::SlowVectorInit);
     store.register_late_pass(|| box unnecessary_sort_by::UnnecessarySortBy);
-    store.register_late_pass(|| box unnecessary_wraps::UnnecessaryWraps);
+    store.register_late_pass(move || box unnecessary_wraps::UnnecessaryWraps::new(avoid_breaking_exported_api));
     store.register_late_pass(|| box assertions_on_constants::AssertionsOnConstants);
     store.register_late_pass(|| box transmuting_null::TransmutingNull);
     store.register_late_pass(|| box path_buf_push_overwrite::PathBufPushOverwrite);
@@ -1230,10 +2030,10 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     let literal_representation_threshold = conf.literal_representation_threshold;
     store.register_early_pass(move || box literal_representation::DecimalLiteralRepresentation::new(literal_representation_threshold));
     let enum_variant_name_threshold = conf.enum_variant_name_threshold;
-    store.register_early_pass(move || box enum_variants::EnumVariantNames::new(enum_variant_name_threshold));
+    store.register_late_pass(move || box enum_variants::EnumVariantNames::new(enum_variant_name_threshold, avoid_breaking_exported_api));
     store.register_early_pass(|| box tabs_in_doc_comments::TabsInDocComments);
     let upper_case_acronyms_aggressive = conf.upper_case_acronyms_aggressive;
-    store.register_early_pass(move || box upper_case_acronyms::UpperCaseAcronyms::new(upper_case_acronyms_aggressive));
+    store.register_late_pass(move || box upper_case_acronyms::UpperCaseAcronyms::new(avoid_breaking_exported_api, upper_case_acronyms_aggressive));
     store.register_late_pass(|| box default::Default::default());
     store.register_late_pass(|| box unused_self::UnusedSelf);
     store.register_late_pass(|| box mutable_debug_assertion::DebugAssertWithMutCall);
@@ -1269,8 +2069,9 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_early_pass(move || box non_expressive_names::NonExpressiveNames {
         single_char_binding_names_threshold,
     });
+    let macro_matcher = conf.standard_macro_braces.iter().cloned().collect::<FxHashSet<_>>();
+    store.register_early_pass(move || box nonstandard_macro_braces::MacroBraces::new(&macro_matcher));
     store.register_late_pass(|| box macro_use::MacroUseImports::default());
-    store.register_late_pass(|| box map_identity::MapIdentity);
     store.register_late_pass(|| box pattern_type_mismatch::PatternTypeMismatch);
     store.register_late_pass(|| box stable_sort_primitive::StableSortPrimitive);
     store.register_late_pass(|| box repeat_once::RepeatOnce);
@@ -1295,795 +2096,16 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_late_pass(|| box from_str_radix_10::FromStrRadix10);
     store.register_late_pass(|| box manual_map::ManualMap);
     store.register_late_pass(move || box if_then_some_else_none::IfThenSomeElseNone::new(msrv));
-
-    store.register_group(true, "clippy::restriction", Some("clippy_restriction"), vec![
-        LintId::of(arithmetic::FLOAT_ARITHMETIC),
-        LintId::of(arithmetic::INTEGER_ARITHMETIC),
-        LintId::of(as_conversions::AS_CONVERSIONS),
-        LintId::of(asm_syntax::INLINE_ASM_X86_ATT_SYNTAX),
-        LintId::of(asm_syntax::INLINE_ASM_X86_INTEL_SYNTAX),
-        LintId::of(create_dir::CREATE_DIR),
-        LintId::of(dbg_macro::DBG_MACRO),
-        LintId::of(default_numeric_fallback::DEFAULT_NUMERIC_FALLBACK),
-        LintId::of(else_if_without_else::ELSE_IF_WITHOUT_ELSE),
-        LintId::of(exhaustive_items::EXHAUSTIVE_ENUMS),
-        LintId::of(exhaustive_items::EXHAUSTIVE_STRUCTS),
-        LintId::of(exit::EXIT),
-        LintId::of(float_literal::LOSSY_FLOAT_LITERAL),
-        LintId::of(if_then_some_else_none::IF_THEN_SOME_ELSE_NONE),
-        LintId::of(implicit_return::IMPLICIT_RETURN),
-        LintId::of(indexing_slicing::INDEXING_SLICING),
-        LintId::of(inherent_impl::MULTIPLE_INHERENT_IMPL),
-        LintId::of(integer_division::INTEGER_DIVISION),
-        LintId::of(let_underscore::LET_UNDERSCORE_MUST_USE),
-        LintId::of(literal_representation::DECIMAL_LITERAL_REPRESENTATION),
-        LintId::of(map_err_ignore::MAP_ERR_IGNORE),
-        LintId::of(matches::REST_PAT_IN_FULLY_BOUND_STRUCTS),
-        LintId::of(matches::WILDCARD_ENUM_MATCH_ARM),
-        LintId::of(mem_forget::MEM_FORGET),
-        LintId::of(methods::CLONE_ON_REF_PTR),
-        LintId::of(methods::EXPECT_USED),
-        LintId::of(methods::FILETYPE_IS_FILE),
-        LintId::of(methods::GET_UNWRAP),
-        LintId::of(methods::UNWRAP_USED),
-        LintId::of(methods::WRONG_PUB_SELF_CONVENTION),
-        LintId::of(misc::FLOAT_CMP_CONST),
-        LintId::of(misc_early::UNNEEDED_FIELD_PATTERN),
-        LintId::of(missing_doc::MISSING_DOCS_IN_PRIVATE_ITEMS),
-        LintId::of(missing_inline::MISSING_INLINE_IN_PUBLIC_ITEMS),
-        LintId::of(modulo_arithmetic::MODULO_ARITHMETIC),
-        LintId::of(panic_in_result_fn::PANIC_IN_RESULT_FN),
-        LintId::of(panic_unimplemented::PANIC),
-        LintId::of(panic_unimplemented::TODO),
-        LintId::of(panic_unimplemented::UNIMPLEMENTED),
-        LintId::of(panic_unimplemented::UNREACHABLE),
-        LintId::of(pattern_type_mismatch::PATTERN_TYPE_MISMATCH),
-        LintId::of(semicolon_if_nothing_returned::SEMICOLON_IF_NOTHING_RETURNED),
-        LintId::of(shadow::SHADOW_REUSE),
-        LintId::of(shadow::SHADOW_SAME),
-        LintId::of(strings::STRING_ADD),
-        LintId::of(strings::STRING_TO_STRING),
-        LintId::of(strings::STR_TO_STRING),
-        LintId::of(types::RC_BUFFER),
-        LintId::of(unwrap_in_result::UNWRAP_IN_RESULT),
-        LintId::of(verbose_file_reads::VERBOSE_FILE_READS),
-        LintId::of(write::PRINT_STDERR),
-        LintId::of(write::PRINT_STDOUT),
-        LintId::of(write::USE_DEBUG),
-    ]);
-
-    store.register_group(true, "clippy::pedantic", Some("clippy_pedantic"), vec![
-        LintId::of(attrs::INLINE_ALWAYS),
-        LintId::of(await_holding_invalid::AWAIT_HOLDING_LOCK),
-        LintId::of(await_holding_invalid::AWAIT_HOLDING_REFCELL_REF),
-        LintId::of(bit_mask::VERBOSE_BIT_MASK),
-        LintId::of(bytecount::NAIVE_BYTECOUNT),
-        LintId::of(case_sensitive_file_extension_comparisons::CASE_SENSITIVE_FILE_EXTENSION_COMPARISONS),
-        LintId::of(casts::CAST_LOSSLESS),
-        LintId::of(casts::CAST_POSSIBLE_TRUNCATION),
-        LintId::of(casts::CAST_POSSIBLE_WRAP),
-        LintId::of(casts::CAST_PRECISION_LOSS),
-        LintId::of(casts::CAST_PTR_ALIGNMENT),
-        LintId::of(casts::CAST_SIGN_LOSS),
-        LintId::of(casts::PTR_AS_PTR),
-        LintId::of(checked_conversions::CHECKED_CONVERSIONS),
-        LintId::of(copies::SAME_FUNCTIONS_IN_IF_CONDITION),
-        LintId::of(copy_iterator::COPY_ITERATOR),
-        LintId::of(default::DEFAULT_TRAIT_ACCESS),
-        LintId::of(dereference::EXPLICIT_DEREF_METHODS),
-        LintId::of(derive::EXPL_IMPL_CLONE_ON_COPY),
-        LintId::of(derive::UNSAFE_DERIVE_DESERIALIZE),
-        LintId::of(doc::DOC_MARKDOWN),
-        LintId::of(doc::MISSING_ERRORS_DOC),
-        LintId::of(doc::MISSING_PANICS_DOC),
-        LintId::of(empty_enum::EMPTY_ENUM),
-        LintId::of(enum_variants::MODULE_NAME_REPETITIONS),
-        LintId::of(enum_variants::PUB_ENUM_VARIANT_NAMES),
-        LintId::of(eta_reduction::REDUNDANT_CLOSURE_FOR_METHOD_CALLS),
-        LintId::of(excessive_bools::FN_PARAMS_EXCESSIVE_BOOLS),
-        LintId::of(excessive_bools::STRUCT_EXCESSIVE_BOOLS),
-        LintId::of(functions::MUST_USE_CANDIDATE),
-        LintId::of(functions::TOO_MANY_LINES),
-        LintId::of(if_not_else::IF_NOT_ELSE),
-        LintId::of(implicit_hasher::IMPLICIT_HASHER),
-        LintId::of(implicit_saturating_sub::IMPLICIT_SATURATING_SUB),
-        LintId::of(infinite_iter::MAYBE_INFINITE_ITER),
-        LintId::of(invalid_upcast_comparisons::INVALID_UPCAST_COMPARISONS),
-        LintId::of(items_after_statements::ITEMS_AFTER_STATEMENTS),
-        LintId::of(large_stack_arrays::LARGE_STACK_ARRAYS),
-        LintId::of(let_underscore::LET_UNDERSCORE_DROP),
-        LintId::of(literal_representation::LARGE_DIGIT_GROUPS),
-        LintId::of(literal_representation::UNREADABLE_LITERAL),
-        LintId::of(loops::EXPLICIT_INTO_ITER_LOOP),
-        LintId::of(loops::EXPLICIT_ITER_LOOP),
-        LintId::of(macro_use::MACRO_USE_IMPORTS),
-        LintId::of(manual_ok_or::MANUAL_OK_OR),
-        LintId::of(match_on_vec_items::MATCH_ON_VEC_ITEMS),
-        LintId::of(matches::MATCH_BOOL),
-        LintId::of(matches::MATCH_SAME_ARMS),
-        LintId::of(matches::MATCH_WILDCARD_FOR_SINGLE_VARIANTS),
-        LintId::of(matches::MATCH_WILD_ERR_ARM),
-        LintId::of(matches::SINGLE_MATCH_ELSE),
-        LintId::of(methods::FILTER_MAP),
-        LintId::of(methods::FILTER_MAP_NEXT),
-        LintId::of(methods::IMPLICIT_CLONE),
-        LintId::of(methods::INEFFICIENT_TO_STRING),
-        LintId::of(methods::MAP_FLATTEN),
-        LintId::of(methods::MAP_UNWRAP_OR),
-        LintId::of(misc::USED_UNDERSCORE_BINDING),
-        LintId::of(misc_early::UNSEPARATED_LITERAL_SUFFIX),
-        LintId::of(mut_mut::MUT_MUT),
-        LintId::of(needless_continue::NEEDLESS_CONTINUE),
-        LintId::of(needless_for_each::NEEDLESS_FOR_EACH),
-        LintId::of(needless_pass_by_value::NEEDLESS_PASS_BY_VALUE),
-        LintId::of(non_expressive_names::SIMILAR_NAMES),
-        LintId::of(option_if_let_else::OPTION_IF_LET_ELSE),
-        LintId::of(pass_by_ref_or_value::LARGE_TYPES_PASSED_BY_VALUE),
-        LintId::of(pass_by_ref_or_value::TRIVIALLY_COPY_PASS_BY_REF),
-        LintId::of(ranges::RANGE_MINUS_ONE),
-        LintId::of(ranges::RANGE_PLUS_ONE),
-        LintId::of(redundant_else::REDUNDANT_ELSE),
-        LintId::of(ref_option_ref::REF_OPTION_REF),
-        LintId::of(shadow::SHADOW_UNRELATED),
-        LintId::of(strings::STRING_ADD_ASSIGN),
-        LintId::of(trait_bounds::TRAIT_DUPLICATION_IN_BOUNDS),
-        LintId::of(trait_bounds::TYPE_REPETITION_IN_BOUNDS),
-        LintId::of(types::LINKEDLIST),
-        LintId::of(types::OPTION_OPTION),
-        LintId::of(unicode::NON_ASCII_LITERAL),
-        LintId::of(unicode::UNICODE_NOT_NFC),
-        LintId::of(unit_types::LET_UNIT_VALUE),
-        LintId::of(unnecessary_wraps::UNNECESSARY_WRAPS),
-        LintId::of(unnested_or_patterns::UNNESTED_OR_PATTERNS),
-        LintId::of(unused_self::UNUSED_SELF),
-        LintId::of(wildcard_imports::ENUM_GLOB_USE),
-        LintId::of(wildcard_imports::WILDCARD_IMPORTS),
-        LintId::of(zero_sized_map_values::ZERO_SIZED_MAP_VALUES),
-    ]);
-
-    #[cfg(feature = "internal-lints")]
-    store.register_group(true, "clippy::internal", Some("clippy_internal"), vec![
-        LintId::of(utils::internal_lints::CLIPPY_LINTS_INTERNAL),
-        LintId::of(utils::internal_lints::COLLAPSIBLE_SPAN_LINT_CALLS),
-        LintId::of(utils::internal_lints::COMPILER_LINT_FUNCTIONS),
-        LintId::of(utils::internal_lints::DEFAULT_LINT),
-        LintId::of(utils::internal_lints::IF_CHAIN_STYLE),
-        LintId::of(utils::internal_lints::INTERNING_DEFINED_SYMBOL),
-        LintId::of(utils::internal_lints::INVALID_PATHS),
-        LintId::of(utils::internal_lints::LINT_WITHOUT_LINT_PASS),
-        LintId::of(utils::internal_lints::MATCH_TYPE_ON_DIAGNOSTIC_ITEM),
-        LintId::of(utils::internal_lints::OUTER_EXPN_EXPN_DATA),
-        LintId::of(utils::internal_lints::PRODUCE_ICE),
-        LintId::of(utils::internal_lints::UNNECESSARY_SYMBOL_STR),
-    ]);
-
-    store.register_group(true, "clippy::all", Some("clippy"), vec![
-        LintId::of(absurd_extreme_comparisons::ABSURD_EXTREME_COMPARISONS),
-        LintId::of(approx_const::APPROX_CONSTANT),
-        LintId::of(assertions_on_constants::ASSERTIONS_ON_CONSTANTS),
-        LintId::of(assign_ops::ASSIGN_OP_PATTERN),
-        LintId::of(assign_ops::MISREFACTORED_ASSIGN_OP),
-        LintId::of(async_yields_async::ASYNC_YIELDS_ASYNC),
-        LintId::of(atomic_ordering::INVALID_ATOMIC_ORDERING),
-        LintId::of(attrs::BLANKET_CLIPPY_RESTRICTION_LINTS),
-        LintId::of(attrs::DEPRECATED_CFG_ATTR),
-        LintId::of(attrs::DEPRECATED_SEMVER),
-        LintId::of(attrs::MISMATCHED_TARGET_OS),
-        LintId::of(attrs::USELESS_ATTRIBUTE),
-        LintId::of(bit_mask::BAD_BIT_MASK),
-        LintId::of(bit_mask::INEFFECTIVE_BIT_MASK),
-        LintId::of(blacklisted_name::BLACKLISTED_NAME),
-        LintId::of(blocks_in_if_conditions::BLOCKS_IN_IF_CONDITIONS),
-        LintId::of(booleans::LOGIC_BUG),
-        LintId::of(booleans::NONMINIMAL_BOOL),
-        LintId::of(casts::CAST_REF_TO_MUT),
-        LintId::of(casts::CHAR_LIT_AS_U8),
-        LintId::of(casts::FN_TO_NUMERIC_CAST),
-        LintId::of(casts::FN_TO_NUMERIC_CAST_WITH_TRUNCATION),
-        LintId::of(casts::UNNECESSARY_CAST),
-        LintId::of(collapsible_if::COLLAPSIBLE_ELSE_IF),
-        LintId::of(collapsible_if::COLLAPSIBLE_IF),
-        LintId::of(collapsible_match::COLLAPSIBLE_MATCH),
-        LintId::of(comparison_chain::COMPARISON_CHAIN),
-        LintId::of(copies::BRANCHES_SHARING_CODE),
-        LintId::of(copies::IFS_SAME_COND),
-        LintId::of(copies::IF_SAME_THEN_ELSE),
-        LintId::of(default::FIELD_REASSIGN_WITH_DEFAULT),
-        LintId::of(derive::DERIVE_HASH_XOR_EQ),
-        LintId::of(derive::DERIVE_ORD_XOR_PARTIAL_ORD),
-        LintId::of(doc::MISSING_SAFETY_DOC),
-        LintId::of(doc::NEEDLESS_DOCTEST_MAIN),
-        LintId::of(double_comparison::DOUBLE_COMPARISONS),
-        LintId::of(double_parens::DOUBLE_PARENS),
-        LintId::of(drop_forget_ref::DROP_COPY),
-        LintId::of(drop_forget_ref::DROP_REF),
-        LintId::of(drop_forget_ref::FORGET_COPY),
-        LintId::of(drop_forget_ref::FORGET_REF),
-        LintId::of(duration_subsec::DURATION_SUBSEC),
-        LintId::of(entry::MAP_ENTRY),
-        LintId::of(enum_clike::ENUM_CLIKE_UNPORTABLE_VARIANT),
-        LintId::of(enum_variants::ENUM_VARIANT_NAMES),
-        LintId::of(enum_variants::MODULE_INCEPTION),
-        LintId::of(eq_op::EQ_OP),
-        LintId::of(eq_op::OP_REF),
-        LintId::of(erasing_op::ERASING_OP),
-        LintId::of(escape::BOXED_LOCAL),
-        LintId::of(eta_reduction::REDUNDANT_CLOSURE),
-        LintId::of(eval_order_dependence::DIVERGING_SUB_EXPRESSION),
-        LintId::of(eval_order_dependence::EVAL_ORDER_DEPENDENCE),
-        LintId::of(explicit_write::EXPLICIT_WRITE),
-        LintId::of(float_equality_without_abs::FLOAT_EQUALITY_WITHOUT_ABS),
-        LintId::of(float_literal::EXCESSIVE_PRECISION),
-        LintId::of(format::USELESS_FORMAT),
-        LintId::of(formatting::POSSIBLE_MISSING_COMMA),
-        LintId::of(formatting::SUSPICIOUS_ASSIGNMENT_FORMATTING),
-        LintId::of(formatting::SUSPICIOUS_ELSE_FORMATTING),
-        LintId::of(formatting::SUSPICIOUS_UNARY_OP_FORMATTING),
-        LintId::of(from_over_into::FROM_OVER_INTO),
-        LintId::of(from_str_radix_10::FROM_STR_RADIX_10),
-        LintId::of(functions::DOUBLE_MUST_USE),
-        LintId::of(functions::MUST_USE_UNIT),
-        LintId::of(functions::NOT_UNSAFE_PTR_ARG_DEREF),
-        LintId::of(functions::RESULT_UNIT_ERR),
-        LintId::of(functions::TOO_MANY_ARGUMENTS),
-        LintId::of(get_last_with_len::GET_LAST_WITH_LEN),
-        LintId::of(identity_op::IDENTITY_OP),
-        LintId::of(if_let_mutex::IF_LET_MUTEX),
-        LintId::of(if_let_some_result::IF_LET_SOME_RESULT),
-        LintId::of(inconsistent_struct_constructor::INCONSISTENT_STRUCT_CONSTRUCTOR),
-        LintId::of(indexing_slicing::OUT_OF_BOUNDS_INDEXING),
-        LintId::of(infinite_iter::INFINITE_ITER),
-        LintId::of(inherent_to_string::INHERENT_TO_STRING),
-        LintId::of(inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY),
-        LintId::of(inline_fn_without_body::INLINE_FN_WITHOUT_BODY),
-        LintId::of(int_plus_one::INT_PLUS_ONE),
-        LintId::of(large_const_arrays::LARGE_CONST_ARRAYS),
-        LintId::of(large_enum_variant::LARGE_ENUM_VARIANT),
-        LintId::of(len_zero::COMPARISON_TO_EMPTY),
-        LintId::of(len_zero::LEN_WITHOUT_IS_EMPTY),
-        LintId::of(len_zero::LEN_ZERO),
-        LintId::of(let_underscore::LET_UNDERSCORE_LOCK),
-        LintId::of(lifetimes::EXTRA_UNUSED_LIFETIMES),
-        LintId::of(lifetimes::NEEDLESS_LIFETIMES),
-        LintId::of(literal_representation::INCONSISTENT_DIGIT_GROUPING),
-        LintId::of(literal_representation::MISTYPED_LITERAL_SUFFIXES),
-        LintId::of(literal_representation::UNUSUAL_BYTE_GROUPINGS),
-        LintId::of(loops::EMPTY_LOOP),
-        LintId::of(loops::EXPLICIT_COUNTER_LOOP),
-        LintId::of(loops::FOR_KV_MAP),
-        LintId::of(loops::FOR_LOOPS_OVER_FALLIBLES),
-        LintId::of(loops::ITER_NEXT_LOOP),
-        LintId::of(loops::MANUAL_FLATTEN),
-        LintId::of(loops::MANUAL_MEMCPY),
-        LintId::of(loops::MUT_RANGE_BOUND),
-        LintId::of(loops::NEEDLESS_COLLECT),
-        LintId::of(loops::NEEDLESS_RANGE_LOOP),
-        LintId::of(loops::NEVER_LOOP),
-        LintId::of(loops::SAME_ITEM_PUSH),
-        LintId::of(loops::SINGLE_ELEMENT_LOOP),
-        LintId::of(loops::WHILE_IMMUTABLE_CONDITION),
-        LintId::of(loops::WHILE_LET_LOOP),
-        LintId::of(loops::WHILE_LET_ON_ITERATOR),
-        LintId::of(main_recursion::MAIN_RECURSION),
-        LintId::of(manual_async_fn::MANUAL_ASYNC_FN),
-        LintId::of(manual_map::MANUAL_MAP),
-        LintId::of(manual_non_exhaustive::MANUAL_NON_EXHAUSTIVE),
-        LintId::of(manual_strip::MANUAL_STRIP),
-        LintId::of(manual_unwrap_or::MANUAL_UNWRAP_OR),
-        LintId::of(map_clone::MAP_CLONE),
-        LintId::of(map_identity::MAP_IDENTITY),
-        LintId::of(map_unit_fn::OPTION_MAP_UNIT_FN),
-        LintId::of(map_unit_fn::RESULT_MAP_UNIT_FN),
-        LintId::of(matches::INFALLIBLE_DESTRUCTURING_MATCH),
-        LintId::of(matches::MATCH_AS_REF),
-        LintId::of(matches::MATCH_LIKE_MATCHES_MACRO),
-        LintId::of(matches::MATCH_OVERLAPPING_ARM),
-        LintId::of(matches::MATCH_REF_PATS),
-        LintId::of(matches::MATCH_SINGLE_BINDING),
-        LintId::of(matches::REDUNDANT_PATTERN_MATCHING),
-        LintId::of(matches::SINGLE_MATCH),
-        LintId::of(matches::WILDCARD_IN_OR_PATTERNS),
-        LintId::of(mem_discriminant::MEM_DISCRIMINANT_NON_ENUM),
-        LintId::of(mem_replace::MEM_REPLACE_OPTION_WITH_NONE),
-        LintId::of(mem_replace::MEM_REPLACE_WITH_DEFAULT),
-        LintId::of(mem_replace::MEM_REPLACE_WITH_UNINIT),
-        LintId::of(methods::BIND_INSTEAD_OF_MAP),
-        LintId::of(methods::BYTES_NTH),
-        LintId::of(methods::CHARS_LAST_CMP),
-        LintId::of(methods::CHARS_NEXT_CMP),
-        LintId::of(methods::CLONE_DOUBLE_REF),
-        LintId::of(methods::CLONE_ON_COPY),
-        LintId::of(methods::EXPECT_FUN_CALL),
-        LintId::of(methods::FILTER_MAP_IDENTITY),
-        LintId::of(methods::FILTER_NEXT),
-        LintId::of(methods::FLAT_MAP_IDENTITY),
-        LintId::of(methods::FROM_ITER_INSTEAD_OF_COLLECT),
-        LintId::of(methods::INSPECT_FOR_EACH),
-        LintId::of(methods::INTO_ITER_ON_REF),
-        LintId::of(methods::ITERATOR_STEP_BY_ZERO),
-        LintId::of(methods::ITER_CLONED_COLLECT),
-        LintId::of(methods::ITER_COUNT),
-        LintId::of(methods::ITER_NEXT_SLICE),
-        LintId::of(methods::ITER_NTH),
-        LintId::of(methods::ITER_NTH_ZERO),
-        LintId::of(methods::ITER_SKIP_NEXT),
-        LintId::of(methods::MANUAL_FILTER_MAP),
-        LintId::of(methods::MANUAL_FIND_MAP),
-        LintId::of(methods::MANUAL_SATURATING_ARITHMETIC),
-        LintId::of(methods::MAP_COLLECT_RESULT_UNIT),
-        LintId::of(methods::NEW_RET_NO_SELF),
-        LintId::of(methods::OK_EXPECT),
-        LintId::of(methods::OPTION_AS_REF_DEREF),
-        LintId::of(methods::OPTION_FILTER_MAP),
-        LintId::of(methods::OPTION_MAP_OR_NONE),
-        LintId::of(methods::OR_FUN_CALL),
-        LintId::of(methods::RESULT_MAP_OR_INTO_OPTION),
-        LintId::of(methods::SEARCH_IS_SOME),
-        LintId::of(methods::SHOULD_IMPLEMENT_TRAIT),
-        LintId::of(methods::SINGLE_CHAR_ADD_STR),
-        LintId::of(methods::SINGLE_CHAR_PATTERN),
-        LintId::of(methods::SKIP_WHILE_NEXT),
-        LintId::of(methods::STRING_EXTEND_CHARS),
-        LintId::of(methods::SUSPICIOUS_MAP),
-        LintId::of(methods::UNINIT_ASSUMED_INIT),
-        LintId::of(methods::UNNECESSARY_FILTER_MAP),
-        LintId::of(methods::UNNECESSARY_FOLD),
-        LintId::of(methods::UNNECESSARY_LAZY_EVALUATIONS),
-        LintId::of(methods::USELESS_ASREF),
-        LintId::of(methods::WRONG_SELF_CONVENTION),
-        LintId::of(methods::ZST_OFFSET),
-        LintId::of(minmax::MIN_MAX),
-        LintId::of(misc::CMP_NAN),
-        LintId::of(misc::CMP_OWNED),
-        LintId::of(misc::FLOAT_CMP),
-        LintId::of(misc::MODULO_ONE),
-        LintId::of(misc::SHORT_CIRCUIT_STATEMENT),
-        LintId::of(misc::TOPLEVEL_REF_ARG),
-        LintId::of(misc::ZERO_PTR),
-        LintId::of(misc_early::BUILTIN_TYPE_SHADOW),
-        LintId::of(misc_early::DOUBLE_NEG),
-        LintId::of(misc_early::DUPLICATE_UNDERSCORE_ARGUMENT),
-        LintId::of(misc_early::MIXED_CASE_HEX_LITERALS),
-        LintId::of(misc_early::REDUNDANT_PATTERN),
-        LintId::of(misc_early::UNNEEDED_WILDCARD_PATTERN),
-        LintId::of(misc_early::ZERO_PREFIXED_LITERAL),
-        LintId::of(mut_key::MUTABLE_KEY_TYPE),
-        LintId::of(mut_mutex_lock::MUT_MUTEX_LOCK),
-        LintId::of(mut_reference::UNNECESSARY_MUT_PASSED),
-        LintId::of(mutex_atomic::MUTEX_ATOMIC),
-        LintId::of(needless_arbitrary_self_type::NEEDLESS_ARBITRARY_SELF_TYPE),
-        LintId::of(needless_bool::BOOL_COMPARISON),
-        LintId::of(needless_bool::NEEDLESS_BOOL),
-        LintId::of(needless_borrowed_ref::NEEDLESS_BORROWED_REFERENCE),
-        LintId::of(needless_question_mark::NEEDLESS_QUESTION_MARK),
-        LintId::of(needless_update::NEEDLESS_UPDATE),
-        LintId::of(neg_cmp_op_on_partial_ord::NEG_CMP_OP_ON_PARTIAL_ORD),
-        LintId::of(neg_multiply::NEG_MULTIPLY),
-        LintId::of(new_without_default::NEW_WITHOUT_DEFAULT),
-        LintId::of(no_effect::NO_EFFECT),
-        LintId::of(no_effect::UNNECESSARY_OPERATION),
-        LintId::of(non_copy_const::BORROW_INTERIOR_MUTABLE_CONST),
-        LintId::of(non_copy_const::DECLARE_INTERIOR_MUTABLE_CONST),
-        LintId::of(non_expressive_names::JUST_UNDERSCORES_AND_DIGITS),
-        LintId::of(non_expressive_names::MANY_SINGLE_CHAR_NAMES),
-        LintId::of(non_octal_unix_permissions::NON_OCTAL_UNIX_PERMISSIONS),
-        LintId::of(open_options::NONSENSICAL_OPEN_OPTIONS),
-        LintId::of(option_env_unwrap::OPTION_ENV_UNWRAP),
-        LintId::of(overflow_check_conditional::OVERFLOW_CHECK_CONDITIONAL),
-        LintId::of(partialeq_ne_impl::PARTIALEQ_NE_IMPL),
-        LintId::of(precedence::PRECEDENCE),
-        LintId::of(ptr::CMP_NULL),
-        LintId::of(ptr::MUT_FROM_REF),
-        LintId::of(ptr::PTR_ARG),
-        LintId::of(ptr_eq::PTR_EQ),
-        LintId::of(ptr_offset_with_cast::PTR_OFFSET_WITH_CAST),
-        LintId::of(question_mark::QUESTION_MARK),
-        LintId::of(ranges::MANUAL_RANGE_CONTAINS),
-        LintId::of(ranges::RANGE_ZIP_WITH_LEN),
-        LintId::of(ranges::REVERSED_EMPTY_RANGES),
-        LintId::of(redundant_clone::REDUNDANT_CLONE),
-        LintId::of(redundant_closure_call::REDUNDANT_CLOSURE_CALL),
-        LintId::of(redundant_field_names::REDUNDANT_FIELD_NAMES),
-        LintId::of(redundant_slicing::REDUNDANT_SLICING),
-        LintId::of(redundant_static_lifetimes::REDUNDANT_STATIC_LIFETIMES),
-        LintId::of(reference::DEREF_ADDROF),
-        LintId::of(reference::REF_IN_DEREF),
-        LintId::of(regex::INVALID_REGEX),
-        LintId::of(repeat_once::REPEAT_ONCE),
-        LintId::of(returns::LET_AND_RETURN),
-        LintId::of(returns::NEEDLESS_RETURN),
-        LintId::of(self_assignment::SELF_ASSIGNMENT),
-        LintId::of(serde_api::SERDE_API_MISUSE),
-        LintId::of(single_component_path_imports::SINGLE_COMPONENT_PATH_IMPORTS),
-        LintId::of(size_of_in_element_count::SIZE_OF_IN_ELEMENT_COUNT),
-        LintId::of(slow_vector_initialization::SLOW_VECTOR_INITIALIZATION),
-        LintId::of(stable_sort_primitive::STABLE_SORT_PRIMITIVE),
-        LintId::of(strings::STRING_FROM_UTF8_AS_BYTES),
-        LintId::of(suspicious_operation_groupings::SUSPICIOUS_OPERATION_GROUPINGS),
-        LintId::of(suspicious_trait_impl::SUSPICIOUS_ARITHMETIC_IMPL),
-        LintId::of(suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL),
-        LintId::of(swap::ALMOST_SWAPPED),
-        LintId::of(swap::MANUAL_SWAP),
-        LintId::of(tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
-        LintId::of(temporary_assignment::TEMPORARY_ASSIGNMENT),
-        LintId::of(to_digit_is_some::TO_DIGIT_IS_SOME),
-        LintId::of(to_string_in_display::TO_STRING_IN_DISPLAY),
-        LintId::of(transmute::CROSSPOINTER_TRANSMUTE),
-        LintId::of(transmute::TRANSMUTES_EXPRESSIBLE_AS_PTR_CASTS),
-        LintId::of(transmute::TRANSMUTE_BYTES_TO_STR),
-        LintId::of(transmute::TRANSMUTE_FLOAT_TO_INT),
-        LintId::of(transmute::TRANSMUTE_INT_TO_BOOL),
-        LintId::of(transmute::TRANSMUTE_INT_TO_CHAR),
-        LintId::of(transmute::TRANSMUTE_INT_TO_FLOAT),
-        LintId::of(transmute::TRANSMUTE_PTR_TO_PTR),
-        LintId::of(transmute::TRANSMUTE_PTR_TO_REF),
-        LintId::of(transmute::UNSOUND_COLLECTION_TRANSMUTE),
-        LintId::of(transmute::WRONG_TRANSMUTE),
-        LintId::of(transmuting_null::TRANSMUTING_NULL),
-        LintId::of(try_err::TRY_ERR),
-        LintId::of(types::BORROWED_BOX),
-        LintId::of(types::BOX_VEC),
-        LintId::of(types::REDUNDANT_ALLOCATION),
-        LintId::of(types::TYPE_COMPLEXITY),
-        LintId::of(types::VEC_BOX),
-        LintId::of(undropped_manually_drops::UNDROPPED_MANUALLY_DROPS),
-        LintId::of(unicode::INVISIBLE_CHARACTERS),
-        LintId::of(unit_return_expecting_ord::UNIT_RETURN_EXPECTING_ORD),
-        LintId::of(unit_types::UNIT_ARG),
-        LintId::of(unit_types::UNIT_CMP),
-        LintId::of(unnamed_address::FN_ADDRESS_COMPARISONS),
-        LintId::of(unnamed_address::VTABLE_ADDRESS_COMPARISONS),
-        LintId::of(unnecessary_sort_by::UNNECESSARY_SORT_BY),
-        LintId::of(unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME),
-        LintId::of(unused_io_amount::UNUSED_IO_AMOUNT),
-        LintId::of(unused_unit::UNUSED_UNIT),
-        LintId::of(unwrap::PANICKING_UNWRAP),
-        LintId::of(unwrap::UNNECESSARY_UNWRAP),
-        LintId::of(upper_case_acronyms::UPPER_CASE_ACRONYMS),
-        LintId::of(useless_conversion::USELESS_CONVERSION),
-        LintId::of(vec::USELESS_VEC),
-        LintId::of(vec_init_then_push::VEC_INIT_THEN_PUSH),
-        LintId::of(vec_resize_to_zero::VEC_RESIZE_TO_ZERO),
-        LintId::of(write::PRINTLN_EMPTY_STRING),
-        LintId::of(write::PRINT_LITERAL),
-        LintId::of(write::PRINT_WITH_NEWLINE),
-        LintId::of(write::WRITELN_EMPTY_STRING),
-        LintId::of(write::WRITE_LITERAL),
-        LintId::of(write::WRITE_WITH_NEWLINE),
-        LintId::of(zero_div_zero::ZERO_DIVIDED_BY_ZERO),
-    ]);
-
-    store.register_group(true, "clippy::style", Some("clippy_style"), vec![
-        LintId::of(assertions_on_constants::ASSERTIONS_ON_CONSTANTS),
-        LintId::of(assign_ops::ASSIGN_OP_PATTERN),
-        LintId::of(attrs::BLANKET_CLIPPY_RESTRICTION_LINTS),
-        LintId::of(blacklisted_name::BLACKLISTED_NAME),
-        LintId::of(blocks_in_if_conditions::BLOCKS_IN_IF_CONDITIONS),
-        LintId::of(casts::FN_TO_NUMERIC_CAST),
-        LintId::of(casts::FN_TO_NUMERIC_CAST_WITH_TRUNCATION),
-        LintId::of(collapsible_if::COLLAPSIBLE_ELSE_IF),
-        LintId::of(collapsible_if::COLLAPSIBLE_IF),
-        LintId::of(collapsible_match::COLLAPSIBLE_MATCH),
-        LintId::of(comparison_chain::COMPARISON_CHAIN),
-        LintId::of(default::FIELD_REASSIGN_WITH_DEFAULT),
-        LintId::of(doc::MISSING_SAFETY_DOC),
-        LintId::of(doc::NEEDLESS_DOCTEST_MAIN),
-        LintId::of(enum_variants::ENUM_VARIANT_NAMES),
-        LintId::of(enum_variants::MODULE_INCEPTION),
-        LintId::of(eq_op::OP_REF),
-        LintId::of(eta_reduction::REDUNDANT_CLOSURE),
-        LintId::of(float_literal::EXCESSIVE_PRECISION),
-        LintId::of(formatting::SUSPICIOUS_ASSIGNMENT_FORMATTING),
-        LintId::of(formatting::SUSPICIOUS_ELSE_FORMATTING),
-        LintId::of(formatting::SUSPICIOUS_UNARY_OP_FORMATTING),
-        LintId::of(from_over_into::FROM_OVER_INTO),
-        LintId::of(from_str_radix_10::FROM_STR_RADIX_10),
-        LintId::of(functions::DOUBLE_MUST_USE),
-        LintId::of(functions::MUST_USE_UNIT),
-        LintId::of(functions::RESULT_UNIT_ERR),
-        LintId::of(if_let_some_result::IF_LET_SOME_RESULT),
-        LintId::of(inconsistent_struct_constructor::INCONSISTENT_STRUCT_CONSTRUCTOR),
-        LintId::of(inherent_to_string::INHERENT_TO_STRING),
-        LintId::of(len_zero::COMPARISON_TO_EMPTY),
-        LintId::of(len_zero::LEN_WITHOUT_IS_EMPTY),
-        LintId::of(len_zero::LEN_ZERO),
-        LintId::of(literal_representation::INCONSISTENT_DIGIT_GROUPING),
-        LintId::of(literal_representation::UNUSUAL_BYTE_GROUPINGS),
-        LintId::of(loops::EMPTY_LOOP),
-        LintId::of(loops::FOR_KV_MAP),
-        LintId::of(loops::NEEDLESS_RANGE_LOOP),
-        LintId::of(loops::SAME_ITEM_PUSH),
-        LintId::of(loops::WHILE_LET_ON_ITERATOR),
-        LintId::of(main_recursion::MAIN_RECURSION),
-        LintId::of(manual_async_fn::MANUAL_ASYNC_FN),
-        LintId::of(manual_map::MANUAL_MAP),
-        LintId::of(manual_non_exhaustive::MANUAL_NON_EXHAUSTIVE),
-        LintId::of(map_clone::MAP_CLONE),
-        LintId::of(matches::INFALLIBLE_DESTRUCTURING_MATCH),
-        LintId::of(matches::MATCH_LIKE_MATCHES_MACRO),
-        LintId::of(matches::MATCH_OVERLAPPING_ARM),
-        LintId::of(matches::MATCH_REF_PATS),
-        LintId::of(matches::REDUNDANT_PATTERN_MATCHING),
-        LintId::of(matches::SINGLE_MATCH),
-        LintId::of(mem_replace::MEM_REPLACE_OPTION_WITH_NONE),
-        LintId::of(mem_replace::MEM_REPLACE_WITH_DEFAULT),
-        LintId::of(methods::BYTES_NTH),
-        LintId::of(methods::CHARS_LAST_CMP),
-        LintId::of(methods::CHARS_NEXT_CMP),
-        LintId::of(methods::FROM_ITER_INSTEAD_OF_COLLECT),
-        LintId::of(methods::INTO_ITER_ON_REF),
-        LintId::of(methods::ITER_CLONED_COLLECT),
-        LintId::of(methods::ITER_NEXT_SLICE),
-        LintId::of(methods::ITER_NTH_ZERO),
-        LintId::of(methods::ITER_SKIP_NEXT),
-        LintId::of(methods::MANUAL_SATURATING_ARITHMETIC),
-        LintId::of(methods::MAP_COLLECT_RESULT_UNIT),
-        LintId::of(methods::NEW_RET_NO_SELF),
-        LintId::of(methods::OK_EXPECT),
-        LintId::of(methods::OPTION_MAP_OR_NONE),
-        LintId::of(methods::RESULT_MAP_OR_INTO_OPTION),
-        LintId::of(methods::SHOULD_IMPLEMENT_TRAIT),
-        LintId::of(methods::SINGLE_CHAR_ADD_STR),
-        LintId::of(methods::STRING_EXTEND_CHARS),
-        LintId::of(methods::UNNECESSARY_FOLD),
-        LintId::of(methods::UNNECESSARY_LAZY_EVALUATIONS),
-        LintId::of(methods::WRONG_SELF_CONVENTION),
-        LintId::of(misc::TOPLEVEL_REF_ARG),
-        LintId::of(misc::ZERO_PTR),
-        LintId::of(misc_early::BUILTIN_TYPE_SHADOW),
-        LintId::of(misc_early::DOUBLE_NEG),
-        LintId::of(misc_early::DUPLICATE_UNDERSCORE_ARGUMENT),
-        LintId::of(misc_early::MIXED_CASE_HEX_LITERALS),
-        LintId::of(misc_early::REDUNDANT_PATTERN),
-        LintId::of(mut_mutex_lock::MUT_MUTEX_LOCK),
-        LintId::of(mut_reference::UNNECESSARY_MUT_PASSED),
-        LintId::of(neg_multiply::NEG_MULTIPLY),
-        LintId::of(new_without_default::NEW_WITHOUT_DEFAULT),
-        LintId::of(non_copy_const::BORROW_INTERIOR_MUTABLE_CONST),
-        LintId::of(non_copy_const::DECLARE_INTERIOR_MUTABLE_CONST),
-        LintId::of(non_expressive_names::JUST_UNDERSCORES_AND_DIGITS),
-        LintId::of(non_expressive_names::MANY_SINGLE_CHAR_NAMES),
-        LintId::of(ptr::CMP_NULL),
-        LintId::of(ptr::PTR_ARG),
-        LintId::of(ptr_eq::PTR_EQ),
-        LintId::of(question_mark::QUESTION_MARK),
-        LintId::of(ranges::MANUAL_RANGE_CONTAINS),
-        LintId::of(redundant_field_names::REDUNDANT_FIELD_NAMES),
-        LintId::of(redundant_static_lifetimes::REDUNDANT_STATIC_LIFETIMES),
-        LintId::of(returns::LET_AND_RETURN),
-        LintId::of(returns::NEEDLESS_RETURN),
-        LintId::of(single_component_path_imports::SINGLE_COMPONENT_PATH_IMPORTS),
-        LintId::of(suspicious_operation_groupings::SUSPICIOUS_OPERATION_GROUPINGS),
-        LintId::of(tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
-        LintId::of(to_digit_is_some::TO_DIGIT_IS_SOME),
-        LintId::of(try_err::TRY_ERR),
-        LintId::of(unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME),
-        LintId::of(unused_unit::UNUSED_UNIT),
-        LintId::of(upper_case_acronyms::UPPER_CASE_ACRONYMS),
-        LintId::of(write::PRINTLN_EMPTY_STRING),
-        LintId::of(write::PRINT_LITERAL),
-        LintId::of(write::PRINT_WITH_NEWLINE),
-        LintId::of(write::WRITELN_EMPTY_STRING),
-        LintId::of(write::WRITE_LITERAL),
-        LintId::of(write::WRITE_WITH_NEWLINE),
-    ]);
-
-    store.register_group(true, "clippy::complexity", Some("clippy_complexity"), vec![
-        LintId::of(assign_ops::MISREFACTORED_ASSIGN_OP),
-        LintId::of(attrs::DEPRECATED_CFG_ATTR),
-        LintId::of(booleans::NONMINIMAL_BOOL),
-        LintId::of(casts::CHAR_LIT_AS_U8),
-        LintId::of(casts::UNNECESSARY_CAST),
-        LintId::of(copies::BRANCHES_SHARING_CODE),
-        LintId::of(double_comparison::DOUBLE_COMPARISONS),
-        LintId::of(double_parens::DOUBLE_PARENS),
-        LintId::of(duration_subsec::DURATION_SUBSEC),
-        LintId::of(eval_order_dependence::DIVERGING_SUB_EXPRESSION),
-        LintId::of(eval_order_dependence::EVAL_ORDER_DEPENDENCE),
-        LintId::of(explicit_write::EXPLICIT_WRITE),
-        LintId::of(format::USELESS_FORMAT),
-        LintId::of(functions::TOO_MANY_ARGUMENTS),
-        LintId::of(get_last_with_len::GET_LAST_WITH_LEN),
-        LintId::of(identity_op::IDENTITY_OP),
-        LintId::of(int_plus_one::INT_PLUS_ONE),
-        LintId::of(lifetimes::EXTRA_UNUSED_LIFETIMES),
-        LintId::of(lifetimes::NEEDLESS_LIFETIMES),
-        LintId::of(loops::EXPLICIT_COUNTER_LOOP),
-        LintId::of(loops::MANUAL_FLATTEN),
-        LintId::of(loops::MUT_RANGE_BOUND),
-        LintId::of(loops::SINGLE_ELEMENT_LOOP),
-        LintId::of(loops::WHILE_LET_LOOP),
-        LintId::of(manual_strip::MANUAL_STRIP),
-        LintId::of(manual_unwrap_or::MANUAL_UNWRAP_OR),
-        LintId::of(map_identity::MAP_IDENTITY),
-        LintId::of(map_unit_fn::OPTION_MAP_UNIT_FN),
-        LintId::of(map_unit_fn::RESULT_MAP_UNIT_FN),
-        LintId::of(matches::MATCH_AS_REF),
-        LintId::of(matches::MATCH_SINGLE_BINDING),
-        LintId::of(matches::WILDCARD_IN_OR_PATTERNS),
-        LintId::of(methods::BIND_INSTEAD_OF_MAP),
-        LintId::of(methods::CLONE_ON_COPY),
-        LintId::of(methods::FILTER_MAP_IDENTITY),
-        LintId::of(methods::FILTER_NEXT),
-        LintId::of(methods::FLAT_MAP_IDENTITY),
-        LintId::of(methods::INSPECT_FOR_EACH),
-        LintId::of(methods::ITER_COUNT),
-        LintId::of(methods::MANUAL_FILTER_MAP),
-        LintId::of(methods::MANUAL_FIND_MAP),
-        LintId::of(methods::OPTION_AS_REF_DEREF),
-        LintId::of(methods::OPTION_FILTER_MAP),
-        LintId::of(methods::SEARCH_IS_SOME),
-        LintId::of(methods::SKIP_WHILE_NEXT),
-        LintId::of(methods::SUSPICIOUS_MAP),
-        LintId::of(methods::UNNECESSARY_FILTER_MAP),
-        LintId::of(methods::USELESS_ASREF),
-        LintId::of(misc::SHORT_CIRCUIT_STATEMENT),
-        LintId::of(misc_early::UNNEEDED_WILDCARD_PATTERN),
-        LintId::of(misc_early::ZERO_PREFIXED_LITERAL),
-        LintId::of(needless_arbitrary_self_type::NEEDLESS_ARBITRARY_SELF_TYPE),
-        LintId::of(needless_bool::BOOL_COMPARISON),
-        LintId::of(needless_bool::NEEDLESS_BOOL),
-        LintId::of(needless_borrowed_ref::NEEDLESS_BORROWED_REFERENCE),
-        LintId::of(needless_question_mark::NEEDLESS_QUESTION_MARK),
-        LintId::of(needless_update::NEEDLESS_UPDATE),
-        LintId::of(neg_cmp_op_on_partial_ord::NEG_CMP_OP_ON_PARTIAL_ORD),
-        LintId::of(no_effect::NO_EFFECT),
-        LintId::of(no_effect::UNNECESSARY_OPERATION),
-        LintId::of(overflow_check_conditional::OVERFLOW_CHECK_CONDITIONAL),
-        LintId::of(partialeq_ne_impl::PARTIALEQ_NE_IMPL),
-        LintId::of(precedence::PRECEDENCE),
-        LintId::of(ptr_offset_with_cast::PTR_OFFSET_WITH_CAST),
-        LintId::of(ranges::RANGE_ZIP_WITH_LEN),
-        LintId::of(redundant_closure_call::REDUNDANT_CLOSURE_CALL),
-        LintId::of(redundant_slicing::REDUNDANT_SLICING),
-        LintId::of(reference::DEREF_ADDROF),
-        LintId::of(reference::REF_IN_DEREF),
-        LintId::of(repeat_once::REPEAT_ONCE),
-        LintId::of(strings::STRING_FROM_UTF8_AS_BYTES),
-        LintId::of(swap::MANUAL_SWAP),
-        LintId::of(temporary_assignment::TEMPORARY_ASSIGNMENT),
-        LintId::of(transmute::CROSSPOINTER_TRANSMUTE),
-        LintId::of(transmute::TRANSMUTES_EXPRESSIBLE_AS_PTR_CASTS),
-        LintId::of(transmute::TRANSMUTE_BYTES_TO_STR),
-        LintId::of(transmute::TRANSMUTE_FLOAT_TO_INT),
-        LintId::of(transmute::TRANSMUTE_INT_TO_BOOL),
-        LintId::of(transmute::TRANSMUTE_INT_TO_CHAR),
-        LintId::of(transmute::TRANSMUTE_INT_TO_FLOAT),
-        LintId::of(transmute::TRANSMUTE_PTR_TO_PTR),
-        LintId::of(transmute::TRANSMUTE_PTR_TO_REF),
-        LintId::of(types::BORROWED_BOX),
-        LintId::of(types::TYPE_COMPLEXITY),
-        LintId::of(types::VEC_BOX),
-        LintId::of(unit_types::UNIT_ARG),
-        LintId::of(unnecessary_sort_by::UNNECESSARY_SORT_BY),
-        LintId::of(unwrap::UNNECESSARY_UNWRAP),
-        LintId::of(useless_conversion::USELESS_CONVERSION),
-        LintId::of(zero_div_zero::ZERO_DIVIDED_BY_ZERO),
-    ]);
-
-    store.register_group(true, "clippy::correctness", Some("clippy_correctness"), vec![
-        LintId::of(absurd_extreme_comparisons::ABSURD_EXTREME_COMPARISONS),
-        LintId::of(approx_const::APPROX_CONSTANT),
-        LintId::of(async_yields_async::ASYNC_YIELDS_ASYNC),
-        LintId::of(atomic_ordering::INVALID_ATOMIC_ORDERING),
-        LintId::of(attrs::DEPRECATED_SEMVER),
-        LintId::of(attrs::MISMATCHED_TARGET_OS),
-        LintId::of(attrs::USELESS_ATTRIBUTE),
-        LintId::of(bit_mask::BAD_BIT_MASK),
-        LintId::of(bit_mask::INEFFECTIVE_BIT_MASK),
-        LintId::of(booleans::LOGIC_BUG),
-        LintId::of(casts::CAST_REF_TO_MUT),
-        LintId::of(copies::IFS_SAME_COND),
-        LintId::of(copies::IF_SAME_THEN_ELSE),
-        LintId::of(derive::DERIVE_HASH_XOR_EQ),
-        LintId::of(derive::DERIVE_ORD_XOR_PARTIAL_ORD),
-        LintId::of(drop_forget_ref::DROP_COPY),
-        LintId::of(drop_forget_ref::DROP_REF),
-        LintId::of(drop_forget_ref::FORGET_COPY),
-        LintId::of(drop_forget_ref::FORGET_REF),
-        LintId::of(enum_clike::ENUM_CLIKE_UNPORTABLE_VARIANT),
-        LintId::of(eq_op::EQ_OP),
-        LintId::of(erasing_op::ERASING_OP),
-        LintId::of(float_equality_without_abs::FLOAT_EQUALITY_WITHOUT_ABS),
-        LintId::of(formatting::POSSIBLE_MISSING_COMMA),
-        LintId::of(functions::NOT_UNSAFE_PTR_ARG_DEREF),
-        LintId::of(if_let_mutex::IF_LET_MUTEX),
-        LintId::of(indexing_slicing::OUT_OF_BOUNDS_INDEXING),
-        LintId::of(infinite_iter::INFINITE_ITER),
-        LintId::of(inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY),
-        LintId::of(inline_fn_without_body::INLINE_FN_WITHOUT_BODY),
-        LintId::of(let_underscore::LET_UNDERSCORE_LOCK),
-        LintId::of(literal_representation::MISTYPED_LITERAL_SUFFIXES),
-        LintId::of(loops::FOR_LOOPS_OVER_FALLIBLES),
-        LintId::of(loops::ITER_NEXT_LOOP),
-        LintId::of(loops::NEVER_LOOP),
-        LintId::of(loops::WHILE_IMMUTABLE_CONDITION),
-        LintId::of(mem_discriminant::MEM_DISCRIMINANT_NON_ENUM),
-        LintId::of(mem_replace::MEM_REPLACE_WITH_UNINIT),
-        LintId::of(methods::CLONE_DOUBLE_REF),
-        LintId::of(methods::ITERATOR_STEP_BY_ZERO),
-        LintId::of(methods::UNINIT_ASSUMED_INIT),
-        LintId::of(methods::ZST_OFFSET),
-        LintId::of(minmax::MIN_MAX),
-        LintId::of(misc::CMP_NAN),
-        LintId::of(misc::FLOAT_CMP),
-        LintId::of(misc::MODULO_ONE),
-        LintId::of(mut_key::MUTABLE_KEY_TYPE),
-        LintId::of(non_octal_unix_permissions::NON_OCTAL_UNIX_PERMISSIONS),
-        LintId::of(open_options::NONSENSICAL_OPEN_OPTIONS),
-        LintId::of(option_env_unwrap::OPTION_ENV_UNWRAP),
-        LintId::of(ptr::MUT_FROM_REF),
-        LintId::of(ranges::REVERSED_EMPTY_RANGES),
-        LintId::of(regex::INVALID_REGEX),
-        LintId::of(self_assignment::SELF_ASSIGNMENT),
-        LintId::of(serde_api::SERDE_API_MISUSE),
-        LintId::of(size_of_in_element_count::SIZE_OF_IN_ELEMENT_COUNT),
-        LintId::of(suspicious_trait_impl::SUSPICIOUS_ARITHMETIC_IMPL),
-        LintId::of(suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL),
-        LintId::of(swap::ALMOST_SWAPPED),
-        LintId::of(to_string_in_display::TO_STRING_IN_DISPLAY),
-        LintId::of(transmute::UNSOUND_COLLECTION_TRANSMUTE),
-        LintId::of(transmute::WRONG_TRANSMUTE),
-        LintId::of(transmuting_null::TRANSMUTING_NULL),
-        LintId::of(undropped_manually_drops::UNDROPPED_MANUALLY_DROPS),
-        LintId::of(unicode::INVISIBLE_CHARACTERS),
-        LintId::of(unit_return_expecting_ord::UNIT_RETURN_EXPECTING_ORD),
-        LintId::of(unit_types::UNIT_CMP),
-        LintId::of(unnamed_address::FN_ADDRESS_COMPARISONS),
-        LintId::of(unnamed_address::VTABLE_ADDRESS_COMPARISONS),
-        LintId::of(unused_io_amount::UNUSED_IO_AMOUNT),
-        LintId::of(unwrap::PANICKING_UNWRAP),
-        LintId::of(vec_resize_to_zero::VEC_RESIZE_TO_ZERO),
-    ]);
-
-    store.register_group(true, "clippy::perf", Some("clippy_perf"), vec![
-        LintId::of(entry::MAP_ENTRY),
-        LintId::of(escape::BOXED_LOCAL),
-        LintId::of(large_const_arrays::LARGE_CONST_ARRAYS),
-        LintId::of(large_enum_variant::LARGE_ENUM_VARIANT),
-        LintId::of(loops::MANUAL_MEMCPY),
-        LintId::of(loops::NEEDLESS_COLLECT),
-        LintId::of(methods::EXPECT_FUN_CALL),
-        LintId::of(methods::ITER_NTH),
-        LintId::of(methods::OR_FUN_CALL),
-        LintId::of(methods::SINGLE_CHAR_PATTERN),
-        LintId::of(misc::CMP_OWNED),
-        LintId::of(mutex_atomic::MUTEX_ATOMIC),
-        LintId::of(redundant_clone::REDUNDANT_CLONE),
-        LintId::of(slow_vector_initialization::SLOW_VECTOR_INITIALIZATION),
-        LintId::of(stable_sort_primitive::STABLE_SORT_PRIMITIVE),
-        LintId::of(types::BOX_VEC),
-        LintId::of(types::REDUNDANT_ALLOCATION),
-        LintId::of(vec::USELESS_VEC),
-        LintId::of(vec_init_then_push::VEC_INIT_THEN_PUSH),
-    ]);
-
-    store.register_group(true, "clippy::cargo", Some("clippy_cargo"), vec![
-        LintId::of(cargo_common_metadata::CARGO_COMMON_METADATA),
-        LintId::of(multiple_crate_versions::MULTIPLE_CRATE_VERSIONS),
-        LintId::of(wildcard_dependencies::WILDCARD_DEPENDENCIES),
-    ]);
-
-    store.register_group(true, "clippy::nursery", Some("clippy_nursery"), vec![
-        LintId::of(attrs::EMPTY_LINE_AFTER_OUTER_ATTR),
-        LintId::of(cognitive_complexity::COGNITIVE_COMPLEXITY),
-        LintId::of(disallowed_method::DISALLOWED_METHOD),
-        LintId::of(fallible_impl_from::FALLIBLE_IMPL_FROM),
-        LintId::of(floating_point_arithmetic::IMPRECISE_FLOPS),
-        LintId::of(floating_point_arithmetic::SUBOPTIMAL_FLOPS),
-        LintId::of(future_not_send::FUTURE_NOT_SEND),
-        LintId::of(let_if_seq::USELESS_LET_IF_SEQ),
-        LintId::of(missing_const_for_fn::MISSING_CONST_FOR_FN),
-        LintId::of(mutable_debug_assertion::DEBUG_ASSERT_WITH_MUT_CALL),
-        LintId::of(mutex_atomic::MUTEX_INTEGER),
-        LintId::of(needless_borrow::NEEDLESS_BORROW),
-        LintId::of(path_buf_push_overwrite::PATH_BUF_PUSH_OVERWRITE),
-        LintId::of(redundant_pub_crate::REDUNDANT_PUB_CRATE),
-        LintId::of(regex::TRIVIAL_REGEX),
-        LintId::of(strings::STRING_LIT_AS_BYTES),
-        LintId::of(transmute::USELESS_TRANSMUTE),
-        LintId::of(use_self::USE_SELF),
-    ]);
+    store.register_early_pass(|| box bool_assert_comparison::BoolAssertComparison);
+    store.register_late_pass(|| box unused_async::UnusedAsync);
+    let disallowed_types = conf.disallowed_types.iter().cloned().collect::<FxHashSet<_>>();
+    store.register_late_pass(move || box disallowed_type::DisallowedType::new(&disallowed_types));
+    let import_renames = conf.enforced_import_renames.clone();
+    store.register_late_pass(move || box missing_enforced_import_rename::ImportRename::new(import_renames.clone()));
+    let scripts = conf.allowed_scripts.clone();
+    store.register_early_pass(move || box disallowed_script_idents::DisallowedScriptIdents::new(&scripts));
+    store.register_late_pass(|| box strlen_on_c_strings::StrlenOnCStrings);
+    store.register_late_pass(move || box self_named_constructor::SelfNamedConstructor);
 }
 
 #[rustfmt::skip]
@@ -2153,6 +2175,15 @@ pub fn register_renamed(ls: &mut rustc_lint::LintStore) {
     ls.register_renamed("clippy::identity_conversion", "clippy::useless_conversion");
     ls.register_renamed("clippy::zero_width_space", "clippy::invisible_characters");
     ls.register_renamed("clippy::single_char_push_str", "clippy::single_char_add_str");
+
+    // uplifted lints
+    ls.register_renamed("clippy::invalid_ref", "invalid_value");
+    ls.register_renamed("clippy::into_iter_on_array", "array_into_iter");
+    ls.register_renamed("clippy::unused_label", "unused_labels");
+    ls.register_renamed("clippy::drop_bounds", "drop_bounds");
+    ls.register_renamed("clippy::temporary_cstring_as_ptr", "temporary_cstring_as_ptr");
+    ls.register_renamed("clippy::panic_params", "non_fmt_panics");
+    ls.register_renamed("clippy::unknown_clippy_lints", "unknown_lints");
 }
 
 // only exists to let the dogfood integration test works.

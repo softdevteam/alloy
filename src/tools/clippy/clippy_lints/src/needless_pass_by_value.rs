@@ -279,7 +279,7 @@ impl<'tcx> LateLintPass<'tcx> for NeedlessPassByValue {
                             spans.extend(
                                 deref_span
                                     .iter()
-                                    .cloned()
+                                    .copied()
                                     .map(|span| (span, format!("*{}", snippet(cx, span, "<expr>")))),
                             );
                             spans.sort_by_key(|&(span, _)| span);
@@ -326,10 +326,8 @@ impl MovedVariablesCtxt {
 }
 
 impl<'tcx> euv::Delegate<'tcx> for MovedVariablesCtxt {
-    fn consume(&mut self, cmt: &euv::PlaceWithHirId<'tcx>, _: HirId, mode: euv::ConsumeMode) {
-        if let euv::ConsumeMode::Move = mode {
-            self.move_common(cmt);
-        }
+    fn consume(&mut self, cmt: &euv::PlaceWithHirId<'tcx>, _: HirId) {
+        self.move_common(cmt);
     }
 
     fn borrow(&mut self, _: &euv::PlaceWithHirId<'tcx>, _: HirId, _: ty::BorrowKind) {}

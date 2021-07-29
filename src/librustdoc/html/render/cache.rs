@@ -1,19 +1,18 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::ty::TyCtxt;
-use rustc_span::symbol::{sym, Symbol};
+use rustc_span::symbol::Symbol;
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
+use crate::clean;
 use crate::clean::types::{
-    FnDecl, FnRetTy, GenericBound, Generics, GetDefId, Type, TypeKind, WherePredicate,
+    FnDecl, FnRetTy, GenericBound, Generics, GetDefId, Type, WherePredicate,
 };
-use crate::clean::{self, AttributesExt};
 use crate::formats::cache::Cache;
 use crate::formats::item_type::ItemType;
 use crate::html::markdown::short_markdown_summary;
-use crate::html::render::{Generic, IndexItem, IndexItemFunctionType, RenderType, TypeWithKind};
+use crate::html::render::{IndexItem, IndexItemFunctionType, RenderType, TypeWithKind};
 
 /// Indicates where an external crate can be found.
 crate enum ExternalLocation {
@@ -23,45 +22,6 @@ crate enum ExternalLocation {
     Local,
     /// The external crate could not be found.
     Unknown,
-}
-
-/// Attempts to find where an external crate is located, given that we're
-/// rendering in to the specified source destination.
-crate fn extern_location(
-    e: &clean::ExternalCrate,
-    extern_url: Option<&str>,
-    dst: &Path,
-) -> ExternalLocation {
-    use ExternalLocation::*;
-    // See if there's documentation generated into the local directory
-    let local_location = dst.join(&*e.name.as_str());
-    if local_location.is_dir() {
-        return Local;
-    }
-
-    if let Some(url) = extern_url {
-        let mut url = url.to_string();
-        if !url.ends_with('/') {
-            url.push('/');
-        }
-        return Remote(url);
-    }
-
-    // Failing that, see if there's an attribute specifying where to find this
-    // external crate
-    e.attrs
-        .lists(sym::doc)
-        .filter(|a| a.has_name(sym::html_root_url))
-        .filter_map(|a| a.value_str())
-        .map(|url| {
-            let mut url = url.to_string();
-            if !url.ends_with('/') {
-                url.push('/')
-            }
-            Remote(url)
-        })
-        .next()
-        .unwrap_or(Unknown) // Well, at least we tried.
 }
 
 /// Builds the search index from the collected metadata
@@ -74,18 +34,26 @@ crate fn build_index<'tcx>(krate: &clean::Crate, cache: &mut Cache, tcx: TyCtxt<
     // has since been learned.
     for &(did, ref item) in &cache.orphan_impl_items {
         if let Some(&(ref fqp, _)) = cache.paths.get(&did) {
+            let desc = item
+                .doc_value()
+                .map_or_else(String::new, |s| short_markdown_summary(&s, &item.link_names(&cache)));
             cache.search_index.push(IndexItem {
                 ty: item.type_(),
                 name: item.name.unwrap().to_string(),
                 path: fqp[..fqp.len() - 1].join("::"),
-                desc: item.doc_value().map_or_else(String::new, |s| short_markdown_summary(&s)),
-                parent: Some(did),
+                desc,
+                parent: Some(did.into()),
                 parent_idx: None,
-                search_type: get_index_search_type(&item, cache, tcx),
+                search_type: get_index_search_type(&item, tcx),
                 aliases: item.attrs.get_doc_aliases(),
             });
         }
     }
+
+    let crate_doc = krate
+        .module
+        .doc_value()
+        .map_or_else(String::new, |s| short_markdown_summary(&s, &krate.module.link_names(&cache)));
 
     let Cache { ref mut search_index, ref paths, .. } = *cache;
 
@@ -139,9 +107,6 @@ crate fn build_index<'tcx>(krate: &clean::Crate, cache: &mut Cache, tcx: TyCtxt<
         }
         crate_items.push(&*item);
     }
-
-    let crate_doc =
-        krate.module.doc_value().map_or_else(String::new, |s| short_markdown_summary(&s));
 
     struct CrateData<'a> {
         doc: String,
@@ -227,7 +192,6 @@ crate fn build_index<'tcx>(krate: &clean::Crate, cache: &mut Cache, tcx: TyCtxt<
 
 crate fn get_index_search_type<'tcx>(
     item: &clean::Item,
-    cache: &Cache,
     tcx: TyCtxt<'tcx>,
 ) -> Option<IndexItemFunctionType> {
     let (all_types, ret_types) = match *item.kind {
@@ -239,12 +203,12 @@ crate fn get_index_search_type<'tcx>(
 
     let inputs = all_types
         .iter()
-        .map(|(ty, kind)| TypeWithKind::from((get_index_type(&ty, &cache), *kind)))
+        .map(|(ty, kind)| TypeWithKind::from((get_index_type(&ty), *kind)))
         .filter(|a| a.ty.name.is_some())
         .collect();
     let output = ret_types
         .iter()
-        .map(|(ty, kind)| TypeWithKind::from((get_index_type(&ty, &cache), *kind)))
+        .map(|(ty, kind)| TypeWithKind::from((get_index_type(&ty), *kind)))
         .filter(|a| a.ty.name.is_some())
         .collect::<Vec<_>>();
     let output = if output.is_empty() { None } else { Some(output) };
@@ -252,12 +216,10 @@ crate fn get_index_search_type<'tcx>(
     Some(IndexItemFunctionType { inputs, output })
 }
 
-fn get_index_type(clean_type: &clean::Type, cache: &Cache) -> RenderType {
+fn get_index_type(clean_type: &clean::Type) -> RenderType {
     RenderType {
-        ty: clean_type.def_id_full(cache),
-        idx: None,
         name: get_index_type_name(clean_type, true).map(|s| s.as_str().to_ascii_lowercase()),
-        generics: get_generics(clean_type, cache),
+        generics: get_generics(clean_type),
     }
 }
 
@@ -273,6 +235,7 @@ fn get_index_type_name(clean_type: &clean::Type, accept_generic: bool) -> Option
             });
             Some(path_segment.name)
         }
+        clean::DynTrait(ref bounds, _) => get_index_type_name(&bounds[0].trait_, accept_generic),
         clean::Generic(s) if accept_generic => Some(s),
         clean::Primitive(ref p) => Some(p.as_sym()),
         clean::BorrowedRef { ref type_, .. } => get_index_type_name(type_, accept_generic),
@@ -289,16 +252,17 @@ fn get_index_type_name(clean_type: &clean::Type, accept_generic: bool) -> Option
     }
 }
 
-fn get_generics(clean_type: &clean::Type, cache: &Cache) -> Option<Vec<Generic>> {
+/// Return a list of generic parameters for use in the search index.
+///
+/// This function replaces bounds with types, so that `T where T: Debug` just becomes `Debug`.
+/// It does return duplicates, and that's intentional, since search queries like `Result<usize, usize>`
+/// are supposed to match only results where both parameters are `usize`.
+fn get_generics(clean_type: &clean::Type) -> Option<Vec<String>> {
     clean_type.generics().and_then(|types| {
         let r = types
             .iter()
             .filter_map(|t| {
-                get_index_type_name(t, false).map(|name| Generic {
-                    name: name.as_str().to_ascii_lowercase(),
-                    defid: t.def_id_full(cache),
-                    idx: None,
-                })
+                get_index_type_name(t, false).map(|name| name.as_str().to_ascii_lowercase())
             })
             .collect::<Vec<_>>();
         if r.is_empty() { None } else { Some(r) }
@@ -315,15 +279,15 @@ crate fn get_real_types<'tcx>(
     arg: &Type,
     tcx: TyCtxt<'tcx>,
     recurse: i32,
-    res: &mut FxHashSet<(Type, TypeKind)>,
+    res: &mut FxHashSet<(Type, ItemType)>,
 ) -> usize {
-    fn insert(res: &mut FxHashSet<(Type, TypeKind)>, tcx: TyCtxt<'_>, ty: Type) -> usize {
+    fn insert(res: &mut FxHashSet<(Type, ItemType)>, tcx: TyCtxt<'_>, ty: Type) -> usize {
         if let Some(kind) = ty.def_id().map(|did| tcx.def_kind(did).into()) {
             res.insert((ty, kind));
             1
         } else if ty.is_primitive() {
             // This is a primitive, let's store it as such.
-            res.insert((ty, TypeKind::Primitive));
+            res.insert((ty, ItemType::Primitive));
             1
         } else {
             0
@@ -393,7 +357,7 @@ crate fn get_all_types<'tcx>(
     generics: &Generics,
     decl: &FnDecl,
     tcx: TyCtxt<'tcx>,
-) -> (Vec<(Type, TypeKind)>, Vec<(Type, TypeKind)>) {
+) -> (Vec<(Type, ItemType)>, Vec<(Type, ItemType)>) {
     let mut all_types = FxHashSet::default();
     for arg in decl.inputs.values.iter() {
         if arg.type_.is_self_type() {

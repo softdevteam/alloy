@@ -19,8 +19,28 @@ Read ["Installation"] from [The Book].
 ## Installing from Source
 
 The Rust build system uses a Python script called `x.py` to build the compiler,
-which manages the bootstrapping process. More information about it can be found
-by running `./x.py --help` or reading the [rustc dev guide][rustcguidebuild].
+which manages the bootstrapping process. It lives in the root of the project.
+
+The `x.py` command can be run directly on most systems in the following format:
+
+```sh
+./x.py <subcommand> [flags]
+```
+
+This is how the documentation and examples assume you are running `x.py`.
+
+Systems such as Ubuntu 20.04 LTS do not create the necessary `python` command by default when Python is installed that allows `x.py` to be run directly. In that case you can either create a symlink for `python` (Ubuntu provides the `python-is-python3` package for this), or run `x.py` using Python itself:
+
+```sh
+# Python 3
+python3 x.py <subcommand> [flags]
+
+# Python 2.7
+python2.7 x.py <subcommand> [flags]
+```
+
+More information about `x.py` can be found
+by running it with the `--help` flag or reading the [rustc dev guide][rustcguidebuild].
 
 [gettingstarted]: https://rustc-dev-guide.rust-lang.org/getting-started.html
 [rustcguidebuild]: https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html
@@ -252,15 +272,14 @@ See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and
 
 ## Trademark
 
-The Rust programming language is an open source, community project governed
-by a core team. It is also sponsored by the Mozilla Foundation (“Mozilla”),
-which owns and protects the Rust and Cargo trademarks and logos
-(the “Rust Trademarks”).
+[The Rust Foundation][rust-foundation] owns and protects the Rust and Cargo
+trademarks and logos (the “Rust Trademarks”).
 
 If you want to use these names or brands, please read the [media guide][media-guide].
 
 Third-party logos may be subject to third-party copyrights and trademarks. See
 [Licenses][policies-licenses] for details.
 
+[rust-foundation]: https://foundation.rust-lang.org/
 [media-guide]: https://www.rust-lang.org/policies/media-guide
 [policies-licenses]: https://www.rust-lang.org/policies/licenses

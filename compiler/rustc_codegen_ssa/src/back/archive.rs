@@ -1,14 +1,24 @@
+use rustc_data_structures::temp_dir::MaybeTempDir;
+use rustc_middle::middle::cstore::DllImport;
 use rustc_session::Session;
 use rustc_span::symbol::Symbol;
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub fn find_library(name: Symbol, search_paths: &[PathBuf], sess: &Session) -> PathBuf {
+pub fn find_library(
+    name: Symbol,
+    verbatim: bool,
+    search_paths: &[PathBuf],
+    sess: &Session,
+) -> PathBuf {
     // On Windows, static libraries sometimes show up as libfoo.a and other
     // times show up as foo.lib
-    let oslibname =
-        format!("{}{}{}", sess.target.staticlib_prefix, name, sess.target.staticlib_suffix);
+    let oslibname = if verbatim {
+        name.to_string()
+    } else {
+        format!("{}{}{}", sess.target.staticlib_prefix, name, sess.target.staticlib_suffix)
+    };
     let unixlibname = format!("lib{}.a", name);
 
     for path in search_paths {
@@ -45,8 +55,15 @@ pub trait ArchiveBuilder<'a> {
         lto: bool,
         skip_objects: bool,
     ) -> io::Result<()>;
-    fn add_native_library(&mut self, name: Symbol);
+    fn add_native_library(&mut self, name: Symbol, verbatim: bool);
     fn update_symbols(&mut self);
 
     fn build(self);
+
+    fn inject_dll_import_lib(
+        &mut self,
+        lib_name: &str,
+        dll_imports: &[DllImport],
+        tmpdir: &MaybeTempDir,
+    );
 }

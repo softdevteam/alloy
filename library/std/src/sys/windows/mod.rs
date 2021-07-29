@@ -18,7 +18,6 @@ pub mod c;
 pub mod cmath;
 pub mod condvar;
 pub mod env;
-pub mod ext;
 pub mod fs;
 pub mod handle;
 pub mod io;
@@ -49,19 +48,31 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(not(test))]
-pub fn init() {}
+// SAFETY: must be called only once during runtime initialization.
+// NOTE: this is not guaranteed to run, for example when Rust code is called externally.
+pub unsafe fn init(_argc: isize, _argv: *const *const u8) {
+    stack_overflow::init();
+}
+
+// SAFETY: must be called only once during runtime cleanup.
+// NOTE: this is not guaranteed to run, for example when the program aborts.
+pub unsafe fn cleanup() {
+    net::cleanup();
+}
 
 pub fn decode_error_kind(errno: i32) -> ErrorKind {
+    use ErrorKind::*;
+
     match errno as c::DWORD {
-        c::ERROR_ACCESS_DENIED => return ErrorKind::PermissionDenied,
-        c::ERROR_ALREADY_EXISTS => return ErrorKind::AlreadyExists,
-        c::ERROR_FILE_EXISTS => return ErrorKind::AlreadyExists,
-        c::ERROR_BROKEN_PIPE => return ErrorKind::BrokenPipe,
-        c::ERROR_FILE_NOT_FOUND => return ErrorKind::NotFound,
-        c::ERROR_PATH_NOT_FOUND => return ErrorKind::NotFound,
-        c::ERROR_NO_DATA => return ErrorKind::BrokenPipe,
-        c::ERROR_INVALID_PARAMETER => return ErrorKind::InvalidInput,
+        c::ERROR_ACCESS_DENIED => return PermissionDenied,
+        c::ERROR_ALREADY_EXISTS => return AlreadyExists,
+        c::ERROR_FILE_EXISTS => return AlreadyExists,
+        c::ERROR_BROKEN_PIPE => return BrokenPipe,
+        c::ERROR_FILE_NOT_FOUND => return NotFound,
+        c::ERROR_PATH_NOT_FOUND => return NotFound,
+        c::ERROR_NO_DATA => return BrokenPipe,
+        c::ERROR_INVALID_PARAMETER => return InvalidInput,
+        c::ERROR_NOT_ENOUGH_MEMORY | c::ERROR_OUTOFMEMORY => return OutOfMemory,
         c::ERROR_SEM_TIMEOUT
         | c::WAIT_TIMEOUT
         | c::ERROR_DRIVER_CANCEL_TIMEOUT
@@ -77,24 +88,42 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         | c::DNS_ERROR_RECORD_TIMED_OUT
         | c::ERROR_IPSEC_IKE_TIMED_OUT
         | c::ERROR_RUNLEVEL_SWITCH_TIMEOUT
-        | c::ERROR_RUNLEVEL_SWITCH_AGENT_TIMEOUT => return ErrorKind::TimedOut,
-        c::ERROR_CALL_NOT_IMPLEMENTED => return ErrorKind::Unsupported,
+        | c::ERROR_RUNLEVEL_SWITCH_AGENT_TIMEOUT => return TimedOut,
+        c::ERROR_CALL_NOT_IMPLEMENTED => return Unsupported,
+        c::ERROR_HOST_UNREACHABLE => return HostUnreachable,
+        c::ERROR_NETWORK_UNREACHABLE => return NetworkUnreachable,
+        c::ERROR_DIRECTORY => return NotADirectory,
+        c::ERROR_DIRECTORY_NOT_SUPPORTED => return IsADirectory,
+        c::ERROR_DIR_NOT_EMPTY => return DirectoryNotEmpty,
+        c::ERROR_WRITE_PROTECT => return ReadOnlyFilesystem,
+        c::ERROR_DISK_FULL | c::ERROR_HANDLE_DISK_FULL => return StorageFull,
+        c::ERROR_SEEK_ON_DEVICE => return NotSeekable,
+        c::ERROR_DISK_QUOTA_EXCEEDED => return FilesystemQuotaExceeded,
+        c::ERROR_FILE_TOO_LARGE => return FileTooLarge,
+        c::ERROR_BUSY => return ResourceBusy,
+        c::ERROR_POSSIBLE_DEADLOCK => return Deadlock,
+        c::ERROR_NOT_SAME_DEVICE => return CrossesDevices,
+        c::ERROR_TOO_MANY_LINKS => return TooManyLinks,
+        c::ERROR_FILENAME_EXCED_RANGE => return FilenameTooLong,
         _ => {}
     }
 
     match errno {
-        c::WSAEACCES => ErrorKind::PermissionDenied,
-        c::WSAEADDRINUSE => ErrorKind::AddrInUse,
-        c::WSAEADDRNOTAVAIL => ErrorKind::AddrNotAvailable,
-        c::WSAECONNABORTED => ErrorKind::ConnectionAborted,
-        c::WSAECONNREFUSED => ErrorKind::ConnectionRefused,
-        c::WSAECONNRESET => ErrorKind::ConnectionReset,
-        c::WSAEINVAL => ErrorKind::InvalidInput,
-        c::WSAENOTCONN => ErrorKind::NotConnected,
-        c::WSAEWOULDBLOCK => ErrorKind::WouldBlock,
-        c::WSAETIMEDOUT => ErrorKind::TimedOut,
+        c::WSAEACCES => PermissionDenied,
+        c::WSAEADDRINUSE => AddrInUse,
+        c::WSAEADDRNOTAVAIL => AddrNotAvailable,
+        c::WSAECONNABORTED => ConnectionAborted,
+        c::WSAECONNREFUSED => ConnectionRefused,
+        c::WSAECONNRESET => ConnectionReset,
+        c::WSAEINVAL => InvalidInput,
+        c::WSAENOTCONN => NotConnected,
+        c::WSAEWOULDBLOCK => WouldBlock,
+        c::WSAETIMEDOUT => TimedOut,
+        c::WSAEHOSTUNREACH => HostUnreachable,
+        c::WSAENETDOWN => NetworkDown,
+        c::WSAENETUNREACH => NetworkUnreachable,
 
-        _ => ErrorKind::Other,
+        _ => Uncategorized,
     }
 }
 
@@ -271,18 +300,4 @@ pub fn abort_internal() -> ! {
         }
     }
     crate::intrinsics::abort();
-}
-
-cfg_if::cfg_if! {
-    if #[cfg(target_vendor = "uwp")] {
-        #[link(name = "ws2_32")]
-        // For BCryptGenRandom
-        #[link(name = "bcrypt")]
-        extern "C" {}
-    } else {
-        #[link(name = "advapi32")]
-        #[link(name = "ws2_32")]
-        #[link(name = "userenv")]
-        extern "C" {}
-    }
 }

@@ -25,7 +25,7 @@
 //!
 //! # Defining a new target
 //!
-//! Targets are defined using [JSON](http://json.org/). The `Target` struct in
+//! Targets are defined using [JSON](https://json.org/). The `Target` struct in
 //! this module defines the format the JSON file should take, though each
 //! underscore in the field names should be replaced with a hyphen (`-`) in the
 //! JSON file. Some fields are required in every target specification, such as
@@ -55,8 +55,8 @@ pub mod crt_objects;
 mod android_base;
 mod apple_base;
 mod apple_sdk_base;
-mod arm_base;
 mod avr_gnu_base;
+mod bpf_base;
 mod dragonfly_base;
 mod freebsd_base;
 mod fuchsia_base;
@@ -74,7 +74,6 @@ mod msvc_base;
 mod netbsd_base;
 mod openbsd_base;
 mod redox_base;
-mod riscv_base;
 mod solaris_base;
 mod thumb_base;
 mod uefi_msvc_base;
@@ -93,6 +92,7 @@ pub enum LinkerFlavor {
     Msvc,
     Lld(LldFlavor),
     PtxLinker,
+    BpfLinker,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -161,6 +161,7 @@ flavor_mappings! {
     ((LinkerFlavor::Ld), "ld"),
     ((LinkerFlavor::Msvc), "msvc"),
     ((LinkerFlavor::PtxLinker), "ptx-linker"),
+    ((LinkerFlavor::BpfLinker), "bpf-linker"),
     ((LinkerFlavor::Lld(LldFlavor::Wasm)), "wasm-ld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld64)), "ld64.lld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld)), "ld.lld"),
@@ -668,6 +669,42 @@ impl ToJson for SanitizerSet {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum FramePointer {
+    /// Forces the machine code generator to always preserve the frame pointers.
+    Always,
+    /// Forces the machine code generator to preserve the frame pointers except for the leaf
+    /// functions (i.e. those that don't call other functions).
+    NonLeaf,
+    /// Allows the machine code generator to omit the frame pointers.
+    ///
+    /// This option does not guarantee that the frame pointers will be omitted.
+    MayOmit,
+}
+
+impl FromStr for FramePointer {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        Ok(match s {
+            "always" => Self::Always,
+            "non-leaf" => Self::NonLeaf,
+            "may-omit" => Self::MayOmit,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl ToJson for FramePointer {
+    fn to_json(&self) -> Json {
+        match *self {
+            Self::Always => "always",
+            Self::NonLeaf => "non-leaf",
+            Self::MayOmit => "may-omit",
+        }
+        .to_json()
+    }
+}
+
 macro_rules! supported_targets {
     ( $(($( $triple:literal, )+ $module:ident ),)+ ) => {
         $(mod $module;)+
@@ -766,6 +803,7 @@ supported_targets! {
     ("armv7-unknown-freebsd", armv7_unknown_freebsd),
     ("i686-unknown-freebsd", i686_unknown_freebsd),
     ("powerpc64-unknown-freebsd", powerpc64_unknown_freebsd),
+    ("powerpc64le-unknown-freebsd", powerpc64le_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
 
     ("x86_64-unknown-dragonfly", x86_64_unknown_dragonfly),
@@ -897,6 +935,41 @@ supported_targets! {
     ("aarch64_be-unknown-linux-gnu", aarch64_be_unknown_linux_gnu),
     ("aarch64-unknown-linux-gnu_ilp32", aarch64_unknown_linux_gnu_ilp32),
     ("aarch64_be-unknown-linux-gnu_ilp32", aarch64_be_unknown_linux_gnu_ilp32),
+
+    ("bpfeb-unknown-none", bpfeb_unknown_none),
+    ("bpfel-unknown-none", bpfel_unknown_none),
+}
+
+/// Warnings encountered when parsing the target `json`.
+///
+/// Includes fields that weren't recognized and fields that don't have the expected type.
+#[derive(Debug, PartialEq)]
+pub struct TargetWarnings {
+    unused_fields: Vec<String>,
+    incorrect_type: Vec<String>,
+}
+
+impl TargetWarnings {
+    pub fn empty() -> Self {
+        Self { unused_fields: Vec::new(), incorrect_type: Vec::new() }
+    }
+
+    pub fn warning_messages(&self) -> Vec<String> {
+        let mut warnings = vec![];
+        if !self.unused_fields.is_empty() {
+            warnings.push(format!(
+                "target json file contains unused fields: {}",
+                self.unused_fields.join(", ")
+            ));
+        }
+        if !self.incorrect_type.is_empty() {
+            warnings.push(format!(
+                "target json file contains fields whose value doesn't have the correct json type: {}",
+                self.incorrect_type.join(", ")
+            ));
+        }
+        warnings
+    }
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -911,7 +984,7 @@ pub struct Target {
     /// Architecture to use for ABI considerations. Valid options include: "x86",
     /// "x86_64", "arm", "aarch64", "mips", "powerpc", "powerpc64", and others.
     pub arch: String,
-    /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
+    /// [Data layout](https://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
     pub data_layout: String,
     /// Optional settings with defaults.
     pub options: TargetOptions,
@@ -922,6 +995,7 @@ pub trait HasTargetSpec {
 }
 
 impl HasTargetSpec for Target {
+    #[inline]
     fn target_spec(&self) -> &Target {
         self
     }
@@ -951,6 +1025,9 @@ pub struct TargetOptions {
     pub os: String,
     /// Environment name to use for conditional compilation (`target_env`). Defaults to "".
     pub env: String,
+    /// ABI name to distinguish multiple ABIs on the same OS and architecture. For instance, `"eabi"`
+    /// or `"eabihf"`. Defaults to "".
+    pub abi: String,
     /// Vendor name to use for conditional compilation (`target_vendor`). Defaults to "unknown".
     pub vendor: String,
     /// Default linker flavor used if `-C linker-flavor` or `-C linker` are not passed
@@ -1028,8 +1105,8 @@ pub struct TargetOptions {
     pub tls_model: TlsModel,
     /// Do not emit code that uses the "red zone", if the ABI has one. Defaults to false.
     pub disable_redzone: bool,
-    /// Eliminate frame pointers from stack frames if possible. Defaults to true.
-    pub eliminate_frame_pointer: bool,
+    /// Frame pointer mode for this target. Defaults to `MayOmit`.
+    pub frame_pointer: FramePointer,
     /// Emit each function in its own section. Defaults to true.
     pub function_sections: bool,
     /// String to prepend to the name of every dynamic library. Defaults to "lib".
@@ -1042,8 +1119,12 @@ pub struct TargetOptions {
     pub staticlib_prefix: String,
     /// String to append to the name of every static library. Defaults to ".a".
     pub staticlib_suffix: String,
-    /// OS family to use for conditional compilation. Valid options: "unix", "windows".
-    pub os_family: Option<String>,
+    /// Values of the `target_family` cfg set for this target.
+    ///
+    /// Common options are: "unix", "windows". Defaults to no families.
+    ///
+    /// See <https://doc.rust-lang.org/reference/conditional-compilation.html#target_family>.
+    pub families: Vec<String>,
     /// Whether the target toolchain's ABI supports returning small structs as an integer.
     pub abi_return_struct_as_int: bool,
     /// Whether the target toolchain is like macOS's. Only useful for compiling against iOS/macOS,
@@ -1082,7 +1163,7 @@ pub struct TargetOptions {
     /// Version of DWARF to use if not using the default.
     /// Useful because some platforms (osx, bsd) only want up to DWARF2.
     pub dwarf_version: Option<u32>,
-    /// Whether the linker support GNU-like arguments such as -O. Defaults to false.
+    /// Whether the linker support GNU-like arguments such as -O. Defaults to true.
     pub linker_is_gnu: bool,
     /// The MinGW toolchain has a known issue that prevents it from correctly
     /// handling COFF object files with more than 2<sup>15</sup> sections. Since each weak
@@ -1145,11 +1226,6 @@ pub struct TargetOptions {
 
     /// Panic strategy: "unwind" or "abort"
     pub panic_strategy: PanicStrategy,
-
-    /// A list of ABIs unsupported by the current target. Note that generic ABIs
-    /// are considered to be supported on all platforms and cannot be marked
-    /// unsupported.
-    pub unsupported_abis: Vec<Abi>,
 
     /// Whether or not linking dylibs to a static CRT is allowed.
     pub crt_static_allows_dylibs: bool,
@@ -1269,6 +1345,7 @@ impl Default for TargetOptions {
             c_int_width: "32".to_string(),
             os: "none".to_string(),
             env: String::new(),
+            abi: String::new(),
             vendor: "unknown".to_string(),
             linker_flavor: LinkerFlavor::Gcc,
             linker: option_env!("CFG_DEFAULT_LINKER").map(|s| s.to_string()),
@@ -1286,14 +1363,14 @@ impl Default for TargetOptions {
             code_model: None,
             tls_model: TlsModel::GeneralDynamic,
             disable_redzone: false,
-            eliminate_frame_pointer: true,
+            frame_pointer: FramePointer::MayOmit,
             function_sections: true,
             dll_prefix: "lib".to_string(),
             dll_suffix: ".so".to_string(),
             exe_suffix: String::new(),
             staticlib_prefix: "lib".to_string(),
             staticlib_suffix: ".a".to_string(),
-            os_family: None,
+            families: Vec::new(),
             abi_return_struct_as_int: false,
             is_like_osx: false,
             is_like_solaris: false,
@@ -1303,7 +1380,7 @@ impl Default for TargetOptions {
             is_like_fuchsia: false,
             is_like_wasm: false,
             dwarf_version: None,
-            linker_is_gnu: false,
+            linker_is_gnu: true,
             allows_weak_linkage: true,
             has_rpath: false,
             no_default_libraries: true,
@@ -1332,7 +1409,6 @@ impl Default for TargetOptions {
             max_atomic_width: None,
             atomic_cas: true,
             panic_strategy: PanicStrategy::Unwind,
-            unsupported_abis: vec![],
             crt_static_allows_dylibs: false,
             crt_static_default: false,
             crt_static_respected: false,
@@ -1385,38 +1461,86 @@ impl Target {
     /// Given a function ABI, turn it into the correct ABI for this target.
     pub fn adjust_abi(&self, abi: Abi) -> Abi {
         match abi {
-            Abi::System { unwind } => {
-                if self.is_like_windows && self.arch == "x86" {
-                    Abi::Stdcall { unwind }
-                } else {
-                    Abi::C { unwind }
-                }
+            Abi::C { .. } => self.default_adjusted_cabi.unwrap_or(abi),
+            Abi::System { unwind } if self.is_like_windows && self.arch == "x86" => {
+                Abi::Stdcall { unwind }
             }
-            // These ABI kinds are ignored on non-x86 Windows targets.
-            // See https://docs.microsoft.com/en-us/cpp/cpp/argument-passing-and-naming-conventions
-            // and the individual pages for __stdcall et al.
-            Abi::Stdcall { unwind } | Abi::Thiscall { unwind } => {
-                if self.is_like_windows && self.arch != "x86" { Abi::C { unwind } } else { abi }
-            }
-            Abi::Fastcall | Abi::Vectorcall => {
-                if self.is_like_windows && self.arch != "x86" {
-                    Abi::C { unwind: false }
-                } else {
-                    abi
-                }
-            }
-            Abi::EfiApi => {
-                if self.arch == "x86_64" {
-                    Abi::Win64
-                } else {
-                    Abi::C { unwind: false }
-                }
-            }
+            Abi::System { unwind } => Abi::C { unwind },
+            Abi::EfiApi if self.arch == "x86_64" => Abi::Win64,
+            Abi::EfiApi => Abi::C { unwind: false },
 
-            Abi::C { unwind } => self.default_adjusted_cabi.unwrap_or(Abi::C { unwind }),
+            // See commentary in `is_abi_supported`.
+            Abi::Stdcall { .. } | Abi::Thiscall { .. } if self.arch == "x86" => abi,
+            Abi::Stdcall { unwind } | Abi::Thiscall { unwind } => Abi::C { unwind },
+            Abi::Fastcall if self.arch == "x86" => abi,
+            Abi::Vectorcall if ["x86", "x86_64"].contains(&&self.arch[..]) => abi,
+            Abi::Fastcall | Abi::Vectorcall => Abi::C { unwind: false },
 
             abi => abi,
         }
+    }
+
+    /// Returns a None if the UNSUPPORTED_CALLING_CONVENTIONS lint should be emitted
+    pub fn is_abi_supported(&self, abi: Abi) -> Option<bool> {
+        use Abi::*;
+        Some(match abi {
+            Rust
+            | C { .. }
+            | System { .. }
+            | RustIntrinsic
+            | RustCall
+            | PlatformIntrinsic
+            | Unadjusted
+            | Cdecl
+            | EfiApi => true,
+            X86Interrupt => ["x86", "x86_64"].contains(&&self.arch[..]),
+            Aapcs | CCmseNonSecureCall => ["arm", "aarch64"].contains(&&self.arch[..]),
+            Win64 | SysV64 => self.arch == "x86_64",
+            PtxKernel => self.arch == "nvptx64",
+            Msp430Interrupt => self.arch == "msp430",
+            AmdGpuKernel => self.arch == "amdgcn",
+            AvrInterrupt | AvrNonBlockingInterrupt => self.arch == "avr",
+            Wasm => ["wasm32", "wasm64"].contains(&&self.arch[..]),
+            // On windows these fall-back to platform native calling convention (C) when the
+            // architecture is not supported.
+            //
+            // This is I believe a historical accident that has occurred as part of Microsoft
+            // striving to allow most of the code to "just" compile when support for 64-bit x86
+            // was added and then later again, when support for ARM architectures was added.
+            //
+            // This is well documented across MSDN. Support for this in Rust has been added in
+            // #54576. This makes much more sense in context of Microsoft's C++ than it does in
+            // Rust, but there isn't much leeway remaining here to change it back at the time this
+            // comment has been written.
+            //
+            // Following are the relevant excerpts from the MSDN documentation.
+            //
+            // > The __vectorcall calling convention is only supported in native code on x86 and
+            // x64 processors that include Streaming SIMD Extensions 2 (SSE2) and above.
+            // > ...
+            // > On ARM machines, __vectorcall is accepted and ignored by the compiler.
+            //
+            // -- https://docs.microsoft.com/en-us/cpp/cpp/vectorcall?view=msvc-160
+            //
+            // > On ARM and x64 processors, __stdcall is accepted and ignored by the compiler;
+            //
+            // -- https://docs.microsoft.com/en-us/cpp/cpp/stdcall?view=msvc-160
+            //
+            // > In most cases, keywords or compiler switches that specify an unsupported
+            // > convention on a particular platform are ignored, and the platform default
+            // > convention is used.
+            //
+            // -- https://docs.microsoft.com/en-us/cpp/cpp/argument-passing-and-naming-conventions
+            Stdcall { .. } | Fastcall | Thiscall { .. } | Vectorcall if self.is_like_windows => {
+                true
+            }
+            // Outside of Windows we want to only support these calling conventions for the
+            // architectures for which these calling conventions are actually well defined.
+            Stdcall { .. } | Fastcall | Thiscall { .. } if self.arch == "x86" => true,
+            Vectorcall if ["x86", "x86_64"].contains(&&self.arch[..]) => true,
+            // Return a `None` for other cases so that we know to emit a future compat lint.
+            Stdcall { .. } | Fastcall | Thiscall { .. } | Vectorcall => return None,
+        })
     }
 
     /// Minimum integer size in bits that this target can perform atomic
@@ -1431,12 +1555,8 @@ impl Target {
         self.max_atomic_width.unwrap_or_else(|| self.pointer_width.into())
     }
 
-    pub fn is_abi_supported(&self, abi: Abi) -> bool {
-        abi.generic() || !self.unsupported_abis.contains(&abi)
-    }
-
     /// Loads a target descriptor from a JSON object.
-    pub fn from_json(obj: Json) -> Result<Target, String> {
+    pub fn from_json(mut obj: Json) -> Result<(Target, TargetWarnings), String> {
         // While ugly, this code must remain this way to retain
         // compatibility with existing JSON fields and the internal
         // expected naming of the Target and TargetOptions structs.
@@ -1444,10 +1564,9 @@ impl Target {
         // are round-tripped through this code to catch cases where
         // the JSON parser is not updated to match the structs.
 
-        let get_req_field = |name: &str| {
-            obj.find(name)
-                .and_then(Json::as_string)
-                .map(str::to_string)
+        let mut get_req_field = |name: &str| {
+            obj.remove_key(name)
+                .and_then(|j| Json::as_string(&j).map(str::to_string))
                 .ok_or_else(|| format!("Field {} in target specification is required", name))
         };
 
@@ -1461,28 +1580,30 @@ impl Target {
             options: Default::default(),
         };
 
+        let mut incorrect_type = vec![];
+
         macro_rules! key {
             ($key_name:ident) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(s) = obj.find(&name).and_then(Json::as_string) {
-                    base.$key_name = s.to_string();
+                if let Some(s) = obj.remove_key(&name).and_then(|j| Json::as_string(&j).map(str::to_string)) {
+                    base.$key_name = s;
                 }
             } );
             ($key_name:ident = $json_name:expr) => ( {
                 let name = $json_name;
-                if let Some(s) = obj.find(&name).and_then(Json::as_string) {
-                    base.$key_name = s.to_string();
+                if let Some(s) = obj.remove_key(&name).and_then(|j| Json::as_string(&j).map(str::to_string)) {
+                    base.$key_name = s;
                 }
             } );
             ($key_name:ident, bool) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(s) = obj.find(&name).and_then(Json::as_boolean) {
+                if let Some(s) = obj.remove_key(&name).and_then(|j| Json::as_boolean(&j)) {
                     base.$key_name = s;
                 }
             } );
             ($key_name:ident, Option<u32>) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(s) = obj.find(&name).and_then(Json::as_u64) {
+                if let Some(s) = obj.remove_key(&name).and_then(|j| Json::as_u64(&j)) {
                     if s < 1 || s > 5 {
                         return Err("Not a valid DWARF version number".to_string());
                     }
@@ -1491,13 +1612,13 @@ impl Target {
             } );
             ($key_name:ident, Option<u64>) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(s) = obj.find(&name).and_then(Json::as_u64) {
+                if let Some(s) = obj.remove_key(&name).and_then(|j| Json::as_u64(&j)) {
                     base.$key_name = Some(s);
                 }
             } );
             ($key_name:ident, MergeFunctions) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<MergeFunctions>() {
                         Ok(mergefunc) => base.$key_name = mergefunc,
                         _ => return Some(Err(format!("'{}' is not a valid value for \
@@ -1510,7 +1631,7 @@ impl Target {
             } );
             ($key_name:ident, RelocModel) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<RelocModel>() {
                         Ok(relocation_model) => base.$key_name = relocation_model,
                         _ => return Some(Err(format!("'{}' is not a valid relocation model. \
@@ -1522,7 +1643,7 @@ impl Target {
             } );
             ($key_name:ident, CodeModel) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<CodeModel>() {
                         Ok(code_model) => base.$key_name = Some(code_model),
                         _ => return Some(Err(format!("'{}' is not a valid code model. \
@@ -1534,7 +1655,7 @@ impl Target {
             } );
             ($key_name:ident, TlsModel) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<TlsModel>() {
                         Ok(tls_model) => base.$key_name = tls_model,
                         _ => return Some(Err(format!("'{}' is not a valid TLS model. \
@@ -1546,7 +1667,7 @@ impl Target {
             } );
             ($key_name:ident, PanicStrategy) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s {
                         "unwind" => base.$key_name = PanicStrategy::Unwind,
                         "abort" => base.$key_name = PanicStrategy::Abort,
@@ -1559,7 +1680,7 @@ impl Target {
             } );
             ($key_name:ident, RelroLevel) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<RelroLevel>() {
                         Ok(level) => base.$key_name = level,
                         _ => return Some(Err(format!("'{}' is not a valid value for \
@@ -1571,7 +1692,7 @@ impl Target {
             } );
             ($key_name:ident, SplitDebuginfo) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<SplitDebuginfo>() {
                         Ok(level) => base.$key_name = level,
                         _ => return Some(Err(format!("'{}' is not a valid value for \
@@ -1583,31 +1704,31 @@ impl Target {
             } );
             ($key_name:ident, list) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(v) = obj.find(&name).and_then(Json::as_array) {
-                    base.$key_name = v.iter()
-                        .map(|a| a.as_string().unwrap().to_string())
-                        .collect();
+                if let Some(j) = obj.remove_key(&name){
+                    if let Some(v) = Json::as_array(&j) {
+                        base.$key_name = v.iter()
+                            .map(|a| a.as_string().unwrap().to_string())
+                            .collect();
+                    } else {
+                        incorrect_type.push(name)
+                    }
                 }
             } );
             ($key_name:ident, opt_list) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(v) = obj.find(&name).and_then(Json::as_array) {
-                    base.$key_name = Some(v.iter()
-                        .map(|a| a.as_string().unwrap().to_string())
-                        .collect());
+                if let Some(j) = obj.remove_key(&name) {
+                    if let Some(v) = Json::as_array(&j) {
+                        base.$key_name = Some(v.iter()
+                            .map(|a| a.as_string().unwrap().to_string())
+                            .collect());
+                    } else {
+                        incorrect_type.push(name)
+                    }
                 }
             } );
             ($key_name:ident, optional) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(o) = obj.find(&name[..]) {
-                    base.$key_name = o
-                        .as_string()
-                        .map(|s| s.to_string() );
-                }
-            } );
-            ($key_name:ident = $json_name:expr, optional) => ( {
-                let name = $json_name;
-                if let Some(o) = obj.find(name) {
+                if let Some(o) = obj.remove_key(&name[..]) {
                     base.$key_name = o
                         .as_string()
                         .map(|s| s.to_string() );
@@ -1615,7 +1736,7 @@ impl Target {
             } );
             ($key_name:ident, LldFlavor) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     if let Some(flavor) = LldFlavor::from_str(&s) {
                         base.$key_name = flavor;
                     } else {
@@ -1629,7 +1750,7 @@ impl Target {
             } );
             ($key_name:ident, LinkerFlavor) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match LinkerFlavor::from_str(s) {
                         Some(linker_flavor) => base.$key_name = linker_flavor,
                         _ => return Some(Err(format!("'{}' is not a valid value for linker-flavor. \
@@ -1640,7 +1761,7 @@ impl Target {
             } );
             ($key_name:ident, StackProbeType) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| match StackProbeType::from_json(o) {
+                obj.remove_key(&name[..]).and_then(|o| match StackProbeType::from_json(&o) {
                     Ok(v) => {
                         base.$key_name = v;
                         Some(Ok(()))
@@ -1652,25 +1773,29 @@ impl Target {
             } );
             ($key_name:ident, SanitizerSet) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_array()).and_then(|a| {
-                    for s in a {
-                        base.$key_name |= match s.as_string() {
-                            Some("address") => SanitizerSet::ADDRESS,
-                            Some("leak") => SanitizerSet::LEAK,
-                            Some("memory") => SanitizerSet::MEMORY,
-                            Some("thread") => SanitizerSet::THREAD,
-                            Some("hwaddress") => SanitizerSet::HWADDRESS,
-                            Some(s) => return Some(Err(format!("unknown sanitizer {}", s))),
-                            _ => return Some(Err(format!("not a string: {:?}", s))),
-                        };
+                if let Some(o) = obj.remove_key(&name[..]) {
+                    if let Some(a) = o.as_array() {
+                        for s in a {
+                            base.$key_name |= match s.as_string() {
+                                Some("address") => SanitizerSet::ADDRESS,
+                                Some("leak") => SanitizerSet::LEAK,
+                                Some("memory") => SanitizerSet::MEMORY,
+                                Some("thread") => SanitizerSet::THREAD,
+                                Some("hwaddress") => SanitizerSet::HWADDRESS,
+                                Some(s) => return Err(format!("unknown sanitizer {}", s)),
+                                _ => return Err(format!("not a string: {:?}", s)),
+                            };
+                        }
+                    } else {
+                        incorrect_type.push(name)
                     }
-                    Some(Ok(()))
-                }).unwrap_or(Ok(()))
+                }
+                Ok::<(), String>(())
             } );
 
             ($key_name:ident, crt_objects_fallback) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match s.parse::<CrtObjectsFallback>() {
                         Ok(fallback) => base.$key_name = Some(fallback),
                         _ => return Some(Err(format!("'{}' is not a valid CRT objects fallback. \
@@ -1681,7 +1806,7 @@ impl Target {
             } );
             ($key_name:ident, link_objects) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(val) = obj.find(&name[..]) {
+                if let Some(val) = obj.remove_key(&name[..]) {
                     let obj = val.as_object().ok_or_else(|| format!("{}: expected a \
                         JSON object with fields per CRT object kind.", name))?;
                     let mut args = CrtObjects::new();
@@ -1709,7 +1834,7 @@ impl Target {
             } );
             ($key_name:ident, link_args) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(val) = obj.find(&name[..]) {
+                if let Some(val) = obj.remove_key(&name[..]) {
                     let obj = val.as_object().ok_or_else(|| format!("{}: expected a \
                         JSON object with fields per linker-flavor.", name))?;
                     let mut args = LinkArgs::new();
@@ -1736,22 +1861,26 @@ impl Target {
             } );
             ($key_name:ident, env) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                if let Some(a) = obj.find(&name[..]).and_then(|o| o.as_array()) {
-                    for o in a {
-                        if let Some(s) = o.as_string() {
-                            let p = s.split('=').collect::<Vec<_>>();
-                            if p.len() == 2 {
-                                let k = p[0].to_string();
-                                let v = p[1].to_string();
-                                base.$key_name.push((k, v));
+                if let Some(o) = obj.remove_key(&name[..]) {
+                    if let Some(a) = o.as_array() {
+                        for o in a {
+                            if let Some(s) = o.as_string() {
+                                let p = s.split('=').collect::<Vec<_>>();
+                                if p.len() == 2 {
+                                    let k = p[0].to_string();
+                                    let v = p[1].to_string();
+                                    base.$key_name.push((k, v));
+                                }
                             }
                         }
+                    } else {
+                        incorrect_type.push(name)
                     }
                 }
             } );
             ($key_name:ident, Option<Abi>) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                obj.remove_key(&name[..]).and_then(|o| o.as_string().and_then(|s| {
                     match lookup_abi(s) {
                         Some(abi) => base.$key_name = Some(abi),
                         _ => return Some(Err(format!("'{}' is not a valid value for abi", s))),
@@ -1759,15 +1888,42 @@ impl Target {
                     Some(Ok(()))
                 })).unwrap_or(Ok(()))
             } );
+            ($key_name:ident, TargetFamilies) => ( {
+                if let Some(value) = obj.remove_key("target-family") {
+                    if let Some(v) = Json::as_array(&value) {
+                        base.$key_name = v.iter()
+                            .map(|a| a.as_string().unwrap().to_string())
+                            .collect();
+                    } else if let Some(v) = Json::as_string(&value) {
+                        base.$key_name = vec![v.to_string()];
+                    }
+                }
+            } );
         }
 
-        if let Some(s) = obj.find("target-endian").and_then(Json::as_string) {
-            base.endian = s.parse()?;
+        if let Some(j) = obj.remove_key("target-endian") {
+            if let Some(s) = Json::as_string(&j) {
+                base.endian = s.parse()?;
+            } else {
+                incorrect_type.push("target-endian".to_string())
+            }
         }
+
+        if let Some(fp) = obj.remove_key("frame-pointer") {
+            if let Some(s) = Json::as_string(&fp) {
+                base.frame_pointer = s
+                    .parse()
+                    .map_err(|()| format!("'{}' is not a valid value for frame-pointer", s))?;
+            } else {
+                incorrect_type.push("frame-pointer".to_string())
+            }
+        }
+
         key!(is_builtin, bool);
         key!(c_int_width = "target-c-int-width");
         key!(os);
         key!(env);
+        key!(abi);
         key!(vendor);
         key!(linker_flavor, LinkerFlavor)?;
         key!(linker, optional);
@@ -1795,14 +1951,13 @@ impl Target {
         key!(code_model, CodeModel)?;
         key!(tls_model, TlsModel)?;
         key!(disable_redzone, bool);
-        key!(eliminate_frame_pointer, bool);
         key!(function_sections, bool);
         key!(dll_prefix);
         key!(dll_suffix);
         key!(exe_suffix);
         key!(staticlib_prefix);
         key!(staticlib_suffix);
-        key!(os_family = "target-family", optional);
+        key!(families, TargetFamilies);
         key!(abi_return_struct_as_int, bool);
         key!(is_like_osx, bool);
         key!(is_like_solaris, bool);
@@ -1860,50 +2015,36 @@ impl Target {
         key!(supported_sanitizers, SanitizerSet)?;
         key!(default_adjusted_cabi, Option<Abi>)?;
 
-        // NB: The old name is deprecated, but support for it is retained for
-        // compatibility.
-        for name in ["abi-blacklist", "unsupported-abis"].iter() {
-            if let Some(array) = obj.find(name).and_then(Json::as_array) {
-                for name in array.iter().filter_map(|abi| abi.as_string()) {
-                    match lookup_abi(name) {
-                        Some(abi) => {
-                            if abi.generic() {
-                                return Err(format!(
-                                    "The ABI \"{}\" is considered to be supported on all \
-                                    targets and cannot be marked unsupported",
-                                    abi
-                                ));
-                            }
-
-                            base.unsupported_abis.push(abi)
-                        }
-                        None => {
-                            return Err(format!(
-                                "Unknown ABI \"{}\" in target specification",
-                                name
-                            ));
-                        }
-                    }
-                }
-            }
+        if base.is_builtin {
+            // This can cause unfortunate ICEs later down the line.
+            return Err(format!("may not set is_builtin for targets not built-in"));
         }
-
-        Ok(base)
+        // Each field should have been read using `Json::remove_key` so any keys remaining are unused.
+        let remaining_keys = obj.as_object().ok_or("Expected JSON object for target")?.keys();
+        Ok((
+            base,
+            TargetWarnings { unused_fields: remaining_keys.cloned().collect(), incorrect_type },
+        ))
     }
 
-    /// Search RUST_TARGET_PATH for a JSON file specifying the given target
-    /// triple. Note that it could also just be a bare filename already, so also
-    /// check for that. If one of the hardcoded targets we know about, just
-    /// return it directly.
+    /// Search for a JSON file specifying the given target triple.
     ///
-    /// The error string could come from any of the APIs called, including
-    /// filesystem access and JSON decoding.
-    pub fn search(target_triple: &TargetTriple) -> Result<Target, String> {
+    /// If none is found in `$RUST_TARGET_PATH`, look for a file called `target.json` inside the
+    /// sysroot under the target-triple's `rustlib` directory.  Note that it could also just be a
+    /// bare filename already, so also check for that. If one of the hardcoded targets we know
+    /// about, just return it directly.
+    ///
+    /// The error string could come from any of the APIs called, including filesystem access and
+    /// JSON decoding.
+    pub fn search(
+        target_triple: &TargetTriple,
+        sysroot: &PathBuf,
+    ) -> Result<(Target, TargetWarnings), String> {
         use rustc_serialize::json;
         use std::env;
         use std::fs;
 
-        fn load_file(path: &Path) -> Result<Target, String> {
+        fn load_file(path: &Path) -> Result<(Target, TargetWarnings), String> {
             let contents = fs::read(path).map_err(|e| e.to_string())?;
             let obj = json::from_reader(&mut &contents[..]).map_err(|e| e.to_string())?;
             Target::from_json(obj)
@@ -1913,7 +2054,7 @@ impl Target {
             TargetTriple::TargetTriple(ref target_triple) => {
                 // check if triple is in list of built-in targets
                 if let Some(t) = load_builtin(target_triple) {
-                    return Ok(t);
+                    return Ok((t, TargetWarnings::empty()));
                 }
 
                 // search for a file named `target_triple`.json in RUST_TARGET_PATH
@@ -1925,14 +2066,26 @@ impl Target {
 
                 let target_path = env::var_os("RUST_TARGET_PATH").unwrap_or_default();
 
-                // FIXME 16351: add a sane default search path?
-
                 for dir in env::split_paths(&target_path) {
                     let p = dir.join(&path);
                     if p.is_file() {
                         return load_file(&p);
                     }
                 }
+
+                // Additionally look in the sysroot under `lib/rustlib/<triple>/target.json`
+                // as a fallback.
+                let rustlib_path = crate::target_rustlib_path(&sysroot, &target_triple);
+                let p = std::array::IntoIter::new([
+                    Path::new(sysroot),
+                    Path::new(&rustlib_path),
+                    Path::new("target.json"),
+                ])
+                .collect::<PathBuf>();
+                if p.is_file() {
+                    return load_file(&p);
+                }
+
                 Err(format!("Could not find specification for target {:?}", target_triple))
             }
             TargetTriple::TargetPath(ref target_path) => {
@@ -2008,6 +2161,7 @@ impl ToJson for Target {
         target_option_val!(c_int_width, "target-c-int-width");
         target_option_val!(os);
         target_option_val!(env);
+        target_option_val!(abi);
         target_option_val!(vendor);
         target_option_val!(linker_flavor);
         target_option_val!(linker);
@@ -2035,14 +2189,14 @@ impl ToJson for Target {
         target_option_val!(code_model);
         target_option_val!(tls_model);
         target_option_val!(disable_redzone);
-        target_option_val!(eliminate_frame_pointer);
+        target_option_val!(frame_pointer);
         target_option_val!(function_sections);
         target_option_val!(dll_prefix);
         target_option_val!(dll_suffix);
         target_option_val!(exe_suffix);
         target_option_val!(staticlib_prefix);
         target_option_val!(staticlib_suffix);
-        target_option_val!(os_family, "target-family");
+        target_option_val!(families, "target-family");
         target_option_val!(abi_return_struct_as_int);
         target_option_val!(is_like_osx);
         target_option_val!(is_like_solaris);
@@ -2101,17 +2255,6 @@ impl ToJson for Target {
 
         if let Some(abi) = self.default_adjusted_cabi {
             d.insert("default-adjusted-cabi".to_string(), Abi::name(abi).to_json());
-        }
-
-        if default.unsupported_abis != self.unsupported_abis {
-            d.insert(
-                "unsupported-abis".to_string(),
-                self.unsupported_abis
-                    .iter()
-                    .map(|&name| Abi::name(name).to_json())
-                    .collect::<Vec<_>>()
-                    .to_json(),
-            );
         }
 
         Json::Object(d)

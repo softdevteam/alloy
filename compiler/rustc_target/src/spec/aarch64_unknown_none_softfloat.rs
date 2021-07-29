@@ -10,16 +10,15 @@ use super::{LinkerFlavor, LldFlavor, PanicStrategy, RelocModel, Target, TargetOp
 
 pub fn target() -> Target {
     let opts = TargetOptions {
+        abi: "softfloat".to_string(),
         linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
         linker: Some("rust-lld".to_owned()),
         features: "+strict-align,-neon,-fp-armv8".to_string(),
         executables: true,
         relocation_model: RelocModel::Static,
         disable_redzone: true,
-        linker_is_gnu: true,
         max_atomic_width: Some(128),
         panic_strategy: PanicStrategy::Abort,
-        unsupported_abis: super::arm_base::unsupported_abis(),
         ..Default::default()
     };
     Target {

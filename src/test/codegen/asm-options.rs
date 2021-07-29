@@ -10,7 +10,7 @@
 #[no_mangle]
 pub unsafe fn pure(x: i32) {
     let y: i32;
-    asm!("", out("ax") y, in("bx") x, options(pure, nomem));
+    asm!("", out("ax") y, in("cx") x, options(pure, nomem));
 }
 
 // CHECK-LABEL: @noreturn
@@ -93,4 +93,11 @@ pub unsafe fn dont_remove_nonpure() {
     asm!("", options());
     asm!("", options(nomem));
     asm!("", options(readonly));
+}
+
+// CHECK-LABEL: @raw
+// CHECK: call void asm sideeffect inteldialect "{} {}", ""()
+#[no_mangle]
+pub unsafe fn raw() {
+    asm!("{} {}", options(nostack, nomem, preserves_flags, raw));
 }

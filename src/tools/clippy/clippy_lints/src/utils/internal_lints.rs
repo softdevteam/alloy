@@ -1,9 +1,10 @@
-use crate::consts::{constant_simple, Constant};
+use clippy_utils::consts::{constant_simple, Constant};
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::source::snippet;
 use clippy_utils::ty::match_type;
 use clippy_utils::{
-    is_else_clause, is_expn_of, match_def_path, match_qpath, method_calls, path_to_res, paths, run_lints, SpanlessEq,
+    is_else_clause, is_expn_of, is_expr_path_def_path, is_lint_allowed, match_def_path, method_calls, path_to_res,
+    paths, SpanlessEq,
 };
 use if_chain::if_chain;
 use rustc_ast::ast::{Crate as AstCrate, ItemKind, LitKind, ModKind, NodeId};
@@ -30,6 +31,9 @@ use rustc_span::{BytePos, Span};
 use rustc_typeck::hir_ty_to_ty;
 
 use std::borrow::{Borrow, Cow};
+
+#[cfg(feature = "metadata-collector-lint")]
+pub mod metadata_collector;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for various things we like to keep tidy in clippy.
@@ -349,7 +353,7 @@ impl_lint_pass!(LintWithoutLintPass => [DEFAULT_LINT, LINT_WITHOUT_LINT_PASS]);
 
 impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
-        if !run_lints(cx, &[DEFAULT_LINT], item.hir_id()) {
+        if is_lint_allowed(cx, DEFAULT_LINT, item.hir_id()) {
             return;
         }
 
@@ -407,7 +411,7 @@ impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
     }
 
     fn check_crate_post(&mut self, cx: &LateContext<'tcx>, _: &'tcx Crate<'_>) {
-        if !run_lints(cx, &[LINT_WITHOUT_LINT_PASS], CRATE_HIR_ID) {
+        if is_lint_allowed(cx, LINT_WITHOUT_LINT_PASS, CRATE_HIR_ID) {
             return;
         }
 
@@ -493,7 +497,7 @@ impl_lint_pass!(CompilerLintFunctions => [COMPILER_LINT_FUNCTIONS]);
 
 impl<'tcx> LateLintPass<'tcx> for CompilerLintFunctions {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        if !run_lints(cx, &[COMPILER_LINT_FUNCTIONS], expr.hir_id) {
+        if is_lint_allowed(cx, COMPILER_LINT_FUNCTIONS, expr.hir_id) {
             return;
         }
 
@@ -522,7 +526,7 @@ declare_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
 
 impl<'tcx> LateLintPass<'tcx> for OuterExpnDataPass {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) {
-        if !run_lints(cx, &[OUTER_EXPN_EXPN_DATA], expr.hir_id) {
+        if is_lint_allowed(cx, OUTER_EXPN_EXPN_DATA, expr.hir_id) {
             return;
         }
 
@@ -572,14 +576,13 @@ declare_lint_pass!(CollapsibleCalls => [COLLAPSIBLE_SPAN_LINT_CALLS]);
 
 impl<'tcx> LateLintPass<'tcx> for CollapsibleCalls {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) {
-        if !run_lints(cx, &[COLLAPSIBLE_SPAN_LINT_CALLS], expr.hir_id) {
+        if is_lint_allowed(cx, COLLAPSIBLE_SPAN_LINT_CALLS, expr.hir_id) {
             return;
         }
 
         if_chain! {
             if let ExprKind::Call(func, and_then_args) = expr.kind;
-            if let ExprKind::Path(ref path) = func.kind;
-            if match_qpath(path, &["span_lint_and_then"]);
+            if is_expr_path_def_path(cx, func, &["clippy_utils", "diagnostics", "span_lint_and_then"]);
             if and_then_args.len() == 5;
             if let ExprKind::Closure(_, _, body_id, _, _) = &and_then_args[4].kind;
             let body = cx.tcx.hir().body(*body_id);
@@ -754,15 +757,14 @@ declare_lint_pass!(MatchTypeOnDiagItem => [MATCH_TYPE_ON_DIAGNOSTIC_ITEM]);
 
 impl<'tcx> LateLintPass<'tcx> for MatchTypeOnDiagItem {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) {
-        if !run_lints(cx, &[MATCH_TYPE_ON_DIAGNOSTIC_ITEM], expr.hir_id) {
+        if is_lint_allowed(cx, MATCH_TYPE_ON_DIAGNOSTIC_ITEM, expr.hir_id) {
             return;
         }
 
         if_chain! {
             // Check if this is a call to utils::match_type()
             if let ExprKind::Call(fn_path, [context, ty, ty_path]) = expr.kind;
-            if let ExprKind::Path(fn_qpath) = &fn_path.kind;
-            if match_qpath(fn_qpath, &["utils", "match_type"]);
+            if is_expr_path_def_path(cx, fn_path, &["clippy_utils", "ty", "match_type"]);
             // Extract the path to the matched type
             if let Some(segments) = path_to_matched_type(cx, ty_path);
             let segments: Vec<&str> = segments.iter().map(|sym| &**sym).collect();
@@ -771,6 +773,7 @@ impl<'tcx> LateLintPass<'tcx> for MatchTypeOnDiagItem {
             let diag_items = cx.tcx.diagnostic_items(ty_did.krate);
             if let Some(item_name) = diag_items.iter().find_map(|(k, v)| if *v == ty_did { Some(k) } else { None });
             then {
+                // TODO: check paths constants from external crates.
                 let cx_snippet = snippet(cx, context.span, "_");
                 let ty_snippet = snippet(cx, ty.span, "_");
 
@@ -778,9 +781,9 @@ impl<'tcx> LateLintPass<'tcx> for MatchTypeOnDiagItem {
                     cx,
                     MATCH_TYPE_ON_DIAGNOSTIC_ITEM,
                     expr.span,
-                    "usage of `utils::match_type()` on a type diagnostic item",
+                    "usage of `clippy_utils::ty::match_type()` on a type diagnostic item",
                     "try",
-                    format!("utils::is_type_diagnostic_item({}, {}, sym::{})", cx_snippet, ty_snippet, item_name),
+                    format!("clippy_utils::ty::is_type_diagnostic_item({}, {}, sym::{})", cx_snippet, ty_snippet, item_name),
                     Applicability::MaybeIncorrect,
                 );
             }
@@ -1097,7 +1100,7 @@ impl<'tcx> LateLintPass<'tcx> for IfChainStyle {
                 IF_CHAIN_STYLE,
                 if_chain_local_span(cx, local, if_chain_span),
                 "`let` expression should be inside `then { .. }`",
-            )
+            );
         }
     }
 
@@ -1138,7 +1141,7 @@ impl<'tcx> LateLintPass<'tcx> for IfChainStyle {
         if is_first_if_chain_expr(cx, expr.hir_id, if_chain_span)
             && is_if_chain_then(then_block.stmts, then_block.expr, if_chain_span)
         {
-            span_lint(cx, IF_CHAIN_STYLE, expr.span, "`if_chain!` only has one `if`")
+            span_lint(cx, IF_CHAIN_STYLE, expr.span, "`if_chain!` only has one `if`");
         }
     }
 }

@@ -61,6 +61,7 @@ pub fn options() -> TargetOptions {
 
     TargetOptions {
         is_like_wasm: true,
+        families: vec!["wasm".to_string()],
 
         // we allow dynamic linking, but only cdylibs. Basically we allow a
         // final library artifact that exports some symbols (a wasm module) but
@@ -101,12 +102,7 @@ pub fn options() -> TargetOptions {
         // we use the LLD shipped with the Rust toolchain by default
         linker: Some("rust-lld".to_owned()),
         lld_flavor: LldFlavor::Wasm,
-
-        // No need for indirection here, simd types can always be passed by
-        // value as the whole module either has simd or not, which is different
-        // from x86 (for example) where programs can have functions that don't
-        // enable simd features.
-        simd_types_indirect: false,
+        linker_is_gnu: false,
 
         pre_link_args,
 

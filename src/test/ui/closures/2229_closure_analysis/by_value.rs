@@ -1,11 +1,7 @@
+// edition:2021
+
 // Test that we handle derferences properly when only some of the captures are being moved with
 // `capture_disjoint_fields` enabled.
-
-
-#![feature(capture_disjoint_fields)]
-//~^ WARNING: the feature `capture_disjoint_fields` is incomplete
-//~| NOTE: `#[warn(incomplete_features)]` on by default
-//~| NOTE: see issue #53488 <https://github.com/rust-lang/rust/issues/53488>
 #![feature(rustc_attrs)]
 
 #[derive(Debug, Default)]
@@ -26,8 +22,7 @@ fn big_box() {
     //~^ First Pass analysis includes:
     //~| Min Capture analysis includes:
         let p = t.0.0;
-        //~^ NOTE: Capturing t[(0, 0),Deref,(0, 0)] -> ImmBorrow
-        //~| NOTE: Capturing t[(0, 0)] -> ByValue
+        //~^ NOTE: Capturing t[(0, 0),Deref,(0, 0)] -> ByValue
         //~| NOTE: Min Capture t[(0, 0)] -> ByValue
         println!("{} {:?}", t.1, p);
         //~^ NOTE: Capturing t[(1, 0)] -> ImmBorrow
