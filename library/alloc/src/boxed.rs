@@ -138,6 +138,7 @@ use core::cmp::Ordering;
 use core::convert::{From, TryFrom};
 use core::fmt;
 use core::future::Future;
+use core::gc::NoFinalize;
 use core::hash::{Hash, Hasher};
 #[cfg(not(no_global_oom_handling))]
 use core::iter::FromIterator;
@@ -1721,3 +1722,9 @@ impl<S: ?Sized + Stream + Unpin> Stream for Box<S> {
         (**self).size_hint()
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: NoFinalize> NoFinalize for Box<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: NoFinalize, A: Allocator> NoFinalize for Box<T, A> {}

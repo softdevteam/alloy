@@ -3,6 +3,7 @@
 
 use core::alloc::LayoutError;
 use core::cmp;
+use core::gc::NoFinalize;
 use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ops::Drop;
@@ -558,3 +559,5 @@ fn alloc_guard(alloc_size: usize) -> Result<(), TryReserveError> {
 fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
+
+impl<T: NoFinalize, A: Allocator> NoFinalize for RawVec<T, A> {}
