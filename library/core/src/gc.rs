@@ -70,3 +70,26 @@ pub unsafe fn gc_layout<T>() -> Trace {
 
 impl<T: ?Sized> !NoTrace for *mut T {}
 impl<T: ?Sized> !NoTrace for *const T {}
+
+mod impls {
+    use super::NoFinalize;
+
+    macro_rules! impl_nofinalize {
+        ($($t:ty)*) => (
+            $(
+                #[unstable(feature = "gc", issue = "none")]
+                impl NoFinalize for $t {}
+            )*
+        )
+    }
+
+    impl_nofinalize! {
+        usize u8 u16 u32 u64 u128
+            isize i8 i16 i32 i64 i128
+            f32 f64
+            bool char
+    }
+
+    #[unstable(feature = "never_type", issue = "35121")]
+    impl NoFinalize for ! {}
+}
