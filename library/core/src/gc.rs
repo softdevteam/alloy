@@ -1,5 +1,6 @@
 #![unstable(feature = "gc", issue = "none")]
 #![allow(missing_docs)]
+use crate::ops::{Deref, DerefMut};
 
 #[cfg(not(bootstrap))]
 static MAX_LAYOUT: usize = crate::mem::size_of::<usize>() * 64;
@@ -10,9 +11,20 @@ static MAX_LAYOUT: usize = crate::mem::size_of::<usize>() * 64;
 #[cfg_attr(not(bootstrap), lang = "conservative")]
 pub trait Conservative {}
 
+/// Prevents a type from being finalized when used in `Gc`.
+///
+/// If a type `T` implements `NoFinalize`, a finalizer will not be registered to
+/// call its drop method when passed to `Gc::new`, regardless of whether its
+/// component types require finalization.
+///
+/// # Safety
+///
+/// Unsafe because this should be used with care. Preventing drop from
+/// running can lead to surprising behaviour. In particular, this will also
+/// prevent the finalization of all component types of T.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(not(bootstrap), lang = "no_finalize")]
-pub trait NoFinalize {}
+pub unsafe trait NoFinalize {}
 
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(not(bootstrap), lang = "notrace")]
@@ -23,6 +35,21 @@ pub auto trait NoTrace {}
 pub struct Trace {
     pub bitmap: u64,
     pub size: u64,
+}
+
+/// A wrapper which prevents `T` from being finalized when used in a `Gc`.
+///
+/// This has the same effect as implementing `NoFinalize` trait on `T`, however,
+/// due to the orphan rule this is not always possible. `NonFinalizable` acts as
+/// a convenience wrapper.
+#[derive(Debug)]
+pub struct NonFinalizable<T: ?Sized>(T);
+
+impl<T> NonFinalizable<T> {
+    /// Wrap a value to prevent finalization in `Gc`.
+    pub fn new(value: T) -> NonFinalizable<T> {
+        NonFinalizable(value)
+    }
 }
 
 #[unstable(feature = "gc", issue = "none")]
@@ -71,6 +98,25 @@ pub unsafe fn gc_layout<T>() -> Trace {
 impl<T: ?Sized> !NoTrace for *mut T {}
 impl<T: ?Sized> !NoTrace for *const T {}
 
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> Deref for NonFinalizable<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> DerefMut for NonFinalizable<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+unsafe impl<T> NoFinalize for NonFinalizable<T> {}
+
 mod impls {
     use super::NoFinalize;
 
@@ -78,7 +124,7 @@ mod impls {
         ($($t:ty)*) => (
             $(
                 #[unstable(feature = "gc", issue = "none")]
-                impl NoFinalize for $t {}
+                unsafe impl NoFinalize for $t {}
             )*
         )
     }
@@ -91,5 +137,5 @@ mod impls {
     }
 
     #[unstable(feature = "never_type", issue = "35121")]
-    impl NoFinalize for ! {}
+    unsafe impl NoFinalize for ! {}
 }
