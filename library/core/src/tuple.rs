@@ -69,7 +69,7 @@ macro_rules! tuple_impls {
             }
 
             #[unstable(feature = "gc", issue = "none")]
-            impl<$($T:NoFinalize),+> NoFinalize for ($($T,)+) {}
+            unsafe impl<$($T:NoFinalize),+> NoFinalize for ($($T,)+) {}
         )+
     }
 }

@@ -17,9 +17,12 @@ impl Drop for HasDropNoFinalize {
     fn drop(&mut self) {}
 }
 
-impl NoFinalize for HasDropNoFinalize {}
-
 struct FinalizedContainer<T>(T);
+struct MaybeFinalize<T>(T);
+struct ExplicitNoFinalize;
+
+unsafe impl NoFinalize for ExplicitNoFinalize {}
+unsafe impl NoFinalize for HasDropNoFinalize {}
 
 impl<T> Drop for FinalizedContainer<T> {
     fn drop(&mut self) {}
@@ -54,8 +57,10 @@ static VEC_STRING: bool = mem::needs_finalizer::<Vec<String>>();
 static VEC_BOX_FINALIZABLE: bool = mem::needs_finalizer::<Vec<Box<HasDrop>>>();
 static VEC_BOX_UNFINALIZABLE: bool = mem::needs_finalizer::<Vec<Box<HasDropNoFinalize>>>();
 
-
 static OUTER_NEEDS_FINALIZING: bool = mem::needs_finalizer::<FinalizedContainer<Vec<HasDropNoFinalize>>>();
+
+static STATIC_MAYBE_FINALIZE_NO_COMPONENTS: bool = mem::needs_finalizer::<MaybeFinalize<ExplicitNoFinalize>>();
+static STATIC_MAYBE_FINALIZE_DROP_COMPONENTS: bool = mem::needs_finalizer::<MaybeFinalize<HasDrop>>();
 
 fn main() {
     assert!(!CONST_U8);
@@ -88,4 +93,7 @@ fn main() {
     assert!(!VEC_BOX_UNFINALIZABLE);
 
     assert!(OUTER_NEEDS_FINALIZING);
+
+    assert!(!STATIC_MAYBE_FINALIZE_NO_COMPONENTS);
+    assert!(STATIC_MAYBE_FINALIZE_DROP_COMPONENTS);
 }

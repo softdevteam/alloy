@@ -2713,10 +2713,10 @@ impl<T: Ord, A: Allocator> Ord for Vec<T, A> {
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: NoFinalize, A: Allocator> NoFinalize for Vec<T, A> {}
+unsafe impl<T: NoFinalize, A: Allocator> NoFinalize for Vec<T, A> {}
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: NoFinalize> NoFinalize for Vec<T> {}
+unsafe impl<T: NoFinalize> NoFinalize for Vec<T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for Vec<T, A> {

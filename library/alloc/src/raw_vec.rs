@@ -560,4 +560,4 @@ fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
 
-impl<T: NoFinalize, A: Allocator> NoFinalize for RawVec<T, A> {}
+unsafe impl<T: NoFinalize, A: Allocator> NoFinalize for RawVec<T, A> {}
