@@ -31,6 +31,7 @@ use crate::num;
 use crate::str;
 use crate::string;
 use crate::sync::Arc;
+use crate::time;
 
 /// `Error` is a trait representing the basic expectations for error values,
 /// i.e., values of type `E` in [`Result<T, E>`].
@@ -182,7 +183,7 @@ impl<'a, E: Error + 'a> From<E> for Box<dyn Error + 'a> {
     ///
     /// impl fmt::Display for AnError {
     ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    ///         write!(f , "An error")
+    ///         write!(f, "An error")
     ///     }
     /// }
     ///
@@ -215,7 +216,7 @@ impl<'a, E: Error + Send + Sync + 'a> From<E> for Box<dyn Error + Send + Sync + 
     ///
     /// impl fmt::Display for AnError {
     ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    ///         write!(f , "An error")
+    ///         write!(f, "An error")
     ///     }
     /// }
     ///
@@ -594,11 +595,11 @@ impl Error for char::ParseCharError {
     }
 }
 
-#[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
+#[stable(feature = "try_reserve", since = "1.57.0")]
 impl Error for alloc::collections::TryReserveError {}
 
 #[unstable(feature = "duration_checked_float", issue = "83400")]
-impl Error for core::time::FromSecsError {}
+impl Error for time::FromSecsError {}
 
 // Copied from `any.rs`.
 impl dyn Error + 'static {

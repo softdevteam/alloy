@@ -8,21 +8,21 @@ use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::intravisit as hir_visit;
 use rustc_hir::intravisit::Visitor as HirVisitor;
-use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
+use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass};
 use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Detects closures called in the same expression where they
+    /// ### What it does
+    /// Detects closures called in the same expression where they
     /// are defined.
     ///
-    /// **Why is this bad?** It is unnecessarily adding to the expression's
+    /// ### Why is this bad?
+    /// It is unnecessarily adding to the expression's
     /// complexity.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// // Bad
     /// let a = (|| 42)()
@@ -30,6 +30,7 @@ declare_clippy_lint! {
     /// // Good
     /// let a = 42
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub REDUNDANT_CLOSURE_CALL,
     complexity,
     "throwaway closures called in the expression they are defined"
@@ -51,9 +52,7 @@ impl ReturnVisitor {
 
 impl<'ast> ast_visit::Visitor<'ast> for ReturnVisitor {
     fn visit_expr(&mut self, ex: &'ast ast::Expr) {
-        if let ast::ExprKind::Ret(_) = ex.kind {
-            self.found_return = true;
-        } else if let ast::ExprKind::Try(_) = ex.kind {
+        if let ast::ExprKind::Ret(_) | ast::ExprKind::Try(_) = ex.kind {
             self.found_return = true;
         }
 
@@ -63,7 +62,7 @@ impl<'ast> ast_visit::Visitor<'ast> for ReturnVisitor {
 
 impl EarlyLintPass for RedundantClosureCall {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &ast::Expr) {
-        if in_external_macro(cx.sess(), expr.span) {
+        if in_external_macro(cx.sess, expr.span) {
             return;
         }
         if_chain! {

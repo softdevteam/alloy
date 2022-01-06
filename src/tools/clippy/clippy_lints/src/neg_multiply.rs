@@ -7,16 +7,20 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for multiplication by -1 as a form of negation.
+    /// ### What it does
+    /// Checks for multiplication by -1 as a form of negation.
     ///
-    /// **Why is this bad?** It's more readable to just negate.
+    /// ### Why is this bad?
+    /// It's more readable to just negate.
     ///
-    /// **Known problems:** This only catches integers (for now).
+    /// ### Known problems
+    /// This only catches integers (for now).
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// x * -1
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NEG_MULTIPLY,
     style,
     "multiplying integers with `-1`"
@@ -43,7 +47,7 @@ impl<'tcx> LateLintPass<'tcx> for NegMultiply {
 fn check_mul(cx: &LateContext<'_>, span: Span, lit: &Expr<'_>, exp: &Expr<'_>) {
     if_chain! {
         if let ExprKind::Lit(ref l) = lit.kind;
-        if let Constant::Int(1) = consts::lit_to_constant(&l.node, cx.typeck_results().expr_ty_opt(lit));
+        if consts::lit_to_constant(&l.node, cx.typeck_results().expr_ty_opt(lit)) == Constant::Int(1);
         if cx.typeck_results().expr_ty(exp).is_integral();
         then {
             span_lint(cx, NEG_MULTIPLY, span, "negation by multiplying with `-1`");

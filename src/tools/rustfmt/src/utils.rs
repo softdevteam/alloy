@@ -42,7 +42,7 @@ pub(crate) fn is_same_visibility(a: &Visibility, b: &Visibility) -> bool {
         (
             VisibilityKind::Restricted { path: p, .. },
             VisibilityKind::Restricted { path: q, .. },
-        ) => pprust::path_to_string(&p) == pprust::path_to_string(&q),
+        ) => pprust::path_to_string(p) == pprust::path_to_string(q),
         (VisibilityKind::Public, VisibilityKind::Public)
         | (VisibilityKind::Inherited, VisibilityKind::Inherited)
         | (
@@ -191,7 +191,7 @@ pub(crate) fn outer_attributes(attrs: &[ast::Attribute]) -> Vec<ast::Attribute> 
 
 #[inline]
 pub(crate) fn is_single_line(s: &str) -> bool {
-    s.chars().find(|&c| c == '\n').is_none()
+    !s.chars().any(|c| c == '\n')
 }
 
 #[inline]
@@ -260,8 +260,7 @@ fn is_skip(meta_item: &MetaItem) -> bool {
     match meta_item.kind {
         MetaItemKind::Word => {
             let path_str = pprust::path_to_string(&meta_item.path);
-            path_str == &*skip_annotation().as_str()
-                || path_str == &*depr_skip_annotation().as_str()
+            path_str == *skip_annotation().as_str() || path_str == *depr_skip_annotation().as_str()
         }
         MetaItemKind::List(ref l) => {
             meta_item.has_name(sym::cfg_attr) && l.len() == 2 && is_skip_nested(&l[1])
@@ -357,11 +356,11 @@ macro_rules! source {
 }
 
 pub(crate) fn mk_sp(lo: BytePos, hi: BytePos) -> Span {
-    Span::new(lo, hi, SyntaxContext::root())
+    Span::new(lo, hi, SyntaxContext::root(), None)
 }
 
 pub(crate) fn mk_sp_lo_plus_one(lo: BytePos) -> Span {
-    Span::new(lo, lo + BytePos(1), SyntaxContext::root())
+    Span::new(lo, lo + BytePos(1), SyntaxContext::root(), None)
 }
 
 // Returns `true` if the given span does not intersect with file lines.
@@ -690,7 +689,7 @@ mod test {
     #[test]
     fn test_remove_trailing_white_spaces() {
         let s = "    r#\"\n        test\n    \"#";
-        assert_eq!(remove_trailing_white_spaces(&s), s);
+        assert_eq!(remove_trailing_white_spaces(s), s);
     }
 
     #[test]
@@ -699,7 +698,7 @@ mod test {
         let config = Config::default();
         let indent = Indent::new(4, 0);
         assert_eq!(
-            trim_left_preserve_layout(&s, indent, &config),
+            trim_left_preserve_layout(s, indent, &config),
             Some("aaa\n    bbb\n    ccc".to_string())
         );
     }

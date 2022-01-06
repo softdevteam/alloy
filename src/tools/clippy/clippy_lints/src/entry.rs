@@ -1,3 +1,4 @@
+use clippy_utils::higher;
 use clippy_utils::{
     can_move_expr_to_closure_no_visit,
     diagnostics::span_lint_and_sugg,
@@ -5,23 +6,27 @@ use clippy_utils::{
     source::{reindent_multiline, snippet_indent, snippet_with_applicability, snippet_with_context},
     SpanlessEq,
 };
+use core::fmt::Write;
 use rustc_errors::Applicability;
 use rustc_hir::{
+    hir_id::HirIdSet,
     intravisit::{walk_expr, ErasedMap, NestedVisitorMap, Visitor},
-    Block, Expr, ExprKind, Guard, HirId, Local, Stmt, StmtKind, UnOp,
+    Block, Expr, ExprKind, Guard, HirId, Pat, Stmt, StmtKind, UnOp,
 };
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{Span, SyntaxContext, DUMMY_SP};
-use std::fmt::Write;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for uses of `contains_key` + `insert` on `HashMap`
+    /// ### What it does
+    /// Checks for uses of `contains_key` + `insert` on `HashMap`
     /// or `BTreeMap`.
     ///
-    /// **Why is this bad?** Using `entry` is more efficient.
+    /// ### Why is this bad?
+    /// Using `entry` is more efficient.
     ///
-    /// **Known problems:** The suggestion may have type inference errors in some cases. e.g.
+    /// ### Known problems
+    /// The suggestion may have type inference errors in some cases. e.g.
     /// ```rust
     /// let mut map = std::collections::HashMap::new();
     /// let _ = if !map.contains_key(&0) {
@@ -31,7 +36,7 @@ declare_clippy_lint! {
     /// };
     /// ```
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # use std::collections::HashMap;
     /// # let mut map = HashMap::new();
@@ -49,6 +54,7 @@ declare_clippy_lint! {
     /// # let v = 1;
     /// map.entry(k).or_insert(v);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MAP_ENTRY,
     perf,
     "use of `contains_key` followed by `insert` on a `HashMap` or `BTreeMap`"
@@ -59,10 +65,11 @@ declare_lint_pass!(HashMapPass => [MAP_ENTRY]);
 impl<'tcx> LateLintPass<'tcx> for HashMapPass {
     #[allow(clippy::too_many_lines)]
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        let (cond_expr, then_expr, else_expr) = match expr.kind {
-            ExprKind::If(c, t, e) => (c, t, e),
+        let (cond_expr, then_expr, else_expr) = match higher::If::hir(expr) {
+            Some(higher::If { cond, then, r#else }) => (cond, then, r#else),
             _ => return,
         };
+
         let (map_ty, contains_expr) = match try_parse_contains(cx, cond_expr) {
             Some(x) => x,
             None => return,
@@ -239,11 +246,14 @@ fn try_parse_contains(cx: &LateContext<'_>, expr: &'tcx Expr<'_>) -> Option<(Map
         ExprKind::MethodCall(
             _,
             _,
-            [map, Expr {
-                kind: ExprKind::AddrOf(_, _, key),
-                span: key_span,
-                ..
-            }],
+            [
+                map,
+                Expr {
+                    kind: ExprKind::AddrOf(_, _, key),
+                    span: key_span,
+                    ..
+                },
+            ],
             _,
         ) if key_span.ctxt() == expr.span.ctxt() => {
             let id = cx.typeck_results().type_dependent_def_id(expr.hir_id)?;
@@ -333,6 +343,8 @@ struct InsertSearcher<'cx, 'tcx> {
     edits: Vec<Edit<'tcx>>,
     /// A stack of loops the visitor is currently in.
     loops: Vec<HirId>,
+    /// Local variables created in the expression. These don't need to be captured.
+    locals: HirIdSet,
 }
 impl<'tcx> InsertSearcher<'_, 'tcx> {
     /// Visit the expression as a branch in control flow. Multiple insert calls can be used, but
@@ -380,13 +392,16 @@ impl<'tcx> Visitor<'tcx> for InsertSearcher<'_, 'tcx> {
                 }
             },
             StmtKind::Expr(e) => self.visit_expr(e),
-            StmtKind::Local(Local { init: Some(e), .. }) => {
-                self.allow_insert_closure &= !self.in_tail_pos;
-                self.in_tail_pos = false;
-                self.is_single_insert = false;
-                self.visit_expr(e);
+            StmtKind::Local(l) => {
+                self.visit_pat(l.pat);
+                if let Some(e) = l.init {
+                    self.allow_insert_closure &= !self.in_tail_pos;
+                    self.in_tail_pos = false;
+                    self.is_single_insert = false;
+                    self.visit_expr(e);
+                }
             },
-            _ => {
+            StmtKind::Item(_) => {
                 self.allow_insert_closure &= !self.in_tail_pos;
                 self.is_single_insert = false;
             },
@@ -468,6 +483,7 @@ impl<'tcx> Visitor<'tcx> for InsertSearcher<'_, 'tcx> {
                     // Each branch may contain it's own insert expression.
                     let mut is_map_used = self.is_map_used;
                     for arm in arms {
+                        self.visit_pat(arm.pat);
                         if let Some(Guard::If(guard) | Guard::IfLet(_, guard)) = arm.guard {
                             self.visit_non_tail_expr(guard);
                         }
@@ -493,7 +509,8 @@ impl<'tcx> Visitor<'tcx> for InsertSearcher<'_, 'tcx> {
                 },
                 _ => {
                     self.allow_insert_closure &= !self.in_tail_pos;
-                    self.allow_insert_closure &= can_move_expr_to_closure_no_visit(self.cx, expr, &self.loops);
+                    self.allow_insert_closure &=
+                        can_move_expr_to_closure_no_visit(self.cx, expr, &self.loops, &self.locals);
                     // Sub expressions are no longer in the tail position.
                     self.is_single_insert = false;
                     self.in_tail_pos = false;
@@ -501,6 +518,12 @@ impl<'tcx> Visitor<'tcx> for InsertSearcher<'_, 'tcx> {
                 },
             },
         }
+    }
+
+    fn visit_pat(&mut self, p: &'tcx Pat<'tcx>) {
+        p.each_binding_or_first(&mut |_, id, _, _| {
+            self.locals.insert(id);
+        });
     }
 }
 
@@ -627,6 +650,7 @@ fn find_insert_calls(
         in_tail_pos: true,
         is_single_insert: true,
         loops: Vec::new(),
+        locals: HirIdSet::default(),
     };
     s.visit_expr(expr);
     let allow_insert_closure = s.allow_insert_closure;

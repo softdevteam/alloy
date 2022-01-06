@@ -10,7 +10,7 @@
 
 use std::env;
 use std::env::consts::EXE_EXTENSION;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -118,6 +118,10 @@ impl Step for Llvm {
             let idx = target.triple.find('-').unwrap();
 
             format!("riscv{}{}", &target.triple[5..7], &target.triple[idx..])
+        } else if self.target.starts_with("powerpc") && self.target.ends_with("freebsd") {
+            // FreeBSD 13 had incompatible ABI changes on all PowerPC platforms.
+            // Set the version suffix to 13.0 so the correct target details are used.
+            format!("{}{}", self.target, "13.0")
         } else {
             target.to_string()
         };
@@ -161,19 +165,23 @@ impl Step for Llvm {
 
         let llvm_exp_targets = match builder.config.llvm_experimental_targets {
             Some(ref s) => s,
-            None => "AVR",
+            None => "AVR;M68k",
         };
 
         let assertions = if builder.config.llvm_assertions { "ON" } else { "OFF" };
+        let plugins = if builder.config.llvm_plugins { "ON" } else { "OFF" };
+        let enable_tests = if builder.config.llvm_tests { "ON" } else { "OFF" };
 
         cfg.out_dir(&out_dir)
             .profile(profile)
             .define("LLVM_ENABLE_ASSERTIONS", assertions)
+            .define("LLVM_ENABLE_PLUGINS", plugins)
             .define("LLVM_TARGETS_TO_BUILD", llvm_targets)
             .define("LLVM_EXPERIMENTAL_TARGETS_TO_BUILD", llvm_exp_targets)
             .define("LLVM_INCLUDE_EXAMPLES", "OFF")
             .define("LLVM_INCLUDE_DOCS", "OFF")
             .define("LLVM_INCLUDE_BENCHMARKS", "OFF")
+            .define("LLVM_INCLUDE_TESTS", enable_tests)
             .define("LLVM_ENABLE_TERMINFO", "OFF")
             .define("LLVM_ENABLE_LIBEDIT", "OFF")
             .define("LLVM_ENABLE_BINDINGS", "OFF")
@@ -181,6 +189,19 @@ impl Step for Llvm {
             .define("LLVM_PARALLEL_COMPILE_JOBS", builder.jobs().to_string())
             .define("LLVM_TARGET_ARCH", target_native.split('-').next().unwrap())
             .define("LLVM_DEFAULT_TARGET_TRIPLE", target_native);
+
+        // Parts of our test suite rely on the `FileCheck` tool, which is built by default in
+        // `build/$TARGET/llvm/build/bin` is but *not* then installed to `build/$TARGET/llvm/bin`.
+        // This flag makes sure `FileCheck` is copied in the final binaries directory.
+        cfg.define("LLVM_INSTALL_UTILS", "ON");
+
+        if builder.config.llvm_profile_generate {
+            cfg.define("LLVM_BUILD_INSTRUMENTED", "IR");
+            cfg.define("LLVM_BUILD_RUNTIME", "No");
+        }
+        if let Some(path) = builder.config.llvm_profile_use.as_ref() {
+            cfg.define("LLVM_PROFDATA_FILE", &path);
+        }
 
         if target != "aarch64-apple-darwin" && !target.contains("windows") {
             cfg.define("LLVM_ENABLE_ZLIB", "ON");
@@ -228,9 +249,14 @@ impl Step for Llvm {
             }
         }
 
-        if target.starts_with("riscv") {
-            // In RISC-V, using C++ atomics require linking to `libatomic` but the LLVM build
-            // system check cannot detect this. Therefore it is set manually here.
+        if !target.contains("freebsd") && target.starts_with("riscv") {
+            // RISC-V GCC erroneously requires linking against
+            // `libatomic` when using 1-byte and 2-byte C++
+            // atomics but the LLVM build system check cannot
+            // detect this. Therefore it is set manually here.
+            // FreeBSD uses Clang as its system compiler and
+            // provides no libatomic in its base system so does
+            // not want this.
             if !builder.config.llvm_tools_enabled {
                 cfg.define("CMAKE_EXE_LINKER_FLAGS", "-latomic");
             } else {
@@ -261,6 +287,10 @@ impl Step for Llvm {
             enabled_llvm_projects.push("polly");
         }
 
+        if builder.config.llvm_clang {
+            enabled_llvm_projects.push("clang");
+        }
+
         // We want libxml to be disabled.
         // See https://github.com/rust-lang/rust/pull/50104
         cfg.define("LLVM_ENABLE_LIBXML2", "OFF");
@@ -275,6 +305,11 @@ impl Step for Llvm {
             if num_linkers > 0 {
                 cfg.define("LLVM_PARALLEL_LINK_JOBS", num_linkers.to_string());
             }
+        }
+
+        // Workaround for ppc32 lld limitation
+        if target == "powerpc-unknown-freebsd" {
+            cfg.define("CMAKE_EXE_LINKER_FLAGS", "-fuse-ld=bfd");
         }
 
         // https://llvm.org/docs/HowToCrossCompileLLVM.html
@@ -348,11 +383,11 @@ fn check_llvm_version(builder: &Builder<'_>, llvm_config: &Path) {
     let version = output(cmd.arg("--version"));
     let mut parts = version.split('.').take(2).filter_map(|s| s.parse::<u32>().ok());
     if let (Some(major), Some(_minor)) = (parts.next(), parts.next()) {
-        if major >= 10 {
+        if major >= 12 {
             return;
         }
     }
-    panic!("\n\nbad LLVM version: {}, need >=10.0\n\n", version)
+    panic!("\n\nbad LLVM version: {}, need >=12.0\n\n", version)
 }
 
 fn configure_cmake(
@@ -812,6 +847,11 @@ fn supported_sanitizers(
         "x86_64-apple-darwin" => darwin_libs("osx", &["asan", "lsan", "tsan"]),
         "x86_64-fuchsia" => common_libs("fuchsia", "x86_64", &["asan"]),
         "x86_64-unknown-freebsd" => common_libs("freebsd", "x86_64", &["asan", "msan", "tsan"]),
+        "x86_64-unknown-netbsd" => {
+            common_libs("netbsd", "x86_64", &["asan", "lsan", "msan", "tsan"])
+        }
+        "x86_64-unknown-illumos" => common_libs("illumos", "x86_64", &["asan"]),
+        "x86_64-pc-solaris" => common_libs("solaris", "x86_64", &["asan"]),
         "x86_64-unknown-linux-gnu" => {
             common_libs("linux", "x86_64", &["asan", "lsan", "msan", "tsan"])
         }
@@ -922,6 +962,157 @@ impl Step for CrtBeginEnd {
 
         t!(fs::copy(out_dir.join("crtbegin.o"), out_dir.join("crtbeginS.o")));
         t!(fs::copy(out_dir.join("crtend.o"), out_dir.join("crtendS.o")));
+        out_dir
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Libunwind {
+    pub target: TargetSelection,
+}
+
+impl Step for Libunwind {
+    type Output = PathBuf;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/llvm-project/libunwind")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(Libunwind { target: run.target });
+    }
+
+    /// Build linunwind.a
+    fn run(self, builder: &Builder<'_>) -> Self::Output {
+        if builder.config.dry_run {
+            return PathBuf::new();
+        }
+
+        let out_dir = builder.native_dir(self.target).join("libunwind");
+        let root = builder.src.join("src/llvm-project/libunwind");
+
+        if up_to_date(&root, &out_dir.join("libunwind.a")) {
+            return out_dir;
+        }
+
+        builder.info(&format!("Building libunwind.a for {}", self.target.triple));
+        t!(fs::create_dir_all(&out_dir));
+
+        let mut cc_cfg = cc::Build::new();
+        let mut cpp_cfg = cc::Build::new();
+
+        cpp_cfg.cpp(true);
+        cpp_cfg.cpp_set_stdlib(None);
+        cpp_cfg.flag("-nostdinc++");
+        cpp_cfg.flag("-fno-exceptions");
+        cpp_cfg.flag("-fno-rtti");
+        cpp_cfg.flag_if_supported("-fvisibility-global-new-delete-hidden");
+
+        for cfg in [&mut cc_cfg, &mut cpp_cfg].iter_mut() {
+            if let Some(ar) = builder.ar(self.target) {
+                cfg.archiver(ar);
+            }
+            cfg.target(&self.target.triple);
+            cfg.host(&builder.config.build.triple);
+            cfg.warnings(false);
+            cfg.debug(false);
+            // get_compiler() need set opt_level first.
+            cfg.opt_level(3);
+            cfg.flag("-fstrict-aliasing");
+            cfg.flag("-funwind-tables");
+            cfg.flag("-fvisibility=hidden");
+            cfg.define("_LIBUNWIND_DISABLE_VISIBILITY_ANNOTATIONS", None);
+            cfg.include(root.join("include"));
+            cfg.cargo_metadata(false);
+            cfg.out_dir(&out_dir);
+
+            if self.target.contains("x86_64-fortanix-unknown-sgx") {
+                cfg.static_flag(true);
+                cfg.flag("-fno-stack-protector");
+                cfg.flag("-ffreestanding");
+                cfg.flag("-fexceptions");
+
+                // easiest way to undefine since no API available in cc::Build to undefine
+                cfg.flag("-U_FORTIFY_SOURCE");
+                cfg.define("_FORTIFY_SOURCE", "0");
+                cfg.define("RUST_SGX", "1");
+                cfg.define("__NO_STRING_INLINES", None);
+                cfg.define("__NO_MATH_INLINES", None);
+                cfg.define("_LIBUNWIND_IS_BAREMETAL", None);
+                cfg.define("__LIBUNWIND_IS_NATIVE_ONLY", None);
+                cfg.define("NDEBUG", None);
+            }
+        }
+
+        cc_cfg.compiler(builder.cc(self.target));
+        if let Ok(cxx) = builder.cxx(self.target) {
+            cpp_cfg.compiler(cxx);
+        } else {
+            cc_cfg.compiler(builder.cc(self.target));
+        }
+
+        // Don't set this for clang
+        // By default, Clang builds C code in GNU C17 mode.
+        // By default, Clang builds C++ code according to the C++98 standard,
+        // with many C++11 features accepted as extensions.
+        if cc_cfg.get_compiler().is_like_gnu() {
+            cc_cfg.flag("-std=c99");
+        }
+        if cpp_cfg.get_compiler().is_like_gnu() {
+            cpp_cfg.flag("-std=c++11");
+        }
+
+        if self.target.contains("x86_64-fortanix-unknown-sgx") || self.target.contains("musl") {
+            // use the same GCC C compiler command to compile C++ code so we do not need to setup the
+            // C++ compiler env variables on the builders.
+            // Don't set this for clang++, as clang++ is able to compile this without libc++.
+            if cpp_cfg.get_compiler().is_like_gnu() {
+                cpp_cfg.cpp(false);
+                cpp_cfg.compiler(builder.cc(self.target));
+            }
+        }
+
+        let mut c_sources = vec![
+            "Unwind-sjlj.c",
+            "UnwindLevel1-gcc-ext.c",
+            "UnwindLevel1.c",
+            "UnwindRegistersRestore.S",
+            "UnwindRegistersSave.S",
+        ];
+
+        let cpp_sources = vec!["Unwind-EHABI.cpp", "Unwind-seh.cpp", "libunwind.cpp"];
+        let cpp_len = cpp_sources.len();
+
+        if self.target.contains("x86_64-fortanix-unknown-sgx") {
+            c_sources.push("UnwindRustSgx.c");
+        }
+
+        for src in c_sources {
+            cc_cfg.file(root.join("src").join(src).canonicalize().unwrap());
+        }
+
+        for src in &cpp_sources {
+            cpp_cfg.file(root.join("src").join(src).canonicalize().unwrap());
+        }
+
+        cpp_cfg.compile("unwind-cpp");
+
+        // FIXME: https://github.com/alexcrichton/cc-rs/issues/545#issuecomment-679242845
+        let mut count = 0;
+        for entry in fs::read_dir(&out_dir).unwrap() {
+            let file = entry.unwrap().path().canonicalize().unwrap();
+            if file.is_file() && file.extension() == Some(OsStr::new("o")) {
+                // file name starts with "Unwind-EHABI", "Unwind-seh" or "libunwind"
+                let file_name = file.file_name().unwrap().to_str().expect("UTF-8 file name");
+                if cpp_sources.iter().any(|f| file_name.starts_with(&f[..f.len() - 4])) {
+                    cc_cfg.object(&file);
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(cpp_len, count, "Can't get object files from {:?}", &out_dir);
+
+        cc_cfg.compile("unwind");
         out_dir
     }
 }

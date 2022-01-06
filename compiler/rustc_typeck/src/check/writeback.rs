@@ -130,7 +130,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
     fn write_ty_to_typeck_results(&mut self, hir_id: hir::HirId, ty: Ty<'tcx>) {
         debug!("write_ty_to_typeck_results({:?}, {:?})", hir_id, ty);
-        assert!(!ty.needs_infer() && !ty.has_placeholders() && !ty.has_free_regions());
+        assert!(!ty.needs_infer() && !ty.has_placeholders() && !ty.has_free_regions(self.tcx()));
         self.typeck_results.node_types_mut().insert(hir_id, ty);
     }
 
@@ -140,7 +140,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
     // operating on scalars, we clear the overload.
     fn fix_scalar_builtin_expr(&mut self, e: &hir::Expr<'_>) {
         match e.kind {
-            hir::ExprKind::Unary(hir::UnOp::Neg | hir::UnOp::Not, ref inner) => {
+            hir::ExprKind::Unary(hir::UnOp::Neg | hir::UnOp::Not, inner) => {
                 let inner_ty = self.fcx.node_ty(inner.hir_id);
                 let inner_ty = self.fcx.resolve_vars_if_possible(inner_ty);
 
@@ -150,8 +150,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                     typeck_results.node_substs_mut().remove(e.hir_id);
                 }
             }
-            hir::ExprKind::Binary(ref op, ref lhs, ref rhs)
-            | hir::ExprKind::AssignOp(ref op, ref lhs, ref rhs) => {
+            hir::ExprKind::Binary(ref op, lhs, rhs) | hir::ExprKind::AssignOp(ref op, lhs, rhs) => {
                 let lhs_ty = self.fcx.node_ty(lhs.hir_id);
                 let lhs_ty = self.fcx.resolve_vars_if_possible(lhs_ty);
 
@@ -175,10 +174,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                                 }
                             }
                         }
-                        hir::ExprKind::AssignOp(..) => {
-                            if let Some(a) = typeck_results.adjustments_mut().get_mut(lhs.hir_id) {
-                                a.pop();
-                            }
+                        hir::ExprKind::AssignOp(..)
+                            if let Some(a) = typeck_results.adjustments_mut().get_mut(lhs.hir_id) =>
+                        {
+                            a.pop();
                         }
                         _ => {}
                     }
@@ -198,7 +197,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
             // All valid indexing looks like this; might encounter non-valid indexes at this point.
             let base_ty = typeck_results
-                .expr_ty_adjusted_opt(&base)
+                .expr_ty_adjusted_opt(base)
                 .map(|t| self.fcx.resolve_vars_if_possible(t).kind());
             if base_ty.is_none() {
                 // When encountering `return [0][0]` outside of a `fn` body we can encounter a base
@@ -207,7 +206,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                 self.tcx().sess.delay_span_bug(e.span, &format!("bad base: `{:?}`", base));
             }
             if let Some(ty::Ref(_, base_ty, _)) = base_ty {
-                let index_ty = typeck_results.expr_ty_adjusted_opt(&index).unwrap_or_else(|| {
+                let index_ty = typeck_results.expr_ty_adjusted_opt(index).unwrap_or_else(|| {
                     // When encountering `return [0][0]` outside of a `fn` body we would attempt
                     // to access an unexistend index. We assume that more relevant errors will
                     // already have been emitted, so we only gate on this with an ICE if no
@@ -283,6 +282,12 @@ impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
             hir::ExprKind::Field(..) => {
                 self.visit_field_id(e.hir_id);
             }
+            hir::ExprKind::ConstBlock(anon_const) => {
+                self.visit_node_id(e.span, anon_const.hir_id);
+
+                let body = self.tcx().hir().body(anon_const.body);
+                self.visit_body(body);
+            }
             _ => {}
         }
 
@@ -330,6 +335,15 @@ impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
         let ty = self.fcx.node_ty(hir_ty.hir_id);
         let ty = self.resolve(ty, &hir_ty.span);
         self.write_ty_to_typeck_results(hir_ty.hir_id, ty);
+    }
+
+    fn visit_infer(&mut self, inf: &'tcx hir::InferArg) {
+        intravisit::walk_inf(self, inf);
+        // Ignore cases where the inference is a const.
+        if let Some(ty) = self.fcx.node_ty_opt(inf.hir_id) {
+            let ty = self.resolve(ty, &inf.span);
+            self.write_ty_to_typeck_results(inf.hir_id, ty);
+        }
     }
 }
 
@@ -488,8 +502,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             fcx_typeck_results.generator_interior_types.clone();
     }
 
+    #[instrument(skip(self, span), level = "debug")]
     fn visit_opaque_types(&mut self, span: Span) {
-        for &(opaque_type_key, opaque_defn) in self.fcx.opaque_types.borrow().iter() {
+        let opaque_types = self.fcx.infcx.inner.borrow().opaque_types.clone();
+        for (opaque_type_key, opaque_defn) in opaque_types {
             let hir_id =
                 self.tcx().hir().local_def_id_to_hir_id(opaque_type_key.def_id.expect_local());
             let instantiated_ty = self.resolve(opaque_defn.concrete_ty, &hir_id);
@@ -542,23 +558,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             // in some other location, or we'll end up emitting an error due
             // to the lack of defining usage
             if !skip_add {
-                let old_concrete_ty = self
-                    .typeck_results
-                    .concrete_opaque_types
-                    .insert(opaque_type_key, definition_ty);
-                if let Some(old_concrete_ty) = old_concrete_ty {
-                    if old_concrete_ty != definition_ty {
-                        span_bug!(
-                            span,
-                            "`visit_opaque_types` tried to write different types for the same \
-                                 opaque type: {:?}, {:?}, {:?}, {:?}",
-                            opaque_type_key.def_id,
-                            definition_ty,
-                            opaque_defn,
-                            old_concrete_ty,
-                        );
-                    }
-                }
+                self.typeck_results.concrete_opaque_types.insert(opaque_type_key.def_id);
             }
         }
     }
@@ -570,6 +570,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         }
     }
 
+    #[instrument(skip(self, span), level = "debug")]
     fn visit_node_id(&mut self, span: Span, hir_id: hir::HirId) {
         // Export associated path extensions and method resolutions.
         if let Some(def) =
@@ -585,7 +586,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         let n_ty = self.fcx.node_ty(hir_id);
         let n_ty = self.resolve(n_ty, &span);
         self.write_ty_to_typeck_results(hir_id, n_ty);
-        debug!("node {:?} has type {:?}", hir_id, n_ty);
+        debug!(?n_ty);
 
         // Resolve any substitutions
         if let Some(substs) = self.fcx.typeck_results.borrow().node_substs_opt(hir_id) {
@@ -596,31 +597,33 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         }
     }
 
+    #[instrument(skip(self, span), level = "debug")]
     fn visit_adjustments(&mut self, span: Span, hir_id: hir::HirId) {
         let adjustment = self.fcx.typeck_results.borrow_mut().adjustments_mut().remove(hir_id);
         match adjustment {
             None => {
-                debug!("no adjustments for node {:?}", hir_id);
+                debug!("no adjustments for node");
             }
 
             Some(adjustment) => {
                 let resolved_adjustment = self.resolve(adjustment, &span);
-                debug!("adjustments for node {:?}: {:?}", hir_id, resolved_adjustment);
+                debug!(?resolved_adjustment);
                 self.typeck_results.adjustments_mut().insert(hir_id, resolved_adjustment);
             }
         }
     }
 
+    #[instrument(skip(self, span), level = "debug")]
     fn visit_pat_adjustments(&mut self, span: Span, hir_id: hir::HirId) {
         let adjustment = self.fcx.typeck_results.borrow_mut().pat_adjustments_mut().remove(hir_id);
         match adjustment {
             None => {
-                debug!("no pat_adjustments for node {:?}", hir_id);
+                debug!("no pat_adjustments for node");
             }
 
             Some(adjustment) => {
                 let resolved_adjustment = self.resolve(adjustment, &span);
-                debug!("pat_adjustments for node {:?}: {:?}", hir_id, resolved_adjustment);
+                debug!(?resolved_adjustment);
                 self.typeck_results.pat_adjustments_mut().insert(hir_id, resolved_adjustment);
             }
         }
@@ -738,6 +741,26 @@ impl<'cx, 'tcx> Resolver<'cx, 'tcx> {
     }
 }
 
+struct EraseEarlyRegions<'tcx> {
+    tcx: TyCtxt<'tcx>,
+}
+
+impl<'tcx> TypeFolder<'tcx> for EraseEarlyRegions<'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
+        self.tcx
+    }
+    fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        if ty.has_type_flags(ty::TypeFlags::HAS_POTENTIAL_FREE_REGIONS) {
+            ty.super_fold_with(self)
+        } else {
+            ty
+        }
+    }
+    fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
+        if let ty::ReLateBound(..) = r { r } else { self.tcx.lifetimes.re_erased }
+    }
+}
+
 impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
     fn tcx<'a>(&'a self) -> TyCtxt<'tcx> {
         self.tcx
@@ -745,7 +768,13 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
         match self.infcx.fully_resolve(t) {
-            Ok(t) => self.infcx.tcx.erase_regions(t),
+            Ok(t) => {
+                // Do not anonymize late-bound regions
+                // (e.g. keep `for<'a>` named `for<'a>`).
+                // This allows NLL to generate error messages that
+                // refer to the higher-ranked lifetime names written by the user.
+                EraseEarlyRegions { tcx: self.infcx.tcx }.fold_ty(t)
+            }
             Err(_) => {
                 debug!("Resolver::fold_ty: input type `{:?}` not fully resolvable", t);
                 self.report_type_error(t);

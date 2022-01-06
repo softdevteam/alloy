@@ -3,15 +3,16 @@ use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::ItemKind;
-use rustc_middle::ty::layout::{HasParamEnv, HasTyCtxt, TyAndLayout};
+use rustc_middle::ty::layout::{HasParamEnv, HasTyCtxt, LayoutError, LayoutOfHelpers, TyAndLayout};
 use rustc_middle::ty::{ParamEnv, Ty, TyCtxt};
 use rustc_span::symbol::sym;
-use rustc_target::abi::{HasDataLayout, LayoutOf, TargetDataLayout};
+use rustc_span::Span;
+use rustc_target::abi::{HasDataLayout, TargetDataLayout};
 
 pub fn test_layout(tcx: TyCtxt<'_>) {
     if tcx.features().rustc_attrs {
         // if the `rustc_attrs` feature is not enabled, don't bother testing layout
-        tcx.hir().krate().visit_all_item_likes(&mut LayoutTest { tcx });
+        tcx.hir().visit_all_item_likes(&mut LayoutTest { tcx });
     }
 }
 
@@ -27,7 +28,7 @@ impl ItemLikeVisitor<'tcx> for LayoutTest<'tcx> {
             | ItemKind::Struct(..)
             | ItemKind::Union(..) => {
                 for attr in self.tcx.get_attrs(item.def_id.to_def_id()).iter() {
-                    if self.tcx.sess.check_name(attr, sym::rustc_layout) {
+                    if attr.has_name(sym::rustc_layout) {
                         self.dump_layout_of(item.def_id, item, attr);
                     }
                 }
@@ -113,12 +114,16 @@ struct UnwrapLayoutCx<'tcx> {
     param_env: ParamEnv<'tcx>,
 }
 
-impl LayoutOf for UnwrapLayoutCx<'tcx> {
-    type Ty = Ty<'tcx>;
-    type TyAndLayout = TyAndLayout<'tcx>;
+impl LayoutOfHelpers<'tcx> for UnwrapLayoutCx<'tcx> {
+    type LayoutOfResult = TyAndLayout<'tcx>;
 
-    fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyAndLayout {
-        self.tcx.layout_of(self.param_env.and(ty)).unwrap()
+    fn handle_layout_err(&self, err: LayoutError<'tcx>, span: Span, ty: Ty<'tcx>) -> ! {
+        span_bug!(
+            span,
+            "`#[rustc_layout(..)]` test resulted in `layout_of({}) = Err({})`",
+            ty,
+            err
+        );
     }
 }
 

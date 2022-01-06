@@ -1,5 +1,6 @@
 use crate::io::prelude::*;
-use crate::io::{self, BufReader, BufWriter, ErrorKind, IoSlice, LineWriter, SeekFrom};
+use crate::io::{self, BufReader, BufWriter, ErrorKind, IoSlice, LineWriter, ReadBuf, SeekFrom};
+use crate::mem::MaybeUninit;
 use crate::panic;
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use crate::thread;
@@ -53,6 +54,55 @@ fn test_buffered_reader() {
     assert_eq!(reader.buffer(), []);
 
     assert_eq!(reader.read(&mut buf).unwrap(), 0);
+}
+
+#[test]
+fn test_buffered_reader_read_buf() {
+    let inner: &[u8] = &[5, 6, 7, 0, 1, 2, 3, 4];
+    let mut reader = BufReader::with_capacity(2, inner);
+
+    let mut buf = [MaybeUninit::uninit(); 3];
+    let mut buf = ReadBuf::uninit(&mut buf);
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled(), [5, 6, 7]);
+    assert_eq!(reader.buffer(), []);
+
+    let mut buf = [MaybeUninit::uninit(); 2];
+    let mut buf = ReadBuf::uninit(&mut buf);
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled(), [0, 1]);
+    assert_eq!(reader.buffer(), []);
+
+    let mut buf = [MaybeUninit::uninit(); 1];
+    let mut buf = ReadBuf::uninit(&mut buf);
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled(), [2]);
+    assert_eq!(reader.buffer(), [3]);
+
+    let mut buf = [MaybeUninit::uninit(); 3];
+    let mut buf = ReadBuf::uninit(&mut buf);
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled(), [3]);
+    assert_eq!(reader.buffer(), []);
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled(), [3, 4]);
+    assert_eq!(reader.buffer(), []);
+
+    buf.clear();
+
+    reader.read_buf(&mut buf).unwrap();
+
+    assert_eq!(buf.filled_len(), 0);
 }
 
 #[test]
@@ -241,6 +291,28 @@ fn test_buffered_reader_seek_underflow_discard_buffer_between_seeks() {
     // buffer.
     assert!(reader.seek(SeekFrom::Current(i64::MIN)).is_err());
     assert_eq!(reader.buffer().len(), 0);
+}
+
+#[test]
+fn test_buffered_reader_read_to_end_consumes_buffer() {
+    let data: &[u8] = &[0, 1, 2, 3, 4, 5, 6, 7];
+    let mut reader = BufReader::with_capacity(3, data);
+    let mut buf = Vec::new();
+    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1, 2][..]));
+    assert_eq!(reader.read_to_end(&mut buf).ok(), Some(8));
+    assert_eq!(&buf, &[0, 1, 2, 3, 4, 5, 6, 7]);
+    assert!(reader.buffer().is_empty());
+}
+
+#[test]
+fn test_buffered_reader_read_to_string_consumes_buffer() {
+    let data: &[u8] = "deadbeef".as_bytes();
+    let mut reader = BufReader::with_capacity(3, data);
+    let mut buf = String::new();
+    assert_eq!(reader.fill_buf().ok(), Some("dea".as_bytes()));
+    assert_eq!(reader.read_to_string(&mut buf).ok(), Some(8));
+    assert_eq!(&buf, "deadbeef");
+    assert!(reader.buffer().is_empty());
 }
 
 #[test]
@@ -468,9 +540,6 @@ struct ProgrammableSink {
     // Writes append to this slice
     pub buffer: Vec<u8>,
 
-    // Flush sets this flag
-    pub flushed: bool,
-
     // If true, writes will always be an error
     pub always_write_error: bool,
 
@@ -520,7 +589,6 @@ impl Write for ProgrammableSink {
         if self.always_flush_error {
             Err(io::Error::new(io::ErrorKind::Other, "test - always_flush_error"))
         } else {
-            self.flushed = true;
             Ok(())
         }
     }

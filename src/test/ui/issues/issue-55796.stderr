@@ -4,7 +4,7 @@ error[E0495]: cannot infer an appropriate lifetime due to conflicting requiremen
 LL |         Box::new(self.out_edges(u).map(|e| e.target()))
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-note: first, the lifetime cannot outlive the lifetime `'a` as defined on the trait at 7:17...
+note: first, the lifetime cannot outlive the lifetime `'a` as defined here...
   --> $DIR/issue-55796.rs:7:17
    |
 LL | pub trait Graph<'a> {
@@ -15,7 +15,7 @@ note: ...so that the type `Map<<Self as Graph<'a>>::EdgesIter, [closure@$DIR/iss
 LL |         Box::new(self.out_edges(u).map(|e| e.target()))
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: but, the lifetime must be valid for the static lifetime...
-note: ...so that the expression is assignable
+note: ...so that the types are compatible
   --> $DIR/issue-55796.rs:18:9
    |
 LL |         Box::new(self.out_edges(u).map(|e| e.target()))
@@ -29,7 +29,7 @@ error[E0495]: cannot infer an appropriate lifetime due to conflicting requiremen
 LL |         Box::new(self.in_edges(u).map(|e| e.target()))
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-note: first, the lifetime cannot outlive the lifetime `'a` as defined on the trait at 7:17...
+note: first, the lifetime cannot outlive the lifetime `'a` as defined here...
   --> $DIR/issue-55796.rs:7:17
    |
 LL | pub trait Graph<'a> {
@@ -40,7 +40,7 @@ note: ...so that the type `Map<<Self as Graph<'a>>::EdgesIter, [closure@$DIR/iss
 LL |         Box::new(self.in_edges(u).map(|e| e.target()))
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: but, the lifetime must be valid for the static lifetime...
-note: ...so that the expression is assignable
+note: ...so that the types are compatible
   --> $DIR/issue-55796.rs:23:9
    |
 LL |         Box::new(self.in_edges(u).map(|e| e.target()))

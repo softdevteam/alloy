@@ -8,14 +8,22 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of dbg!() macro.
+    /// ### What it does
+    /// Checks for usage of dbg!() macro.
     ///
-    /// **Why is this bad?** `dbg!` macro is intended as a debugging tool. It
+    /// ### Why is this bad?
+    /// `dbg!` macro is intended as a debugging tool. It
     /// should not be in version control.
     ///
-    /// **Known problems:** None.
+    /// ### Known problems
+    /// * The lint level is unaffected by crate attributes. The level can still
+    ///   be set for functions, modules and other items. To change the level for
+    ///   the entire crate, please use command line flags. More information and a
+    ///   configuration example can be found in [clippy#6610].
     ///
-    /// **Example:**
+    /// [clippy#6610]: https://github.com/rust-lang/rust-clippy/issues/6610#issuecomment-977120558
+    ///
+    /// ### Example
     /// ```rust,ignore
     /// // Bad
     /// dbg!(true)
@@ -23,6 +31,7 @@ declare_clippy_lint! {
     /// // Good
     /// true
     /// ```
+    #[clippy::version = "1.34.0"]
     pub DBG_MACRO,
     restriction,
     "`dbg!` macro is intended as a debugging tool"

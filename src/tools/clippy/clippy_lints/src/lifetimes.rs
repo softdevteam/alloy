@@ -1,5 +1,5 @@
 use clippy_utils::diagnostics::span_lint;
-use clippy_utils::{in_macro, trait_ref_of_method};
+use clippy_utils::trait_ref_of_method;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::intravisit::{
     walk_fn_decl, walk_generic_param, walk_generics, walk_item, walk_param_bound, walk_poly_trait_ref, walk_ty,
@@ -18,20 +18,22 @@ use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, Symbol};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for lifetime annotations which can be removed by
+    /// ### What it does
+    /// Checks for lifetime annotations which can be removed by
     /// relying on lifetime elision.
     ///
-    /// **Why is this bad?** The additional lifetimes make the code look more
+    /// ### Why is this bad?
+    /// The additional lifetimes make the code look more
     /// complicated, while there is nothing out of the ordinary going on. Removing
     /// them leads to more readable code.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// - We bail out if the function has a `where` clause where lifetimes
     /// are mentioned due to potenial false positives.
     /// - Lifetime bounds such as `impl Foo + 'a` and `T: 'a` must be elided with the
     /// placeholder notation `'_` because the fully elided notation leaves the type bound to `'static`.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Bad: unnecessary lifetime annotations
     /// fn in_and_out<'a>(x: &'a u8, y: u8) -> &'a u8 {
@@ -43,6 +45,7 @@ declare_clippy_lint! {
     ///     x
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NEEDLESS_LIFETIMES,
     complexity,
     "using explicit lifetimes for references in function arguments when elision rules \
@@ -50,16 +53,16 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for lifetimes in generics that are never used
+    /// ### What it does
+    /// Checks for lifetimes in generics that are never used
     /// anywhere else.
     ///
-    /// **Why is this bad?** The additional lifetimes make the code look more
+    /// ### Why is this bad?
+    /// The additional lifetimes make the code look more
     /// complicated, while there is nothing out of the ordinary going on. Removing
     /// them leads to more readable code.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Bad: unnecessary lifetimes
     /// fn unused_lifetime<'a>(x: u8) {
@@ -71,6 +74,7 @@ declare_clippy_lint! {
     ///     // ...
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub EXTRA_UNUSED_LIFETIMES,
     complexity,
     "unused lifetimes in function definitions"
@@ -126,7 +130,7 @@ fn check_fn_inner<'tcx>(
     span: Span,
     report_extra_lifetimes: bool,
 ) {
-    if in_macro(span) || has_where_lifetimes(cx, &generics.where_clause) {
+    if span.from_expansion() || has_where_lifetimes(cx, &generics.where_clause) {
         return;
     }
 
@@ -376,11 +380,15 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
 
     fn visit_ty(&mut self, ty: &'tcx Ty<'_>) {
         match ty.kind {
-            TyKind::OpaqueDef(item, _) => {
+            TyKind::OpaqueDef(item, bounds) => {
                 let map = self.cx.tcx.hir();
                 let item = map.item(item);
                 walk_item(self, item);
                 walk_ty(self, ty);
+                self.lts.extend(bounds.iter().filter_map(|bound| match bound {
+                    GenericArg::Lifetime(l) => Some(RefLt::Named(l.name.ident().name)),
+                    _ => None,
+                }));
             },
             TyKind::BareFn(&BareFnTy { decl, .. }) => {
                 let mut sub_visitor = RefVisitor::new(self.cx);

@@ -12,7 +12,7 @@ use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::config::OptLevel;
 use rustc_session::Session;
 use rustc_target::spec::abi::Abi;
-use rustc_target::spec::{FramePointer, SanitizerSet, StackProbeType};
+use rustc_target::spec::{FramePointer, SanitizerSet, StackProbeType, StackProtector};
 
 use crate::attributes;
 use crate::llvm::AttributePlace::Function;
@@ -161,6 +161,17 @@ fn set_probestack(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     }
 }
 
+fn set_stackprotector(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
+    let sspattr = match cx.sess().stack_protector() {
+        StackProtector::None => return,
+        StackProtector::All => Attribute::StackProtectReq,
+        StackProtector::Strong => Attribute::StackProtectStrong,
+        StackProtector::Basic => Attribute::StackProtect,
+    };
+
+    sspattr.apply_llfn(Function, llfn)
+}
+
 pub fn apply_target_cpu_attr(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     let target_cpu = SmallCStr::new(llvm_util::target_cpu(cx.tcx.sess));
     llvm::AddFunctionAttrStringValue(
@@ -263,10 +274,15 @@ pub fn from_fn_attrs(cx: &CodegenCx<'ll, 'tcx>, llfn: &'ll Value, instance: ty::
         attributes::emit_uwtable(llfn, true);
     }
 
+    if cx.sess().opts.debugging_opts.profile_sample_use.is_some() {
+        llvm::AddFunctionAttrString(llfn, Function, cstr!("use-sample-profile"));
+    }
+
     // FIXME: none of these three functions interact with source level attributes.
     set_frame_pointer_type(cx, llfn);
     set_instrument_function(cx, llfn);
     set_probestack(cx, llfn);
+    set_stackprotector(cx, llfn);
 
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
         Attribute::Cold.apply_llfn(Function, llfn);
@@ -305,9 +321,12 @@ pub fn from_fn_attrs(cx: &CodegenCx<'ll, 'tcx>, llfn: &'ll Value, instance: ty::
     let mut function_features = codegen_fn_attrs
         .target_features
         .iter()
-        .map(|f| {
+        .flat_map(|f| {
             let feature = &f.as_str();
-            format!("+{}", llvm_util::to_llvm_feature(cx.tcx.sess, feature))
+            llvm_util::to_llvm_feature(cx.tcx.sess, feature)
+                .into_iter()
+                .map(|f| format!("+{}", f))
+                .collect::<Vec<String>>()
         })
         .chain(codegen_fn_attrs.instruction_set.iter().map(|x| match x {
             InstructionSetAttr::ArmA32 => "-thumb-mode".to_string(),

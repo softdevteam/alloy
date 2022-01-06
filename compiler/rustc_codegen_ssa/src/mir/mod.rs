@@ -2,8 +2,9 @@ use crate::traits::*;
 use rustc_errors::ErrorReported;
 use rustc_middle::mir;
 use rustc_middle::mir::interpret::ErrorHandled;
-use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt, TyAndLayout};
+use rustc_middle::ty::layout::{FnAbiOf, HasTyCtxt, TyAndLayout};
 use rustc_middle::ty::{self, Instance, Ty, TypeFoldable};
+use rustc_symbol_mangling::typeid_for_fnabi;
 use rustc_target::abi::call::{FnAbi, PassMode};
 
 use std::iter;
@@ -29,7 +30,7 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     cx: &'a Bx::CodegenCx,
 
-    fn_abi: FnAbi<'tcx, Ty<'tcx>>,
+    fn_abi: &'tcx FnAbi<'tcx, Ty<'tcx>>,
 
     /// When unwinding is initiated, we have to store this personality
     /// value somewhere so that we can load it and re-use it in the
@@ -129,6 +130,7 @@ impl<'a, 'tcx, V: CodegenObject> LocalRef<'tcx, V> {
 
 ///////////////////////////////////////////////////////////////////////////
 
+#[instrument(level = "debug", skip(cx))]
 pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
     instance: Instance<'tcx>,
@@ -139,7 +141,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
     let mir = cx.tcx().instance_mir(instance.def);
 
-    let fn_abi = FnAbi::of_instance(cx, instance, &[]);
+    let fn_abi = cx.fn_abi_of_instance(instance, ty::List::empty());
     debug!("fn_abi: {:?}", fn_abi);
 
     let debug_context = cx.create_function_debug_context(instance, &fn_abi, llfn, &mir);
@@ -152,20 +154,11 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     }
 
     let cleanup_kinds = analyze::cleanup_kinds(&mir);
-    // Allocate a `Block` for every basic block, except
-    // the start block, if nothing loops back to it.
-    let reentrant_start_block = !mir.predecessors()[mir::START_BLOCK].is_empty();
-    let cached_llbbs: IndexVec<mir::BasicBlock, Option<Bx::BasicBlock>> =
-        mir.basic_blocks()
-            .indices()
-            .map(|bb| {
-                if bb == mir::START_BLOCK && !reentrant_start_block {
-                    Some(start_llbb)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    let cached_llbbs: IndexVec<mir::BasicBlock, Option<Bx::BasicBlock>> = mir
+        .basic_blocks()
+        .indices()
+        .map(|bb| if bb == mir::START_BLOCK { Some(start_llbb) } else { None })
+        .collect();
 
     let mut fx = FunctionCx {
         instance,
@@ -216,7 +209,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         let mut allocate_local = |local| {
             let decl = &mir.local_decls[local];
             let layout = bx.layout_of(fx.monomorphize(decl.ty));
-            assert!(!layout.ty.has_erasable_regions());
+            assert!(!layout.ty.has_erasable_regions(cx.tcx()));
 
             if local == mir::RETURN_PLACE && fx.fn_abi.ret.is_indirect() {
                 debug!("alloc: {:?} (return place) -> place", local);
@@ -247,15 +240,17 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     // Apply debuginfo to the newly allocated locals.
     fx.debug_introduce_locals(&mut bx);
 
-    // Branch to the START block, if it's not the entry block.
-    if reentrant_start_block {
-        bx.br(fx.llbb(mir::START_BLOCK));
-    }
-
     // Codegen the body of each block using reverse postorder
     // FIXME(eddyb) reuse RPO iterator between `analysis` and this.
     for (bb, _) in traversal::reverse_postorder(&mir) {
         fx.codegen_block(bb);
+    }
+
+    // For backends that support CFI using type membership (i.e., testing whether a given  pointer
+    // is associated with a type identifier).
+    if cx.tcx().sess.is_sanitizer_cfi_enabled() {
+        let typeid = typeid_for_fnabi(cx.tcx(), fn_abi);
+        bx.type_metadata(llfn, typeid);
     }
 }
 
@@ -270,6 +265,8 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let mir = fx.mir;
     let mut idx = 0;
     let mut llarg_idx = fx.fn_abi.ret.is_indirect() as usize;
+
+    let mut num_untupled = None;
 
     let args = mir
         .args_iter()
@@ -299,6 +296,11 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                     let pr_field = place.project_field(bx, i);
                     bx.store_fn_arg(arg, &mut llarg_idx, pr_field);
                 }
+                assert_eq!(
+                    None,
+                    num_untupled.replace(tupled_arg_tys.len()),
+                    "Replaced existing num_tupled"
+                );
 
                 return LocalRef::Place(place);
             }
@@ -375,10 +377,17 @@ fn arg_local_refs<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         .collect::<Vec<_>>();
 
     if fx.instance.def.requires_caller_location(bx.tcx()) {
+        let mir_args = if let Some(num_untupled) = num_untupled {
+            // Subtract off the tupled argument that gets 'expanded'
+            args.len() - 1 + num_untupled
+        } else {
+            args.len()
+        };
         assert_eq!(
             fx.fn_abi.args.len(),
-            args.len() + 1,
-            "#[track_caller] fn's must have 1 more argument in their ABI than in their MIR",
+            mir_args + 1,
+            "#[track_caller] instance {:?} must have 1 more argument in their ABI than in their MIR",
+            fx.instance
         );
 
         let arg = fx.fn_abi.args.last().unwrap();

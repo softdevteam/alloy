@@ -12,6 +12,7 @@ macro_rules! nonzero {
     };
 }
 
+#[allow(clippy::nonminimal_bool)]
 fn main() {
     let mut i = 1;
     while i < 10 {
@@ -48,6 +49,34 @@ fn main() {
         }
 
         println!("bleh");
+    }
+}
+
+fn simple_loop() {
+    loop {
+        continue; // should lint here
+    }
+}
+
+fn simple_loop2() {
+    loop {
+        println!("bleh");
+        continue; // should lint here
+    }
+}
+
+#[rustfmt::skip]
+fn simple_loop3() {
+    loop {
+        continue // should lint here
+    }
+}
+
+#[rustfmt::skip]
+fn simple_loop4() {
+    loop {
+        println!("bleh");
+        continue // should lint here
     }
 }
 

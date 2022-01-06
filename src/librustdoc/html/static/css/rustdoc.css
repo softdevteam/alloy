@@ -75,12 +75,13 @@
 	font-display: swap;
 }
 
-/* Avoid using legacy CJK serif fonts in Windows like Batang */
+/* Avoid using legacy CJK serif fonts in Windows like Batang. */
 @font-face {
-	font-family: 'Noto Sans KR';
-	src: url("noto-sans-kr-v13-korean-regular.woff") format("woff");
+	font-family: 'NanumBarunGothic';
+	src: url("NanumBarunGothic.ttf.woff2") format("woff2"),
+		url("NanumBarunGothic.ttf.woff") format("woff");
 	font-display: swap;
-	unicode-range: U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+	unicode-range: U+AC00-D7AF, U+1100-11FF, U+3130-318F, U+A960-A97F, U+D7B0-D7FF;
 }
 
 * {
@@ -107,10 +108,9 @@ html {
 /* General structure and fonts */
 
 body {
-	font: 16px/1.4 "Source Serif 4", "Noto Sans KR", serif;
+	font: 16px/1.4 "Source Serif 4", NanumBarunGothic, serif;
 	margin: 0;
 	position: relative;
-	padding: 10px 15px 20px 15px;
 
 	-webkit-font-feature-settings: "kern", "liga";
 	-moz-font-feature-settings: "kern", "liga";
@@ -126,10 +126,15 @@ h2 {
 h3 {
 	font-size: 1.3em;
 }
-h1, h2, h3, h4 {
+h1, h2, h3, h4, h5, h6 {
 	font-weight: 500;
+}
+h1, h2, h3, h4 {
 	margin: 20px 0 15px 0;
 	padding-bottom: 6px;
+}
+.docblock h3, .docblock h4, h5, h6 {
+	margin: 15px 0 5px 0;
 }
 h1.fqn {
 	display: flex;
@@ -143,8 +148,28 @@ h1.fqn {
 h1.fqn > .in-band > a:hover {
 	text-decoration: underline;
 }
-h2, h3, h4 {
+/* The only headings that get underlines are:
+	 Markdown-generated headings within the top-doc
+	 Rustdoc-generated h2 section headings (e.g. "Implementations", "Required Methods", etc)
+	Underlines elsewhere in the documentation break up visual flow and tend to invert
+	section hierarchies. */
+h2,
+.top-doc h3,
+.top-doc h4,
+.sidebar .others h3 {
 	border-bottom: 1px solid;
+}
+h3.code-header {
+	font-size: 1.1em;
+}
+h4.code-header {
+	font-size: 1em;
+}
+h3.code-header, h4.code-header {
+	font-weight: 600;
+	border-bottom-style: none;
+	padding: 0;
+	margin: 0;
 }
 .impl,
 .impl-items .method,
@@ -161,30 +186,23 @@ h2, h3, h4 {
 	margin-bottom: 10px;
 	position: relative;
 }
-.impl, .method.trait-impl,
-.type.trait-impl,
-.associatedconstant.trait-impl,
-.associatedtype.trait-impl {
-	padding-left: 15px;
-}
 
 div.impl-items > div {
 	padding-left: 0;
 }
 
-h1, h2, h3, h4,
+h1, h2, h3, h4, h5, h6,
 .sidebar, a.source, .search-input, .search-results .result-name,
 .content table td:first-child > a,
 .item-left > a,
 div.item-list .out-of-band, span.since,
 #source-sidebar, #sidebar-toggle,
 details.rustdoc-toggle > summary::before,
-details.undocumented > summary::before,
 div.impl-items > div:not(.docblock):not(.item-info),
 .content ul.crate a.crate, a.srclink,
 /* This selector is for the items listed in the "all items" page. */
-#main > ul.docblock > li > a {
-	font-family: "Fira Sans", Arial, sans-serif;
+#main-content > ul.docblock > li > a {
+	font-family: "Fira Sans", Arial, NanumBarunGothic, sans-serif;
 }
 
 .content ul.crate a.crate {
@@ -229,11 +247,37 @@ textarea {
 
 /* end tweaks for normalize.css 8 */
 
+.rustdoc {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+}
+
+main {
+	position: relative;
+	flex-grow: 1;
+	padding: 10px 15px 40px 45px;
+	min-width: 0;
+}
+
+.source main {
+	padding: 15px;
+}
+
+.width-limiter {
+	max-width: 960px;
+	margin-right: auto;
+}
+
+.source .width-limiter {
+	max-width: unset;
+}
+
 details:not(.rustdoc-toggle) summary {
 	margin-bottom: .6em;
 }
 
-code, pre, a.test-arrow {
+code, pre, a.test-arrow, .code-header {
 	font-family: "Source Code Pro", monospace;
 }
 .docblock code, .docblock-short code {
@@ -242,12 +286,14 @@ code, pre, a.test-arrow {
 }
 .docblock pre code, .docblock-short pre code {
 	padding: 0;
-	padding-right: 1ex;
 }
 pre {
 	padding: 14px;
 }
-.type-decl pre {
+.docblock.item-decl {
+	margin-left: 0;
+}
+.item-decl pre {
 	overflow-x: auto;
 }
 
@@ -264,24 +310,75 @@ li {
 }
 
 .source .content {
-	margin-top: 50px;
 	max-width: none;
 	overflow: visible;
 	margin-left: 0px;
 }
 
 nav.sub {
+	position: relative;
 	font-size: 16px;
 	text-transform: uppercase;
 }
 
+.sub-container {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+}
+
+.sub-logo-container {
+	display: none;
+	margin-right: 20px;
+}
+
+.source .sub-logo-container {
+	display: block;
+}
+
+.source .sub-logo-container > img {
+	height: 60px;
+	width: 60px;
+	object-fit: contain;
+}
+
 .sidebar {
 	width: 200px;
-	position: fixed;
-	left: 0;
+	overflow-y: scroll;
+	position: sticky;
+	min-width: 200px;
+	height: 100vh;
 	top: 0;
-	bottom: 0;
-	overflow: auto;
+	left: 0;
+}
+
+.rustdoc.source .sidebar {
+	width: 50px;
+	min-width: 0px;
+	max-width: 300px;
+	flex-grow: 0;
+	flex-shrink: 0;
+	flex-basis: auto;
+	border-right: 1px solid;
+	overflow-x: hidden;
+	/* The sidebar is by default hidden  */
+	overflow-y: hidden;
+}
+
+.source .sidebar > *:not(:first-child) {
+	transition: opacity 0.5s, visibility 0.2s;
+	opacity: 0;
+	visibility: hidden;
+}
+
+.source .sidebar.expanded {
+	overflow-y: auto;
+	width: 300px;
+}
+
+.source .sidebar.expanded > * {
+	opacity: 1;
+	visibility: visible;
 }
 
 /* Improve the scrollbar display on firefox */
@@ -307,10 +404,6 @@ nav.sub {
 	margin-right: -10px;
 }
 
-.content, nav {
-	max-width: 960px;
-}
-
 /* Everything else */
 
 .hidden {
@@ -318,22 +411,15 @@ nav.sub {
 }
 
 .logo-container {
-	height: 100px;
-	width: 100px;
-	position: relative;
-	margin: 20px auto;
-	display: block;
+	display: flex;
 	margin-top: 10px;
+	margin-bottom: 10px;
+	justify-content: center;
 }
 
 .logo-container > img {
-	max-width: 100px;
-	max-height: 100px;
-	position: absolute;
-	left: 50%;
-	top: 50%;
-	transform: translate(-50%, -50%);
-	display: block;
+	height: 100px;
+	width: 100px;
 }
 
 .sidebar .location {
@@ -413,10 +499,6 @@ nav.sub {
 	display: none;
 }
 
-.content {
-	padding: 15px 0;
-}
-
 .source .content pre.rust {
 	white-space: pre;
 	overflow: auto;
@@ -442,9 +524,18 @@ nav.sub {
 	border-bottom-left-radius: 5px;
 }
 
+.example-wrap > pre.rust a:hover {
+	text-decoration: underline;
+}
+
 .rustdoc:not(.source) .example-wrap > pre:not(.line-number) {
 	width: 100%;
 	overflow-x: auto;
+}
+
+.rustdoc:not(.source) .example-wrap > pre.line-numbers {
+	width: auto;
+	overflow-x: visible;
 }
 
 .rustdoc .example-wrap > pre {
@@ -452,7 +543,6 @@ nav.sub {
 }
 
 #search {
-	margin-left: 230px;
 	position: relative;
 }
 
@@ -490,25 +580,27 @@ nav.sub {
 	white-space: pre-wrap;
 }
 
-.docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5 {
-	border-bottom: 1px solid;
-}
-
-.top-doc .docblock h1 { font-size: 1.3em; }
-.top-doc .docblock h2 { font-size: 1.15em; }
-.top-doc .docblock h3,
+.top-doc .docblock h2 { font-size: 1.3em; }
+.top-doc .docblock h3 { font-size: 1.15em; }
 .top-doc .docblock h4,
 .top-doc .docblock h5 {
+	font-size: 1.1em;
+}
+.top-doc .docblock h6 {
 	font-size: 1em;
 }
 
-.docblock h1 { font-size: 1em; }
-.docblock h2 { font-size: 0.95em; }
-.docblock h3, .docblock h4, .docblock h5 { font-size: 0.9em; }
+.docblock h5 { font-size: 1em; }
+.docblock h6 { font-size: 0.95em; }
 
 .docblock {
 	margin-left: 24px;
 	position: relative;
+}
+
+.docblock > :not(.information) {
+	max-width: 100%;
+	overflow-x: auto;
 }
 
 .content .out-of-band {
@@ -520,7 +612,7 @@ nav.sub {
 	font-weight: normal;
 }
 
-.method > code, .trait-impl > code, .invisible > code {
+.method > .code-header, .trait-impl > .code-header, .invisible > .code-header {
 	max-width: calc(100% - 41px);
 	display: block;
 }
@@ -534,16 +626,17 @@ nav.sub {
 	flex-grow: 1;
 	margin: 0px;
 	padding: 0px;
+	overflow-wrap: anywhere;
 }
 
-.in-band > code {
+.in-band > code, .in-band > .code-header {
 	display: inline-block;
 }
 
-#main {
+#main-content {
 	position: relative;
 }
-#main > .since {
+#main-content > .since {
 	top: inherit;
 	font-family: "Fira Sans", Arial, sans-serif;
 }
@@ -646,13 +739,6 @@ nav.sub {
 	left: -19px;
 }
 
-.content .impl-items .method, .content .impl-items > .type, .impl-items > .associatedconstant,
-.impl-items > .associatedtype, .content .impl-items details > summary > .type,
-.impl-items details > summary > .associatedconstant,
-.impl-items details > summary > .associatedtype {
-	margin-left: 20px;
-}
-
 .content .impl-items .docblock, .content .impl-items .item-info {
 	margin-bottom: .6em;
 }
@@ -669,14 +755,18 @@ nav.sub {
 	flex-basis: 100%;
 }
 
-#main > .item-info {
+#main-content > .item-info {
 	margin-top: 0;
 }
 
 nav:not(.sidebar) {
+	flex-grow: 1;
 	border-bottom: 1px solid;
 	padding-bottom: 10px;
-	margin-bottom: 10px;
+	margin-bottom: 25px;
+}
+.source nav:not(.sidebar).sub {
+	margin-left: 32px;
 }
 nav.main {
 	padding: 20px 0;
@@ -694,10 +784,6 @@ nav.main .separator {
 }
 nav.sum { text-align: right; }
 nav.sub form { display: inline; }
-
-nav.sub, .content {
-	margin-left: 230px;
-}
 
 a {
 	text-decoration: none;
@@ -723,17 +809,21 @@ a {
 .anchor {
 	display: none;
 	position: absolute;
-	left: -7px;
+	left: -0.5em;
+	background: none !important;
 }
 .anchor.field {
 	left: -5px;
 }
 .small-section-header > .anchor {
-	left: -28px;
-	padding-right: 10px; /* avoid gap that causes hover to disappear */
+	left: -15px;
+	padding-right: 8px;
 }
-.anchor:before {
-	content: '\2002\00a7\2002';
+h2.small-section-header > .anchor {
+	padding-right: 6px;
+}
+.anchor::before {
+	content: '§';
 }
 
 .docblock a:not(.srclink):not(.test-arrow):hover,
@@ -742,7 +832,7 @@ a {
 }
 
 .invisible > .srclink,
-.method > code + .srclink {
+.method > .code-header + .srclink {
 	position: absolute;
 	top: 0;
 	right: 0;
@@ -753,26 +843,21 @@ a {
 .block a.current.crate { font-weight: 500; }
 
 .item-table {
-	display: grid;
-	column-gap: 1.2rem;
-	row-gap: 0.0rem;
-	grid-template-columns: auto 1fr;
-	/* align content left */
-	justify-items: start;
+	display: table;
 }
-
+.item-row {
+	display: table-row;
+}
 .item-left, .item-right {
-	display: block;
+	display: table-cell;
 }
 .item-left {
-	grid-column: 1;
-}
-.item-right {
-	grid-column: 2;
+	padding-right: 1.2rem;
 }
 
 .search-container {
 	position: relative;
+	max-width: 960px;
 }
 .search-container > div {
 	display: inline-flex;
@@ -799,6 +884,7 @@ a {
 	background-color: transparent;
 	background-size: 20px;
 	background-position: calc(100% - 1px) 56%;
+	background-image: /* AUTOREPLACE: */url("down-arrow.svg");
 }
 .search-container > .top-button {
 	position: absolute;
@@ -908,14 +994,23 @@ body.blur > :not(#help) {
 	display: block;
 	margin-right: 0.5rem;
 }
-#help > div > span {
+#help span.top, #help span.bottom {
+	text-align: center;
+	display: block;
+	font-size: 18px;
+
+}
+#help span.top {
 	text-align: center;
 	display: block;
 	margin: 10px 0;
-	font-size: 18px;
-	border-bottom: 1px solid #ccc;
+	border-bottom: 1px solid;
 	padding-bottom: 4px;
 	margin-bottom: 6px;
+}
+#help span.bottom {
+	clear: both;
+	border-top: 1px solid;
 }
 #help dd { margin: 5px 35px; }
 #help .infos { padding-left: 0; }
@@ -930,8 +1025,6 @@ body.blur > :not(#help) {
 	display: table;
 }
 .stab {
-	border-width: 1px;
-	border-style: solid;
 	padding: 3px;
 	margin-bottom: 5px;
 	font-size: 90%;
@@ -942,7 +1035,7 @@ body.blur > :not(#help) {
 }
 
 .stab .emoji {
-	font-size: 1.5em;
+	font-size: 1.2em;
 }
 
 /* Black one-pixel outline around emoji shapes */
@@ -1044,10 +1137,6 @@ a.test-arrow:hover{
 	text-decoration: none;
 }
 
-.section-header a {
-	color: inherit;
-}
-
 .code-attribute {
 	font-weight: 300;
 }
@@ -1067,25 +1156,28 @@ a.test-arrow:hover{
 	margin-right: 5px;
 }
 
-.sub-variant, .sub-variant > h3 {
-	margin-top: 0px !important;
-	padding-top: 1px;
-}
-
-#main > details > .sub-variant > h3 {
-	font-size: 15px;
-	margin-left: 25px;
-	margin-bottom: 5px;
-}
-
-.sub-variant > div {
-	margin-left: 20px;
+h3.variant {
+	font-weight: 600;
+	font-size: 1.1em;
 	margin-bottom: 10px;
+	border-bottom: none;
 }
 
-.sub-variant > div > span {
-	display: block;
-	position: relative;
+.sub-variant h4 {
+	font-size: 1em;
+	font-weight: 400;
+	border-bottom: none;
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+.sub-variant {
+	margin-left: 24px;
+	margin-bottom: 40px;
+}
+
+.sub-variant > .sub-variant-field {
+	margin-left: 24px;
 }
 
 .toggle-label {
@@ -1094,16 +1186,18 @@ a.test-arrow:hover{
 	margin-top: 3px;
 }
 
-.docblock > .section-header:first-child {
+.top-doc .docblock > .section-header:first-child {
 	margin-left: 15px;
-	margin-top: 0;
 }
-
-.docblock > .section-header:first-child:hover > a:before {
+.top-doc .docblock > .section-header:first-child:hover > a:before {
 	left: -10px;
 }
 
-:target > code {
+.docblock > .section-header:first-child {
+	margin-top: 0;
+}
+
+:target > code, :target > .code-header {
 	opacity: 1;
 }
 
@@ -1282,30 +1376,23 @@ pre.rust {
 }
 
 #sidebar-toggle {
-	position: fixed;
-	top: 30px;
-	left: 300px;
-	z-index: 10;
-	padding: 3px;
-	border-top-right-radius: 3px;
-	border-bottom-right-radius: 3px;
+	position: sticky;
+	top: 0;
+	left: 0;
 	cursor: pointer;
 	font-weight: bold;
-	transition: left .5s;
 	font-size: 1.2em;
-	border: 1px solid;
-	border-left: 0;
+	border-bottom: 1px solid;
+	display: flex;
+	height: 40px;
+	justify-content: center;
+	align-items: center;
+	z-index: 10;
 }
 #source-sidebar {
-	position: fixed;
-	top: 0;
-	bottom: 0;
-	left: 0;
 	width: 300px;
 	z-index: 1;
 	overflow: auto;
-	transition: left .5s;
-	border-right: 1px solid;
 }
 #source-sidebar > .title {
 	font-size: 1.5em;
@@ -1316,8 +1403,8 @@ pre.rust {
 
 .theme-picker {
 	position: absolute;
-	left: 211px;
-	top: 19px;
+	left: -34px;
+	top: 9px;
 }
 
 .theme-picker button {
@@ -1434,10 +1521,10 @@ kbd {
 	left: -5px;
 }
 
-#main > ul {
+#main-content > ul {
 	padding-left: 10px;
 }
-#main > ul > li {
+#main-content > ul > li {
 	list-style: none;
 }
 
@@ -1485,13 +1572,11 @@ details.rustdoc-toggle > summary.hideme {
 	cursor: pointer;
 }
 
-details.rustdoc-toggle > summary, details.undocumented > summary {
+details.rustdoc-toggle > summary {
 	list-style: none;
 }
 details.rustdoc-toggle > summary::-webkit-details-marker,
-details.rustdoc-toggle > summary::marker,
-details.undocumented > summary::-webkit-details-marker,
-details.undocumented > summary::marker {
+details.rustdoc-toggle > summary::marker {
 	display: none;
 }
 
@@ -1500,11 +1585,35 @@ details.rustdoc-toggle > summary.hideme > span {
 }
 
 details.rustdoc-toggle > summary::before {
-	content: "[+]";
-	font-weight: 300;
-	font-size: 0.8em;
-	letter-spacing: 1px;
+	content: "";
 	cursor: pointer;
+	width: 17px;
+	height: max(17px, 1.1em);
+	background-repeat: no-repeat;
+	background-position: top left;
+	display: inline-block;
+	vertical-align: middle;
+	opacity: .5;
+}
+
+/* Screen readers see the text version at the end the line.
+	Visual readers see the icon at the start of the line, but small and transparent. */
+details.rustdoc-toggle > summary::after {
+	content: "Expand";
+	overflow: hidden;
+	width: 0;
+	height: 0;
+	position: absolute;
+}
+
+details.rustdoc-toggle > summary.hideme::after {
+	/* "hideme" toggles already have a description when they're contracted */
+	content: "";
+}
+
+details.rustdoc-toggle > summary:focus::before,
+details.rustdoc-toggle > summary:hover::before {
+	opacity: 1;
 }
 
 details.rustdoc-toggle.top-doc > summary,
@@ -1525,14 +1634,13 @@ details.rustdoc-toggle > summary.hideme::before {
 
 details.rustdoc-toggle > summary:not(.hideme)::before {
 	position: absolute;
-	left: -23px;
+	left: -24px;
 	top: 3px;
 }
 
-.impl-items > details.rustdoc-toggle > summary:not(.hideme)::before,
-.undocumented > details.rustdoc-toggle > summary:not(.hideme)::before {
+.impl-items > details.rustdoc-toggle > summary:not(.hideme)::before {
 	position: absolute;
-	left: -2px;
+	left: -24px;
 }
 
 /* When a "hideme" summary is open and the "Expand description" or "Show
@@ -1544,7 +1652,7 @@ details.rustdoc-toggle[open] > summary.hideme {
 	position: absolute;
 }
 
-details.rustdoc-toggle, details.undocumented {
+details.rustdoc-toggle {
 	position: relative;
 }
 
@@ -1552,20 +1660,29 @@ details.rustdoc-toggle[open] > summary.hideme > span {
 	display: none;
 }
 
-details.rustdoc-toggle[open] > summary::before {
-	content: "[−]";
-	display: inline;
+details.undocumented[open] > summary::before,
+details.rustdoc-toggle[open] > summary::before,
+details.rustdoc-toggle[open] > summary.hideme::before {
+	background-image: /* AUTOREPLACE: */url("toggle-minus.svg");
 }
 
-details.undocumented > summary::before {
-	content: "[+] Show hidden undocumented items";
-	cursor: pointer;
-	font-size: 16px;
-	font-weight: 300;
+details.undocumented > summary::before, details.rustdoc-toggle > summary::before {
+	background-image: /* AUTOREPLACE: */url("toggle-plus.svg");
 }
 
-details.undocumented[open] > summary::before {
-	content: "[−] Hide undocumented items";
+details.rustdoc-toggle[open] > summary::before,
+details.rustdoc-toggle[open] > summary.hideme::before {
+	width: 17px;
+	height: max(17px, 1.1em);
+	background-repeat: no-repeat;
+	background-position: top left;
+	display: inline-block;
+	content: "";
+}
+
+details.rustdoc-toggle[open] > summary::after,
+details.rustdoc-toggle[open] > summary.hideme::after {
+	content: "Collapse";
 }
 
 /* Media Queries */
@@ -1578,6 +1695,18 @@ details.undocumented[open] > summary::before {
 	.docblock > .information:first-child > .tooltip {
 		margin-top: 16px;
 	}
+
+	/* When we expand the sidebar on the source code page, we hide the logo on the left of the
+	search bar to have more space. */
+	.sidebar.expanded + main .width-limiter .sub-logo-container.rust-logo {
+		display: none;
+	}
+
+	/* It doesn't render well on mobile because of the layout, so better only have the transition
+	on desktop. */
+	.rustdoc.source .sidebar {
+		transition: width .5s;
+	}
 }
 
 @media (max-width: 700px) {
@@ -1585,14 +1714,43 @@ details.undocumented[open] > summary::before {
 		padding-top: 0px;
 	}
 
-	.rustdoc > .sidebar {
+	main {
+		padding-left: 15px;
+		padding-top: 0px;
+	}
+
+	.rustdoc {
+		flex-direction: column;
+	}
+
+	.rustdoc:not(.source) > .sidebar {
+		width: 100%;
 		height: 45px;
 		min-height: 40px;
+		max-height: 45px;
 		margin: 0;
-		margin-left: -15px;
 		padding: 0 15px;
 		position: static;
 		z-index: 11;
+		overflow-y: hidden;
+	}
+
+	.rustdoc.source > .sidebar {
+		position: fixed;
+		top: 0;
+		left: 0;
+		margin: 0;
+		z-index: 11;
+		width: 0;
+	}
+
+	.sidebar.mobile {
+		position: sticky !important;
+		top: 0;
+		left: 0;
+		width: 100%;
+		margin-left: 0;
+		background-color: rgba(0,0,0,0);
 	}
 
 	.sidebar > .location {
@@ -1610,7 +1768,7 @@ details.undocumented[open] > summary::before {
 		padding: 0;
 	}
 
-	.sidebar .logo-container {
+	.rustdoc:not(.source) .sidebar .logo-container {
 		width: 35px;
 		height: 35px;
 		margin-top: 5px;
@@ -1631,6 +1789,7 @@ details.undocumented[open] > summary::before {
 		cursor: pointer;
 		width: 45px;
 		left: 0;
+		top: 0;
 		text-align: center;
 		display: block;
 		border-bottom: 1px solid;
@@ -1680,20 +1839,25 @@ details.undocumented[open] > summary::before {
 
 	nav.sub {
 		width: calc(100% - 32px);
-		float: right;
+		margin-left: 32px;
+		margin-bottom: 10px;
+	}
+
+	.source nav:not(.sidebar).sub {
+		margin-left: 32px;
 	}
 
 	.content {
 		margin-left: 0px;
 	}
 
-	#main, #search {
-		margin-top: 45px;
-		padding: 0;
+	.source .content {
+		margin-top: 10px;
 	}
 
 	#search {
 		margin-left: 0;
+		padding: 0;
 	}
 
 	.anchor {
@@ -1701,8 +1865,6 @@ details.undocumented[open] > summary::before {
 	}
 
 	.theme-picker {
-		left: 10px;
-		top: 54px;
 		z-index: 1;
 	}
 
@@ -1719,25 +1881,6 @@ details.undocumented[open] > summary::before {
 
 	#titles {
 		height: 50px;
-	}
-
-	.sidebar.mobile {
-		position: fixed;
-		width: 100%;
-		margin-left: 0;
-		background-color: rgba(0,0,0,0);
-		height: 100%;
-	}
-	/*
-	This allows to prevent the version text to overflow the sidebar title on mobile mode when the
-	sidebar is displayed (after clicking on the "hamburger" button).
-	*/
-	.sidebar.mobile > div.version {
-		overflow: hidden;
-		max-height: 33px;
-	}
-	.sidebar {
-		width: calc(100% + 30px);
 	}
 
 	.show-it, .sidebar-elems:focus-within {
@@ -1777,8 +1920,8 @@ details.undocumented[open] > summary::before {
 		border-bottom: 1px solid;
 	}
 
-	#main > details.rustdoc-toggle > summary::before,
-	#main > div > details.rustdoc-toggle > summary::before {
+	#main-content > details.rustdoc-toggle > summary::before,
+	#main-content > div > details.rustdoc-toggle > summary::before {
 		left: -11px;
 	}
 
@@ -1786,19 +1929,32 @@ details.undocumented[open] > summary::before {
 		margin: 10px;
 	}
 
-	#sidebar-toggle {
+	.sidebar.expanded #sidebar-toggle {
+		font-size: 1.5rem;
+	}
+
+	.sidebar:not(.expanded) #sidebar-toggle {
+		position: fixed;
+		left: 1px;
 		top: 100px;
 		width: 30px;
 		font-size: 1.5rem;
 		text-align: center;
 		padding: 0;
+		z-index: 10;
+		border-top-right-radius: 3px;
+		border-bottom-right-radius: 3px;
+		cursor: pointer;
+		font-weight: bold;
+		border: 1px solid;
+		border-left: 0;
 	}
 
 	#source-sidebar {
 		z-index: 11;
 	}
 
-	#main > .line-numbers {
+	#main-content > .line-numbers {
 		margin-top: 0;
 	}
 
@@ -1814,6 +1970,9 @@ details.undocumented[open] > summary::before {
 
 	/* Display an alternating layout on tablets and phones */
 	.item-table {
+		display: block;
+	}
+	.item-row {
 		display: flex;
 		flex-flow: column wrap;
 	}
@@ -1849,14 +2008,7 @@ details.undocumented[open] > summary::before {
 		height: 73px;
 	}
 
-	/* This is to prevent the search bar from being underneath the <section>
-	 * element following it.
-	 */
-	#main, #search {
-		margin-top: 100px;
-	}
-
-	#main > table:not(.table-display) td {
+	#main-content > table:not(.table-display) td {
 		word-break: break-word;
 		width: 50%;
 	}
@@ -1894,4 +2046,188 @@ details.undocumented[open] > summary::before {
 	.docblock {
 		margin-left: 12px;
 	}
+
+	.docblock code {
+		overflow-wrap: anywhere;
+	}
+
+	.sub-container {
+		flex-direction: column;
+	}
+
+	.sub-logo-container {
+		align-self: center;
+	}
+
+	.source .sub-logo-container > img {
+		height: 35px;
+		width: 35px;
+	}
+
+	.sidebar:not(.expanded) #sidebar-toggle {
+		top: 10px;
+	}
 }
+
+
+/* Begin: styles for --scrape-examples feature */
+
+.scraped-example-title {
+	font-family: 'Fira Sans';
+}
+
+.scraped-example:not(.expanded) .code-wrapper pre.line-numbers {
+	overflow: hidden;
+	max-height: 240px;
+}
+
+.scraped-example:not(.expanded) .code-wrapper .example-wrap pre.rust {
+	overflow-y: hidden;
+	max-height: 240px;
+	padding-bottom: 0;
+}
+
+.scraped-example .code-wrapper .prev {
+	position: absolute;
+	top: 0.25em;
+	right: 2.25em;
+	z-index: 100;
+	cursor: pointer;
+}
+
+.scraped-example .code-wrapper .next {
+	position: absolute;
+	top: 0.25em;
+	right: 1.25em;
+	z-index: 100;
+	cursor: pointer;
+}
+
+.scraped-example .code-wrapper .expand {
+	position: absolute;
+	top: 0.25em;
+	right: 0.25em;
+	z-index: 100;
+	cursor: pointer;
+}
+
+.scraped-example .code-wrapper {
+	position: relative;
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	width: 100%;
+}
+
+.scraped-example:not(.expanded) .code-wrapper:before {
+	content: " ";
+	width: 100%;
+	height: 5px;
+	position: absolute;
+	z-index: 100;
+	top: 0;
+	background: linear-gradient(to bottom, rgba(255, 255, 255, 1), rgba(255, 255, 255, 0));
+}
+
+.scraped-example:not(.expanded) .code-wrapper:after {
+	content: " ";
+	width: 100%;
+	height: 5px;
+	position: absolute;
+	z-index: 100;
+	bottom: 0;
+	background: linear-gradient(to top, rgba(255, 255, 255, 1), rgba(255, 255, 255, 0));
+}
+
+.scraped-example:not(.expanded) .code-wrapper {
+	overflow: hidden;
+	max-height: 240px;
+}
+
+.scraped-example .code-wrapper .line-numbers {
+	margin: 0;
+	padding: 14px 0;
+}
+
+.scraped-example .code-wrapper .line-numbers span {
+	padding: 0 14px;
+}
+
+.scraped-example .code-wrapper .example-wrap {
+	flex: 1;
+	overflow-x: auto;
+	overflow-y: hidden;
+	margin-bottom: 0;
+}
+
+.scraped-example .code-wrapper .example-wrap pre.rust {
+	overflow-x: inherit;
+	width: inherit;
+	overflow-y: hidden;
+}
+
+.scraped-example .example-wrap .rust span.highlight {
+	background: #fcffd6;
+}
+
+.scraped-example .example-wrap .rust span.highlight.focus {
+	background: #f6fdb0;
+}
+
+.more-examples-toggle {
+	margin-top: 10px;
+}
+
+.more-examples-toggle summary {
+	color: #999;
+	font-family: 'Fira Sans';
+}
+
+.more-scraped-examples {
+	margin-left: 25px;
+	display: flex;
+	flex-direction: row;
+	width: calc(100% - 25px);
+}
+
+.more-scraped-examples-inner {
+	/* 20px is width of toggle-line + toggle-line-inner */
+	width: calc(100% - 20px);
+}
+
+.toggle-line {
+	align-self: stretch;
+	margin-right: 10px;
+	margin-top: 5px;
+	padding: 0 4px;
+	cursor: pointer;
+}
+
+.toggle-line:hover .toggle-line-inner {
+	background: #aaa;
+}
+
+.toggle-line-inner {
+	min-width: 2px;
+	background: #ddd;
+	height: 100%;
+}
+
+.more-scraped-examples .scraped-example {
+	margin-bottom: 20px;
+}
+
+.more-scraped-examples .scraped-example:last-child {
+	margin-bottom: 0;
+}
+
+.example-links a {
+	margin-top: 20px;
+	font-family: 'Fira Sans';
+}
+
+.example-links ul {
+	margin-bottom: 0;
+}
+
+/* End: styles for --scrape-examples feature */

@@ -9,21 +9,22 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use std::fmt::Display;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for modulo arithmetic.
+    /// ### What it does
+    /// Checks for modulo arithmetic.
     ///
-    /// **Why is this bad?** The results of modulo (%) operation might differ
+    /// ### Why is this bad?
+    /// The results of modulo (%) operation might differ
     /// depending on the language, when negative numbers are involved.
     /// If you interop with different languages it might be beneficial
     /// to double check all places that use modulo arithmetic.
     ///
     /// For example, in Rust `17 % -3 = 2`, but in Python `17 % -3 = -1`.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x = -17 % 3;
     /// ```
+    #[clippy::version = "1.42.0"]
     pub MODULO_ARITHMETIC,
     restriction,
     "any modulo arithmetic statement"
@@ -128,7 +129,7 @@ impl<'tcx> LateLintPass<'tcx> for ModuloArithmetic {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         match &expr.kind {
             ExprKind::Binary(op, lhs, rhs) | ExprKind::AssignOp(op, lhs, rhs) => {
-                if let BinOpKind::Rem = op.node {
+                if op.node == BinOpKind::Rem {
                     let lhs_operand = analyze_operand(lhs, cx, expr);
                     let rhs_operand = analyze_operand(rhs, cx, expr);
                     if_chain! {

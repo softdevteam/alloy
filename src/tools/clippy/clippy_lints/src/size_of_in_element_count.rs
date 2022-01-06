@@ -11,16 +11,16 @@ use rustc_middle::ty::{self, Ty, TyS, TypeAndMut};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Detects expressions where
+    /// ### What it does
+    /// Detects expressions where
     /// `size_of::<T>` or `size_of_val::<T>` is used as a
     /// count of elements of type `T`
     ///
-    /// **Why is this bad?** These functions expect a count
+    /// ### Why is this bad?
+    /// These functions expect a count
     /// of `T` and not a number of bytes
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,no_run
     /// # use std::ptr::copy_nonoverlapping;
     /// # use std::mem::size_of;
@@ -29,6 +29,7 @@ declare_clippy_lint! {
     /// let mut y = [2u8; SIZE];
     /// unsafe { copy_nonoverlapping(x.as_ptr(), y.as_mut_ptr(), size_of::<u8>() * SIZE) };
     /// ```
+    #[clippy::version = "1.50.0"]
     pub SIZE_OF_IN_ELEMENT_COUNT,
     correctness,
     "using `size_of::<T>` or `size_of_val::<T>` where a count of elements of `T` is expected"
@@ -67,7 +68,7 @@ fn get_pointee_ty_and_count_expr(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -
     const FUNCTIONS: [&[&str]; 8] = [
         &paths::PTR_COPY_NONOVERLAPPING,
         &paths::PTR_COPY,
-        &paths::WRITE_BYTES,
+        &paths::PTR_WRITE_BYTES,
         &paths::PTR_SWAP_NONOVERLAPPING,
         &paths::PTR_SLICE_FROM_RAW_PARTS,
         &paths::PTR_SLICE_FROM_RAW_PARTS_MUT,

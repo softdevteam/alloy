@@ -18,7 +18,6 @@
 #include "llvm/Support/Host.h"
 #include "llvm/Support/Memory.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -80,6 +79,9 @@ enum LLVMRustAttribute {
   InaccessibleMemOnly = 27,
   SanitizeHWAddress = 28,
   WillReturn = 29,
+  StackProtectReq = 30,
+  StackProtectStrong = 31,
+  StackProtect = 32,
 };
 
 typedef struct OpaqueRustString *RustStringRef;

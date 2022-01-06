@@ -5,11 +5,11 @@ use rustc_hir::{self, AssocItemKind, Body, FnDecl, HirId, HirIdSet, Impl, ItemKi
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::mir::FakeReadCause;
+use rustc_middle::ty::layout::LayoutOf;
 use rustc_middle::ty::{self, TraitRef, Ty};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::kw;
-use rustc_target::abi::LayoutOf;
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::expr_use_visitor::{Delegate, ExprUseVisitor, PlaceBase, PlaceWithHirId};
 
@@ -19,16 +19,16 @@ pub struct BoxedLocal {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `Box<T>` where an unboxed `T` would
+    /// ### What it does
+    /// Checks for usage of `Box<T>` where an unboxed `T` would
     /// work fine.
     ///
-    /// **Why is this bad?** This is an unnecessary allocation, and bad for
+    /// ### Why is this bad?
+    /// This is an unnecessary allocation, and bad for
     /// performance. It is only necessary to allocate if you wish to move the box
     /// into something.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # fn foo(bar: usize) {}
     /// // Bad
@@ -41,6 +41,7 @@ declare_clippy_lint! {
     /// foo(x);
     /// println!("{}", x);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub BOXED_LOCAL,
     perf,
     "using `Box<T>` where unnecessary"
@@ -53,7 +54,7 @@ fn is_non_trait_box(ty: Ty<'_>) -> bool {
 struct EscapeDelegate<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
     set: HirIdSet,
-    trait_self_ty: Option<Ty<'a>>,
+    trait_self_ty: Option<Ty<'tcx>>,
     too_large_for_stack: u64,
 }
 
@@ -90,9 +91,12 @@ impl<'tcx> LateLintPass<'tcx> for BoxedLocal {
                 for trait_item in items {
                     if trait_item.id.hir_id() == hir_id {
                         // be sure we have `self` parameter in this function
-                        if let AssocItemKind::Fn { has_self: true } = trait_item.kind {
-                            trait_self_ty =
-                                Some(TraitRef::identity(cx.tcx, trait_item.id.def_id.to_def_id()).self_ty());
+                        if trait_item.kind == (AssocItemKind::Fn { has_self: true }) {
+                            trait_self_ty = Some(
+                                TraitRef::identity(cx.tcx, trait_item.id.def_id.to_def_id())
+                                    .self_ty()
+                                    .skip_binder(),
+                            );
                         }
                     }
                 }
@@ -171,7 +175,8 @@ impl<'a, 'tcx> Delegate<'tcx> for EscapeDelegate<'a, 'tcx> {
                 // skip if there is a `self` parameter binding to a type
                 // that contains `Self` (i.e.: `self: Box<Self>`), see #4804
                 if let Some(trait_self_ty) = self.trait_self_ty {
-                    if map.name(cmt.hir_id) == kw::SelfLower && contains_ty(cmt.place.ty(), trait_self_ty) {
+                    if map.name(cmt.hir_id) == kw::SelfLower && contains_ty(self.cx.tcx, cmt.place.ty(), trait_self_ty)
+                    {
                         return;
                     }
                 }

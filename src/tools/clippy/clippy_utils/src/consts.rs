@@ -155,6 +155,19 @@ impl Constant {
             _ => None,
         }
     }
+
+    /// Returns the integer value or `None` if `self` or `val_type` is not integer type.
+    pub fn int_value(&self, cx: &LateContext<'_>, val_type: Ty<'_>) -> Option<FullInt> {
+        if let Constant::Int(const_int) = *self {
+            match *val_type.kind() {
+                ty::Int(ity) => Some(FullInt::S(sext(cx.tcx, const_int, ity))),
+                ty::Uint(_) => Some(FullInt::U(const_int)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
 }
 
 /// Parses a `LitKind` to a `Constant`.
@@ -200,6 +213,52 @@ pub fn constant_simple<'tcx>(
     e: &Expr<'_>,
 ) -> Option<Constant> {
     constant(lcx, typeck_results, e).and_then(|(cst, res)| if res { None } else { Some(cst) })
+}
+
+pub fn constant_full_int(
+    lcx: &LateContext<'tcx>,
+    typeck_results: &ty::TypeckResults<'tcx>,
+    e: &Expr<'_>,
+) -> Option<FullInt> {
+    constant_simple(lcx, typeck_results, e)?.int_value(lcx, typeck_results.expr_ty(e))
+}
+
+#[derive(Copy, Clone, Debug, Eq)]
+pub enum FullInt {
+    S(i128),
+    U(u128),
+}
+
+impl PartialEq for FullInt {
+    #[must_use]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd for FullInt {
+    #[must_use]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FullInt {
+    #[must_use]
+    fn cmp(&self, other: &Self) -> Ordering {
+        use FullInt::{S, U};
+
+        fn cmp_s_u(s: i128, u: u128) -> Ordering {
+            u128::try_from(s).map_or(Ordering::Less, |x| x.cmp(&u))
+        }
+
+        match (*self, *other) {
+            (S(s), S(o)) => s.cmp(&o),
+            (U(s), U(o)) => s.cmp(&o),
+            (S(s), U(o)) => cmp_s_u(s, o),
+            (U(s), S(o)) => cmp_s_u(o, s).reverse(),
+        }
+    }
 }
 
 /// Creates a `ConstEvalLateContext` from the given `LateContext` and `TypeckResults`.
@@ -329,7 +388,7 @@ impl<'a, 'tcx> ConstEvalLateContext<'a, 'tcx> {
         vec.iter().map(|elem| self.expr(elem)).collect::<Option<_>>()
     }
 
-    /// Lookup a possibly constant expression from a `ExprKind::Path`.
+    /// Lookup a possibly constant expression from an `ExprKind::Path`.
     fn fetch_path(&mut self, qpath: &QPath<'_>, id: HirId, ty: Ty<'tcx>) -> Option<Constant> {
         let res = self.typeck_results.qpath_res(qpath, id);
         match res {
@@ -346,11 +405,7 @@ impl<'a, 'tcx> ConstEvalLateContext<'a, 'tcx> {
                     .tcx
                     .const_eval_resolve(
                         self.param_env,
-                        ty::Unevaluated {
-                            def: ty::WithOptConstParam::unknown(def_id),
-                            substs,
-                            promoted: None,
-                        },
+                        ty::Unevaluated::new(ty::WithOptConstParam::unknown(def_id), substs),
                         None,
                     )
                     .ok()

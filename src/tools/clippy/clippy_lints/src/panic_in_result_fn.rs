@@ -8,14 +8,16 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `panic!`, `unimplemented!`, `todo!`, `unreachable!` or assertions in a function of type result.
+    /// ### What it does
+    /// Checks for usage of `panic!`, `unimplemented!`, `todo!`, `unreachable!` or assertions in a function of type result.
     ///
-    /// **Why is this bad?** For some codebases, it is desirable for functions of type result to return an error instead of crashing. Hence panicking macros should be avoided.
+    /// ### Why is this bad?
+    /// For some codebases, it is desirable for functions of type result to return an error instead of crashing. Hence panicking macros should be avoided.
     ///
-    /// **Known problems:** Functions called from a function returning a `Result` may invoke a panicking macro. This is not checked.
+    /// ### Known problems
+    /// Functions called from a function returning a `Result` may invoke a panicking macro. This is not checked.
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// fn result_with_panic() -> Result<bool, String>
     /// {
@@ -28,6 +30,7 @@ declare_clippy_lint! {
     ///     Err(String::from("error"))
     /// }
     /// ```
+    #[clippy::version = "1.48.0"]
     pub PANIC_IN_RESULT_FN,
     restriction,
     "functions of type `Result<..>` that contain `panic!()`, `todo!()`, `unreachable()`, `unimplemented()` or assertion"
@@ -45,7 +48,7 @@ impl<'tcx> LateLintPass<'tcx> for PanicInResultFn {
         span: Span,
         hir_id: hir::HirId,
     ) {
-        if !matches!(fn_kind, FnKind::Closure) && is_type_diagnostic_item(cx, return_ty(cx, hir_id), sym::result_type) {
+        if !matches!(fn_kind, FnKind::Closure) && is_type_diagnostic_item(cx, return_ty(cx, hir_id), sym::Result) {
             lint_impl_body(cx, span, body);
         }
     }

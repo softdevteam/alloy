@@ -1,17 +1,17 @@
 // run-rustfix
 
-#![allow(clippy::needless_borrowed_reference)]
-
-fn x(y: &i32) -> i32 {
-    *y
-}
-
 #[warn(clippy::all, clippy::needless_borrow)]
-#[allow(unused_variables)]
+#[allow(unused_variables, clippy::unnecessary_mut_passed)]
 fn main() {
     let a = 5;
-    let b = x(&a);
-    let c = x(&&a);
+    let ref_a = &a;
+    let _ = x(&a); // no warning
+    let _ = x(&&a); // warn
+
+    let mut b = 5;
+    mut_ref(&mut b); // no warning
+    mut_ref(&mut &mut b); // warn
+
     let s = &String::from("hi");
     let s_ident = f(&s); // should not error, because `&String` implements Copy, but `String` does not
     let g_val = g(&Vec::new()); // should not error, because `&Vec<T>` derefs to `&[T]`
@@ -22,11 +22,38 @@ fn main() {
         44 => &a,
         45 => {
             println!("foo");
-            &&a // FIXME: this should lint, too
+            &&a
         },
         46 => &&a,
+        47 => {
+            println!("foo");
+            loop {
+                println!("{}", a);
+                if a == 25 {
+                    break &ref_a;
+                }
+            }
+        },
         _ => panic!(),
     };
+
+    let _ = x(&&&a);
+    let _ = x(&mut &&a);
+    let _ = x(&&&mut b);
+    let _ = x(&&ref_a);
+    {
+        let b = &mut b;
+        x(&b);
+    }
+}
+
+#[allow(clippy::needless_borrowed_reference)]
+fn x(y: &i32) -> i32 {
+    *y
+}
+
+fn mut_ref(y: &mut i32) {
+    *y = 5;
 }
 
 fn f<T: Copy>(y: &T) -> T {

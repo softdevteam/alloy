@@ -1,10 +1,10 @@
 //! Codegen of a single function
 
 use cranelift_codegen::binemit::{NullStackMapSink, NullTrapSink};
+use rustc_ast::InlineAsmOptions;
 use rustc_index::vec::IndexVec;
 use rustc_middle::ty::adjustment::PointerCast;
-use rustc_middle::ty::layout::FnAbiExt;
-use rustc_target::abi::call::FnAbi;
+use rustc_middle::ty::layout::FnAbiOf;
 
 use crate::constant::ConstantCx;
 use crate::prelude::*;
@@ -23,7 +23,7 @@ pub(crate) fn codegen_fn<'tcx>(
     let mir = tcx.instance_mir(instance.def);
     let _mir_guard = crate::PrintOnPanic(|| {
         let mut buf = Vec::new();
-        rustc_mir::util::write_mir_pretty(tcx, Some(instance.def_id()), &mut buf).unwrap();
+        rustc_middle::mir::write_mir_pretty(tcx, Some(instance.def_id()), &mut buf).unwrap();
         String::from_utf8_lossy(&buf).into_owned()
     });
 
@@ -62,7 +62,7 @@ pub(crate) fn codegen_fn<'tcx>(
         instance,
         symbol_name,
         mir,
-        fn_abi: Some(FnAbi::of_instance(&RevealAllLayoutCx(tcx), instance, &[])),
+        fn_abi: Some(RevealAllLayoutCx(tcx).fn_abi_of_instance(instance, ty::List::empty())),
 
         bcx,
         block_map,
@@ -240,7 +240,8 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
             fx.add_comment(inst, terminator_head);
         }
 
-        fx.set_debug_loc(bb_data.terminator().source_info);
+        let source_info = bb_data.terminator().source_info;
+        fx.set_debug_loc(source_info);
 
         match &bb_data.terminator().kind {
             TerminatorKind::Goto { target } => {
@@ -296,19 +297,19 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
                         let len = codegen_operand(fx, len).load_scalar(fx);
                         let index = codegen_operand(fx, index).load_scalar(fx);
                         let location = fx
-                            .get_caller_location(bb_data.terminator().source_info.span)
+                            .get_caller_location(source_info.span)
                             .load_scalar(fx);
 
                         codegen_panic_inner(
                             fx,
                             rustc_hir::LangItem::PanicBoundsCheck,
                             &[index, len, location],
-                            bb_data.terminator().source_info.span,
+                            source_info.span,
                         );
                     }
                     _ => {
                         let msg_str = msg.description();
-                        codegen_panic(fx, msg_str, bb_data.terminator().source_info.span);
+                        codegen_panic(fx, msg_str, source_info.span);
                     }
                 }
             }
@@ -334,8 +335,6 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
                         crate::optimize::peephole::maybe_unwrap_bool_not(&mut fx.bcx, discr);
                     let test_zero = if is_inverted { !test_zero } else { test_zero };
                     let discr = crate::optimize::peephole::maybe_unwrap_bint(&mut fx.bcx, discr);
-                    let discr =
-                        crate::optimize::peephole::make_branchable_value(&mut fx.bcx, discr);
                     if let Some(taken) = crate::optimize::peephole::maybe_known_branch_taken(
                         &fx.bcx, discr, test_zero,
                     ) {
@@ -381,10 +380,18 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
                 options,
                 destination,
                 line_spans: _,
+                cleanup: _,
             } => {
+                if options.contains(InlineAsmOptions::MAY_UNWIND) {
+                    fx.tcx.sess.span_fatal(
+                        source_info.span,
+                        "cranelift doesn't support unwinding from inline assembly.",
+                    );
+                }
+
                 crate::inline_asm::codegen_inline_asm(
                     fx,
-                    bb_data.terminator().source_info.span,
+                    source_info.span,
                     template,
                     operands,
                     *options,
@@ -418,7 +425,7 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
             }
             TerminatorKind::Drop { place, target, unwind: _ } => {
                 let drop_place = codegen_place(fx, *place);
-                crate::abi::codegen_drop(fx, bb_data.terminator().source_info.span, drop_place);
+                crate::abi::codegen_drop(fx, source_info.span, drop_place);
 
                 let target_block = fx.get_block(*target);
                 fx.bcx.ins().jump(target_block, &[]);
@@ -704,6 +711,13 @@ fn codegen_stmt<'tcx>(
                     let len = codegen_array_len(fx, place);
                     lval.write_cvalue(fx, CValue::by_val(len, usize_layout));
                 }
+                Rvalue::ShallowInitBox(ref operand, content_ty) => {
+                    let content_ty = fx.monomorphize(content_ty);
+                    let box_layout = fx.layout_of(fx.tcx.mk_box(content_ty));
+                    let operand = codegen_operand(fx, operand);
+                    let operand = operand.load_scalar(fx);
+                    lval.write_cvalue(fx, CValue::by_val(operand, box_layout));
+                }
                 Rvalue::NullaryOp(NullOp::Box, content_ty) => {
                     let usize_type = fx.clif_type(fx.tcx.types.usize).unwrap();
                     let content_ty = fx.monomorphize(content_ty);
@@ -734,15 +748,20 @@ fn codegen_stmt<'tcx>(
                     let ptr = fx.bcx.inst_results(call)[0];
                     lval.write_cvalue(fx, CValue::by_val(ptr, box_layout));
                 }
-                Rvalue::NullaryOp(NullOp::SizeOf, ty) => {
+                Rvalue::NullaryOp(null_op, ty) => {
                     assert!(
                         lval.layout()
                             .ty
                             .is_sized(fx.tcx.at(stmt.source_info.span), ParamEnv::reveal_all())
                     );
-                    let ty_size = fx.layout_of(fx.monomorphize(ty)).size.bytes();
+                    let layout = fx.layout_of(fx.monomorphize(ty));
+                    let val = match null_op {
+                        NullOp::SizeOf => layout.size.bytes(),
+                        NullOp::AlignOf => layout.align.abi.bytes(),
+                        NullOp::Box => unreachable!(),
+                    };
                     let val =
-                        CValue::const_val(fx, fx.layout_of(fx.tcx.types.usize), ty_size.into());
+                        CValue::const_val(fx, fx.layout_of(fx.tcx.types.usize), val.into());
                     lval.write_cvalue(fx, val);
                 }
                 Rvalue::Aggregate(ref kind, ref operands) => match kind.as_ref() {

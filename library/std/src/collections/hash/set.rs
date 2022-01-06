@@ -38,8 +38,8 @@ use super::map::{map_try_reserve_error, RandomState};
 /// determined by the [`Eq`] trait, changes while it is in the set. This is
 /// normally only possible through [`Cell`], [`RefCell`], global state, I/O, or
 /// unsafe code. The behavior resulting from such a logic error is not
-/// specified, but will not result in undefined behavior. This could include
-/// panics, incorrect results, aborts, memory leaks, and non-termination.
+/// specified (it could include panics, incorrect results, aborts, memory
+/// leaks, or non-termination) but will not be undefined behavior.
 ///
 /// # Examples
 ///
@@ -95,21 +95,19 @@ use super::map::{map_try_reserve_error, RandomState};
 /// }
 /// ```
 ///
-/// A `HashSet` with fixed list of elements can be initialized from an array:
+/// A `HashSet` with a known list of items can be initialized from an array:
 ///
 /// ```
 /// use std::collections::HashSet;
 ///
-/// let viking_names: HashSet<&'static str> =
-///     [ "Einar", "Olaf", "Harald" ].iter().cloned().collect();
-/// // use the values stored in the set
+/// let viking_names = HashSet::from(["Einar", "Olaf", "Harald"]);
 /// ```
 ///
 /// [hash set]: crate::collections#use-the-set-variant-of-any-of-these-maps-when
 /// [`HashMap`]: crate::collections::HashMap
 /// [`RefCell`]: crate::cell::RefCell
 /// [`Cell`]: crate::cell::Cell
-#[cfg_attr(not(test), rustc_diagnostic_item = "hashset_type")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "HashSet")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct HashSet<T, S = RandomState> {
     base: base::HashSet<T, S>,
@@ -128,6 +126,7 @@ impl<T> HashSet<T, RandomState> {
     /// let set: HashSet<i32> = HashSet::new();
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new() -> HashSet<T, RandomState> {
         Default::default()
@@ -146,6 +145,7 @@ impl<T> HashSet<T, RandomState> {
     /// assert!(set.capacity() >= 10);
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize) -> HashSet<T, RandomState> {
         HashSet { base: base::HashSet::with_capacity_and_hasher(capacity, Default::default()) }
@@ -425,13 +425,12 @@ where
     /// # Examples
     ///
     /// ```
-    /// #![feature(try_reserve)]
     /// use std::collections::HashSet;
     /// let mut set: HashSet<i32> = HashSet::new();
     /// set.try_reserve(10).expect("why is the test harness OOMing on 10 bytes?");
     /// ```
     #[inline]
-    #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
+    #[stable(feature = "try_reserve", since = "1.57.0")]
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.base.try_reserve(additional).map_err(map_try_reserve_error)
     }
@@ -466,7 +465,6 @@ where
     /// # Examples
     ///
     /// ```
-    /// #![feature(shrink_to)]
     /// use std::collections::HashSet;
     ///
     /// let mut set = HashSet::with_capacity(100);
@@ -479,7 +477,7 @@ where
     /// assert!(set.capacity() >= 2);
     /// ```
     #[inline]
-    #[unstable(feature = "shrink_to", reason = "new API", issue = "56431")]
+    #[stable(feature = "shrink_to", since = "1.56.0")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         self.base.shrink_to(min_capacity)
     }
@@ -912,6 +910,7 @@ where
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` such that `f(&e)` returns `false`.
+    /// The elements are visited in unsorted (and unspecified) order.
     ///
     /// # Examples
     ///
@@ -993,6 +992,37 @@ where
         let mut set = HashSet::with_hasher(Default::default());
         set.extend(iter);
         set
+    }
+}
+
+#[stable(feature = "std_collections_from_array", since = "1.56.0")]
+// Note: as what is currently the most convenient built-in way to construct
+// a HashSet, a simple usage of this function must not *require* the user
+// to provide a type annotation in order to infer the third type parameter
+// (the hasher parameter, conventionally "S").
+// To that end, this impl is defined using RandomState as the concrete
+// type of S, rather than being generic over `S: BuildHasher + Default`.
+// It is expected that users who want to specify a hasher will manually use
+// `with_capacity_and_hasher`.
+// If type parameter defaults worked on impls, and if type parameter
+// defaults could be mixed with const generics, then perhaps
+// this could be generalized.
+// See also the equivalent impl on HashMap.
+impl<T, const N: usize> From<[T; N]> for HashSet<T, RandomState>
+where
+    T: Eq + Hash,
+{
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    ///
+    /// let set1 = HashSet::from([1, 2, 3, 4]);
+    /// let set2: HashSet<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(set1, set2);
+    /// ```
+    fn from(arr: [T; N]) -> Self {
+        Self::from_iter(arr)
     }
 }
 
@@ -1208,9 +1238,10 @@ pub struct Iter<'a, K: 'a> {
 /// An owning iterator over the items of a `HashSet`.
 ///
 /// This `struct` is created by the [`into_iter`] method on [`HashSet`]
-/// (provided by the `IntoIterator` trait). See its documentation for more.
+/// (provided by the [`IntoIterator`] trait). See its documentation for more.
 ///
 /// [`into_iter`]: IntoIterator::into_iter
+/// [`IntoIterator`]: crate::iter::IntoIterator
 ///
 /// # Examples
 ///
@@ -1289,6 +1320,8 @@ where
 ///
 /// let mut intersection = a.intersection(&b);
 /// ```
+#[must_use = "this returns the intersection as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Intersection<'a, T: 'a, S: 'a> {
     // iterator of the first set
@@ -1314,6 +1347,8 @@ pub struct Intersection<'a, T: 'a, S: 'a> {
 ///
 /// let mut difference = a.difference(&b);
 /// ```
+#[must_use = "this returns the difference as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Difference<'a, T: 'a, S: 'a> {
     // iterator of the first set
@@ -1339,6 +1374,8 @@ pub struct Difference<'a, T: 'a, S: 'a> {
 ///
 /// let mut intersection = a.symmetric_difference(&b);
 /// ```
+#[must_use = "this returns the difference as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct SymmetricDifference<'a, T: 'a, S: 'a> {
     iter: Chain<Difference<'a, T, S>, Difference<'a, T, S>>,
@@ -1361,6 +1398,8 @@ pub struct SymmetricDifference<'a, T: 'a, S: 'a> {
 ///
 /// let mut union_iter = a.union(&b);
 /// ```
+#[must_use = "this returns the union as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Union<'a, T: 'a, S: 'a> {
     iter: Chain<Iter<'a, T>, Difference<'a, T, S>>,

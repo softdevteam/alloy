@@ -6,7 +6,6 @@ use rustc_errors::{struct_span_err, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
-use rustc_span::symbol::Symbol;
 use rustc_span::{MultiSpan, Span};
 use std::fmt;
 use std::iter;
@@ -15,8 +14,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     pub fn report_extra_impl_obligation(
         &self,
         error_span: Span,
-        item_name: Symbol,
-        _impl_item_def_id: DefId,
+        impl_item_def_id: DefId,
         trait_item_def_id: DefId,
         requirement: &dyn fmt::Display,
     ) -> DiagnosticBuilder<'tcx> {
@@ -27,6 +25,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
         if let Some(trait_item_span) = self.tcx.hir().span_if_local(trait_item_def_id) {
             let span = self.tcx.sess.source_map().guess_head_span(trait_item_span);
+            let item_name = self.tcx.item_name(impl_item_def_id);
             err.span_label(span, format!("definition of `{}` from trait", item_name));
         }
 
@@ -83,10 +82,6 @@ pub fn report_object_safety_error(
                     messages.push(msg.clone());
                 }
             }
-            if trait_span.is_some() {
-                // Only provide the help if its a local trait, otherwise it's not actionable.
-                violation.solution(&mut err);
-            }
         }
     }
     let has_multi_span = !multi_span.is_empty();
@@ -104,11 +99,13 @@ pub fn report_object_safety_error(
          to be resolvable dynamically; for more information visit \
          <https://doc.rust-lang.org/reference/items/traits.html#object-safety>",
     );
-
-    if tcx.sess.trait_methods_not_found.borrow().iter().any(|full_span| full_span.contains(span)) {
-        // Avoid emitting error caused by non-existing method (#58734)
-        err.cancel();
+    if trait_span.is_some() {
+        let mut reported_violations: Vec<_> = reported_violations.into_iter().collect();
+        reported_violations.sort();
+        for violation in reported_violations {
+            // Only provide the help if its a local trait, otherwise it's not actionable.
+            violation.solution(&mut err);
+        }
     }
-
     err
 }

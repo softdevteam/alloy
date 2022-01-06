@@ -17,25 +17,29 @@ pub const APPLICABILITY_VALUES: [[&str; 3]; 4] = [
 #[cfg(feature = "metadata-collector-lint")]
 pub const DIAGNOSTIC_BUILDER: [&str; 3] = ["rustc_errors", "diagnostic_builder", "DiagnosticBuilder"];
 pub const ARC_PTR_EQ: [&str; 4] = ["alloc", "sync", "Arc", "ptr_eq"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const ASSERT_EQ_MACRO: [&str; 3] = ["core", "macros", "assert_eq"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const ASSERT_MACRO: [&str; 4] = ["core", "macros", "builtin", "assert"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const ASSERT_NE_MACRO: [&str; 3] = ["core", "macros", "assert_ne"];
 pub const ASMUT_TRAIT: [&str; 3] = ["core", "convert", "AsMut"];
 pub const ASREF_TRAIT: [&str; 3] = ["core", "convert", "AsRef"];
 pub(super) const BEGIN_PANIC: [&str; 3] = ["std", "panicking", "begin_panic"];
-pub(super) const BEGIN_PANIC_FMT: [&str; 3] = ["std", "panicking", "begin_panic_fmt"];
-pub const BINARY_HEAP: [&str; 4] = ["alloc", "collections", "binary_heap", "BinaryHeap"];
+/// Preferably use the diagnostic item `sym::Borrow` where possible
 pub const BORROW_TRAIT: [&str; 3] = ["core", "borrow", "Borrow"];
-pub const BTREEMAP: [&str; 5] = ["alloc", "collections", "btree", "map", "BTreeMap"];
+pub const BORROW_MUT_TRAIT: [&str; 3] = ["core", "borrow", "BorrowMut"];
 pub const BTREEMAP_CONTAINS_KEY: [&str; 6] = ["alloc", "collections", "btree", "map", "BTreeMap", "contains_key"];
 pub const BTREEMAP_ENTRY: [&str; 6] = ["alloc", "collections", "btree", "map", "entry", "Entry"];
 pub const BTREEMAP_INSERT: [&str; 6] = ["alloc", "collections", "btree", "map", "BTreeMap", "insert"];
-pub const BTREESET: [&str; 5] = ["alloc", "collections", "btree", "set", "BTreeSet"];
 pub const CLONE_TRAIT_METHOD: [&str; 4] = ["core", "clone", "Clone", "clone"];
 pub const CMP_MAX: [&str; 3] = ["core", "cmp", "max"];
 pub const CMP_MIN: [&str; 3] = ["core", "cmp", "min"];
 pub const COW: [&str; 3] = ["alloc", "borrow", "Cow"];
 pub const CSTRING_AS_C_STR: [&str; 5] = ["std", "ffi", "c_str", "CString", "as_c_str"];
-pub const DEFAULT_TRAIT: [&str; 3] = ["core", "default", "Default"];
 pub const DEFAULT_TRAIT_METHOD: [&str; 4] = ["core", "default", "Default", "default"];
 pub const DEREF_MUT_TRAIT_METHOD: [&str; 5] = ["core", "ops", "deref", "DerefMut", "deref_mut"];
+/// Preferably use the diagnostic item `sym::deref_method` where possible
 pub const DEREF_TRAIT_METHOD: [&str; 5] = ["core", "ops", "deref", "Deref", "deref"];
 pub const DIR_BUILDER: [&str; 3] = ["std", "fs", "DirBuilder"];
 pub const DISPLAY_TRAIT: [&str; 3] = ["core", "fmt", "Display"];
@@ -44,22 +48,26 @@ pub const DROP: [&str; 3] = ["core", "mem", "drop"];
 pub const DURATION: [&str; 3] = ["core", "time", "Duration"];
 #[cfg(feature = "internal-lints")]
 pub const EARLY_CONTEXT: [&str; 2] = ["rustc_lint", "EarlyContext"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const EPRINT_MACRO: [&str; 3] = ["std", "macros", "eprint"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const EPRINTLN_MACRO: [&str; 3] = ["std", "macros", "eprintln"];
 pub const EXIT: [&str; 3] = ["std", "process", "exit"];
 pub const F32_EPSILON: [&str; 4] = ["core", "f32", "<impl f32>", "EPSILON"];
 pub const F64_EPSILON: [&str; 4] = ["core", "f64", "<impl f64>", "EPSILON"];
 pub const FILE: [&str; 3] = ["std", "fs", "File"];
 pub const FILE_TYPE: [&str; 3] = ["std", "fs", "FileType"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const FORMAT_ARGS_MACRO: [&str; 4] = ["core", "macros", "builtin", "format_args"];
 pub const FROM_FROM: [&str; 4] = ["core", "convert", "From", "from"];
 pub const FROM_ITERATOR: [&str; 5] = ["core", "iter", "traits", "collect", "FromIterator"];
 pub const FROM_ITERATOR_METHOD: [&str; 6] = ["core", "iter", "traits", "collect", "FromIterator", "from_iter"];
 pub const FROM_STR_METHOD: [&str; 5] = ["core", "str", "traits", "FromStr", "from_str"];
 pub const FUTURE_FROM_GENERATOR: [&str; 3] = ["core", "future", "from_generator"];
 pub const HASH: [&str; 3] = ["core", "hash", "Hash"];
-pub const HASHMAP: [&str; 5] = ["std", "collections", "hash", "map", "HashMap"];
 pub const HASHMAP_CONTAINS_KEY: [&str; 6] = ["std", "collections", "hash", "map", "HashMap", "contains_key"];
 pub const HASHMAP_ENTRY: [&str; 5] = ["std", "collections", "hash", "map", "Entry"];
 pub const HASHMAP_INSERT: [&str; 6] = ["std", "collections", "hash", "map", "HashMap", "insert"];
-pub const HASHSET: [&str; 5] = ["std", "collections", "hash", "set", "HashSet"];
 #[cfg(feature = "internal-lints")]
 pub const IDENT: [&str; 3] = ["rustc_span", "symbol", "Ident"];
 #[cfg(feature = "internal-lints")]
@@ -67,19 +75,17 @@ pub const IDENT_AS_STR: [&str; 4] = ["rustc_span", "symbol", "Ident", "as_str"];
 pub const INDEX: [&str; 3] = ["core", "ops", "Index"];
 pub const INDEX_MUT: [&str; 3] = ["core", "ops", "IndexMut"];
 pub const INSERT_STR: [&str; 4] = ["alloc", "string", "String", "insert_str"];
-pub const INTO: [&str; 3] = ["core", "convert", "Into"];
-pub const INTO_ITERATOR: [&str; 5] = ["core", "iter", "traits", "collect", "IntoIterator"];
 pub const IO_READ: [&str; 3] = ["std", "io", "Read"];
 pub const IO_WRITE: [&str; 3] = ["std", "io", "Write"];
 pub const IPADDR_V4: [&str; 5] = ["std", "net", "ip", "IpAddr", "V4"];
 pub const IPADDR_V6: [&str; 5] = ["std", "net", "ip", "IpAddr", "V6"];
 pub const ITER_REPEAT: [&str; 5] = ["core", "iter", "sources", "repeat", "repeat"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
+pub const ITERTOOLS_NEXT_TUPLE: [&str; 3] = ["itertools", "Itertools", "next_tuple"];
 #[cfg(feature = "internal-lints")]
 pub const KW_MODULE: [&str; 3] = ["rustc_span", "symbol", "kw"];
 #[cfg(feature = "internal-lints")]
 pub const LATE_CONTEXT: [&str; 2] = ["rustc_lint", "LateContext"];
-pub const LIBC_STRLEN: [&str; 2] = ["libc", "strlen"];
-pub const LINKED_LIST: [&str; 4] = ["alloc", "collections", "linked_list", "LinkedList"];
 #[cfg(any(feature = "internal-lints", feature = "metadata-collector-lint"))]
 pub const LINT: [&str; 2] = ["rustc_lint_defs", "Lint"];
 pub const MEM_DISCRIMINANT: [&str; 3] = ["core", "mem", "discriminant"];
@@ -93,6 +99,7 @@ pub const MEM_SIZE_OF_VAL: [&str; 3] = ["core", "mem", "size_of_val"];
 pub const MUTEX_GUARD: [&str; 4] = ["std", "sync", "mutex", "MutexGuard"];
 pub const OPEN_OPTIONS: [&str; 3] = ["std", "fs", "OpenOptions"];
 pub const OPS_MODULE: [&str; 2] = ["core", "ops"];
+/// Preferably use the diagnostic item `sym::Option` where possible
 pub const OPTION: [&str; 3] = ["core", "option", "Option"];
 pub const OPTION_NONE: [&str; 4] = ["core", "option", "Option", "None"];
 pub const OPTION_SOME: [&str; 4] = ["core", "option", "Option", "Some"];
@@ -103,21 +110,25 @@ pub(super) const PANICKING_PANIC: [&str; 3] = ["core", "panicking", "panic"];
 pub(super) const PANICKING_PANIC_FMT: [&str; 3] = ["core", "panicking", "panic_fmt"];
 pub(super) const PANICKING_PANIC_STR: [&str; 3] = ["core", "panicking", "panic_str"];
 pub(super) const PANIC_ANY: [&str; 3] = ["std", "panic", "panic_any"];
+pub const PARKING_LOT_RAWMUTEX: [&str; 3] = ["parking_lot", "raw_mutex", "RawMutex"];
+pub const PARKING_LOT_RAWRWLOCK: [&str; 3] = ["parking_lot", "raw_rwlock", "RawRwLock"];
 pub const PARKING_LOT_MUTEX_GUARD: [&str; 2] = ["parking_lot", "MutexGuard"];
 pub const PARKING_LOT_RWLOCK_READ_GUARD: [&str; 2] = ["parking_lot", "RwLockReadGuard"];
 pub const PARKING_LOT_RWLOCK_WRITE_GUARD: [&str; 2] = ["parking_lot", "RwLockWriteGuard"];
 pub const PATH_BUF_AS_PATH: [&str; 4] = ["std", "path", "PathBuf", "as_path"];
 pub const PATH_TO_PATH_BUF: [&str; 4] = ["std", "path", "Path", "to_path_buf"];
 pub const PERMISSIONS: [&str; 3] = ["std", "fs", "Permissions"];
-pub const PERMISSIONS_FROM_MODE: [&str; 7] = ["std", "os", "imp", "unix", "fs", "PermissionsExt", "from_mode"];
+pub const PERMISSIONS_FROM_MODE: [&str; 6] = ["std", "os", "unix", "fs", "PermissionsExt", "from_mode"];
 pub const POLL: [&str; 4] = ["core", "task", "poll", "Poll"];
 pub const POLL_PENDING: [&str; 5] = ["core", "task", "poll", "Poll", "Pending"];
 pub const POLL_READY: [&str; 5] = ["core", "task", "poll", "Poll", "Ready"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const PRINT_MACRO: [&str; 3] = ["std", "macros", "print"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const PRINTLN_MACRO: [&str; 3] = ["std", "macros", "println"];
 pub const PTR_COPY: [&str; 3] = ["core", "intrinsics", "copy"];
 pub const PTR_COPY_NONOVERLAPPING: [&str; 3] = ["core", "intrinsics", "copy_nonoverlapping"];
 pub const PTR_EQ: [&str; 3] = ["core", "ptr", "eq"];
-pub const PTR_NULL: [&str; 3] = ["core", "ptr", "null"];
-pub const PTR_NULL_MUT: [&str; 3] = ["core", "ptr", "null_mut"];
 pub const PTR_SLICE_FROM_RAW_PARTS: [&str; 3] = ["core", "ptr", "slice_from_raw_parts"];
 pub const PTR_SLICE_FROM_RAW_PARTS_MUT: [&str; 3] = ["core", "ptr", "slice_from_raw_parts_mut"];
 pub const PTR_SWAP_NONOVERLAPPING: [&str; 3] = ["core", "ptr", "swap_nonoverlapping"];
@@ -135,12 +146,19 @@ pub const RANGE_ARGUMENT_TRAIT: [&str; 3] = ["core", "ops", "RangeBounds"];
 pub const RC_PTR_EQ: [&str; 4] = ["alloc", "rc", "Rc", "ptr_eq"];
 pub const REFCELL_REF: [&str; 3] = ["core", "cell", "Ref"];
 pub const REFCELL_REFMUT: [&str; 3] = ["core", "cell", "RefMut"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_BUILDER_NEW: [&str; 5] = ["regex", "re_builder", "unicode", "RegexBuilder", "new"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_BYTES_BUILDER_NEW: [&str; 5] = ["regex", "re_builder", "bytes", "RegexBuilder", "new"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_BYTES_NEW: [&str; 4] = ["regex", "re_bytes", "Regex", "new"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_BYTES_SET_NEW: [&str; 5] = ["regex", "re_set", "bytes", "RegexSet", "new"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_NEW: [&str; 4] = ["regex", "re_unicode", "Regex", "new"];
+#[allow(clippy::invalid_paths)] // internal lints do not know about all external crates
 pub const REGEX_SET_NEW: [&str; 5] = ["regex", "re_set", "unicode", "RegexSet", "new"];
+/// Preferably use the diagnostic item `sym::Result` where possible
 pub const RESULT: [&str; 3] = ["core", "result", "Result"];
 pub const RESULT_ERR: [&str; 4] = ["core", "result", "Result", "Err"];
 pub const RESULT_OK: [&str; 4] = ["core", "result", "Result", "Ok"];
@@ -176,16 +194,16 @@ pub const SYM_MODULE: [&str; 3] = ["rustc_span", "symbol", "sym"];
 pub const SYNTAX_CONTEXT: [&str; 3] = ["rustc_span", "hygiene", "SyntaxContext"];
 pub const TO_OWNED_METHOD: [&str; 4] = ["alloc", "borrow", "ToOwned", "to_owned"];
 pub const TO_STRING_METHOD: [&str; 4] = ["alloc", "string", "ToString", "to_string"];
-pub const TRANSMUTE: [&str; 4] = ["core", "intrinsics", "", "transmute"];
 pub const TRY_FROM: [&str; 4] = ["core", "convert", "TryFrom", "try_from"];
-pub const TRY_INTO_TRAIT: [&str; 3] = ["core", "convert", "TryInto"];
-pub const VEC: [&str; 3] = ["alloc", "vec", "Vec"];
 pub const VEC_AS_MUT_SLICE: [&str; 4] = ["alloc", "vec", "Vec", "as_mut_slice"];
 pub const VEC_AS_SLICE: [&str; 4] = ["alloc", "vec", "Vec", "as_slice"];
-pub const VEC_DEQUE: [&str; 4] = ["alloc", "collections", "vec_deque", "VecDeque"];
 pub const VEC_FROM_ELEM: [&str; 3] = ["alloc", "vec", "from_elem"];
 pub const VEC_NEW: [&str; 4] = ["alloc", "vec", "Vec", "new"];
 pub const VEC_RESIZE: [&str; 4] = ["alloc", "vec", "Vec", "resize"];
 pub const WEAK_ARC: [&str; 3] = ["alloc", "sync", "Weak"];
 pub const WEAK_RC: [&str; 3] = ["alloc", "rc", "Weak"];
-pub const WRITE_BYTES: [&str; 3] = ["core", "intrinsics", "write_bytes"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const WRITE_MACRO: [&str; 3] = ["core", "macros", "write"];
+#[allow(clippy::invalid_paths)] // `check_path` does not seem to work for macros
+pub const WRITELN_MACRO: [&str; 3] = ["core", "macros", "writeln"];
+pub const PTR_NON_NULL: [&str; 4] = ["core", "ptr", "non_null", "NonNull"];

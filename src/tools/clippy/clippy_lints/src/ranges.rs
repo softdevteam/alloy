@@ -18,14 +18,14 @@ use rustc_span::symbol::Ident;
 use std::cmp::Ordering;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for zipping a collection with the range of
+    /// ### What it does
+    /// Checks for zipping a collection with the range of
     /// `0.._.len()`.
     ///
-    /// **Why is this bad?** The code is better expressed with `.enumerate()`.
+    /// ### Why is this bad?
+    /// The code is better expressed with `.enumerate()`.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let x = vec![1];
     /// x.iter().zip(0..x.len());
@@ -35,20 +35,24 @@ declare_clippy_lint! {
     /// # let x = vec![1];
     /// x.iter().enumerate();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub RANGE_ZIP_WITH_LEN,
     complexity,
     "zipping iterator with a range when `enumerate()` would do"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for exclusive ranges where 1 is added to the
+    /// ### What it does
+    /// Checks for exclusive ranges where 1 is added to the
     /// upper bound, e.g., `x..(y+1)`.
     ///
-    /// **Why is this bad?** The code is more readable with an inclusive range
+    /// ### Why is this bad?
+    /// The code is more readable with an inclusive range
     /// like `x..=y`.
     ///
-    /// **Known problems:** Will add unnecessary pair of parentheses when the
-    /// expression is not wrapped in a pair but starts with a opening parenthesis
+    /// ### Known problems
+    /// Will add unnecessary pair of parentheses when the
+    /// expression is not wrapped in a pair but starts with an opening parenthesis
     /// and ends with a closing one.
     /// I.e., `let _ = (f()+1)..(f()+1)` results in `let _ = ((f()+1)..=f())`.
     ///
@@ -61,7 +65,7 @@ declare_clippy_lint! {
     /// `RangeBounds` trait
     /// ([#3307](https://github.com/rust-lang/rust-clippy/issues/3307)).
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// for x..(y+1) { .. }
     /// ```
@@ -69,24 +73,28 @@ declare_clippy_lint! {
     /// ```rust,ignore
     /// for x..=y { .. }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub RANGE_PLUS_ONE,
     pedantic,
     "`x..(y+1)` reads better as `x..=y`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for inclusive ranges where 1 is subtracted from
+    /// ### What it does
+    /// Checks for inclusive ranges where 1 is subtracted from
     /// the upper bound, e.g., `x..=(y-1)`.
     ///
-    /// **Why is this bad?** The code is more readable with an exclusive range
+    /// ### Why is this bad?
+    /// The code is more readable with an exclusive range
     /// like `x..y`.
     ///
-    /// **Known problems:** This will cause a warning that cannot be fixed if
+    /// ### Known problems
+    /// This will cause a warning that cannot be fixed if
     /// the consumer of the range only accepts a specific range type, instead of
     /// the generic `RangeBounds` trait
     /// ([#3307](https://github.com/rust-lang/rust-clippy/issues/3307)).
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// for x..=(y-1) { .. }
     /// ```
@@ -94,22 +102,22 @@ declare_clippy_lint! {
     /// ```rust,ignore
     /// for x..y { .. }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub RANGE_MINUS_ONE,
     pedantic,
     "`x..=(y-1)` reads better as `x..y`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for range expressions `x..y` where both `x` and `y`
+    /// ### What it does
+    /// Checks for range expressions `x..y` where both `x` and `y`
     /// are constant and `x` is greater or equal to `y`.
     ///
-    /// **Why is this bad?** Empty ranges yield no values so iterating them is a no-op.
+    /// ### Why is this bad?
+    /// Empty ranges yield no values so iterating them is a no-op.
     /// Moreover, trying to use a reversed range to index a slice will panic at run-time.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust,no_run
     /// fn main() {
     ///     (10..=0).for_each(|x| println!("{}", x));
@@ -127,22 +135,22 @@ declare_clippy_lint! {
     ///     let sub = &arr[1..3];
     /// }
     /// ```
+    #[clippy::version = "1.45.0"]
     pub REVERSED_EMPTY_RANGES,
     correctness,
     "reversing the limits of range expressions, resulting in empty ranges"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for expressions like `x >= 3 && x < 8` that could
+    /// ### What it does
+    /// Checks for expressions like `x >= 3 && x < 8` that could
     /// be more readably expressed as `(3..8).contains(x)`.
     ///
-    /// **Why is this bad?** `contains` expresses the intent better and has less
+    /// ### Why is this bad?
+    /// `contains` expresses the intent better and has less
     /// failure modes (such as fencepost errors or using `||` instead of `&&`).
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// // given
     /// let x = 6;
@@ -154,6 +162,7 @@ declare_clippy_lint! {
     ///# let x = 6;
     /// assert!((3..8).contains(&x));
     /// ```
+    #[clippy::version = "1.49.0"]
     pub MANUAL_RANGE_CONTAINS,
     style,
     "manually reimplementing {`Range`, `RangeInclusive`}`::contains`"
@@ -325,7 +334,7 @@ fn check_range_zip_with_len(cx: &LateContext<'_>, path: &PathSegment<'_>, args: 
         if let ExprKind::MethodCall(iter_path, _, iter_args, _) = iter.kind;
         if iter_path.ident.name == sym::iter;
         // range expression in `.zip()` call: `0..x.len()`
-        if let Some(higher::Range { start: Some(start), end: Some(end), .. }) = higher::range(zip_arg);
+        if let Some(higher::Range { start: Some(start), end: Some(end), .. }) = higher::Range::hir(zip_arg);
         if is_integer_const(cx, start, 0);
         // `.len()` call
         if let ExprKind::MethodCall(len_path, _, len_args, _) = end.kind;
@@ -333,7 +342,7 @@ fn check_range_zip_with_len(cx: &LateContext<'_>, path: &PathSegment<'_>, args: 
         // `.iter()` and `.len()` called on same `Path`
         if let ExprKind::Path(QPath::Resolved(_, iter_path)) = iter_args[0].kind;
         if let ExprKind::Path(QPath::Resolved(_, len_path)) = len_args[0].kind;
-        if SpanlessEq::new(cx).eq_path_segments(iter_path.segments, len_path.segments);
+        if SpanlessEq::new(cx).eq_path_segments(&iter_path.segments, &len_path.segments);
         then {
             span_lint(cx,
                 RANGE_ZIP_WITH_LEN,
@@ -352,7 +361,7 @@ fn check_exclusive_range_plus_one(cx: &LateContext<'_>, expr: &Expr<'_>) {
             start,
             end: Some(end),
             limits: RangeLimits::HalfOpen
-        }) = higher::range(expr);
+        }) = higher::Range::hir(expr);
         if let Some(y) = y_plus_one(cx, end);
         then {
             let span = if expr.span.from_expansion() {
@@ -397,7 +406,7 @@ fn check_exclusive_range_plus_one(cx: &LateContext<'_>, expr: &Expr<'_>) {
 // inclusive range minus one: `x..=(y-1)`
 fn check_inclusive_range_minus_one(cx: &LateContext<'_>, expr: &Expr<'_>) {
     if_chain! {
-        if let Some(higher::Range { start, end: Some(end), limits: RangeLimits::Closed }) = higher::range(expr);
+        if let Some(higher::Range { start, end: Some(end), limits: RangeLimits::Closed }) = higher::Range::hir(expr);
         if let Some(y) = y_minus_one(cx, end);
         then {
             span_lint_and_then(
@@ -434,8 +443,8 @@ fn check_reversed_empty_range(cx: &LateContext<'_>, expr: &Expr<'_>) {
     fn is_for_loop_arg(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
         let mut cur_expr = expr;
         while let Some(parent_expr) = get_parent_expr(cx, cur_expr) {
-            match higher::for_loop(parent_expr) {
-                Some((_, args, _, _)) if args.hir_id == expr.hir_id => return true,
+            match higher::ForLoop::hir(parent_expr) {
+                Some(higher::ForLoop { arg, .. }) if arg.hir_id == expr.hir_id => return true,
                 _ => cur_expr = parent_expr,
             }
         }
@@ -451,7 +460,7 @@ fn check_reversed_empty_range(cx: &LateContext<'_>, expr: &Expr<'_>) {
     }
 
     if_chain! {
-        if let Some(higher::Range { start: Some(start), end: Some(end), limits }) = higher::range(expr);
+        if let Some(higher::Range { start: Some(start), end: Some(end), limits }) = higher::Range::hir(expr);
         let ty = cx.typeck_results().expr_ty(start);
         if let ty::Int(_) | ty::Uint(_) = ty.kind();
         if let Some((start_idx, _)) = constant(cx, cx.typeck_results(), start);

@@ -7,22 +7,18 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// When sorting primitive values (integers, bools, chars, as well
     /// as arrays, slices, and tuples of such items), it is better to
     /// use an unstable sort than a stable sort.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// Using a stable sort consumes more memory and cpu cycles. Because
     /// values which compare equal are identical, preserving their
     /// relative order (the guarantee that a stable sort provides) means
     /// nothing, while the extra costs still apply.
     ///
-    /// **Known problems:**
-    /// None
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let mut vec = vec![2, 1, 3];
     /// vec.sort();
@@ -32,6 +28,7 @@ declare_clippy_lint! {
     /// let mut vec = vec![2, 1, 3];
     /// vec.sort_unstable();
     /// ```
+    #[clippy::version = "1.47.0"]
     pub STABLE_SORT_PRIMITIVE,
     perf,
     "use of sort() when sort_unstable() is equivalent"

@@ -4,7 +4,7 @@ use crate::Registry;
 use rustc_ast::Crate;
 use rustc_errors::struct_span_err;
 use rustc_metadata::locator;
-use rustc_middle::middle::cstore::MetadataLoader;
+use rustc_session::cstore::MetadataLoader;
 use rustc_session::Session;
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::Span;
@@ -32,7 +32,7 @@ pub fn load_plugins(
     let mut plugins = Vec::new();
 
     for attr in &krate.attrs {
-        if !sess.check_name(attr, sym::plugin) {
+        if !attr.has_name(sym::plugin) {
             continue;
         }
 
@@ -55,20 +55,13 @@ fn load_plugin(
     metadata_loader: &dyn MetadataLoader,
     ident: Ident,
 ) {
-    let (lib, disambiguator) =
-        locator::find_plugin_registrar(sess, metadata_loader, ident.span, ident.name);
-    let symbol = sess.generate_plugin_registrar_symbol(disambiguator);
-    let fun = dylink_registrar(sess, ident.span, lib, symbol);
+    let lib = locator::find_plugin_registrar(sess, metadata_loader, ident.span, ident.name);
+    let fun = dylink_registrar(sess, ident.span, lib);
     plugins.push(fun);
 }
 
 // Dynamically link a registrar function into the compiler process.
-fn dylink_registrar(
-    sess: &Session,
-    span: Span,
-    path: PathBuf,
-    symbol: String,
-) -> PluginRegistrarFn {
+fn dylink_registrar(sess: &Session, span: Span, path: PathBuf) -> PluginRegistrarFn {
     use rustc_metadata::dynamic_lib::DynamicLibrary;
 
     // Make sure the path contains a / or the linker will search for it.
@@ -83,7 +76,7 @@ fn dylink_registrar(
     };
 
     unsafe {
-        let registrar = match lib.symbol(&symbol) {
+        let registrar = match lib.symbol("__rustc_plugin_registrar") {
             Ok(registrar) => mem::transmute::<*mut u8, PluginRegistrarFn>(registrar),
             // again fatal if we can't register macros
             Err(err) => sess.span_fatal(span, &err),
@@ -91,7 +84,7 @@ fn dylink_registrar(
 
         // Intentionally leak the dynamic library. We can't ever unload it
         // since the library can make things that will live arbitrarily long
-        // (e.g., an @-box cycle or a thread).
+        // (e.g., an Rc cycle or a thread).
         mem::forget(lib);
 
         registrar

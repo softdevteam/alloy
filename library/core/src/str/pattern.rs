@@ -22,6 +22,8 @@
 //! assert_eq!(s.find("you"), Some(4));
 //! // char pattern
 //! assert_eq!(s.find('n'), Some(2));
+//! // array of chars pattern
+//! assert_eq!(s.find(&['a', 'e', 'i', 'o', 'u']), Some(1));
 //! // slice of chars pattern
 //! assert_eq!(s.find(&['a', 'e', 'i', 'o', 'u'][..]), Some(1));
 //! // closure pattern
@@ -78,6 +80,11 @@ use crate::slice::memchr;
 /// assert_eq!("abaaa".find('a'), Some(0));
 /// assert_eq!("abaaa".find('b'), Some(1));
 /// assert_eq!("abaaa".find('c'), None);
+///
+/// // &[char; N]
+/// assert_eq!("ab".find(&['b', 'a']), Some(0));
+/// assert_eq!("abaaa".find(&['a', 'z']), Some(0));
+/// assert_eq!("abaaa".find(&['c', 'd']), None);
 ///
 /// // &[char]
 /// assert_eq!("ab".find(&['b', 'a'][..]), Some(0));
@@ -601,6 +608,20 @@ where
     }
 }
 
+impl<const N: usize> MultiCharEq for [char; N] {
+    #[inline]
+    fn matches(&mut self, c: char) -> bool {
+        self.iter().any(|&m| m == c)
+    }
+}
+
+impl<const N: usize> MultiCharEq for &[char; N] {
+    #[inline]
+    fn matches(&mut self, c: char) -> bool {
+        self.iter().any(|&m| m == c)
+    }
+}
+
 impl MultiCharEq for &[char] {
     #[inline]
     fn matches(&mut self, c: char) -> bool {
@@ -750,6 +771,58 @@ macro_rules! searcher_methods {
             self.0.next_reject_back()
         }
     };
+}
+
+/// Associated type for `<[char; N] as Pattern<'a>>::Searcher`.
+#[derive(Clone, Debug)]
+pub struct CharArraySearcher<'a, const N: usize>(
+    <MultiCharEqPattern<[char; N]> as Pattern<'a>>::Searcher,
+);
+
+/// Associated type for `<&[char; N] as Pattern<'a>>::Searcher`.
+#[derive(Clone, Debug)]
+pub struct CharArrayRefSearcher<'a, 'b, const N: usize>(
+    <MultiCharEqPattern<&'b [char; N]> as Pattern<'a>>::Searcher,
+);
+
+/// Searches for chars that are equal to any of the [`char`]s in the array.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!("Hello world".find(['l', 'l']), Some(2));
+/// assert_eq!("Hello world".find(['l', 'l']), Some(2));
+/// ```
+impl<'a, const N: usize> Pattern<'a> for [char; N] {
+    pattern_methods!(CharArraySearcher<'a, N>, MultiCharEqPattern, CharArraySearcher);
+}
+
+unsafe impl<'a, const N: usize> Searcher<'a> for CharArraySearcher<'a, N> {
+    searcher_methods!(forward);
+}
+
+unsafe impl<'a, const N: usize> ReverseSearcher<'a> for CharArraySearcher<'a, N> {
+    searcher_methods!(reverse);
+}
+
+/// Searches for chars that are equal to any of the [`char`]s in the array.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!("Hello world".find(&['l', 'l']), Some(2));
+/// assert_eq!("Hello world".find(&['l', 'l']), Some(2));
+/// ```
+impl<'a, 'b, const N: usize> Pattern<'a> for &'b [char; N] {
+    pattern_methods!(CharArrayRefSearcher<'a, 'b, N>, MultiCharEqPattern, CharArrayRefSearcher);
+}
+
+unsafe impl<'a, 'b, const N: usize> Searcher<'a> for CharArrayRefSearcher<'a, 'b, N> {
+    searcher_methods!(forward);
+}
+
+unsafe impl<'a, 'b, const N: usize> ReverseSearcher<'a> for CharArrayRefSearcher<'a, 'b, N> {
+    searcher_methods!(reverse);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -928,6 +1001,8 @@ struct EmptyNeedle {
     end: usize,
     is_match_fw: bool,
     is_match_bw: bool,
+    // Needed in case of an empty haystack, see #85462
+    is_finished: bool,
 }
 
 impl<'a, 'b> StrSearcher<'a, 'b> {
@@ -941,6 +1016,7 @@ impl<'a, 'b> StrSearcher<'a, 'b> {
                     end: haystack.len(),
                     is_match_fw: true,
                     is_match_bw: true,
+                    is_finished: false,
                 }),
             }
         } else {
@@ -966,13 +1042,19 @@ unsafe impl<'a, 'b> Searcher<'a> for StrSearcher<'a, 'b> {
     fn next(&mut self) -> SearchStep {
         match self.searcher {
             StrSearcherImpl::Empty(ref mut searcher) => {
+                if searcher.is_finished {
+                    return SearchStep::Done;
+                }
                 // empty needle rejects every char and matches every empty string between them
                 let is_match = searcher.is_match_fw;
                 searcher.is_match_fw = !searcher.is_match_fw;
                 let pos = searcher.position;
                 match self.haystack[pos..].chars().next() {
                     _ if is_match => SearchStep::Match(pos, pos),
-                    None => SearchStep::Done,
+                    None => {
+                        searcher.is_finished = true;
+                        SearchStep::Done
+                    }
                     Some(ch) => {
                         searcher.position += ch.len_utf8();
                         SearchStep::Reject(pos, searcher.position)
@@ -1045,12 +1127,18 @@ unsafe impl<'a, 'b> ReverseSearcher<'a> for StrSearcher<'a, 'b> {
     fn next_back(&mut self) -> SearchStep {
         match self.searcher {
             StrSearcherImpl::Empty(ref mut searcher) => {
+                if searcher.is_finished {
+                    return SearchStep::Done;
+                }
                 let is_match = searcher.is_match_bw;
                 searcher.is_match_bw = !searcher.is_match_bw;
                 let end = searcher.end;
                 match self.haystack[..end].chars().next_back() {
                     _ if is_match => SearchStep::Match(end, end),
-                    None => SearchStep::Done,
+                    None => {
+                        searcher.is_finished = true;
+                        SearchStep::Done
+                    }
                     Some(ch) => {
                         searcher.end -= ch.len_utf8();
                         SearchStep::Reject(searcher.end, end)

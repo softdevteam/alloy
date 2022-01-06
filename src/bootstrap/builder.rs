@@ -163,14 +163,8 @@ impl StepDescription {
     }
 
     fn maybe_run(&self, builder: &Builder<'_>, pathset: &PathSet) {
-        if builder.config.exclude.iter().any(|e| pathset.has(e)) {
-            eprintln!("Skipping {:?} because it is excluded", pathset);
+        if self.is_excluded(builder, pathset) {
             return;
-        } else if !builder.config.exclude.is_empty() {
-            eprintln!(
-                "{:?} not skipped for {:?} -- not in {:?}",
-                pathset, self.name, builder.config.exclude
-            );
         }
 
         // Determine the targets participating in this rule.
@@ -180,6 +174,21 @@ impl StepDescription {
             let run = RunConfig { builder, path: pathset.path(builder), target: *target };
             (self.make_run)(run);
         }
+    }
+
+    fn is_excluded(&self, builder: &Builder<'_>, pathset: &PathSet) -> bool {
+        if builder.config.exclude.iter().any(|e| pathset.has(e)) {
+            eprintln!("Skipping {:?} because it is excluded", pathset);
+            return true;
+        }
+
+        if !builder.config.exclude.is_empty() {
+            eprintln!(
+                "{:?} not skipped for {:?} -- not in {:?}",
+                pathset, self.name, builder.config.exclude
+            );
+        }
+        false
     }
 
     fn run(v: &[StepDescription], builder: &Builder<'_>, paths: &[PathBuf]) {
@@ -361,7 +370,7 @@ impl<'a> Builder<'a> {
         match kind {
             Kind::Build => describe!(
                 compile::Std,
-                compile::Rustc,
+                compile::Assemble,
                 compile::CodegenBackend,
                 compile::StartupObjects,
                 tool::BuildManifest,
@@ -473,6 +482,7 @@ impl<'a> Builder<'a> {
                 doc::RustByExample,
                 doc::RustcBook,
                 doc::CargoBook,
+                doc::Clippy,
                 doc::EmbeddedBook,
                 doc::EditionGuide,
             ),
@@ -514,7 +524,7 @@ impl<'a> Builder<'a> {
                 install::Src,
                 install::Rustc
             ),
-            Kind::Run => describe!(run::ExpandYamlAnchors, run::BuildManifest),
+            Kind::Run => describe!(run::ExpandYamlAnchors, run::BuildManifest, run::BumpStage0),
         }
     }
 
@@ -569,7 +579,7 @@ impl<'a> Builder<'a> {
     pub fn new(build: &Build) -> Builder<'_> {
         let (kind, paths) = match build.config.cmd {
             Subcommand::Build { ref paths } => (Kind::Build, &paths[..]),
-            Subcommand::Check { ref paths, all_targets: _ } => (Kind::Check, &paths[..]),
+            Subcommand::Check { ref paths } => (Kind::Check, &paths[..]),
             Subcommand::Clippy { ref paths, .. } => (Kind::Clippy, &paths[..]),
             Subcommand::Fix { ref paths } => (Kind::Fix, &paths[..]),
             Subcommand::Doc { ref paths, .. } => (Kind::Doc, &paths[..]),
@@ -963,8 +973,26 @@ impl<'a> Builder<'a> {
             }
         }
 
-        if self.config.rust_new_symbol_mangling {
+        let use_new_symbol_mangling = match self.config.rust_new_symbol_mangling {
+            Some(setting) => {
+                // If an explicit setting is given, use that
+                setting
+            }
+            None => {
+                if mode == Mode::Std {
+                    // The standard library defaults to the legacy scheme
+                    false
+                } else {
+                    // The compiler and tools default to the new scheme
+                    true
+                }
+            }
+        };
+
+        if use_new_symbol_mangling {
             rustflags.arg("-Zsymbol-mangling-version=v0");
+        } else {
+            rustflags.arg("-Zsymbol-mangling-version=legacy");
         }
 
         // FIXME: It might be better to use the same value for both `RUSTFLAGS` and `RUSTDOCFLAGS`,
@@ -1196,6 +1224,14 @@ impl<'a> Builder<'a> {
                 self.config.rust_debug_assertions.to_string()
             },
         );
+        cargo.env(
+            profile_var("OVERFLOW_CHECKS"),
+            if mode == Mode::Std {
+                self.config.rust_overflow_checks_std.to_string()
+            } else {
+                self.config.rust_overflow_checks.to_string()
+            },
+        );
 
         // `dsymutil` adds time to builds on Apple platforms for no clear benefit, and also makes
         // it more difficult for debuggers to find debug info. The compiler currently defaults to
@@ -1271,7 +1307,7 @@ impl<'a> Builder<'a> {
         // requirement, but the `-L` library path is not propagated across
         // separate Cargo projects. We can add LLVM's library path to the
         // platform-specific environment variable as a workaround.
-        if mode == Mode::ToolRustc {
+        if mode == Mode::ToolRustc || mode == Mode::Codegen {
             if let Some(llvm_config) = self.llvm_config(target) {
                 let llvm_libdir = output(Command::new(&llvm_config).arg("--libdir"));
                 add_link_lib_path(vec![llvm_libdir.trim().into()], &mut cargo);
@@ -1282,7 +1318,7 @@ impl<'a> Builder<'a> {
         // efficient initial-exec TLS model. This doesn't work with `dlopen`,
         // so we can't use it by default in general, but we can use it for tools
         // and our own internal libraries.
-        if !mode.must_support_dlopen() {
+        if !mode.must_support_dlopen() && !target.triple.starts_with("powerpc-") {
             rustflags.arg("-Ztls-model=initial-exec");
         }
 
@@ -1325,12 +1361,6 @@ impl<'a> Builder<'a> {
                 rustdocflags.arg("-Dwarnings");
             }
 
-            // FIXME(#58633) hide "unused attribute" errors in incremental
-            // builds of the standard library, as the underlying checks are
-            // not yet properly integrated with incremental recompilation.
-            if mode == Mode::Std && compiler.stage == 0 && self.config.incremental {
-                lint_flags.push("-Aunused-attributes");
-            }
             // This does not use RUSTFLAGS due to caching issues with Cargo.
             // Clippy is treated as an "in tree" tool, but shares the same
             // cache as other "submodule" tools. With these options set in
@@ -1472,7 +1502,7 @@ impl<'a> Builder<'a> {
             cargo.env("WINAPI_NO_BUNDLED_LIBRARIES", "1");
         }
 
-        for _ in 1..self.verbosity {
+        for _ in 0..self.verbosity {
             cargo.arg("-v");
         }
 
@@ -1578,6 +1608,43 @@ impl<'a> Builder<'a> {
         self.verbose(&format!("{}< {:?}", "  ".repeat(self.stack.borrow().len()), step));
         self.cache.put(step, out.clone());
         out
+    }
+
+    /// Ensure that a given step is built *only if it's supposed to be built by default*, returning
+    /// its output. This will cache the step, so it's safe (and good!) to call this as often as
+    /// needed to ensure that all dependencies are build.
+    pub(crate) fn ensure_if_default<T, S: Step<Output = Option<T>>>(
+        &'a self,
+        step: S,
+    ) -> S::Output {
+        let desc = StepDescription::from::<S>();
+        let should_run = (desc.should_run)(ShouldRun::new(self));
+
+        // Avoid running steps contained in --exclude
+        for pathset in &should_run.paths {
+            if desc.is_excluded(self, pathset) {
+                return None;
+            }
+        }
+
+        // Only execute if it's supposed to run as default
+        if desc.default && should_run.is_really_default() { self.ensure(step) } else { None }
+    }
+
+    /// Checks if any of the "should_run" paths is in the `Builder` paths.
+    pub(crate) fn was_invoked_explicitly<S: Step>(&'a self) -> bool {
+        let desc = StepDescription::from::<S>();
+        let should_run = (desc.should_run)(ShouldRun::new(self));
+
+        for path in &self.paths {
+            if should_run.paths.iter().any(|s| s.has(path))
+                && !desc.is_excluded(self, &PathSet::Suite(path.clone()))
+            {
+                return true;
+            }
+        }
+
+        false
     }
 }
 

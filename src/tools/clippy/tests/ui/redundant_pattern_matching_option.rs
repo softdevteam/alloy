@@ -6,6 +6,7 @@
     unused_must_use,
     clippy::needless_bool,
     clippy::match_like_matches_macro,
+    clippy::equatable_if_let,
     clippy::if_same_then_else
 )]
 
@@ -93,4 +94,10 @@ const fn issue6067() {
         Some(_) => false,
         None => true,
     };
+}
+
+#[allow(clippy::deref_addrof, dead_code)]
+fn issue7921() {
+    if let None = *(&None::<()>) {}
+    if let None = *&None::<()> {}
 }

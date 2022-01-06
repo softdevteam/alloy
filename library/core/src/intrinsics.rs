@@ -735,7 +735,7 @@ extern "rust-intrinsic" {
     /// reach code marked with this function.
     ///
     /// The stabilized version of this intrinsic is [`core::hint::unreachable_unchecked`].
-    #[rustc_const_unstable(feature = "const_unreachable_unchecked", issue = "53188")]
+    #[rustc_const_stable(feature = "const_unreachable_unchecked", since = "1.57.0")]
     pub fn unreachable() -> !;
 
     /// Informs the optimizer that a condition is always true.
@@ -853,19 +853,21 @@ extern "rust-intrinsic" {
     /// This will statically either panic, or do nothing.
     ///
     /// This intrinsic does not have a stable counterpart.
-    #[rustc_const_unstable(feature = "const_assert_type", issue = "none")]
+    #[rustc_const_stable(feature = "const_assert_type", since = "1.59.0")]
     pub fn assert_inhabited<T>();
 
     /// A guard for unsafe functions that cannot ever be executed if `T` does not permit
     /// zero-initialization: This will statically either panic, or do nothing.
     ///
     /// This intrinsic does not have a stable counterpart.
+    #[rustc_const_unstable(feature = "const_assert_type2", issue = "none")]
     pub fn assert_zero_valid<T>();
 
     /// A guard for unsafe functions that cannot ever be executed if `T` has invalid
     /// bit patterns: This will statically either panic, or do nothing.
     ///
     /// This intrinsic does not have a stable counterpart.
+    #[rustc_const_unstable(feature = "const_assert_type2", issue = "none")]
     pub fn assert_uninit_valid<T>();
 
     /// Gets a reference to a static `Location` indicating where it was called.
@@ -910,6 +912,9 @@ extern "rust-intrinsic" {
     /// `transmute` is **incredibly** unsafe. There are a vast number of ways to
     /// cause [undefined behavior][ub] with this function. `transmute` should be
     /// the absolute last resort.
+    ///
+    /// Transmuting pointers to integers in a `const` context is [undefined behavior][ub].
+    /// Any attempt to use the resulting value for integer operations will abort const-evaluation.
     ///
     /// The [nomicon](../../nomicon/transmutes.html) has additional
     /// documentation.
@@ -1010,7 +1015,7 @@ extern "rust-intrinsic" {
     /// let val_casts = unsafe { &mut *(ptr as *mut i32 as *mut u32) };
     /// ```
     ///
-    /// Turning an `&str` into an `&[u8]`:
+    /// Turning an `&str` into a `&[u8]`:
     ///
     /// ```
     /// // this is not a good way to do this.
@@ -1128,8 +1133,6 @@ extern "rust-intrinsic" {
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    // NOTE: While this makes the intrinsic const stable, we have some custom code in const fn
-    // checks that prevent its use within `const fn`.
     #[rustc_const_stable(feature = "const_transmute", since = "1.46.0")]
     #[rustc_diagnostic_item = "transmute"]
     pub fn transmute<T, U>(e: T) -> U;
@@ -1949,9 +1952,13 @@ extern "rust-intrinsic" {
     ///
     /// (The implementation is allowed to branch on the results of comparisons,
     /// which is UB if any of their inputs are `undef`.)
-    #[cfg(not(bootstrap))]
     #[rustc_const_unstable(feature = "const_intrinsic_raw_eq", issue = "none")]
     pub fn raw_eq<T>(a: &T, b: &T) -> bool;
+
+    /// See documentation of [`std::hint::black_box`] for details.
+    ///
+    /// [`std::hint::black_box`]: crate::hint::black_box
+    pub fn black_box<T>(dummy: T) -> T;
 }
 
 // Some functions are defined here because they accidentally got made
@@ -1963,6 +1970,19 @@ extern "rust-intrinsic" {
 /// `align_of::<T>()`.
 pub(crate) fn is_aligned_and_not_null<T>(ptr: *const T) -> bool {
     !ptr.is_null() && ptr as usize % mem::align_of::<T>() == 0
+}
+
+/// Checks whether the regions of memory starting at `src` and `dst` of size
+/// `count * size_of::<T>()` do *not* overlap.
+#[cfg(debug_assertions)]
+pub(crate) fn is_nonoverlapping<T>(src: *const T, dst: *const T, count: usize) -> bool {
+    let src_usize = src as usize;
+    let dst_usize = dst as usize;
+    let size = mem::size_of::<T>().checked_mul(count).unwrap();
+    let diff = if src_usize > dst_usize { src_usize - dst_usize } else { dst_usize - src_usize };
+    // If the absolute distance between the ptrs is at least as big as the size of the buffer,
+    // they do not overlap.
+    diff >= size
 }
 
 /// Copies `count * size_of::<T>()` bytes from `src` to `dst`. The source
@@ -2056,15 +2076,24 @@ pub const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: us
         pub fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
     }
 
-    // FIXME: Perform these checks only at run time
-    /*if cfg!(debug_assertions)
-        && !(is_aligned_and_not_null(src)
-            && is_aligned_and_not_null(dst)
-            && is_nonoverlapping(src, dst, count))
-    {
-        // Not panicking to keep codegen impact smaller.
-        abort();
-    }*/
+    #[cfg(debug_assertions)]
+    fn runtime_check<T>(src: *const T, dst: *mut T, count: usize) {
+        if !is_aligned_and_not_null(src)
+            || !is_aligned_and_not_null(dst)
+            || !is_nonoverlapping(src, dst, count)
+        {
+            // Not panicking to keep codegen impact smaller.
+            abort();
+        }
+    }
+    #[cfg(debug_assertions)]
+    const fn compiletime_check<T>(_src: *const T, _dst: *mut T, _count: usize) {}
+    #[cfg(debug_assertions)]
+    // SAFETY: runtime debug-assertions are a best-effort basis; it's fine to
+    // not do them during compile time
+    unsafe {
+        const_eval_select((src, dst, count), compiletime_check, runtime_check);
+    }
 
     // SAFETY: the safety contract for `copy_nonoverlapping` must be
     // upheld by the caller.
@@ -2141,11 +2170,21 @@ pub const unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
         fn copy<T>(src: *const T, dst: *mut T, count: usize);
     }
 
-    // FIXME: Perform these checks only at run time
-    /*if cfg!(debug_assertions) && !(is_aligned_and_not_null(src) && is_aligned_and_not_null(dst)) {
-        // Not panicking to keep codegen impact smaller.
-        abort();
-    }*/
+    #[cfg(debug_assertions)]
+    fn runtime_check<T>(src: *const T, dst: *mut T) {
+        if !is_aligned_and_not_null(src) || !is_aligned_and_not_null(dst) {
+            // Not panicking to keep codegen impact smaller.
+            abort();
+        }
+    }
+    #[cfg(debug_assertions)]
+    const fn compiletime_check<T>(_src: *const T, _dst: *mut T) {}
+    #[cfg(debug_assertions)]
+    // SAFETY: runtime debug-assertions are a best-effort basis; it's fine to
+    // not do them during compile time
+    unsafe {
+        const_eval_select((src, dst), compiletime_check, runtime_check);
+    }
 
     // SAFETY: the safety contract for `copy` must be upheld by the caller.
     unsafe { copy(src, dst, count) }
@@ -2234,4 +2273,73 @@ pub unsafe fn write_bytes<T>(dst: *mut T, val: u8, count: usize) {
 
     // SAFETY: the safety contract for `write_bytes` must be upheld by the caller.
     unsafe { write_bytes(dst, val, count) }
+}
+
+/// Selects which function to call depending on the context.
+///
+/// If this function is evaluated at compile-time, then a call to this
+/// intrinsic will be replaced with a call to `called_in_const`. It gets
+/// replaced with a call to `called_at_rt` otherwise.
+///
+/// # Type Requirements
+///
+/// The two functions must be both function items. They cannot be function
+/// pointers or closures.
+///
+/// `arg` will be the arguments that will be passed to either one of the
+/// two functions, therefore, both functions must accept the same type of
+/// arguments. Both functions must return RET.
+///
+/// # Safety
+///
+/// This intrinsic allows breaking [referential transparency] in `const fn`
+/// and is therefore `unsafe`.
+///
+/// Code that uses this intrinsic must be extremely careful to ensure that
+/// `const fn`s remain referentially-transparent independently of when they
+/// are evaluated.
+///
+/// The Rust compiler assumes that it is sound to replace a call to a `const
+/// fn` with the result produced by evaluating it at compile-time. If
+/// evaluating the function at run-time were to produce a different result,
+/// or have any other observable side-effects, the behavior is undefined.
+///
+/// [referential transparency]: https://en.wikipedia.org/wiki/Referential_transparency
+#[unstable(
+    feature = "const_eval_select",
+    issue = "none",
+    reason = "const_eval_select will never be stable"
+)]
+#[rustc_const_unstable(feature = "const_eval_select", issue = "none")]
+#[lang = "const_eval_select"]
+#[rustc_do_not_const_check]
+pub const unsafe fn const_eval_select<ARG, F, G, RET>(
+    arg: ARG,
+    _called_in_const: F,
+    called_at_rt: G,
+) -> RET
+where
+    F: ~const FnOnce<ARG, Output = RET>,
+    G: FnOnce<ARG, Output = RET> + ~const Drop,
+{
+    called_at_rt.call_once(arg)
+}
+
+#[unstable(
+    feature = "const_eval_select",
+    issue = "none",
+    reason = "const_eval_select will never be stable"
+)]
+#[rustc_const_unstable(feature = "const_eval_select", issue = "none")]
+#[lang = "const_eval_select_ct"]
+pub const unsafe fn const_eval_select_ct<ARG, F, G, RET>(
+    arg: ARG,
+    called_in_const: F,
+    _called_at_rt: G,
+) -> RET
+where
+    F: ~const FnOnce<ARG, Output = RET>,
+    G: FnOnce<ARG, Output = RET> + ~const Drop,
+{
+    called_in_const.call_once(arg)
 }

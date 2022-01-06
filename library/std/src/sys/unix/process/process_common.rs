@@ -13,6 +13,7 @@ use crate::sys::fd::FileDesc;
 use crate::sys::fs::File;
 use crate::sys::pipe::{self, AnonPipe};
 use crate::sys_common::process::{CommandEnv, CommandEnvs};
+use crate::sys_common::IntoInner;
 
 #[cfg(not(target_os = "fuchsia"))]
 use crate::sys::fs::OpenOptions;
@@ -50,7 +51,7 @@ cfg_if::cfg_if! {
             raw[bit / 8] |= 1 << (bit % 8);
             return 0;
         }
-    } else if #[cfg(not(target_os = "vxworks"))] {
+    } else {
         pub use libc::{sigemptyset, sigaddset};
     }
 }
@@ -79,6 +80,8 @@ pub struct Command {
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
+    #[cfg(target_os = "linux")]
+    create_pidfd: bool,
 }
 
 // Create a new type for argv, so that we can make it `Send` and `Sync`
@@ -124,6 +127,7 @@ pub enum Stdio {
 }
 
 impl Command {
+    #[cfg(not(target_os = "linux"))]
     pub fn new(program: &OsStr) -> Command {
         let mut saw_nul = false;
         let program = os2c(program, &mut saw_nul);
@@ -141,6 +145,28 @@ impl Command {
             stdin: None,
             stdout: None,
             stderr: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn new(program: &OsStr) -> Command {
+        let mut saw_nul = false;
+        let program = os2c(program, &mut saw_nul);
+        Command {
+            argv: Argv(vec![program.as_ptr(), ptr::null()]),
+            args: vec![program.clone()],
+            program,
+            env: Default::default(),
+            cwd: None,
+            uid: None,
+            gid: None,
+            saw_nul,
+            closures: Vec::new(),
+            groups: None,
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            create_pidfd: false,
         }
     }
 
@@ -175,6 +201,22 @@ impl Command {
     }
     pub fn groups(&mut self, groups: &[gid_t]) {
         self.groups = Some(Box::from(groups));
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn create_pidfd(&mut self, val: bool) {
+        self.create_pidfd = val;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
+    pub fn get_create_pidfd(&self) -> bool {
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn get_create_pidfd(&self) -> bool {
+        self.create_pidfd
     }
 
     pub fn saw_nul(&self) -> bool {
@@ -347,17 +389,17 @@ impl Stdio {
             // stderr. No matter which we dup first, the second will get
             // overwritten prematurely.
             Stdio::Fd(ref fd) => {
-                if fd.raw() >= 0 && fd.raw() <= libc::STDERR_FILENO {
+                if fd.as_raw_fd() >= 0 && fd.as_raw_fd() <= libc::STDERR_FILENO {
                     Ok((ChildStdio::Owned(fd.duplicate()?), None))
                 } else {
-                    Ok((ChildStdio::Explicit(fd.raw()), None))
+                    Ok((ChildStdio::Explicit(fd.as_raw_fd()), None))
                 }
             }
 
             Stdio::MakePipe => {
                 let (reader, writer) = pipe::anon_pipe()?;
                 let (ours, theirs) = if readable { (writer, reader) } else { (reader, writer) };
-                Ok((ChildStdio::Owned(theirs.into_fd()), Some(ours)))
+                Ok((ChildStdio::Owned(theirs.into_inner()), Some(ours)))
             }
 
             #[cfg(not(target_os = "fuchsia"))]
@@ -367,7 +409,7 @@ impl Stdio {
                 opts.write(!readable);
                 let path = unsafe { CStr::from_ptr(DEV_NULL.as_ptr() as *const _) };
                 let fd = File::open_c(&path, &opts)?;
-                Ok((ChildStdio::Owned(fd.into_fd()), None))
+                Ok((ChildStdio::Owned(fd.into_inner()), None))
             }
 
             #[cfg(target_os = "fuchsia")]
@@ -378,13 +420,13 @@ impl Stdio {
 
 impl From<AnonPipe> for Stdio {
     fn from(pipe: AnonPipe) -> Stdio {
-        Stdio::Fd(pipe.into_fd())
+        Stdio::Fd(pipe.into_inner())
     }
 }
 
 impl From<File> for Stdio {
     fn from(file: File) -> Stdio {
-        Stdio::Fd(file.into_fd())
+        Stdio::Fd(file.into_inner())
     }
 }
 
@@ -393,7 +435,7 @@ impl ChildStdio {
         match *self {
             ChildStdio::Inherit => None,
             ChildStdio::Explicit(fd) => Some(fd),
-            ChildStdio::Owned(ref fd) => Some(fd.raw()),
+            ChildStdio::Owned(ref fd) => Some(fd.as_raw_fd()),
 
             #[cfg(target_os = "fuchsia")]
             ChildStdio::Null => None,
@@ -415,8 +457,14 @@ impl fmt::Debug for Command {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct ExitCode(u8);
+
+impl fmt::Debug for ExitCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("unix_exit_status").field(&self.0).finish()
+    }
+}
 
 impl ExitCode {
     pub const SUCCESS: ExitCode = ExitCode(EXIT_SUCCESS as _);

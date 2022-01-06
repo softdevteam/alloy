@@ -19,7 +19,7 @@ use crate::source_map::SpanUtils;
 use crate::spanned::Spanned;
 use crate::utils::{
     contains_skip, extra_offset, first_line_width, inner_attributes, last_line_extendable, mk_sp,
-    mk_sp_lo_plus_one, semicolon_for_expr, trimmed_last_line_width, unicode_str_width,
+    semicolon_for_expr, trimmed_last_line_width, unicode_str_width,
 };
 
 /// A simple wrapper type against `ast::Arm`. Used inside `write_list()`.
@@ -167,8 +167,9 @@ fn collect_beginning_verts(
     arms.iter()
         .map(|a| {
             context
-                .snippet_provider
-                .opt_span_before(mk_sp_lo_plus_one(a.pat.span.lo()), "|")
+                .snippet(a.pat.span)
+                .starts_with('|')
+                .then(|| a.pat.span().lo())
         })
         .collect()
 }
@@ -318,7 +319,7 @@ fn flatten_arm_body<'a>(
     let can_extend =
         |expr| !context.config.force_multiline_blocks() && can_flatten_block_around_this(expr);
 
-    if let Some(ref block) = block_can_be_flattened(context, body) {
+    if let Some(block) = block_can_be_flattened(context, body) {
         if let ast::StmtKind::Expr(ref expr) = block.stmts[0].kind {
             if let ast::ExprKind::Block(..) = expr.kind {
                 flatten_arm_body(context, expr, None)
@@ -392,7 +393,7 @@ fn rewrite_match_body(
         if comment_str.is_empty() {
             String::new()
         } else {
-            rewrite_comment(comment_str, false, shape, &context.config)?
+            rewrite_comment(comment_str, false, shape, context.config)?
         }
     };
 
@@ -407,7 +408,8 @@ fn rewrite_match_body(
                 result.push_str(&arrow_comment);
             }
             result.push_str(&nested_indent_str);
-            result.push_str(&body_str);
+            result.push_str(body_str);
+            result.push_str(comma);
             return Some(result);
         }
 
@@ -449,7 +451,7 @@ fn rewrite_match_body(
             result.push_str(&arrow_comment);
         }
         result.push_str(&block_sep);
-        result.push_str(&body_str);
+        result.push_str(body_str);
         result.push_str(&body_suffix);
         Some(result)
     };

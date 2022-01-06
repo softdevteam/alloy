@@ -7,16 +7,16 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::sym;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for manual re-implementations of `PartialEq::ne`.
+    /// ### What it does
+    /// Checks for manual re-implementations of `PartialEq::ne`.
     ///
-    /// **Why is this bad?** `PartialEq::ne` is required to always return the
+    /// ### Why is this bad?
+    /// `PartialEq::ne` is required to always return the
     /// negated result of `PartialEq::eq`, which is exactly what the default
     /// implementation does. Therefore, there should never be any need to
     /// re-implement it.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// struct Foo;
     ///
@@ -25,6 +25,7 @@ declare_clippy_lint! {
     ///    fn ne(&self, other: &Foo) -> bool { !(self == other) }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PARTIALEQ_NE_IMPL,
     complexity,
     "re-implementing `PartialEq::ne`"

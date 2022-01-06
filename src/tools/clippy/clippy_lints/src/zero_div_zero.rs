@@ -6,13 +6,13 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `0.0 / 0.0`.
+    /// ### What it does
+    /// Checks for `0.0 / 0.0`.
     ///
-    /// **Why is this bad?** It's less readable than `f32::NAN` or `f64::NAN`.
+    /// ### Why is this bad?
+    /// It's less readable than `f32::NAN` or `f64::NAN`.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Bad
     /// let nan = 0.0f32 / 0.0;
@@ -20,6 +20,7 @@ declare_clippy_lint! {
     /// // Good
     /// let nan = f32::NAN;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub ZERO_DIVIDED_BY_ZERO,
     complexity,
     "usage of `0.0 / 0.0` to obtain NaN instead of `f32::NAN` or `f64::NAN`"
@@ -32,7 +33,7 @@ impl<'tcx> LateLintPass<'tcx> for ZeroDiv {
         // check for instances of 0.0/0.0
         if_chain! {
             if let ExprKind::Binary(ref op, left, right) = expr.kind;
-            if let BinOpKind::Div = op.node;
+            if op.node == BinOpKind::Div;
             // TODO - constant_simple does not fold many operations involving floats.
             // That's probably fine for this lint - it's pretty unlikely that someone would
             // do something like 0.0/(2.0 - 2.0), but it would be nice to warn on that case too.

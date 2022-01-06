@@ -17,8 +17,6 @@
 //
 // To that end, we check some positions which is not part of the language above.
 
-#![feature(const_generics)]
-//~^ WARN the feature `const_generics` is incomplete
 #![feature(let_chains)] // Avoid inflating `.stderr` with overzealous gates in this test.
 //~^ WARN the feature `let_chains` is incomplete
 
@@ -201,7 +199,6 @@ fn outside_if_and_while_expr() {
 
     (let true = let true = true);
     //~^ ERROR `let` expressions are not supported here
-    //~| ERROR `let` expressions are not supported here
 
     // Check function tail position.
     &let 0 = 0

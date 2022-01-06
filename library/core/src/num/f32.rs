@@ -436,6 +436,7 @@ impl f32 {
     /// assert!(nan.is_nan());
     /// assert!(!f.is_nan());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -448,7 +449,7 @@ impl f32 {
     // private use internally.
     #[inline]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
-    const fn abs_private(self) -> f32 {
+    pub(crate) const fn abs_private(self) -> f32 {
         f32::from_bits(self.to_bits() & 0x7fff_ffff)
     }
 
@@ -467,6 +468,7 @@ impl f32 {
     /// assert!(inf.is_infinite());
     /// assert!(neg_inf.is_infinite());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -488,6 +490,7 @@ impl f32 {
     /// assert!(!inf.is_finite());
     /// assert!(!neg_inf.is_finite());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -515,6 +518,7 @@ impl f32 {
     /// assert!(lower_than_min.is_subnormal());
     /// ```
     /// [subnormal]: https://en.wikipedia.org/wiki/Denormal_number
+    #[must_use]
     #[stable(feature = "is_subnormal", since = "1.53.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -541,6 +545,7 @@ impl f32 {
     /// assert!(!lower_than_min.is_normal());
     /// ```
     /// [subnormal]: https://en.wikipedia.org/wiki/Denormal_number
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -587,6 +592,7 @@ impl f32 {
     /// assert!(f.is_sign_positive());
     /// assert!(!g.is_sign_positive());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -604,6 +610,7 @@ impl f32 {
     /// assert!(!f.is_sign_negative());
     /// assert!(g.is_sign_negative());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_float_classify", issue = "72505")]
     #[inline]
@@ -636,6 +643,8 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "f32_deg_rad_conversions", since = "1.7.0")]
     #[inline]
     pub fn to_degrees(self) -> f32 {
@@ -653,6 +662,8 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "f32_deg_rad_conversions", since = "1.7.0")]
     #[inline]
     pub fn to_radians(self) -> f32 {
@@ -661,6 +672,9 @@ impl f32 {
     }
 
     /// Returns the maximum of the two numbers.
+    ///
+    /// Follows the IEEE-754 2008 semantics for maxNum, except for handling of signaling NaNs.
+    /// This matches the behavior of libm’s fmin.
     ///
     /// ```
     /// let x = 1.0f32;
@@ -678,6 +692,9 @@ impl f32 {
 
     /// Returns the minimum of the two numbers.
     ///
+    /// Follows the IEEE-754 2008 semantics for minNum, except for handling of signaling NaNs.
+    /// This matches the behavior of libm’s fmin.
+    ///
     /// ```
     /// let x = 1.0f32;
     /// let y = 2.0f32;
@@ -690,6 +707,68 @@ impl f32 {
     #[inline]
     pub fn min(self, other: f32) -> f32 {
         intrinsics::minnumf32(self, other)
+    }
+
+    /// Returns the maximum of the two numbers, propagating NaNs.
+    ///
+    /// This returns NaN when *either* argument is NaN, as opposed to
+    /// [`f32::max`] which only returns NaN when *both* arguments are NaN.
+    ///
+    /// ```
+    /// #![feature(float_minimum_maximum)]
+    /// let x = 1.0f32;
+    /// let y = 2.0f32;
+    ///
+    /// assert_eq!(x.maximum(y), y);
+    /// assert!(x.maximum(f32::NAN).is_nan());
+    /// ```
+    ///
+    /// If one of the arguments is NaN, then NaN is returned. Otherwise this returns the greater
+    /// of the two numbers. For this operation, -0.0 is considered to be less than +0.0.
+    /// Note that this follows the semantics specified in IEEE 754-2019.
+    #[unstable(feature = "float_minimum_maximum", issue = "91079")]
+    #[inline]
+    pub fn maximum(self, other: f32) -> f32 {
+        if self > other {
+            self
+        } else if other > self {
+            other
+        } else if self == other {
+            if self.is_sign_positive() && other.is_sign_negative() { self } else { other }
+        } else {
+            self + other
+        }
+    }
+
+    /// Returns the minimum of the two numbers, propagating NaNs.
+    ///
+    /// This returns NaN when *either* argument is NaN, as opposed to
+    /// [`f32::min`] which only returns NaN when *both* arguments are NaN.
+    ///
+    /// ```
+    /// #![feature(float_minimum_maximum)]
+    /// let x = 1.0f32;
+    /// let y = 2.0f32;
+    ///
+    /// assert_eq!(x.minimum(y), x);
+    /// assert!(x.minimum(f32::NAN).is_nan());
+    /// ```
+    ///
+    /// If one of the arguments is NaN, then NaN is returned. Otherwise this returns the lesser
+    /// of the two numbers. For this operation, -0.0 is considered to be less than +0.0.
+    /// Note that this follows the semantics specified in IEEE 754-2019.
+    #[unstable(feature = "float_minimum_maximum", issue = "91079")]
+    #[inline]
+    pub fn minimum(self, other: f32) -> f32 {
+        if self < other {
+            self
+        } else if other < self {
+            other
+        } else if self == other {
+            if self.is_sign_negative() && other.is_sign_positive() { self } else { other }
+        } else {
+            self + other
+        }
     }
 
     /// Rounds toward zero and converts to any primitive integer type,
@@ -712,6 +791,8 @@ impl f32 {
     /// * Not be `NaN`
     /// * Not be infinite
     /// * Be representable in the return type `Int`, after truncating off its fractional part
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "float_approx_unchecked_to", since = "1.44.0")]
     #[inline]
     pub unsafe fn to_int_unchecked<Int>(self) -> Int
@@ -740,6 +821,8 @@ impl f32 {
     /// assert_eq!((12.5f32).to_bits(), 0x41480000);
     ///
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
     #[inline]
@@ -786,6 +869,7 @@ impl f32 {
     /// ```
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
+    #[must_use]
     #[inline]
     pub const fn from_bits(v: u32) -> Self {
         // SAFETY: `u32` is a plain old datatype so we can always transmute from it
@@ -802,6 +886,8 @@ impl f32 {
     /// let bytes = 12.5f32.to_be_bytes();
     /// assert_eq!(bytes, [0x41, 0x48, 0x00, 0x00]);
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
     #[inline]
@@ -818,6 +904,8 @@ impl f32 {
     /// let bytes = 12.5f32.to_le_bytes();
     /// assert_eq!(bytes, [0x00, 0x00, 0x48, 0x41]);
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
     #[inline]
@@ -847,6 +935,8 @@ impl f32 {
     ///     }
     /// );
     /// ```
+    #[must_use = "this returns the result of the operation, \
+                  without modifying the original"]
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
     #[inline]
@@ -864,6 +954,7 @@ impl f32 {
     /// ```
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
+    #[must_use]
     #[inline]
     pub const fn from_be_bytes(bytes: [u8; 4]) -> Self {
         Self::from_bits(u32::from_be_bytes(bytes))
@@ -879,6 +970,7 @@ impl f32 {
     /// ```
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
+    #[must_use]
     #[inline]
     pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
         Self::from_bits(u32::from_le_bytes(bytes))
@@ -905,6 +997,7 @@ impl f32 {
     /// ```
     #[stable(feature = "float_to_from_bytes", since = "1.40.0")]
     #[rustc_const_unstable(feature = "const_float_bits_conv", issue = "72447")]
+    #[must_use]
     #[inline]
     pub const fn from_ne_bytes(bytes: [u8; 4]) -> Self {
         Self::from_bits(u32::from_ne_bytes(bytes))
@@ -955,6 +1048,7 @@ impl f32 {
     /// #     .all(|(a, b)| a.to_bits() == b.to_bits()))
     /// ```
     #[unstable(feature = "total_cmp", issue = "72599")]
+    #[must_use]
     #[inline]
     pub fn total_cmp(&self, other: &Self) -> crate::cmp::Ordering {
         let mut left = self.to_bits() as i32;

@@ -1,5 +1,4 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::in_macro;
 use clippy_utils::source::{snippet_opt, snippet_with_applicability};
 use clippy_utils::sugg::Sugg;
 use if_chain::if_chain;
@@ -10,15 +9,18 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::BytePos;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `*&` and `*&mut` in expressions.
+    /// ### What it does
+    /// Checks for usage of `*&` and `*&mut` in expressions.
     ///
-    /// **Why is this bad?** Immediately dereferencing a reference is no-op and
+    /// ### Why is this bad?
+    /// Immediately dereferencing a reference is no-op and
     /// makes the code less clear.
     ///
-    /// **Known problems:** Multiple dereference/addrof pairs are not handled so
+    /// ### Known problems
+    /// Multiple dereference/addrof pairs are not handled so
     /// the suggested fix for `x = **&&y` is `x = *&y`, which is still incorrect.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// // Bad
     /// let a = f(*&mut b);
@@ -28,6 +30,7 @@ declare_clippy_lint! {
     /// let a = f(b);
     /// let c = d;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub DEREF_ADDROF,
     complexity,
     "use of `*&` or `*&mut` in an expression"
@@ -47,11 +50,12 @@ impl EarlyLintPass for DerefAddrOf {
         if_chain! {
             if let ExprKind::Unary(UnOp::Deref, ref deref_target) = e.kind;
             if let ExprKind::AddrOf(_, ref mutability, ref addrof_target) = without_parens(deref_target).kind;
-            if !in_macro(addrof_target.span);
+            if !addrof_target.span.from_expansion();
             then {
                 let mut applicability = Applicability::MachineApplicable;
                 let sugg = if e.span.from_expansion() {
-                    if let Ok(macro_source) = cx.sess.source_map().span_to_snippet(e.span) {
+                    #[allow(clippy::option_if_let_else)]
+                    if let Some(macro_source) = snippet_opt(cx, e.span) {
                         // Remove leading whitespace from the given span
                         // e.g: ` $visitor` turns into `$visitor`
                         let trim_leading_whitespaces = |span| {
@@ -101,13 +105,15 @@ impl EarlyLintPass for DerefAddrOf {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for references in expressions that use
+    /// ### What it does
+    /// Checks for references in expressions that use
     /// auto dereference.
     ///
-    /// **Why is this bad?** The reference is a no-op and is automatically
+    /// ### Why is this bad?
+    /// The reference is a no-op and is automatically
     /// dereferenced by the compiler and makes the code less clear.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// struct Point(u32, u32);
     /// let point = Point(30, 20);
@@ -119,6 +125,7 @@ declare_clippy_lint! {
     /// # let point = Point(30, 20);
     /// let x = point.0;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub REF_IN_DEREF,
     complexity,
     "Use of reference in auto dereference expression."

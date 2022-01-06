@@ -2,7 +2,6 @@ use crate::build;
 use crate::build::expr::as_place::PlaceBuilder;
 use crate::build::scope::DropKind;
 use crate::thir::pattern::pat_from_hir;
-use rustc_attr::{self as attr, UnwindAttr};
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
@@ -16,10 +15,9 @@ use rustc_middle::mir::*;
 use rustc_middle::thir::{BindingMode, Expr, ExprId, LintLevel, PatKind, Thir};
 use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable, TypeckResults};
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::sym;
 use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
-use rustc_target::spec::PanicStrategy;
 
 use super::lints;
 
@@ -46,13 +44,18 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
     let body_owner_kind = tcx.hir().body_owner_kind(id);
     let typeck_results = tcx.typeck_opt_const_arg(def);
 
-    // Ensure unsafeck is ran before we steal the THIR.
+    // Ensure unsafeck and abstract const building is ran before we steal the THIR.
+    // We can't use `ensure()` for `thir_abstract_const` as it doesn't compute the query
+    // if inputs are green. This can cause ICEs when calling `thir_abstract_const` after
+    // THIR has been stolen if we haven't computed this query yet.
     match def {
         ty::WithOptConstParam { did, const_param_did: Some(const_param_did) } => {
-            tcx.ensure().thir_check_unsafety_for_const_arg((did, const_param_did))
+            tcx.ensure().thir_check_unsafety_for_const_arg((did, const_param_did));
+            drop(tcx.thir_abstract_const_of_const_arg((did, const_param_did)));
         }
         ty::WithOptConstParam { did, const_param_did: None } => {
-            tcx.ensure().thir_check_unsafety(did)
+            tcx.ensure().thir_check_unsafety(did);
+            drop(tcx.thir_abstract_const(did));
         }
     }
 
@@ -241,10 +244,10 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
         // The exception is `body.user_type_annotations`, which is used unmodified
         // by borrow checking.
         debug_assert!(
-            !(body.local_decls.has_free_regions()
-                || body.basic_blocks().has_free_regions()
-                || body.var_debug_info.has_free_regions()
-                || body.yield_ty().has_free_regions()),
+            !(body.local_decls.has_free_regions(tcx)
+                || body.basic_blocks().has_free_regions(tcx)
+                || body.var_debug_info.has_free_regions(tcx)
+                || body.yield_ty().has_free_regions(tcx)),
             "Unexpected free regions in MIR: {:?}",
             body,
         );
@@ -581,60 +584,6 @@ macro_rules! unpack {
     }};
 }
 
-fn should_abort_on_panic(tcx: TyCtxt<'_>, fn_def_id: LocalDefId, abi: Abi) -> bool {
-    // Validate `#[unwind]` syntax regardless of platform-specific panic strategy.
-    let attrs = &tcx.get_attrs(fn_def_id.to_def_id());
-    let unwind_attr = attr::find_unwind_attr(&tcx.sess, attrs);
-
-    // We never unwind, so it's not relevant to stop an unwind.
-    if tcx.sess.panic_strategy() != PanicStrategy::Unwind {
-        return false;
-    }
-
-    match unwind_attr {
-        // If an `#[unwind]` attribute was found, we should adhere to it.
-        Some(UnwindAttr::Allowed) => false,
-        Some(UnwindAttr::Aborts) => true,
-        // If no attribute was found and the panic strategy is `unwind`, then we should examine
-        // the function's ABI string to determine whether it should abort upon panic.
-        None if tcx.features().c_unwind => {
-            use Abi::*;
-            match abi {
-                // In the case of ABI's that have an `-unwind` equivalent, check whether the ABI
-                // permits unwinding. If so, we should not abort. Otherwise, we should.
-                C { unwind } | Stdcall { unwind } | System { unwind } | Thiscall { unwind } => {
-                    !unwind
-                }
-                // Rust and `rust-call` functions are allowed to unwind, and should not abort.
-                Rust | RustCall => false,
-                // Other ABI's should abort.
-                Cdecl
-                | Fastcall
-                | Vectorcall
-                | Aapcs
-                | Win64
-                | SysV64
-                | PtxKernel
-                | Msp430Interrupt
-                | X86Interrupt
-                | AmdGpuKernel
-                | EfiApi
-                | AvrInterrupt
-                | AvrNonBlockingInterrupt
-                | CCmseNonSecureCall
-                | Wasm
-                | RustIntrinsic
-                | PlatformIntrinsic
-                | Unadjusted => true,
-            }
-        }
-        // If the `c_unwind` feature gate is not active, follow the behavior that was in place
-        // prior to #76570. This is a special case: some functions have a C ABI but are meant to
-        // unwind anyway. Don't stop them.
-        None => false, // FIXME(#58794); should be `!(abi == Abi::Rust || abi == Abi::RustCall)`
-    }
-}
-
 ///////////////////////////////////////////////////////////////////////////
 /// the main entry point for building MIR for a function
 
@@ -704,8 +653,7 @@ where
             }));
         let source_info = builder.source_info(fn_end);
         builder.cfg.terminate(return_block, source_info, TerminatorKind::Return);
-        let should_abort = should_abort_on_panic(tcx, fn_def.did, abi);
-        builder.build_drop_trees(should_abort);
+        builder.build_drop_trees();
         return_block.unit()
     }));
 
@@ -752,12 +700,12 @@ fn construct_const<'a, 'tcx>(
     let source_info = builder.source_info(span);
     builder.cfg.terminate(block, source_info, TerminatorKind::Return);
 
-    builder.build_drop_trees(false);
+    builder.build_drop_trees();
 
     builder.finish()
 }
 
-/// Construct MIR for a item that has had errors in type checking.
+/// Construct MIR for an item that has had errors in type checking.
 ///
 /// This is required because we may still want to run MIR passes on an item
 /// with type errors, but normal MIR construction can't handle that in general.
@@ -812,6 +760,7 @@ fn construct_error<'a, 'tcx>(
     cfg.terminate(START_BLOCK, source_info, TerminatorKind::Unreachable);
 
     let mut body = Body::new(
+        tcx,
         MirSource::item(def.did.to_def_id()),
         cfg.basic_blocks,
         source_scopes,
@@ -900,6 +849,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         Body::new(
+            self.tcx,
             MirSource::item(self.def_id),
             self.cfg.basic_blocks,
             self.source_scopes,
@@ -942,7 +892,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let tcx_hir = tcx.hir();
         let hir_typeck_results = self.typeck_results;
 
-        // In analyze_closure() in upvar.rs we gathered a list of upvars used by a
+        // In analyze_closure() in upvar.rs we gathered a list of upvars used by an
         // indexed closure and we stored in a map called closure_min_captures in TypeckResults
         // with the closure's DefId. Here, we run through that vec of UpvarIds for
         // the given closure and use the necessary information to create upvar
@@ -959,13 +909,16 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 ty::Generator(_, substs, _) => ty::UpvarSubsts::Generator(substs),
                 _ => span_bug!(self.fn_span, "upvars with non-closure env ty {:?}", closure_ty),
             };
+            let def_id = self.def_id.as_local().unwrap();
+            let capture_syms = tcx.symbols_for_closure_captures((def_id, fn_def_id));
             let capture_tys = upvar_substs.upvar_tys();
-            let captures_with_tys =
-                hir_typeck_results.closure_min_captures_flattened(fn_def_id).zip(capture_tys);
+            let captures_with_tys = hir_typeck_results
+                .closure_min_captures_flattened(fn_def_id)
+                .zip(capture_tys.zip(capture_syms));
 
             self.upvar_mutbls = captures_with_tys
                 .enumerate()
-                .map(|(i, (captured_place, ty))| {
+                .map(|(i, (captured_place, (ty, sym)))| {
                     let capture = captured_place.info.capture_kind;
                     let var_id = match captured_place.place.base {
                         HirPlaceBase::Upvar(upvar_id) => upvar_id.var_path.hir_id,
@@ -973,14 +926,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     };
 
                     let mutability = captured_place.mutability;
-
-                    // FIXME(project-rfc-2229#8): Store more precise information
-                    let mut name = kw::Empty;
-                    if let Some(Node::Binding(pat)) = tcx_hir.find(var_id) {
-                        if let hir::PatKind::Binding(_, _, ident, _) = pat.kind {
-                            name = ident.name;
-                        }
-                    }
 
                     let mut projs = closure_env_projs.clone();
                     projs.push(ProjectionElem::Field(Field::new(i), ty));
@@ -992,7 +937,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     };
 
                     self.var_debug_info.push(VarDebugInfo {
-                        name,
+                        name: sym,
                         source_info: SourceInfo::outermost(tcx_hir.span(var_id)),
                         value: VarDebugInfoContents::Place(Place {
                             local: ty::CAPTURE_STRUCT_LOCAL,
@@ -1021,59 +966,58 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 DropKind::Value,
             );
 
-            if let Some(arg) = arg_opt {
-                let pat = match tcx.hir().get(arg.pat.hir_id) {
-                    Node::Pat(pat) | Node::Binding(pat) => pat,
-                    node => bug!("pattern became {:?}", node),
-                };
-                let pattern = pat_from_hir(tcx, self.param_env, self.typeck_results, pat);
-                let original_source_scope = self.source_scope;
-                let span = pattern.span;
-                self.set_correct_source_scope_for_arg(arg.hir_id, original_source_scope, span);
-                match *pattern.kind {
-                    // Don't introduce extra copies for simple bindings
-                    PatKind::Binding {
-                        mutability,
-                        var,
-                        mode: BindingMode::ByValue,
-                        subpattern: None,
-                        ..
-                    } => {
-                        self.local_decls[local].mutability = mutability;
-                        self.local_decls[local].source_info.scope = self.source_scope;
-                        self.local_decls[local].local_info = if let Some(kind) = self_binding {
-                            Some(box LocalInfo::User(ClearCrossCrate::Set(
-                                BindingForm::ImplicitSelf(*kind),
-                            )))
-                        } else {
-                            let binding_mode = ty::BindingMode::BindByValue(mutability);
-                            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(
-                                VarBindingForm {
-                                    binding_mode,
-                                    opt_ty_info,
-                                    opt_match_place: Some((Some(place), span)),
-                                    pat_span: span,
-                                },
-                            ))))
-                        };
-                        self.var_indices.insert(var, LocalsForNode::One(local));
-                    }
-                    _ => {
-                        scope = self.declare_bindings(
-                            scope,
-                            expr.span,
-                            &pattern,
-                            matches::ArmHasGuard(false),
-                            Some((Some(&place), span)),
-                        );
-                        let place_builder = PlaceBuilder::from(local);
-                        unpack!(
-                            block = self.place_into_pattern(block, pattern, place_builder, false)
-                        );
-                    }
+            let Some(arg) = arg_opt else {
+                continue;
+            };
+            let pat = match tcx.hir().get(arg.pat.hir_id) {
+                Node::Pat(pat) | Node::Binding(pat) => pat,
+                node => bug!("pattern became {:?}", node),
+            };
+            let pattern = pat_from_hir(tcx, self.param_env, self.typeck_results, pat);
+            let original_source_scope = self.source_scope;
+            let span = pattern.span;
+            self.set_correct_source_scope_for_arg(arg.hir_id, original_source_scope, span);
+            match *pattern.kind {
+                // Don't introduce extra copies for simple bindings
+                PatKind::Binding {
+                    mutability,
+                    var,
+                    mode: BindingMode::ByValue,
+                    subpattern: None,
+                    ..
+                } => {
+                    self.local_decls[local].mutability = mutability;
+                    self.local_decls[local].source_info.scope = self.source_scope;
+                    self.local_decls[local].local_info = if let Some(kind) = self_binding {
+                        Some(Box::new(LocalInfo::User(ClearCrossCrate::Set(
+                            BindingForm::ImplicitSelf(*kind),
+                        ))))
+                    } else {
+                        let binding_mode = ty::BindingMode::BindByValue(mutability);
+                        Some(Box::new(LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(
+                            VarBindingForm {
+                                binding_mode,
+                                opt_ty_info,
+                                opt_match_place: Some((Some(place), span)),
+                                pat_span: span,
+                            },
+                        )))))
+                    };
+                    self.var_indices.insert(var, LocalsForNode::One(local));
                 }
-                self.source_scope = original_source_scope;
+                _ => {
+                    scope = self.declare_bindings(
+                        scope,
+                        expr.span,
+                        &pattern,
+                        matches::ArmHasGuard(false),
+                        Some((Some(&place), span)),
+                    );
+                    let place_builder = PlaceBuilder::from(local);
+                    unpack!(block = self.place_into_pattern(block, pattern, place_builder, false));
+                }
             }
+            self.source_scope = original_source_scope;
         }
 
         // Enter the argument pattern bindings source scope, if it exists.

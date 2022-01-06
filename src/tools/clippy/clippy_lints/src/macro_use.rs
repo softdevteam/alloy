@@ -1,5 +1,4 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::in_macro;
 use clippy_utils::source::snippet;
 use hir::def::{DefKind, Res};
 use if_chain::if_chain;
@@ -9,27 +8,27 @@ use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::hygiene::ExpnKind;
 use rustc_span::{edition::Edition, sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `#[macro_use] use...`.
+    /// ### What it does
+    /// Checks for `#[macro_use] use...`.
     ///
-    /// **Why is this bad?** Since the Rust 2018 edition you can import
+    /// ### Why is this bad?
+    /// Since the Rust 2018 edition you can import
     /// macro's directly, this is considered idiomatic.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// #[macro_use]
     /// use some_macro;
     /// ```
+    #[clippy::version = "1.44.0"]
     pub MACRO_USE_IMPORTS,
     pedantic,
     "#[macro_use] is no longer needed"
 }
-
-const BRACKETS: &[char] = &['<', '>'];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PathAndSpan {
@@ -37,32 +36,15 @@ struct PathAndSpan {
     span: Span,
 }
 
-/// `MacroRefData` includes the name of the macro
-/// and the path from `SourceMap::span_to_filename`.
+/// `MacroRefData` includes the name of the macro.
 #[derive(Debug, Clone)]
 pub struct MacroRefData {
     name: String,
-    path: String,
 }
 
 impl MacroRefData {
-    pub fn new(name: String, callee: Span, cx: &LateContext<'_>) -> Self {
-        let mut path = cx
-            .sess()
-            .source_map()
-            .span_to_filename(callee)
-            .prefer_local()
-            .to_string();
-
-        // std lib paths are <::std::module::file type>
-        // so remove brackets, space and type.
-        if path.contains('<') {
-            path = path.replace(BRACKETS, "");
-        }
-        if path.contains(' ') {
-            path = path.split(' ').next().unwrap().to_string();
-        }
-        Self { name, path }
+    pub fn new(name: String) -> Self {
+        Self { name }
     }
 }
 
@@ -82,29 +64,24 @@ impl MacroUseImports {
     fn push_unique_macro(&mut self, cx: &LateContext<'_>, span: Span) {
         let call_site = span.source_callsite();
         let name = snippet(cx, cx.sess().source_map().span_until_char(call_site, '!'), "_");
-        if let Some(callee) = span.source_callee() {
-            if !self.collected.contains(&call_site) {
-                let name = if name.contains("::") {
-                    name.split("::").last().unwrap().to_string()
-                } else {
-                    name.to_string()
-                };
+        if span.source_callee().is_some() && !self.collected.contains(&call_site) {
+            let name = if name.contains("::") {
+                name.split("::").last().unwrap().to_string()
+            } else {
+                name.to_string()
+            };
 
-                self.mac_refs.push(MacroRefData::new(name, callee.def_site, cx));
-                self.collected.insert(call_site);
-            }
+            self.mac_refs.push(MacroRefData::new(name));
+            self.collected.insert(call_site);
         }
     }
 
     fn push_unique_macro_pat_ty(&mut self, cx: &LateContext<'_>, span: Span) {
         let call_site = span.source_callsite();
         let name = snippet(cx, cx.sess().source_map().span_until_char(call_site, '!'), "_");
-        if let Some(callee) = span.source_callee() {
-            if !self.collected.contains(&call_site) {
-                self.mac_refs
-                    .push(MacroRefData::new(name.to_string(), callee.def_site, cx));
-                self.collected.insert(call_site);
-            }
+        if span.source_callee().is_some() && !self.collected.contains(&call_site) {
+            self.mac_refs.push(MacroRefData::new(name.to_string()));
+            self.collected.insert(call_site);
         }
     }
 }
@@ -159,7 +136,7 @@ impl<'tcx> LateLintPass<'tcx> for MacroUseImports {
         }
     }
     #[allow(clippy::too_many_lines)]
-    fn check_crate_post(&mut self, cx: &LateContext<'_>, _krate: &hir::Crate<'_>) {
+    fn check_crate_post(&mut self, cx: &LateContext<'_>) {
         let mut used = FxHashMap::default();
         let mut check_dup = vec![];
         for (import, span) in &self.imports {
@@ -235,4 +212,8 @@ impl<'tcx> LateLintPass<'tcx> for MacroUseImports {
             }
         }
     }
+}
+
+fn in_macro(span: Span) -> bool {
+    span.from_expansion() && !matches!(span.ctxt().outer_expn_data().kind, ExpnKind::Desugaring(..))
 }

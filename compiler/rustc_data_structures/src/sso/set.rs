@@ -13,7 +13,7 @@ use super::map::SsoHashMap;
 //
 // Missing HashSet API:
 //   all hasher-related
-//   try_reserve (unstable)
+//   try_reserve
 //   shrink_to (unstable)
 //   drain_filter (unstable)
 //   replace
@@ -75,7 +75,7 @@ impl<T> SsoHashSet<T> {
     /// An iterator visiting all elements in arbitrary order.
     /// The iterator element type is `&'a T`.
     #[inline]
-    pub fn iter(&'a self) -> impl Iterator<Item = &'a T> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.into_iter()
     }
 

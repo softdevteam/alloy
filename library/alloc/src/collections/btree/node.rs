@@ -409,7 +409,7 @@ impl<K, V> NodeRef<marker::Dying, K, V, marker::LeafOrInternal> {
 
 impl<'a, K, V, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
     /// Temporarily takes out another mutable reference to the same node. Beware, as
-    /// this method is very dangerous, doubly so since it may not immediately appear
+    /// this method is very dangerous, doubly so since it might not immediately appear
     /// dangerous.
     ///
     /// Because mutable pointers can roam anywhere around the tree, the returned
@@ -574,7 +574,7 @@ impl<K, V> NodeRef<marker::Owned, K, V, marker::LeafOrInternal> {
     /// no cleanup is done on any of the keys, values and other children.
     /// This decreases the height by 1 and is the opposite of `push_internal_level`.
     ///
-    /// Requires exclusive access to the `Root` object but not to the root node;
+    /// Requires exclusive access to the `NodeRef` object but not to the root node;
     /// it will not invalidate other handles or references to the root node.
     ///
     /// Panics if there is no internal level, i.e., if the root node is a leaf.
@@ -777,7 +777,7 @@ impl<BorrowType, K, V, NodeType, HandleType>
 
 impl<'a, K, V, NodeType, HandleType> Handle<NodeRef<marker::Mut<'a>, K, V, NodeType>, HandleType> {
     /// Temporarily takes out another mutable handle on the same location. Beware, as
-    /// this method is very dangerous, doubly so since it may not immediately appear
+    /// this method is very dangerous, doubly so since it might not immediately appear
     /// dangerous.
     ///
     /// For details, see `NodeRef::reborrow_mut`.
@@ -1058,7 +1058,9 @@ impl<'a, K: 'a, V: 'a, NodeType> Handle<NodeRef<marker::Mut<'a>, K, V, NodeType>
 
 impl<K, V, NodeType> Handle<NodeRef<marker::Dying, K, V, NodeType>, marker::KV> {
     /// Extracts the key and value that the KV handle refers to.
-    pub fn into_key_val(mut self) -> (K, V) {
+    /// # Safety
+    /// The node that the handle refers to must not yet have been deallocated.
+    pub unsafe fn into_key_val(mut self) -> (K, V) {
         debug_assert!(self.idx < self.node.len());
         let leaf = self.node.as_leaf_dying();
         unsafe {
@@ -1069,8 +1071,10 @@ impl<K, V, NodeType> Handle<NodeRef<marker::Dying, K, V, NodeType>, marker::KV> 
     }
 
     /// Drops the key and value that the KV handle refers to.
+    /// # Safety
+    /// The node that the handle refers to must not yet have been deallocated.
     #[inline]
-    pub fn drop_key_val(mut self) {
+    pub unsafe fn drop_key_val(mut self) {
         debug_assert!(self.idx < self.node.len());
         let leaf = self.node.as_leaf_dying();
         unsafe {
@@ -1659,7 +1663,7 @@ pub mod marker {
         const PERMITS_TRAVERSAL: bool = true;
     }
     impl BorrowType for Owned {
-        // Traversal isn't needede, it happens using the result of `borrow_mut`.
+        // Traversal isn't needed, it happens using the result of `borrow_mut`.
         // By disabling traversal, and only creating new references to roots,
         // we know that every reference of the `Owned` type is to a root node.
         const PERMITS_TRAVERSAL: bool = false;

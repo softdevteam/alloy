@@ -1,4 +1,6 @@
 #![cfg(feature = "integration")]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
+#![warn(rust_2018_idioms, unused_lifetimes)]
 
 use std::env;
 use std::ffi::OsStr;
@@ -72,8 +74,11 @@ fn integration_test() {
         panic!("incompatible crate versions");
     } else if stderr.contains("failed to run `rustc` to learn about target-specific information") {
         panic!("couldn't find librustc_driver, consider setting `LD_LIBRARY_PATH`");
-    } else if stderr.contains("toolchain") && stderr.contains("is not installed") {
-        panic!("missing required toolchain");
+    } else {
+        assert!(
+            !stderr.contains("toolchain") || !stderr.contains("is not installed"),
+            "missing required toolchain"
+        );
     }
 
     match output.status.code() {

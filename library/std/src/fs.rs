@@ -13,7 +13,7 @@ mod tests;
 
 use crate::ffi::OsString;
 use crate::fmt;
-use crate::io::{self, Initializer, IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
+use crate::io::{self, IoSlice, IoSliceMut, Read, ReadBuf, Seek, SeekFrom, Write};
 use crate::path::{Path, PathBuf};
 use crate::sys::fs as fs_imp;
 use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
@@ -106,7 +106,7 @@ pub struct Metadata(fs_imp::FileAttr);
 /// Iterator over the entries in a directory.
 ///
 /// This iterator is returned from the [`read_dir`] function of this module and
-/// will yield instances of [`io::Result`]`<`[`DirEntry`]`>`. Through a [`DirEntry`]
+/// will yield instances of <code>[io::Result]<[DirEntry]></code>. Through a [`DirEntry`]
 /// information like the entry's path and possibly other metadata can be
 /// learned.
 ///
@@ -198,20 +198,10 @@ pub struct DirBuilder {
     recursive: bool,
 }
 
-/// Indicates how large a buffer to pre-allocate before reading the entire file.
-fn initial_buffer_size(file: &File) -> usize {
-    // Allocate one extra byte so the buffer doesn't need to grow before the
-    // final `read` call at the end of the file.  Don't worry about `usize`
-    // overflow because reading will fail regardless in that case.
-    file.metadata().map(|m| m.len() as usize + 1).unwrap_or(0)
-}
-
 /// Read the entire contents of a file into a bytes vector.
 ///
 /// This is a convenience function for using [`File::open`] and [`read_to_end`]
-/// with fewer imports and without an intermediate variable. It pre-allocates a
-/// buffer based on the file size when available, so it is generally faster than
-/// reading into a vector created with [`Vec::new()`].
+/// with fewer imports and without an intermediate variable.
 ///
 /// [`read_to_end`]: Read::read_to_end
 ///
@@ -238,7 +228,7 @@ fn initial_buffer_size(file: &File) -> usize {
 pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
     fn inner(path: &Path) -> io::Result<Vec<u8>> {
         let mut file = File::open(path)?;
-        let mut bytes = Vec::with_capacity(initial_buffer_size(&file));
+        let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
@@ -248,9 +238,7 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 /// Read the entire contents of a file into a string.
 ///
 /// This is a convenience function for using [`File::open`] and [`read_to_string`]
-/// with fewer imports and without an intermediate variable. It pre-allocates a
-/// buffer based on the file size when available, so it is generally faster than
-/// reading into a string created with [`String::new()`].
+/// with fewer imports and without an intermediate variable.
 ///
 /// [`read_to_string`]: Read::read_to_string
 ///
@@ -279,7 +267,7 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 pub fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
     fn inner(path: &Path) -> io::Result<String> {
         let mut file = File::open(path)?;
-        let mut string = String::with_capacity(initial_buffer_size(&file));
+        let mut string = String::new();
         file.read_to_string(&mut string)?;
         Ok(string)
     }
@@ -370,7 +358,7 @@ impl File {
     ///
     /// It is equivalent to `OpenOptions::new()` but allows you to write more
     /// readable code. Instead of `OpenOptions::new().read(true).open("foo.txt")`
-    /// you can write `File::with_options().read(true).open("foo.txt")`. This
+    /// you can write `File::options().read(true).open("foo.txt")`. This
     /// also avoids the need to import `OpenOptions`.
     ///
     /// See the [`OpenOptions::new`] function for more details.
@@ -378,16 +366,16 @@ impl File {
     /// # Examples
     ///
     /// ```no_run
-    /// #![feature(with_options)]
     /// use std::fs::File;
     ///
     /// fn main() -> std::io::Result<()> {
-    ///     let mut f = File::with_options().read(true).open("foo.txt")?;
+    ///     let mut f = File::options().read(true).open("foo.txt")?;
     ///     Ok(())
     /// }
     /// ```
-    #[unstable(feature = "with_options", issue = "65439")]
-    pub fn with_options() -> OpenOptions {
+    #[must_use]
+    #[stable(feature = "with_options", since = "1.58.0")]
+    pub fn options() -> OpenOptions {
         OpenOptions::new()
     }
 
@@ -419,7 +407,7 @@ impl File {
         self.inner.fsync()
     }
 
-    /// This function is similar to [`sync_all`], except that it may not
+    /// This function is similar to [`sync_all`], except that it might not
     /// synchronize file metadata to the filesystem.
     ///
     /// This is intended for use cases that must synchronize content, but don't
@@ -587,6 +575,12 @@ impl File {
     }
 }
 
+// In addition to the `impl`s here, `File` also has `impl`s for
+// `AsFd`/`From<OwnedFd>`/`Into<OwnedFd>` and
+// `AsRawFd`/`IntoRawFd`/`FromRawFd`, on Unix and WASI, and
+// `AsHandle`/`From<OwnedHandle>`/`Into<OwnedHandle>` and
+// `AsRawHandle`/`IntoRawHandle`/`FromRawHandle` on Windows.
+
 impl AsInner<fs_imp::File> for File {
     fn as_inner(&self) -> &fs_imp::File {
         &self.inner
@@ -610,6 +604,15 @@ impl fmt::Debug for File {
     }
 }
 
+/// Indicates how much extra capacity is needed to read the rest of the file.
+fn buffer_capacity_required(mut file: &File) -> usize {
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let pos = file.stream_position().unwrap_or(0);
+    // Don't worry about `usize` overflow because reading will fail regardless
+    // in that case.
+    size.saturating_sub(pos) as usize
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -620,15 +623,25 @@ impl Read for File {
         self.inner.read_vectored(bufs)
     }
 
+    fn read_buf(&mut self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        self.inner.read_buf(buf)
+    }
+
     #[inline]
     fn is_read_vectored(&self) -> bool {
         self.inner.is_read_vectored()
     }
 
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        // SAFETY: Read is guaranteed to work on uninitialized memory
-        unsafe { Initializer::nop() }
+    // Reserves space in the buffer based on the file size when available.
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        buf.reserve(buffer_capacity_required(self));
+        io::default_read_to_end(self, buf)
+    }
+
+    // Reserves space in the buffer based on the file size when available.
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        buf.reserve(buffer_capacity_required(self));
+        io::default_read_to_string(self, buf)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -662,6 +675,10 @@ impl Read for &File {
         self.inner.read(buf)
     }
 
+    fn read_buf(&mut self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        self.inner.read_buf(buf)
+    }
+
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.inner.read_vectored(bufs)
     }
@@ -671,10 +688,16 @@ impl Read for &File {
         self.inner.is_read_vectored()
     }
 
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        // SAFETY: Read is guaranteed to work on uninitialized memory
-        unsafe { Initializer::nop() }
+    // Reserves space in the buffer based on the file size when available.
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        buf.reserve(buffer_capacity_required(self));
+        io::default_read_to_end(self, buf)
+    }
+
+    // Reserves space in the buffer based on the file size when available.
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        buf.reserve(buffer_capacity_required(self));
+        io::default_read_to_string(self, buf)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -717,6 +740,7 @@ impl OpenOptions {
     /// let file = options.read(true).open("foo.txt");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub fn new() -> Self {
         OpenOptions(fs_imp::OpenOptions::new())
     }
@@ -780,17 +804,17 @@ impl OpenOptions {
     /// If a file is opened with both read and append access, beware that after
     /// opening, and after every write, the position for reading may be set at the
     /// end of the file. So, before writing, save the current position (using
-    /// [`seek`]`(`[`SeekFrom`]`::`[`Current`]`(0))`), and restore it before the next read.
+    /// <code>[seek]\([SeekFrom]::[Current]\(0))</code>), and restore it before the next read.
     ///
     /// ## Note
     ///
     /// This function doesn't create the file if it doesn't exist. Use the
     /// [`OpenOptions::create`] method to do so.
     ///
-    /// [`write()`]: Write::write
-    /// [`flush()`]: Write::flush
-    /// [`seek`]: Seek::seek
-    /// [`Current`]: SeekFrom::Current
+    /// [`write()`]: Write::write "io::Write::write"
+    /// [`flush()`]: Write::flush "io::Write::flush"
+    /// [seek]: Seek::seek "io::Seek::seek"
+    /// [Current]: SeekFrom::Current "io::SeekFrom::Current"
     ///
     /// # Examples
     ///
@@ -955,6 +979,7 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "file_type", since = "1.1.0")]
     pub fn file_type(&self) -> FileType {
         FileType(self.0.file_type())
@@ -977,6 +1002,7 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_dir(&self) -> bool {
         self.file_type().is_dir()
@@ -1005,6 +1031,7 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_file(&self) -> bool {
         self.file_type().is_file()
@@ -1016,7 +1043,6 @@ impl Metadata {
     ///
     #[cfg_attr(unix, doc = "```no_run")]
     #[cfg_attr(not(unix), doc = "```ignore")]
-    /// #![feature(is_symlink)]
     /// use std::fs;
     /// use std::path::Path;
     /// use std::os::unix::fs::symlink;
@@ -1031,7 +1057,8 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
-    #[unstable(feature = "is_symlink", issue = "85748")]
+    #[must_use]
+    #[stable(feature = "is_symlink", since = "1.57.0")]
     pub fn is_symlink(&self) -> bool {
         self.file_type().is_symlink()
     }
@@ -1050,6 +1077,7 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> u64 {
         self.0.size()
@@ -1069,6 +1097,7 @@ impl Metadata {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn permissions(&self) -> Permissions {
         Permissions(self.0.perm())
@@ -1081,7 +1110,7 @@ impl Metadata {
     ///
     /// # Errors
     ///
-    /// This field may not be available on all platforms, and will return an
+    /// This field might not be available on all platforms, and will return an
     /// `Err` on platforms where it is not available.
     ///
     /// # Examples
@@ -1116,7 +1145,7 @@ impl Metadata {
     ///
     /// # Errors
     ///
-    /// This field may not be available on all platforms, and will return an
+    /// This field might not be available on all platforms, and will return an
     /// `Err` on platforms where it is not available.
     ///
     /// # Examples
@@ -1148,7 +1177,7 @@ impl Metadata {
     ///
     /// # Errors
     ///
-    /// This field may not be available on all platforms, and will return an
+    /// This field might not be available on all platforms, and will return an
     /// `Err` on platforms or filesystems where it is not available.
     ///
     /// # Examples
@@ -1216,6 +1245,7 @@ impl Permissions {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use = "call `set_readonly` to modify the readonly flag"]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn readonly(&self) -> bool {
         self.0.readonly()
@@ -1278,6 +1308,7 @@ impl FileType {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "file_type", since = "1.1.0")]
     pub fn is_dir(&self) -> bool {
         self.0.is_dir()
@@ -1310,6 +1341,7 @@ impl FileType {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "file_type", since = "1.1.0")]
     pub fn is_file(&self) -> bool {
         self.0.is_file()
@@ -1345,6 +1377,7 @@ impl FileType {
     ///     Ok(())
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "file_type", since = "1.1.0")]
     pub fn is_symlink(&self) -> bool {
         self.0.is_symlink()
@@ -1407,6 +1440,7 @@ impl DirEntry {
     /// ```
     ///
     /// The exact text, of course, depends on what files you have in `.`.
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn path(&self) -> PathBuf {
         self.0.path()
@@ -1502,6 +1536,7 @@ impl DirEntry {
     ///     }
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "dir_entry_ext", since = "1.1.0")]
     pub fn file_name(&self) -> OsString {
         self.0.file_name()
@@ -1912,6 +1947,7 @@ pub fn canonicalize<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 ///     Ok(())
 /// }
 /// ```
+#[doc(alias = "mkdir")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn create_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     DirBuilder::new().create(path.as_ref())
@@ -1991,6 +2027,7 @@ pub fn create_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
 ///     Ok(())
 /// }
 /// ```
+#[doc(alias = "rmdir")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn remove_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     fs_imp::rmdir(path.as_ref())
@@ -2035,8 +2072,10 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
 
 /// Returns an iterator over the entries within a directory.
 ///
-/// The iterator will yield instances of [`io::Result`]`<`[`DirEntry`]`>`.
+/// The iterator will yield instances of <code>[io::Result]<[DirEntry]></code>.
 /// New errors may be encountered after an iterator is initially constructed.
+/// Entries for the current and parent directories (typically `.` and `..`) are
+/// skipped.
 ///
 /// # Platform-specific behavior
 ///
@@ -2153,6 +2192,7 @@ impl DirBuilder {
     /// let builder = DirBuilder::new();
     /// ```
     #[stable(feature = "dir_builder", since = "1.6.0")]
+    #[must_use]
     pub fn new() -> DirBuilder {
         DirBuilder { inner: fs_imp::DirBuilder::new(), recursive: false }
     }

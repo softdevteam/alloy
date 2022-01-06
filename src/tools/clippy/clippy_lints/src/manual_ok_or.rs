@@ -13,15 +13,15 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::sym;
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
+    ///
     /// Finds patterns that reimplement `Option::ok_or`.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
+    ///
     /// Concise code helps focusing on behavior instead of boilerplate.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Examples:**
+    /// ### Examples
     /// ```rust
     /// let foo: Option<i32> = None;
     /// foo.map_or(Err("error"), |v| Ok(v));
@@ -32,6 +32,7 @@ declare_clippy_lint! {
     /// let foo: Option<i32> = None;
     /// foo.ok_or("error");
     /// ```
+    #[clippy::version = "1.49.0"]
     pub MANUAL_OK_OR,
     pedantic,
     "finds patterns that can be encoded more concisely with `Option::ok_or`"
@@ -51,7 +52,7 @@ impl LateLintPass<'_> for ManualOkOr {
             if args.len() == 3;
             let method_receiver = &args[0];
             let ty = cx.typeck_results().expr_ty(method_receiver);
-            if is_type_diagnostic_item(cx, ty, sym::option_type);
+            if is_type_diagnostic_item(cx, ty, sym::Option);
             let or_expr = &args[1];
             if is_ok_wrapping(cx, &args[2]);
             if let ExprKind::Call(Expr { kind: ExprKind::Path(err_path), .. }, &[ref err_arg]) = or_expr.kind;

@@ -10,15 +10,16 @@ use rustc_hir::{TyKind, Unsafety};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::LateContext;
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
-use rustc_middle::ty::{self, AdtDef, IntTy, Ty, TypeFoldable, UintTy};
-use rustc_span::sym;
-use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::DUMMY_SP;
+use rustc_middle::ty::{self, AdtDef, IntTy, Predicate, Ty, TyCtxt, TypeFoldable, UintTy};
+use rustc_span::symbol::Ident;
+use rustc_span::{sym, Span, Symbol, DUMMY_SP};
 use rustc_trait_selection::infer::InferCtxtExt;
 use rustc_trait_selection::traits::query::normalize::AtExt;
+use std::iter;
 
 use crate::{match_def_path, must_use_attr};
 
+// Checks if the given type implements copy.
 pub fn is_copy<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
     ty.is_copy_modulo_regions(cx.tcx.at(DUMMY_SP), cx.param_env)
 }
@@ -36,8 +37,8 @@ pub fn can_partially_move_ty(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 }
 
 /// Walks into `ty` and returns `true` if any inner type is the same as `other_ty`
-pub fn contains_ty(ty: Ty<'_>, other_ty: Ty<'_>) -> bool {
-    ty.walk().any(|inner| match inner.unpack() {
+pub fn contains_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, other_ty: Ty<'tcx>) -> bool {
+    ty.walk(tcx).any(|inner| match inner.unpack() {
         GenericArgKind::Type(inner_ty) => ty::TyS::same_type(other_ty, inner_ty),
         GenericArgKind::Lifetime(_) | GenericArgKind::Const(_) => false,
     })
@@ -45,8 +46,8 @@ pub fn contains_ty(ty: Ty<'_>, other_ty: Ty<'_>) -> bool {
 
 /// Walks into `ty` and returns `true` if any inner type is an instance of the given adt
 /// constructor.
-pub fn contains_adt_constructor(ty: Ty<'_>, adt: &AdtDef) -> bool {
-    ty.walk().any(|inner| match inner.unpack() {
+pub fn contains_adt_constructor<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, adt: &'tcx AdtDef) -> bool {
+    ty.walk(tcx).any(|inner| match inner.unpack() {
         GenericArgKind::Type(inner_ty) => inner_ty.ty_adt_def() == Some(adt),
         GenericArgKind::Lifetime(_) | GenericArgKind::Const(_) => false,
     })
@@ -77,16 +78,16 @@ pub fn has_iter_method(cx: &LateContext<'_>, probably_ref_ty: Ty<'_>) -> Option<
     // exists and has the desired signature. Unfortunately FnCtxt is not exported
     // so we can't use its `lookup_method` method.
     let into_iter_collections: &[Symbol] = &[
-        sym::vec_type,
-        sym::option_type,
-        sym::result_type,
+        sym::Vec,
+        sym::Option,
+        sym::Result,
         sym::BTreeMap,
         sym::BTreeSet,
-        sym::vecdeque_type,
+        sym::VecDeque,
         sym::LinkedList,
         sym::BinaryHeap,
-        sym::hashset_type,
-        sym::hashmap_type,
+        sym::HashSet,
+        sym::HashMap,
         sym::PathBuf,
         sym::Path,
         sym::Receiver,
@@ -114,7 +115,12 @@ pub fn has_iter_method(cx: &LateContext<'_>, probably_ref_ty: Ty<'_>) -> Option<
 
 /// Checks whether a type implements a trait.
 /// The function returns false in case the type contains an inference variable.
-/// See also `get_trait_def_id`.
+///
+/// See:
+/// * [`get_trait_def_id`](super::get_trait_def_id) to get a trait [`DefId`].
+/// * [Common tools for writing lints] for an example how to use this function and other options.
+///
+/// [Common tools for writing lints]: https://github.com/rust-lang/rust-clippy/blob/master/doc/common_tools_writing_lints.md#checking-if-a-type-implements-a-specific-trait
 pub fn implements_trait<'tcx>(
     cx: &LateContext<'tcx>,
     ty: Ty<'tcx>,
@@ -157,7 +163,7 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
         ty::Tuple(substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
         ty::Opaque(ref def_id, _) => {
             for (predicate, _) in cx.tcx.explicit_item_bounds(*def_id) {
-                if let ty::PredicateKind::Trait(trait_predicate, _) = predicate.kind().skip_binder() {
+                if let ty::PredicateKind::Trait(trait_predicate) = predicate.kind().skip_binder() {
                     if must_use_attr(cx.tcx.get_attrs(trait_predicate.trait_ref.def_id)).is_some() {
                         return true;
                     }
@@ -180,7 +186,7 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 }
 
 // FIXME: Per https://doc.rust-lang.org/nightly/nightly-rustc/rustc_trait_selection/infer/at/struct.At.html#method.normalize
-// this function can be removed once the `normalizie` method does not panic when normalization does
+// this function can be removed once the `normalize` method does not panic when normalization does
 // not succeed
 /// Checks if `Ty` is normalizable. This function is useful
 /// to avoid crashes on `layout_of`.
@@ -209,7 +215,7 @@ fn is_normalizable_helper<'tcx>(
                         .iter()
                         .all(|field| is_normalizable_helper(cx, param_env, field.ty(cx.tcx, substs), cache))
                 }),
-                _ => ty.walk().all(|generic_arg| match generic_arg.unpack() {
+                _ => ty.walk(cx.tcx).all(|generic_arg| match generic_arg.unpack() {
                     GenericArgKind::Type(inner_ty) if inner_ty != ty => {
                         is_normalizable_helper(cx, param_env, inner_ty, cache)
                     },
@@ -224,8 +230,15 @@ fn is_normalizable_helper<'tcx>(
     result
 }
 
-/// Returns true iff the given type is a primitive (a bool or char, any integer or floating-point
-/// number type, a str, or an array, slice, or tuple of those types).
+/// Returns `true` if the given type is a non aggregate primitive (a `bool` or `char`, any
+/// integer or floating-point number type). For checking aggregation of primitive types (e.g.
+/// tuples and slices of primitive type) see `is_recursively_primitive_type`
+pub fn is_non_aggregate_primitive_type(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_))
+}
+
+/// Returns `true` if the given type is a primitive (a `bool` or `char`, any integer or
+/// floating-point number type, a `str`, or an array, slice, or tuple of those types).
 pub fn is_recursively_primitive_type(ty: Ty<'_>) -> bool {
     match ty.kind() {
         ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Str => true,
@@ -247,9 +260,17 @@ pub fn is_type_ref_to_diagnostic_item(cx: &LateContext<'_>, ty: Ty<'_>, diag_ite
     }
 }
 
-/// Checks if the type is equal to a diagnostic item
+/// Checks if the type is equal to a diagnostic item. To check if a type implements a
+/// trait marked with a diagnostic item use [`implements_trait`].
+///
+/// For a further exploitation what diagnostic items are see [diagnostic items] in
+/// rustc-dev-guide.
+///
+/// ---
 ///
 /// If you change the signature, remember to update the internal lint `MatchTypeOnDiagItem`
+///
+/// [Diagnostic Items]: https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-items.html
 pub fn is_type_diagnostic_item(cx: &LateContext<'_>, ty: Ty<'_>, diag_item: Symbol) -> bool {
     match ty.kind() {
         ty::Adt(adt, _) => cx.tcx.is_diagnostic_item(diag_item, adt.did),
@@ -359,4 +380,27 @@ pub fn same_type_and_consts(a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
         },
         _ => a == b,
     }
+}
+
+/// Checks if a given type looks safe to be uninitialized.
+pub fn is_uninit_value_valid_for_ty(cx: &LateContext<'_>, ty: Ty<'_>) -> bool {
+    match ty.kind() {
+        ty::Array(component, _) => is_uninit_value_valid_for_ty(cx, component),
+        ty::Tuple(types) => types.types().all(|ty| is_uninit_value_valid_for_ty(cx, ty)),
+        ty::Adt(adt, _) => cx.tcx.lang_items().maybe_uninit() == Some(adt.did),
+        _ => false,
+    }
+}
+
+/// Gets an iterator over all predicates which apply to the given item.
+pub fn all_predicates_of(tcx: TyCtxt<'_>, id: DefId) -> impl Iterator<Item = &(Predicate<'_>, Span)> {
+    let mut next_id = Some(id);
+    iter::from_fn(move || {
+        next_id.take().map(|id| {
+            let preds = tcx.predicates_of(id);
+            next_id = preds.parent;
+            preds.predicates.iter()
+        })
+    })
+    .flatten()
 }

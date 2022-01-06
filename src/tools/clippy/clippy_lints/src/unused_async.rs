@@ -1,22 +1,21 @@
 use clippy_utils::diagnostics::span_lint_and_help;
 use rustc_hir::intravisit::{walk_expr, walk_fn, FnKind, NestedVisitorMap, Visitor};
-use rustc_hir::{Body, Expr, ExprKind, FnDecl, FnHeader, HirId, IsAsync, Item, ItemKind, YieldSource};
+use rustc_hir::{Body, Expr, ExprKind, FnDecl, FnHeader, HirId, IsAsync, YieldSource};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for functions that are declared `async` but have no `.await`s inside of them.
+    /// ### What it does
+    /// Checks for functions that are declared `async` but have no `.await`s inside of them.
     ///
-    /// **Why is this bad?** Async functions with no async code create overhead, both mentally and computationally.
+    /// ### Why is this bad?
+    /// Async functions with no async code create overhead, both mentally and computationally.
     /// Callers of async methods either need to be calling from an async function themselves or run it on an executor, both of which
     /// causes runtime overhead and hassle for the caller.
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// // Bad
     /// async fn get_random_number() -> i64 {
@@ -30,6 +29,7 @@ declare_clippy_lint! {
     /// }
     /// let number_future = async { get_random_number_improved() };
     /// ```
+    #[clippy::version = "1.54.0"]
     pub UNUSED_ASYNC,
     pedantic,
     "finds async functions with no await statements"
@@ -58,11 +58,6 @@ impl<'a, 'tcx> Visitor<'tcx> for AsyncFnVisitor<'a, 'tcx> {
 }
 
 impl<'tcx> LateLintPass<'tcx> for UnusedAsync {
-    fn check_item(&mut self, _: &LateContext<'tcx>, item: &'tcx Item<'tcx>) {
-        if let ItemKind::Trait(..) = item.kind {
-            return;
-        }
-    }
     fn check_fn(
         &mut self,
         cx: &LateContext<'tcx>,

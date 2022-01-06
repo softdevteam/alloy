@@ -75,14 +75,30 @@ pub struct TypeVariableStorage<'tcx> {
     ///     ?1 <: ?3
     ///     Box<?3> <: ?1
     ///
-    /// This works because `?1` and `?3` are unified in the
-    /// `sub_relations` relation (not in `eq_relations`). Then when we
-    /// process the `Box<?3> <: ?1` constraint, we do an occurs check
-    /// on `Box<?3>` and find a potential cycle.
+    /// Without this second table, what would happen in a case like
+    /// this is that we would instantiate `?1` with a generalized
+    /// type like `Box<?6>`. We would then relate `Box<?3> <: Box<?6>`
+    /// and infer that `?3 <: ?6`. Next, since `?1` was instantiated,
+    /// we would process `?1 <: ?3`, generalize `?1 = Box<?6>` to `Box<?9>`,
+    /// and instantiate `?3` with `Box<?9>`. Finally, we would relate
+    /// `?6 <: ?9`. But now that we instantiated `?3`, we can process
+    /// `?3 <: ?6`, which gives us `Box<?9> <: ?6`... and the cycle
+    /// continues. (This is `occurs-check-2.rs`.)
+    ///
+    /// What prevents this cycle is that when we generalize
+    /// `Box<?3>` to `Box<?6>`, we also sub-unify `?3` and `?6`
+    /// (in the generalizer). When we then process `Box<?6> <: ?3`,
+    /// the occurs check then fails because `?6` and `?3` are sub-unified,
+    /// and hence generalization fails.
     ///
     /// This is reasonable because, in Rust, subtypes have the same
     /// "skeleton" and hence there is no possible type such that
     /// (e.g.)  `Box<?3> <: ?3` for any `?3`.
+    ///
+    /// In practice, we sometimes sub-unify variables in other spots, such
+    /// as when processing subtype predicates. This is not necessary but is
+    /// done to aid diagnostics, as it allows us to be more effective when
+    /// we guide the user towards where they should insert type hints.
     sub_relations: ut::UnificationTableStorage<ty::TyVid>,
 }
 
@@ -113,13 +129,16 @@ pub enum TypeVariableOriginKind {
     SubstitutionPlaceholder,
     AutoDeref,
     AdjustmentType,
-    DivergingFn,
+
+    /// In type check, when we are type checking a function that
+    /// returns `-> dyn Foo`, we substitute a type variable for the
+    /// return type for diagnostic purposes.
+    DynReturnFn,
     LatticeVariable,
 }
 
 pub(crate) struct TypeVariableData {
     origin: TypeVariableOrigin,
-    diverging: bool,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -169,20 +188,12 @@ impl<'tcx> TypeVariableStorage<'tcx> {
 }
 
 impl<'tcx> TypeVariableTable<'_, 'tcx> {
-    /// Returns the diverges flag given when `vid` was created.
-    ///
-    /// Note that this function does not return care whether
-    /// `vid` has been unified with something else or not.
-    pub fn var_diverges(&self, vid: ty::TyVid) -> bool {
-        self.storage.values.get(vid.index as usize).diverging
-    }
-
     /// Returns the origin that was given when `vid` was created.
     ///
     /// Note that this function does not return care whether
     /// `vid` has been unified with something else or not.
     pub fn var_origin(&self, vid: ty::TyVid) -> &TypeVariableOrigin {
-        &self.storage.values.get(vid.index as usize).origin
+        &self.storage.values.get(vid.as_usize()).origin
     }
 
     /// Records that `a == b`, depending on `dir`.
@@ -238,7 +249,6 @@ impl<'tcx> TypeVariableTable<'_, 'tcx> {
     pub fn new_var(
         &mut self,
         universe: ty::UniverseIndex,
-        diverging: bool,
         origin: TypeVariableOrigin,
     ) -> ty::TyVid {
         let eq_key = self.eq_relations().new_key(TypeVariableValue::Unknown { universe });
@@ -246,13 +256,10 @@ impl<'tcx> TypeVariableTable<'_, 'tcx> {
         let sub_key = self.sub_relations().new_key(());
         assert_eq!(eq_key.vid, sub_key);
 
-        let index = self.values().push(TypeVariableData { origin, diverging });
-        assert_eq!(eq_key.vid.index, index as u32);
+        let index = self.values().push(TypeVariableData { origin });
+        assert_eq!(eq_key.vid.as_u32(), index as u32);
 
-        debug!(
-            "new_var(index={:?}, universe={:?}, diverging={:?}, origin={:?}",
-            eq_key.vid, universe, diverging, origin,
-        );
+        debug!("new_var(index={:?}, universe={:?}, origin={:?}", eq_key.vid, universe, origin,);
 
         eq_key.vid
     }
@@ -335,11 +342,11 @@ impl<'tcx> TypeVariableTable<'_, 'tcx> {
         &mut self,
         value_count: usize,
     ) -> (Range<TyVid>, Vec<TypeVariableOrigin>) {
-        let range = TyVid { index: value_count as u32 }..TyVid { index: self.num_vars() as u32 };
+        let range = TyVid::from_usize(value_count)..TyVid::from_usize(self.num_vars());
         (
             range.start..range.end,
-            (range.start.index..range.end.index)
-                .map(|index| self.storage.values.get(index as usize).origin)
+            (range.start.as_usize()..range.end.as_usize())
+                .map(|index| self.storage.values.get(index).origin)
                 .collect(),
         )
     }
@@ -349,7 +356,7 @@ impl<'tcx> TypeVariableTable<'_, 'tcx> {
     pub fn unsolved_variables(&mut self) -> Vec<ty::TyVid> {
         (0..self.storage.values.len())
             .filter_map(|i| {
-                let vid = ty::TyVid { index: i as u32 };
+                let vid = ty::TyVid::from_usize(i);
                 match self.probe(vid) {
                     TypeVariableValue::Unknown { .. } => Some(vid),
                     TypeVariableValue::Known { .. } => None,
@@ -393,6 +400,7 @@ pub(crate) struct TyVidEqKey<'tcx> {
 }
 
 impl<'tcx> From<ty::TyVid> for TyVidEqKey<'tcx> {
+    #[inline] // make this function eligible for inlining - it is quite hot.
     fn from(vid: ty::TyVid) -> Self {
         TyVidEqKey { vid, phantom: PhantomData }
     }
@@ -402,10 +410,10 @@ impl<'tcx> ut::UnifyKey for TyVidEqKey<'tcx> {
     type Value = TypeVariableValue<'tcx>;
     #[inline(always)]
     fn index(&self) -> u32 {
-        self.vid.index
+        self.vid.as_u32()
     }
     fn from_index(i: u32) -> Self {
-        TyVidEqKey::from(ty::TyVid { index: i })
+        TyVidEqKey::from(ty::TyVid::from_u32(i))
     }
     fn tag() -> &'static str {
         "TyVidEqKey"

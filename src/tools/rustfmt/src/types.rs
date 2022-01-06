@@ -1,15 +1,17 @@
 use std::iter::ExactSizeIterator;
 use std::ops::Deref;
 
-use rustc_ast::ast::{self, AttrVec, FnRetTy, Mutability};
-use rustc_span::{symbol::kw, symbol::Ident, BytePos, Pos, Span};
+use rustc_ast::ast::{self, FnRetTy, Mutability};
+use rustc_ast::ptr;
+use rustc_span::{symbol::kw, BytePos, Pos, Span};
 
+use crate::comment::{combine_strs_with_missing_comments, contains_comment};
 use crate::config::lists::*;
 use crate::config::{IndentStyle, TypeDensity, Version};
 use crate::expr::{
     format_expr, rewrite_assign_rhs, rewrite_call, rewrite_tuple, rewrite_unary_prefix, ExprType,
+    RhsAssignKind,
 };
-use crate::items::StructParts;
 use crate::lists::{
     definitive_tactic, itemize_list, write_list, ListFormatting, ListItem, Separator,
 };
@@ -23,11 +25,6 @@ use crate::spanned::Spanned;
 use crate::utils::{
     colon_spaces, extra_offset, first_line_width, format_extern, format_mutability,
     last_line_extendable, last_line_width, mk_sp, rewrite_ident,
-};
-use crate::DEFAULT_VISIBILITY;
-use crate::{
-    comment::{combine_strs_with_missing_comments, contains_comment},
-    items::format_struct_struct,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -174,31 +171,38 @@ impl<'a> Rewrite for SegmentParam<'a> {
             SegmentParam::Const(const_) => const_.rewrite(context, shape),
             SegmentParam::LifeTime(lt) => lt.rewrite(context, shape),
             SegmentParam::Type(ty) => ty.rewrite(context, shape),
-            SegmentParam::Binding(assoc_ty_constraint) => {
-                let mut result = match assoc_ty_constraint.kind {
-                    ast::AssocTyConstraintKind::Bound { .. } => {
-                        format!("{}: ", rewrite_ident(context, assoc_ty_constraint.ident))
-                    }
-                    ast::AssocTyConstraintKind::Equality { .. } => {
-                        match context.config.type_punctuation_density() {
-                            TypeDensity::Wide => {
-                                format!("{} = ", rewrite_ident(context, assoc_ty_constraint.ident))
-                            }
-                            TypeDensity::Compressed => {
-                                format!("{}=", rewrite_ident(context, assoc_ty_constraint.ident))
-                            }
-                        }
-                    }
-                };
-
-                let budget = shape.width.checked_sub(result.len())?;
-                let rewrite = assoc_ty_constraint
-                    .kind
-                    .rewrite(context, Shape::legacy(budget, shape.indent + result.len()))?;
-                result.push_str(&rewrite);
-                Some(result)
-            }
+            SegmentParam::Binding(atc) => atc.rewrite(context, shape),
         }
+    }
+}
+
+impl Rewrite for ast::AssocTyConstraint {
+    fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
+        use ast::AssocTyConstraintKind::{Bound, Equality};
+
+        let mut result = String::with_capacity(128);
+        result.push_str(rewrite_ident(context, self.ident));
+
+        if let Some(ref gen_args) = self.gen_args {
+            let budget = shape.width.checked_sub(result.len())?;
+            let shape = Shape::legacy(budget, shape.indent + result.len());
+            let gen_str = rewrite_generic_args(gen_args, context, shape, gen_args.span())?;
+            result.push_str(&gen_str);
+        }
+
+        let infix = match (&self.kind, context.config.type_punctuation_density()) {
+            (Bound { .. }, _) => ": ",
+            (Equality { .. }, TypeDensity::Wide) => " = ",
+            (Equality { .. }, TypeDensity::Compressed) => "=",
+        };
+        result.push_str(infix);
+
+        let budget = shape.width.checked_sub(result.len())?;
+        let shape = Shape::legacy(budget, shape.indent + result.len());
+        let rewrite = self.kind.rewrite(context, shape)?;
+        result.push_str(&rewrite);
+
+        Some(result)
     }
 }
 
@@ -240,21 +244,9 @@ fn rewrite_segment(
     };
 
     if let Some(ref args) = segment.args {
+        let generics_str = rewrite_generic_args(args, context, shape, mk_sp(*span_lo, span_hi))?;
         match **args {
             ast::GenericArgs::AngleBracketed(ref data) if !data.args.is_empty() => {
-                let param_list = data
-                    .args
-                    .iter()
-                    .map(|x| match x {
-                        ast::AngleBracketedArg::Arg(generic_arg) => {
-                            SegmentParam::from_generic_arg(generic_arg)
-                        }
-                        ast::AngleBracketedArg::Constraint(constraint) => {
-                            SegmentParam::Binding(constraint)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
                 // HACK: squeeze out the span between the identifier and the parameters.
                 // The hack is requried so that we don't remove the separator inside macro calls.
                 // This does not work in the presence of comment, hoping that people are
@@ -270,33 +262,14 @@ fn rewrite_segment(
                 };
                 result.push_str(separator);
 
-                let generics_str = overflow::rewrite_with_angle_brackets(
-                    context,
-                    "",
-                    param_list.iter(),
-                    shape,
-                    mk_sp(*span_lo, span_hi),
-                )?;
-
                 // Update position of last bracket.
                 *span_lo = context
                     .snippet_provider
                     .span_after(mk_sp(*span_lo, span_hi), "<");
-
-                result.push_str(&generics_str)
-            }
-            ast::GenericArgs::Parenthesized(ref data) => {
-                result.push_str(&format_function_type(
-                    data.inputs.iter().map(|x| &**x),
-                    &data.output,
-                    false,
-                    data.span,
-                    context,
-                    shape,
-                )?);
             }
             _ => (),
         }
+        result.push_str(&generics_str)
     }
 
     Some(result)
@@ -458,7 +431,7 @@ impl Rewrite for ast::WherePredicate {
                     format!("{}{}", type_str, colon)
                 };
 
-                rewrite_assign_rhs(context, lhs, bounds, shape)?
+                rewrite_assign_rhs(context, lhs, bounds, &RhsAssignKind::Bounds, shape)?
             }
             ast::WherePredicate::RegionPredicate(ast::WhereRegionPredicate {
                 ref lifetime,
@@ -471,7 +444,7 @@ impl Rewrite for ast::WherePredicate {
                 ..
             }) => {
                 let lhs_ty_str = lhs_ty.rewrite(context, shape).map(|lhs| lhs + " =")?;
-                rewrite_assign_rhs(context, lhs_ty_str, &**rhs_ty, shape)?
+                rewrite_assign_rhs(context, lhs_ty_str, &**rhs_ty, &RhsAssignKind::Ty, shape)?
             }
         };
 
@@ -486,6 +459,41 @@ impl Rewrite for ast::GenericArg {
             ast::GenericArg::Type(ref ty) => ty.rewrite(context, shape),
             ast::GenericArg::Const(ref const_) => const_.rewrite(context, shape),
         }
+    }
+}
+
+fn rewrite_generic_args(
+    gen_args: &ast::GenericArgs,
+    context: &RewriteContext<'_>,
+    shape: Shape,
+    span: Span,
+) -> Option<String> {
+    match gen_args {
+        ast::GenericArgs::AngleBracketed(ref data) if !data.args.is_empty() => {
+            let args = data
+                .args
+                .iter()
+                .map(|x| match x {
+                    ast::AngleBracketedArg::Arg(generic_arg) => {
+                        SegmentParam::from_generic_arg(generic_arg)
+                    }
+                    ast::AngleBracketedArg::Constraint(constraint) => {
+                        SegmentParam::Binding(constraint)
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            overflow::rewrite_with_angle_brackets(context, "", args.iter(), shape, span)
+        }
+        ast::GenericArgs::Parenthesized(ref data) => format_function_type(
+            data.inputs.iter().map(|x| &**x),
+            &data.output,
+            false,
+            data.span,
+            context,
+            shape,
+        ),
+        _ => Some("".to_owned()),
     }
 }
 
@@ -537,10 +545,10 @@ impl Rewrite for ast::GenericBound {
                         .map(|s| format!("?{}", s)),
                     ast::TraitBoundModifier::MaybeConst => poly_trait_ref
                         .rewrite(context, shape.offset_left(7)?)
-                        .map(|s| format!("?const {}", s)),
+                        .map(|s| format!("~const {}", s)),
                     ast::TraitBoundModifier::MaybeConstMaybe => poly_trait_ref
                         .rewrite(context, shape.offset_left(8)?)
-                        .map(|s| format!("?const ?{}", s)),
+                        .map(|s| format!("~const ?{}", s)),
                 };
                 rewrite.map(|s| if has_paren { format!("({})", s) } else { s })
             }
@@ -571,13 +579,23 @@ impl Rewrite for ast::GenericParam {
         if let ast::GenericParamKind::Const {
             ref ty,
             kw_span: _,
-            default: _,
+            default,
         } = &self.kind
         {
             result.push_str("const ");
             result.push_str(rewrite_ident(context, self.ident));
             result.push_str(": ");
             result.push_str(&ty.rewrite(context, shape)?);
+            if let Some(default) = default {
+                let eq_str = match context.config.type_punctuation_density() {
+                    TypeDensity::Compressed => "=",
+                    TypeDensity::Wide => " = ",
+                };
+                result.push_str(eq_str);
+                let budget = shape.width.checked_sub(result.len())?;
+                let rewrite = default.rewrite(context, Shape::legacy(budget, shape.indent))?;
+                result.push_str(&rewrite);
+            }
         } else {
             result.push_str(rewrite_ident(context, self.ident));
         }
@@ -662,7 +680,7 @@ impl Rewrite for ast::Ty {
                 let mut_str = format_mutability(mt.mutbl);
                 let mut_len = mut_str.len();
                 let mut result = String::with_capacity(128);
-                result.push_str("&");
+                result.push('&');
                 let ref_hi = context.snippet_provider.span_after(self.span(), "&");
                 let mut cmnt_lo = ref_hi;
 
@@ -685,7 +703,7 @@ impl Rewrite for ast::Ty {
                     } else {
                         result.push_str(&lt_str);
                     }
-                    result.push_str(" ");
+                    result.push(' ');
                     cmnt_lo = lifetime.ident.span.hi();
                 }
 
@@ -712,7 +730,7 @@ impl Rewrite for ast::Ty {
                     result = combine_strs_with_missing_comments(
                         context,
                         result.trim_end(),
-                        &mt.ty.rewrite(&context, shape)?,
+                        &mt.ty.rewrite(context, shape)?,
                         before_ty_span,
                         shape,
                         true,
@@ -722,7 +740,7 @@ impl Rewrite for ast::Ty {
                     let budget = shape.width.checked_sub(used_width)?;
                     let ty_str = mt
                         .ty
-                        .rewrite(&context, Shape::legacy(budget, shape.indent + used_width))?;
+                        .rewrite(context, Shape::legacy(budget, shape.indent + used_width))?;
                     result.push_str(&ty_str);
                 }
 
@@ -768,54 +786,6 @@ impl Rewrite for ast::Ty {
             }
             ast::TyKind::Tup(ref items) => {
                 rewrite_tuple(context, items.iter(), self.span, shape, items.len() == 1)
-            }
-            ast::TyKind::AnonymousStruct(ref fields, recovered) => {
-                let ident = Ident::new(
-                    kw::Struct,
-                    mk_sp(self.span.lo(), self.span.lo() + BytePos(6)),
-                );
-                let data = ast::VariantData::Struct(fields.clone(), recovered);
-                let variant = ast::Variant {
-                    attrs: AttrVec::new(),
-                    id: self.id,
-                    span: self.span,
-                    vis: DEFAULT_VISIBILITY,
-                    ident,
-                    data,
-                    disr_expr: None,
-                    is_placeholder: false,
-                };
-                format_struct_struct(
-                    &context,
-                    &StructParts::from_variant(&variant),
-                    fields,
-                    shape.indent,
-                    None,
-                )
-            }
-            ast::TyKind::AnonymousUnion(ref fields, recovered) => {
-                let ident = Ident::new(
-                    kw::Union,
-                    mk_sp(self.span.lo(), self.span.lo() + BytePos(5)),
-                );
-                let data = ast::VariantData::Struct(fields.clone(), recovered);
-                let variant = ast::Variant {
-                    attrs: AttrVec::new(),
-                    id: self.id,
-                    span: self.span,
-                    vis: DEFAULT_VISIBILITY,
-                    ident,
-                    data,
-                    disr_expr: None,
-                    is_placeholder: false,
-                };
-                format_struct_struct(
-                    &context,
-                    &StructParts::from_variant(&variant),
-                    fields,
-                    shape.indent,
-                    None,
-                )
             }
             ast::TyKind::Path(ref q_self, ref path) => {
                 rewrite_path(context, PathContext::Type, q_self.as_ref(), path, shape)
@@ -1048,11 +1018,7 @@ fn join_bounds_inner(
                     true,
                 )
                 .map(|v| (v, trailing_span, extendable)),
-                _ => Some((
-                    String::from(strs) + &trailing_str,
-                    trailing_span,
-                    extendable,
-                )),
+                _ => Some((strs + &trailing_str, trailing_span, extendable)),
             }
         },
     )?;
@@ -1065,6 +1031,13 @@ fn join_bounds_inner(
     } else {
         Some(result.0)
     }
+}
+
+pub(crate) fn opaque_ty(ty: &Option<ptr::P<ast::Ty>>) -> Option<&ast::GenericBounds> {
+    ty.as_ref().and_then(|t| match &t.kind {
+        ast::TyKind::ImplTrait(_, bounds) => Some(bounds),
+        _ => None,
+    })
 }
 
 pub(crate) fn can_be_overflowed_type(
@@ -1089,10 +1062,7 @@ fn rewrite_lifetime_param(
 ) -> Option<String> {
     let result = generic_params
         .iter()
-        .filter(|p| match p.kind {
-            ast::GenericParamKind::Lifetime => true,
-            _ => false,
-        })
+        .filter(|p| matches!(p.kind, ast::GenericParamKind::Lifetime))
         .map(|lt| lt.rewrite(context, shape))
         .collect::<Option<Vec<_>>>()?
         .join(", ");

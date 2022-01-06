@@ -31,7 +31,7 @@
 //! When you execute `x.py build`, the steps executed are:
 //!
 //! * First, the python script is run. This will automatically download the
-//!   stage0 rustc and cargo according to `src/stage0.txt`, or use the cached
+//!   stage0 rustc and cargo according to `src/stage0.json`, or use the cached
 //!   versions if they're available. These are then used to compile rustbuild
 //!   itself (using Cargo). Finally, control is then transferred to rustbuild.
 //!
@@ -277,7 +277,6 @@ pub struct Build {
 struct Crate {
     name: Interned<String>,
     deps: HashSet<Interned<String>>,
-    id: String,
     path: PathBuf,
 }
 
@@ -486,7 +485,7 @@ impl Build {
             t!(std::fs::read_dir(dir)).next().is_none()
         }
 
-        if !self.config.submodules {
+        if !self.config.submodules(&self.rust_info) {
             return;
         }
 
@@ -494,7 +493,7 @@ impl Build {
 
         // NOTE: The check for the empty directory is here because when running x.py the first time,
         // the submodule won't be checked out. Check it out now so we can build it.
-        if !channel::GitInfo::new(false, relative_path).is_git() && !dir_is_empty(&absolute_path) {
+        if !channel::GitInfo::new(false, &absolute_path).is_git() && !dir_is_empty(&absolute_path) {
             return;
         }
 
@@ -562,7 +561,7 @@ impl Build {
             "library/stdarch",
         ];
         // Avoid running git when there isn't a git checkout.
-        if !self.config.submodules {
+        if !self.config.submodules(&self.rust_info) {
             return;
         }
         let output = output(
@@ -1044,7 +1043,7 @@ impl Build {
             options[1] = Some(format!("-Clink-arg=-Wl,{}", threads));
         }
 
-        std::array::IntoIter::new(options).flatten()
+        IntoIterator::into_iter(options).flatten()
     }
 
     /// Returns if this target should statically link the C runtime, if specified
@@ -1145,7 +1144,7 @@ impl Build {
         match &self.config.channel[..] {
             "stable" => num.to_string(),
             "beta" => {
-                if self.rust_info.is_git() {
+                if self.rust_info.is_git() && !self.config.ignore_git {
                     format!("{}-beta.{}", num, self.beta_prerelease_version())
                 } else {
                     format!("{}-beta", num)
@@ -1494,8 +1493,13 @@ impl Build {
             {
                 eprintln!(
                     "
-Couldn't find required command: ninja
-You should install ninja, or set `ninja=false` in config.toml in the `[llvm]` section.
+Couldn't find required command: ninja (or ninja-build)
+
+You should install ninja as described at
+<https://github.com/ninja-build/ninja/wiki/Pre-built-Ninja-packages>,
+or set `ninja = false` in the `[llvm]` section of `config.toml`.
+Alternatively, set `download-ci-llvm = true` in that `[llvm]` section
+to download LLVM rather than building it.
 "
                 );
                 std::process::exit(1);

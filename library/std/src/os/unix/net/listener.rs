@@ -1,5 +1,5 @@
 use super::{sockaddr_un, SocketAddr, UnixStream};
-use crate::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::path::Path;
 use crate::sys::cvt;
 use crate::sys::net::Socket;
@@ -74,9 +74,47 @@ impl UnixListener {
             let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::bind(*inner.as_inner(), &addr as *const _ as *const _, len as _))?;
-            cvt(libc::listen(*inner.as_inner(), 128))?;
+            cvt(libc::bind(inner.as_inner().as_raw_fd(), &addr as *const _ as *const _, len as _))?;
+            cvt(libc::listen(inner.as_inner().as_raw_fd(), 128))?;
 
+            Ok(UnixListener(inner))
+        }
+    }
+
+    /// Creates a new `UnixListener` bound to the specified [`socket address`].
+    ///
+    /// [`socket address`]: crate::os::unix::net::SocketAddr
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(unix_socket_abstract)]
+    /// use std::os::unix::net::{UnixListener};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let listener1 = UnixListener::bind("path/to/socket")?;
+    ///     let addr = listener1.local_addr()?;
+    ///
+    ///     let listener2 = match UnixListener::bind_addr(&addr) {
+    ///         Ok(sock) => sock,
+    ///         Err(err) => {
+    ///             println!("Couldn't bind: {:?}", err);
+    ///             return Err(err);
+    ///         }
+    ///     };
+    ///     Ok(())
+    /// }
+    /// ```
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
+    pub fn bind_addr(socket_addr: &SocketAddr) -> io::Result<UnixListener> {
+        unsafe {
+            let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
+            cvt(libc::bind(
+                inner.as_raw_fd(),
+                &socket_addr.addr as *const _ as *const _,
+                socket_addr.len as _,
+            ))?;
+            cvt(libc::listen(inner.as_raw_fd(), 128))?;
             Ok(UnixListener(inner))
         }
     }
@@ -150,7 +188,7 @@ impl UnixListener {
     /// ```
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        SocketAddr::new(|addr, len| unsafe { libc::getsockname(*self.0.as_inner(), addr, len) })
+        SocketAddr::new(|addr, len| unsafe { libc::getsockname(self.as_raw_fd(), addr, len) })
     }
 
     /// Moves the socket into or out of nonblocking mode.
@@ -242,7 +280,7 @@ impl UnixListener {
 impl AsRawFd for UnixListener {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        *self.0.as_inner()
+        self.0.as_inner().as_raw_fd()
     }
 }
 
@@ -250,7 +288,7 @@ impl AsRawFd for UnixListener {
 impl FromRawFd for UnixListener {
     #[inline]
     unsafe fn from_raw_fd(fd: RawFd) -> UnixListener {
-        UnixListener(Socket::from_inner(fd))
+        UnixListener(Socket::from_inner(FromInner::from_inner(OwnedFd::from_raw_fd(fd))))
     }
 }
 
@@ -258,7 +296,31 @@ impl FromRawFd for UnixListener {
 impl IntoRawFd for UnixListener {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.0.into_inner()
+        self.0.into_inner().into_inner().into_raw_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for UnixListener {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_inner().as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<OwnedFd> for UnixListener {
+    #[inline]
+    fn from(fd: OwnedFd) -> UnixListener {
+        UnixListener(Socket::from_inner(FromInner::from_inner(fd)))
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<UnixListener> for OwnedFd {
+    #[inline]
+    fn from(listener: UnixListener) -> OwnedFd {
+        listener.0.into_inner().into_inner()
     }
 }
 
@@ -303,6 +365,7 @@ impl<'a> IntoIterator for &'a UnixListener {
 /// }
 /// ```
 #[derive(Debug)]
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "unix_socket", since = "1.10.0")]
 pub struct Incoming<'a> {
     listener: &'a UnixListener,

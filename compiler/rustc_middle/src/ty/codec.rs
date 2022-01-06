@@ -1,10 +1,10 @@
-// This module contains some shared code for encoding and decoding various
-// things from the `ty` module, and in particular implements support for
-// "shorthands" which allow to have pointers back into the already encoded
-// stream instead of re-encoding the same thing twice.
-//
-// The functionality in here is shared between persisting to crate metadata and
-// persisting to incr. comp. caches.
+//! This module contains some shared code for encoding and decoding various
+//! things from the `ty` module, and in particular implements support for
+//! "shorthands" which allow to have pointers back into the already encoded
+//! stream instead of re-encoding the same thing twice.
+//!
+//! The functionality in here is shared between persisting to crate metadata and
+//! persisting to incr. comp. caches.
 
 use crate::arena::ArenaAllocatable;
 use crate::infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
@@ -12,6 +12,7 @@ use crate::mir::{
     self,
     interpret::{AllocId, Allocation},
 };
+use crate::thir;
 use crate::ty::subst::SubstsRef;
 use crate::ty::{self, List, Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashMap;
@@ -209,7 +210,7 @@ where
 impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
     #[allow(rustc::usage_of_ty_tykind)]
     fn decode(decoder: &mut D) -> Result<Ty<'tcx>, D::Error> {
-        // Handle shorthands first, if we have an usize > 0x80.
+        // Handle shorthands first, if we have a usize > 0x80.
         if decoder.positioned_at_shorthand() {
             let pos = decoder.read_usize()?;
             assert!(pos >= SHORTHAND_OFFSET);
@@ -228,7 +229,7 @@ impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
 impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for ty::Binder<'tcx, ty::PredicateKind<'tcx>> {
     fn decode(decoder: &mut D) -> Result<ty::Binder<'tcx, ty::PredicateKind<'tcx>>, D::Error> {
         let bound_vars = Decodable::decode(decoder)?;
-        // Handle shorthands first, if we have an usize > 0x80.
+        // Handle shorthands first, if we have a usize > 0x80.
         Ok(ty::Binder::bind_with_vars(
             if decoder.positioned_at_shorthand() {
                 let pos = decoder.read_usize()?;
@@ -362,7 +363,7 @@ impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [(ty::Predicate<'tcx>, 
     }
 }
 
-impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::Node<'tcx>] {
+impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [thir::abstract_const::Node<'tcx>] {
     fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
         Ok(decoder.tcx().arena.alloc_from_iter(
             (0..decoder.read_usize()?)
@@ -372,7 +373,7 @@ impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::N
     }
 }
 
-impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::NodeId] {
+impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [thir::abstract_const::NodeId] {
     fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
         Ok(decoder.tcx().arena.alloc_from_iter(
             (0..decoder.read_usize()?)
@@ -385,7 +386,7 @@ impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::N
 impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for ty::List<ty::BoundVariableKind> {
     fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
         let len = decoder.read_usize()?;
-        Ok(decoder.tcx().mk_bound_variable_kinds((0..len).map(|_| Decodable::decode(decoder)))?)
+        decoder.tcx().mk_bound_variable_kinds((0..len).map(|_| Decodable::decode(decoder)))
     }
 }
 
@@ -416,17 +417,17 @@ macro_rules! __impl_decoder_methods {
 macro_rules! impl_arena_allocatable_decoder {
     ([]$args:tt) => {};
     ([decode $(, $attrs:ident)*]
-     [[$name:ident: $ty:ty], $tcx:lifetime]) => {
-        impl<$tcx, D: TyDecoder<$tcx>> RefDecodable<$tcx, D> for $ty {
+     [$name:ident: $ty:ty]) => {
+        impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for $ty {
             #[inline]
-            fn decode(decoder: &mut D) -> Result<&$tcx Self, D::Error> {
+            fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
                 decode_arena_allocable(decoder)
             }
         }
 
-        impl<$tcx, D: TyDecoder<$tcx>> RefDecodable<$tcx, D> for [$ty] {
+        impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [$ty] {
             #[inline]
-            fn decode(decoder: &mut D) -> Result<&$tcx Self, D::Error> {
+            fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
                 decode_arena_allocable_slice(decoder)
             }
         }
@@ -437,15 +438,15 @@ macro_rules! impl_arena_allocatable_decoder {
 }
 
 macro_rules! impl_arena_allocatable_decoders {
-    ([], [$($a:tt $name:ident: $ty:ty,)*], $tcx:lifetime) => {
+    ([$($a:tt $name:ident: $ty:ty,)*]) => {
         $(
-            impl_arena_allocatable_decoder!($a [[$name: $ty], $tcx]);
+            impl_arena_allocatable_decoder!($a [$name: $ty]);
         )*
     }
 }
 
-rustc_hir::arena_types!(impl_arena_allocatable_decoders, [], 'tcx);
-arena_types!(impl_arena_allocatable_decoders, [], 'tcx);
+rustc_hir::arena_types!(impl_arena_allocatable_decoders);
+arena_types!(impl_arena_allocatable_decoders);
 
 #[macro_export]
 macro_rules! implement_ty_decoder {

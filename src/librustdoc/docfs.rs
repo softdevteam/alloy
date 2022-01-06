@@ -11,18 +11,9 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::mpsc::Sender;
-
-macro_rules! try_err {
-    ($e:expr, $file:expr) => {
-        match $e {
-            Ok(e) => e,
-            Err(e) => return Err(E::new(e, $file)),
-        }
-    };
-}
 
 crate trait PathError {
     fn new<S, P: AsRef<Path>>(e: S, path: P) -> Self
@@ -55,17 +46,17 @@ impl DocFS {
         fs::create_dir_all(path)
     }
 
-    crate fn write<P, C, E>(&self, path: P, contents: C) -> Result<(), E>
+    crate fn write<E>(
+        &self,
+        path: PathBuf,
+        contents: impl 'static + Send + AsRef<[u8]>,
+    ) -> Result<(), E>
     where
-        P: AsRef<Path>,
-        C: AsRef<[u8]>,
         E: PathError,
     {
         if !self.sync_only && cfg!(windows) {
             // A possible future enhancement after more detailed profiling would
             // be to create the file sync so errors are reported eagerly.
-            let path = path.as_ref().to_path_buf();
-            let contents = contents.as_ref().to_vec();
             let sender = self.errors.clone().expect("can't write after closing");
             rayon::spawn(move || {
                 fs::write(&path, contents).unwrap_or_else(|e| {
@@ -75,7 +66,7 @@ impl DocFS {
                 });
             });
         } else {
-            try_err!(fs::write(&path, contents), path);
+            fs::write(&path, contents).map_err(|e| E::new(e, path))?;
         }
         Ok(())
     }

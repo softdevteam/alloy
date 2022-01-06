@@ -15,12 +15,15 @@ use std::{
     env, fmt,
     fs::write,
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use clap::{App, Arg, ArgMatches};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use walkdir::{DirEntry, WalkDir};
 
 #[cfg(not(windows))]
 const CLIPPY_DRIVER_PATH: &str = "target/debug/clippy-driver";
@@ -108,6 +111,22 @@ impl std::fmt::Display for ClippyWarning {
     }
 }
 
+fn get(path: &str) -> Result<ureq::Response, ureq::Error> {
+    const MAX_RETRIES: u8 = 4;
+    let mut retries = 0;
+    loop {
+        match ureq::get(path).call() {
+            Ok(res) => return Ok(res),
+            Err(e) if retries >= MAX_RETRIES => return Err(e),
+            Err(ureq::Error::Transport(e)) => eprintln!("Error: {}", e),
+            Err(e) => return Err(e),
+        }
+        eprintln!("retrying in {} seconds...", retries);
+        thread::sleep(Duration::from_secs(retries as u64));
+        retries += 1;
+    }
+}
+
 impl CrateSource {
     /// Makes the sources available on the disk for clippy to check.
     /// Clones a git repo and checks out the specified commit or downloads a crate from crates.io or
@@ -128,7 +147,7 @@ impl CrateSource {
                 if !krate_file_path.is_file() {
                     // create a file path to download and write the crate data into
                     let mut krate_dest = std::fs::File::create(&krate_file_path).unwrap();
-                    let mut krate_req = ureq::get(&url).call().unwrap().into_reader();
+                    let mut krate_req = get(&url).unwrap().into_reader();
                     // copy the crate into the file
                     std::io::copy(&mut krate_req, &mut krate_dest).unwrap();
 
@@ -193,32 +212,41 @@ impl CrateSource {
                 }
             },
             CrateSource::Path { name, path, options } => {
-                use fs_extra::dir;
+                // copy path into the dest_crate_root but skip directories that contain a CACHEDIR.TAG file.
+                // The target/ directory contains a CACHEDIR.TAG file so it is the most commonly skipped directory
+                // as a result of this filter.
+                let dest_crate_root = PathBuf::from(LINTCHECK_SOURCES).join(name);
+                if dest_crate_root.exists() {
+                    println!("Deleting existing directory at {:?}", dest_crate_root);
+                    std::fs::remove_dir_all(&dest_crate_root).unwrap();
+                }
 
-                // simply copy the entire directory into our target dir
-                let copy_dest = PathBuf::from(format!("{}/", LINTCHECK_SOURCES));
+                println!("Copying {:?} to {:?}", path, dest_crate_root);
 
-                // the source path of the crate we copied,  ${copy_dest}/crate_name
-                let crate_root = copy_dest.join(name); // .../crates/local_crate
+                fn is_cache_dir(entry: &DirEntry) -> bool {
+                    std::fs::read(entry.path().join("CACHEDIR.TAG"))
+                        .map(|x| x.starts_with(b"Signature: 8a477f597d28d172789f06886806bc55"))
+                        .unwrap_or(false)
+                }
 
-                if crate_root.exists() {
-                    println!(
-                        "Not copying {} to {}, destination already exists",
-                        path.display(),
-                        crate_root.display()
-                    );
-                } else {
-                    println!("Copying {} to {}", path.display(), copy_dest.display());
+                for entry in WalkDir::new(path).into_iter().filter_entry(|e| !is_cache_dir(e)) {
+                    let entry = entry.unwrap();
+                    let entry_path = entry.path();
+                    let relative_entry_path = entry_path.strip_prefix(path).unwrap();
+                    let dest_path = dest_crate_root.join(relative_entry_path);
+                    let metadata = entry_path.symlink_metadata().unwrap();
 
-                    dir::copy(path, &copy_dest, &dir::CopyOptions::new()).unwrap_or_else(|_| {
-                        panic!("Failed to copy from {}, to  {}", path.display(), crate_root.display())
-                    });
+                    if metadata.is_dir() {
+                        std::fs::create_dir(dest_path).unwrap();
+                    } else if metadata.is_file() {
+                        std::fs::copy(entry_path, dest_path).unwrap();
+                    }
                 }
 
                 Crate {
                     version: String::from("local"),
                     name: name.clone(),
-                    path: crate_root,
+                    path: dest_crate_root,
                     options: options.clone(),
                 }
             },
@@ -535,7 +563,7 @@ fn parse_json_message(json_message: &str, krate: &Crate) -> ClippyWarning {
     }
 }
 
-/// Generate a short list of occuring lints-types and their count
+/// Generate a short list of occurring lints-types and their count
 fn gather_stats(clippy_warnings: &[ClippyWarning]) -> (String, HashMap<&String, usize>) {
     // count lint type occurrences
     let mut counter: HashMap<&String, usize> = HashMap::new();
@@ -690,7 +718,7 @@ pub fn main() {
             // quarter of the time which might result in a longer wall clock runtime
 
             // This helps when we check many small crates with dep-trees that don't have a lot of branches in
-            // order to achive some kind of parallelism
+            // order to achieve some kind of parallelism
 
             // by default, use a single thread
             let num_cpus = config.max_jobs;

@@ -4,7 +4,7 @@ use std::ops::{Deref, Range};
 
 use clippy_utils::diagnostics::{span_lint, span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::source::{snippet_opt, snippet_with_applicability};
-use rustc_ast::ast::{Expr, ExprKind, ImplKind, Item, ItemKind, MacCall, Path, StrLit, StrStyle};
+use rustc_ast::ast::{Expr, ExprKind, Impl, Item, ItemKind, MacCall, Path, StrLit, StrStyle};
 use rustc_ast::token::{self, LitKind};
 use rustc_ast::tokenstream::TokenStream;
 use rustc_errors::Applicability;
@@ -16,14 +16,14 @@ use rustc_span::symbol::{kw, Symbol};
 use rustc_span::{sym, BytePos, Span, DUMMY_SP};
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns when you use `println!("")` to
+    /// ### What it does
+    /// This lint warns when you use `println!("")` to
     /// print a newline.
     ///
-    /// **Why is this bad?** You should use `println!()`, which is simpler.
+    /// ### Why is this bad?
+    /// You should use `println!()`, which is simpler.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Bad
     /// println!("");
@@ -31,21 +31,22 @@ declare_clippy_lint! {
     /// // Good
     /// println!();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PRINTLN_EMPTY_STRING,
     style,
     "using `println!(\"\")` with an empty string"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns when you use `print!()` with a format
+    /// ### What it does
+    /// This lint warns when you use `print!()` with a format
     /// string that ends in a newline.
     ///
-    /// **Why is this bad?** You should use `println!()` instead, which appends the
+    /// ### Why is this bad?
+    /// You should use `println!()` instead, which appends the
     /// newline.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let name = "World";
     /// print!("Hello {}!\n", name);
@@ -55,75 +56,102 @@ declare_clippy_lint! {
     /// # let name = "World";
     /// println!("Hello {}!", name);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PRINT_WITH_NEWLINE,
     style,
     "using `print!()` with a format string that ends in a single newline"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for printing on *stdout*. The purpose of this lint
+    /// ### What it does
+    /// Checks for printing on *stdout*. The purpose of this lint
     /// is to catch debugging remnants.
     ///
-    /// **Why is this bad?** People often print on *stdout* while debugging an
+    /// ### Why is this bad?
+    /// People often print on *stdout* while debugging an
     /// application and might forget to remove those prints afterward.
     ///
-    /// **Known problems:** Only catches `print!` and `println!` calls.
+    /// ### Known problems
+    /// * Only catches `print!` and `println!` calls.
+    /// * The lint level is unaffected by crate attributes. The level can still
+    ///   be set for functions, modules and other items. To change the level for
+    ///   the entire crate, please use command line flags. More information and a
+    ///   configuration example can be found in [clippy#6610].
     ///
-    /// **Example:**
+    /// [clippy#6610]: https://github.com/rust-lang/rust-clippy/issues/6610#issuecomment-977120558
+    ///
+    /// ### Example
     /// ```rust
     /// println!("Hello world!");
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PRINT_STDOUT,
     restriction,
     "printing on stdout"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for printing on *stderr*. The purpose of this lint
+    /// ### What it does
+    /// Checks for printing on *stderr*. The purpose of this lint
     /// is to catch debugging remnants.
     ///
-    /// **Why is this bad?** People often print on *stderr* while debugging an
+    /// ### Why is this bad?
+    /// People often print on *stderr* while debugging an
     /// application and might forget to remove those prints afterward.
     ///
-    /// **Known problems:** Only catches `eprint!` and `eprintln!` calls.
+    /// ### Known problems
+    /// * Only catches `eprint!` and `eprintln!` calls.
+    /// * The lint level is unaffected by crate attributes. The level can still
+    ///   be set for functions, modules and other items. To change the level for
+    ///   the entire crate, please use command line flags. More information and a
+    ///   configuration example can be found in [clippy#6610].
     ///
-    /// **Example:**
+    /// [clippy#6610]: https://github.com/rust-lang/rust-clippy/issues/6610#issuecomment-977120558
+    ///
+    /// ### Example
     /// ```rust
     /// eprintln!("Hello world!");
     /// ```
+    #[clippy::version = "1.50.0"]
     pub PRINT_STDERR,
     restriction,
     "printing on stderr"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for use of `Debug` formatting. The purpose of this
+    /// ### What it does
+    /// Checks for use of `Debug` formatting. The purpose of this
     /// lint is to catch debugging remnants.
     ///
-    /// **Why is this bad?** The purpose of the `Debug` trait is to facilitate
+    /// ### Why is this bad?
+    /// The purpose of the `Debug` trait is to facilitate
     /// debugging Rust code. It should not be used in user-facing output.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let foo = "bar";
     /// println!("{:?}", foo);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub USE_DEBUG,
     restriction,
     "use of `Debug`-based formatting"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns about the use of literals as `print!`/`println!` args.
+    /// ### What it does
+    /// This lint warns about the use of literals as `print!`/`println!` args.
     ///
-    /// **Why is this bad?** Using literals as `println!` args is inefficient
+    /// ### Why is this bad?
+    /// Using literals as `println!` args is inefficient
     /// (c.f., https://github.com/matthiaskrgr/rust-str-bench) and unnecessary
     /// (i.e., just put the literal in the format string)
     ///
-    /// **Known problems:** Will also warn with macro calls as arguments that expand to literals
+    /// ### Known problems
+    /// Will also warn with macro calls as arguments that expand to literals
     /// -- e.g., `println!("{}", env!("FOO"))`.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// println!("{}", "foo");
     /// ```
@@ -131,20 +159,21 @@ declare_clippy_lint! {
     /// ```rust
     /// println!("foo");
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PRINT_LITERAL,
     style,
     "printing a literal with a format string"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns when you use `writeln!(buf, "")` to
+    /// ### What it does
+    /// This lint warns when you use `writeln!(buf, "")` to
     /// print a newline.
     ///
-    /// **Why is this bad?** You should use `writeln!(buf)`, which is simpler.
+    /// ### Why is this bad?
+    /// You should use `writeln!(buf)`, which is simpler.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # use std::fmt::Write;
     /// # let mut buf = String::new();
@@ -154,22 +183,23 @@ declare_clippy_lint! {
     /// // Good
     /// writeln!(buf);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub WRITELN_EMPTY_STRING,
     style,
     "using `writeln!(buf, \"\")` with an empty string"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns when you use `write!()` with a format
+    /// ### What it does
+    /// This lint warns when you use `write!()` with a format
     /// string that
     /// ends in a newline.
     ///
-    /// **Why is this bad?** You should use `writeln!()` instead, which appends the
+    /// ### Why is this bad?
+    /// You should use `writeln!()` instead, which appends the
     /// newline.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # use std::fmt::Write;
     /// # let mut buf = String::new();
@@ -180,22 +210,26 @@ declare_clippy_lint! {
     /// // Good
     /// writeln!(buf, "Hello {}!", name);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub WRITE_WITH_NEWLINE,
     style,
     "using `write!()` with a format string that ends in a single newline"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns about the use of literals as `write!`/`writeln!` args.
+    /// ### What it does
+    /// This lint warns about the use of literals as `write!`/`writeln!` args.
     ///
-    /// **Why is this bad?** Using literals as `writeln!` args is inefficient
+    /// ### Why is this bad?
+    /// Using literals as `writeln!` args is inefficient
     /// (c.f., https://github.com/matthiaskrgr/rust-str-bench) and unnecessary
     /// (i.e., just put the literal in the format string)
     ///
-    /// **Known problems:** Will also warn with macro calls as arguments that expand to literals
+    /// ### Known problems
+    /// Will also warn with macro calls as arguments that expand to literals
     /// -- e.g., `writeln!(buf, "{}", env!("FOO"))`.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # use std::fmt::Write;
     /// # let mut buf = String::new();
@@ -205,6 +239,7 @@ declare_clippy_lint! {
     /// // Good
     /// writeln!(buf, "foo");
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub WRITE_LITERAL,
     style,
     "writing a literal with a format string"
@@ -229,7 +264,7 @@ impl_lint_pass!(Write => [
 
 impl EarlyLintPass for Write {
     fn check_item(&mut self, _: &EarlyContext<'_>, item: &Item) {
-        if let ItemKind::Impl(box ImplKind {
+        if let ItemKind::Impl(box Impl {
             of_trait: Some(trait_ref),
             ..
         }) = &item.kind
@@ -285,7 +320,7 @@ impl EarlyLintPass for Write {
                     let nl_span = match (dest, only_nl) {
                         // Special case of `write!(buf, "\n")`: Mark everything from the end of
                         // `buf` for removal so no trailing comma [`writeln!(buf, )`] remains.
-                        (Some(dest_expr), true) => Span::new(dest_expr.span.hi(), nl_span.hi(), nl_span.ctxt()),
+                        (Some(dest_expr), true) => nl_span.with_lo(dest_expr.span.hi()),
                         _ => nl_span,
                     };
                     span_lint_and_then(
@@ -548,10 +583,10 @@ impl Write {
             let replacement: String = match lit.token.kind {
                 LitKind::Integer | LitKind::Float | LitKind::Err => continue,
                 LitKind::StrRaw(_) | LitKind::ByteStrRaw(_) if matches!(fmtstr.style, StrStyle::Raw(_)) => {
-                    lit.token.symbol.as_str().replace("{", "{{").replace("}", "}}")
+                    lit.token.symbol.as_str().replace('{', "{{").replace('}', "}}")
                 },
                 LitKind::Str | LitKind::ByteStr if matches!(fmtstr.style, StrStyle::Cooked) => {
-                    lit.token.symbol.as_str().replace("{", "{{").replace("}", "}}")
+                    lit.token.symbol.as_str().replace('{', "{{").replace('}', "}}")
                 },
                 LitKind::StrRaw(_) | LitKind::Str | LitKind::ByteStrRaw(_) | LitKind::ByteStr => continue,
                 LitKind::Byte | LitKind::Char => match &*lit.token.symbol.as_str() {

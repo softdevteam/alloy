@@ -92,6 +92,7 @@ E0164: include_str!("./error_codes/E0164.md"),
 E0165: include_str!("./error_codes/E0165.md"),
 E0170: include_str!("./error_codes/E0170.md"),
 E0178: include_str!("./error_codes/E0178.md"),
+E0183: include_str!("./error_codes/E0183.md"),
 E0184: include_str!("./error_codes/E0184.md"),
 E0185: include_str!("./error_codes/E0185.md"),
 E0186: include_str!("./error_codes/E0186.md"),
@@ -237,17 +238,20 @@ E0455: include_str!("./error_codes/E0455.md"),
 E0458: include_str!("./error_codes/E0458.md"),
 E0459: include_str!("./error_codes/E0459.md"),
 E0463: include_str!("./error_codes/E0463.md"),
+E0464: include_str!("./error_codes/E0464.md"),
 E0466: include_str!("./error_codes/E0466.md"),
 E0468: include_str!("./error_codes/E0468.md"),
 E0469: include_str!("./error_codes/E0469.md"),
 E0477: include_str!("./error_codes/E0477.md"),
 E0478: include_str!("./error_codes/E0478.md"),
+E0482: include_str!("./error_codes/E0482.md"),
 E0491: include_str!("./error_codes/E0491.md"),
 E0492: include_str!("./error_codes/E0492.md"),
 E0493: include_str!("./error_codes/E0493.md"),
 E0495: include_str!("./error_codes/E0495.md"),
 E0496: include_str!("./error_codes/E0496.md"),
 E0497: include_str!("./error_codes/E0497.md"),
+E0498: include_str!("./error_codes/E0498.md"),
 E0499: include_str!("./error_codes/E0499.md"),
 E0500: include_str!("./error_codes/E0500.md"),
 E0501: include_str!("./error_codes/E0501.md"),
@@ -287,6 +291,7 @@ E0539: include_str!("./error_codes/E0539.md"),
 E0541: include_str!("./error_codes/E0541.md"),
 E0542: include_str!("./error_codes/E0542.md"),
 E0543: include_str!("./error_codes/E0543.md"),
+E0544: include_str!("./error_codes/E0544.md"),
 E0545: include_str!("./error_codes/E0545.md"),
 E0546: include_str!("./error_codes/E0546.md"),
 E0547: include_str!("./error_codes/E0547.md"),
@@ -357,6 +362,7 @@ E0621: include_str!("./error_codes/E0621.md"),
 E0622: include_str!("./error_codes/E0622.md"),
 E0623: include_str!("./error_codes/E0623.md"),
 E0624: include_str!("./error_codes/E0624.md"),
+E0625: include_str!("./error_codes/E0625.md"),
 E0626: include_str!("./error_codes/E0626.md"),
 E0627: include_str!("./error_codes/E0627.md"),
 E0628: include_str!("./error_codes/E0628.md"),
@@ -476,12 +482,15 @@ E0780: include_str!("./error_codes/E0780.md"),
 E0781: include_str!("./error_codes/E0781.md"),
 E0782: include_str!("./error_codes/E0782.md"),
 E0783: include_str!("./error_codes/E0783.md"),
+E0784: include_str!("./error_codes/E0784.md"),
+E0785: include_str!("./error_codes/E0785.md"),
+E0786: include_str!("./error_codes/E0786.md"),
 ;
 //  E0006, // merged with E0005
 //  E0008, // cannot bind by-move into a pattern guard
-//  E0019, merged into E0015
-//  E0035, merged into E0087/E0089
-//  E0036, merged into E0087/E0089
+//  E0019, // merged into E0015
+//  E0035, // merged into E0087/E0089
+//  E0036, // merged into E0087/E0089
 //  E0068,
 //  E0085,
 //  E0086,
@@ -496,8 +505,8 @@ E0783: include_str!("./error_codes/E0783.md"),
 //  E0134,
 //  E0135,
 //  E0141,
-//  E0153, unused error code
-//  E0157, unused error code
+//  E0153, // unused error code
+//  E0157, // unused error code
 //  E0159, // use of trait `{}` as struct constructor
 //  E0163, // merged into E0071
 //  E0167,
@@ -506,7 +515,6 @@ E0783: include_str!("./error_codes/E0783.md"),
 //  E0173, // manual implementations of unboxed closure traits are experimental
 //  E0174,
 //  E0182, // merged into E0229
-    E0183,
 //  E0187, // cannot infer the kind of the closure
 //  E0188, // can not cast an immutable reference to a mutable pointer
 //  E0189, // deprecated: can only cast a boxed pointer to a boxed object
@@ -566,25 +574,24 @@ E0783: include_str!("./error_codes/E0783.md"),
            // between structures with the same definition
 //  E0385, // {} in an aliasable location
 //  E0402, // cannot use an outer type parameter in this context
-//  E0406, merged into 420
-//  E0410, merged into 408
-//  E0413, merged into 530
-//  E0414, merged into 530
-//  E0417, merged into 532
-//  E0418, merged into 532
-//  E0419, merged into 531
-//  E0420, merged into 532
-//  E0421, merged into 531
-//  E0427, merged into 530
+//  E0406, // merged into 420
+//  E0410, // merged into 408
+//  E0413, // merged into 530
+//  E0414, // merged into 530
+//  E0417, // merged into 532
+//  E0418, // merged into 532
+//  E0419, // merged into 531
+//  E0420, // merged into 532
+//  E0421, // merged into 531
+//  E0427, // merged into 530
 //  E0456, // plugin `..` is not available for triple `..`
     E0457, // plugin `..` only found in rlib format, but must be available...
     E0460, // found possibly newer version of crate `..`
     E0461, // couldn't find crate `..` with expected target triple ..
     E0462, // found staticlib `..` instead of rlib or dylib
-    E0464, // multiple matching crates for `..`
     E0465, // multiple .. candidates for `..` found
-//  E0467, removed
-//  E0470, removed
+//  E0467, // removed
+//  E0470, // removed
 //  E0471, // constant evaluation error (in pattern)
     E0472, // llvm_asm! is unsupported on this target
 //  E0473, // dereference of reference outside its lifetime
@@ -594,7 +601,6 @@ E0783: include_str!("./error_codes/E0783.md"),
 //  E0479, // the type `..` (provided as the value of a type parameter) is...
 //  E0480, // lifetime of method receiver does not outlive the method call
 //  E0481, // lifetime of function argument does not outlive the function call
-    E0482, // lifetime of return value does not outlive the function call
 //  E0483, // lifetime of operand does not outlive the operation
 //  E0484, // reference is not valid at the time of borrow
 //  E0485, // automatically reference is not valid at the time of borrow
@@ -603,14 +609,11 @@ E0783: include_str!("./error_codes/E0783.md"),
 //  E0488, // lifetime of variable does not enclose its declaration
 //  E0489, // type/lifetime parameter not in scope here
     E0490, // a value of type `..` is borrowed for too long
-    E0498,  // malformed plugin attribute
     E0514, // metadata version mismatch
     E0519, // local crate and dependency have same (crate-name, disambiguator)
-    // two dependencies have same (crate-name, disambiguator) but different SVH
-    E0523,
+    E0523, // two dependencies have same (crate-name, disambiguator) but different SVH
 //  E0526, // shuffle indices are not constant
 //  E0540, // multiple rustc_deprecated attributes
-    E0544, // multiple stability levels
 //  E0548, // replaced with a generic attribute input check
 //  E0553, // multiple rustc_const_unstable attributes
 //  E0555, // replaced with a generic attribute input check
@@ -622,7 +625,6 @@ E0783: include_str!("./error_codes/E0783.md"),
 //  E0611, // merged into E0616
 //  E0612, // merged into E0609
 //  E0613, // Removed (merged with E0609)
-    E0625, // thread-local statics cannot be accessed at compile-time
 //  E0629, // missing 'feature' (rustc_const_unstable)
 //  E0630, // rustc_const_unstable attribute must be paired with stable/unstable
            // attribute
@@ -636,7 +638,7 @@ E0783: include_str!("./error_codes/E0783.md"),
     E0711, // a feature has been declared with conflicting stability attributes
     E0717, // rustc_promotable without stability attribute
 //  E0721, // `await` keyword
-//    E0723, unstable feature in `const` context
+//  E0723, // unstable feature in `const` context
     E0726, // non-explicit (not `'_`) elided lifetime in unsupported position
 //  E0738, // Removed; errored on `#[track_caller] fn`s in `extern "Rust" { ... }`.
     E0772, // `'static' obligation coming from `impl dyn Trait {}` or `impl Foo for dyn Bar {}`.

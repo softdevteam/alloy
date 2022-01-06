@@ -22,6 +22,8 @@ pub struct Foo {
 }
 
 impl Foo {
+    /// Some documentation
+    /// # A Heading
     pub fn a_method(&self) {}
 }
 
@@ -38,7 +40,9 @@ impl Trait for Foo {
 }
 
 
-impl implementors::Whatever for Foo {}
+impl implementors::Whatever for Foo {
+    type Foo = u32;
+}
 
 pub mod sub_mod {
     /// ```txt
@@ -65,6 +69,15 @@ pub mod long_table {
     ///
     /// I wanna sqdkfnqds f dsqf qds f dsqf dsq f dsq f qds f qds f qds f dsqq f dsf sqdf dsq fds f dsq f dq f ds fq sd fqds f dsq f sqd fsq df sd fdsqfqsd fdsq f dsq f dsqfd s dfq
     pub struct Foo;
+
+    /// | This::is::a::kinda::very::long::header::number::one | This::is::a::kinda::very::long::header::number::two | This::is::a::kinda::very::long::header::number::one | This::is::a::kinda::very::long::header::number::two |
+    /// | ----------- | ----------- | ----------- | ----------- |
+    /// | This::is::a::kinda::long::content::number::one | This::is::a::kinda::very::long::content::number::two | This::is::a::kinda::long::content::number::one | This::is::a::kinda::very::long::content::number::two |
+    ///
+    /// I wanna sqdkfnqds f dsqf qds f dsqf dsq f dsq f qds f qds f qds f dsqq f dsf sqdf dsq fds f dsq f dq f ds fq sd fqds f dsq f sqd fsq df sd fdsqfqsd fdsq f dsq f dsqfd s dfq
+    impl Foo {
+        pub fn foo(&self) {}
+    }
 }
 
 pub mod summary_table {
@@ -72,4 +85,21 @@ pub mod summary_table {
     /// | -------- | -------- |
     /// | content | content |
     pub struct Foo;
+}
+
+pub mod too_long {
+pub type ReallyLongTypeNameLongLongLong = Option<unsafe extern "C" fn(a: *const u8, b: *const u8) -> *const u8>;
+
+pub const ReallyLongTypeNameLongLongLongConstBecauseWhyNotAConstRightGigaGigaSupraLong: u32 = 0;
+
+pub struct SuperIncrediblyLongLongLongLongLongLongLongGigaGigaGigaMegaLongLongLongStructName {
+    pub a: u32,
+}
+
+impl SuperIncrediblyLongLongLongLongLongLongLongGigaGigaGigaMegaLongLongLongStructName {
+    /// ```
+    /// let x = SuperIncrediblyLongLongLongLongLongLongLongGigaGigaGigaMegaLongLongLongStructName { a: 0 };
+    /// ```
+        pub fn foo(&self) {}
+    }
 }

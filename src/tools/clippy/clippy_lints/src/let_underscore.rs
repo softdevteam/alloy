@@ -9,15 +9,14 @@ use rustc_middle::ty::subst::GenericArgKind;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `let _ = <expr>`
-    /// where expr is #[must_use]
+    /// ### What it does
+    /// Checks for `let _ = <expr>` where expr is `#[must_use]`
     ///
-    /// **Why is this bad?** It's better to explicitly
-    /// handle the value of a #[must_use] expr
+    /// ### Why is this bad?
+    /// It's better to explicitly handle the value of a `#[must_use]`
+    /// expr
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// fn f() -> Result<u32, u32> {
     ///     Ok(0)
@@ -27,23 +26,25 @@ declare_clippy_lint! {
     /// // is_ok() is marked #[must_use]
     /// let _ = f().is_ok();
     /// ```
+    #[clippy::version = "1.42.0"]
     pub LET_UNDERSCORE_MUST_USE,
     restriction,
     "non-binding let on a `#[must_use]` expression"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `let _ = sync_lock`
+    /// ### What it does
+    /// Checks for `let _ = sync_lock`.
+    /// This supports `mutex` and `rwlock` in `std::sync` and `parking_lot`.
     ///
-    /// **Why is this bad?** This statement immediately drops the lock instead of
+    /// ### Why is this bad?
+    /// This statement immediately drops the lock instead of
     /// extending its lifetime to the end of the scope, which is often not intended.
     /// To extend lock lifetime to the end of the scope, use an underscore-prefixed
     /// name instead (i.e. _lock). If you want to explicitly drop the lock,
     /// `std::mem::drop` conveys your intention better and is less error-prone.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     ///
     /// Bad:
     /// ```rust,ignore
@@ -54,25 +55,26 @@ declare_clippy_lint! {
     /// ```rust,ignore
     /// let _lock = mutex.lock();
     /// ```
+    #[clippy::version = "1.43.0"]
     pub LET_UNDERSCORE_LOCK,
     correctness,
     "non-binding let on a synchronization lock"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `let _ = <expr>`
+    /// ### What it does
+    /// Checks for `let _ = <expr>`
     /// where expr has a type that implements `Drop`
     ///
-    /// **Why is this bad?** This statement immediately drops the initializer
+    /// ### Why is this bad?
+    /// This statement immediately drops the initializer
     /// expression instead of extending its lifetime to the end of the scope, which
     /// is often not intended. To extend the expression's lifetime to the end of the
     /// scope, use an underscore-prefixed name instead (i.e. _var). If you want to
     /// explicitly drop the expression, `std::mem::drop` conveys your intention
     /// better and is less error-prone.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     ///
     /// Bad:
     /// ```rust,ignore
@@ -95,6 +97,7 @@ declare_clippy_lint! {
     ///     // dropped at end of scope
     /// }
     /// ```
+    #[clippy::version = "1.50.0"]
     pub LET_UNDERSCORE_DROP,
     pedantic,
     "non-binding let on a type that implements `Drop`"
@@ -102,10 +105,12 @@ declare_clippy_lint! {
 
 declare_lint_pass!(LetUnderscore => [LET_UNDERSCORE_MUST_USE, LET_UNDERSCORE_LOCK, LET_UNDERSCORE_DROP]);
 
-const SYNC_GUARD_PATHS: [&[&str]; 3] = [
+const SYNC_GUARD_PATHS: [&[&str]; 5] = [
     &paths::MUTEX_GUARD,
     &paths::RWLOCK_READ_GUARD,
     &paths::RWLOCK_WRITE_GUARD,
+    &paths::PARKING_LOT_RAWMUTEX,
+    &paths::PARKING_LOT_RAWRWLOCK,
 ];
 
 impl<'tcx> LateLintPass<'tcx> for LetUnderscore {
@@ -119,7 +124,7 @@ impl<'tcx> LateLintPass<'tcx> for LetUnderscore {
             if let Some(init) = local.init;
             then {
                 let init_ty = cx.typeck_results().expr_ty(init);
-                let contains_sync_guard = init_ty.walk().any(|inner| match inner.unpack() {
+                let contains_sync_guard = init_ty.walk(cx.tcx).any(|inner| match inner.unpack() {
                     GenericArgKind::Type(inner_ty) => {
                         SYNC_GUARD_PATHS.iter().any(|path| match_type(cx, inner_ty, path))
                     },

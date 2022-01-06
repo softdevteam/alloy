@@ -10,24 +10,27 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{BytePos, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for functions that expect closures of type
+    /// ### What it does
+    /// Checks for functions that expect closures of type
     /// Fn(...) -> Ord where the implemented closure returns the unit type.
     /// The lint also suggests to remove the semi-colon at the end of the statement if present.
     ///
-    /// **Why is this bad?** Likely, returning the unit type is unintentional, and
+    /// ### Why is this bad?
+    /// Likely, returning the unit type is unintentional, and
     /// could simply be caused by an extra semi-colon. Since () implements Ord
     /// it doesn't cause a compilation error.
     /// This is the same reasoning behind the unit_cmp lint.
     ///
-    /// **Known problems:** If returning unit is intentional, then there is no
+    /// ### Known problems
+    /// If returning unit is intentional, then there is no
     /// way of specifying this without triggering needless_return lint
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let mut twins = vec!((1, 1), (2, 2));
     /// twins.sort_by_key(|x| { x.1; });
     /// ```
+    #[clippy::version = "1.47.0"]
     pub UNIT_RETURN_EXPECTING_ORD,
     correctness,
     "fn arguments of type Fn(...) -> Ord returning the unit type ()."
@@ -43,7 +46,7 @@ fn get_trait_predicates_for_trait_id<'tcx>(
     let mut preds = Vec::new();
     for (pred, _) in generics.predicates {
         if_chain! {
-            if let PredicateKind::Trait(poly_trait_pred, _) = pred.kind().skip_binder();
+            if let PredicateKind::Trait(poly_trait_pred) = pred.kind().skip_binder();
             let trait_pred = cx.tcx.erase_late_bound_regions(pred.kind().rebind(poly_trait_pred));
             if let Some(trait_def_id) = trait_id;
             if trait_def_id == trait_pred.trait_ref.def_id;
@@ -125,7 +128,7 @@ fn check_arg<'tcx>(cx: &LateContext<'tcx>, arg: &'tcx Expr<'tcx>) -> Option<(Spa
                 then {
                     let data = stmt.span.data();
                     // Make a span out of the semicolon for the help message
-                    Some((span, Some(Span::new(data.hi-BytePos(1), data.hi, data.ctxt))))
+                    Some((span, Some(data.with_lo(data.hi-BytePos(1)))))
                 } else {
                     Some((span, None))
                 }

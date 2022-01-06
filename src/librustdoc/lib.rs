@@ -4,9 +4,12 @@
 )]
 #![feature(rustc_private)]
 #![feature(array_methods)]
+#![feature(assert_matches)]
 #![feature(box_patterns)]
+#![feature(control_flow_enum)]
 #![feature(box_syntax)]
 #![feature(in_band_lifetimes)]
+#![feature(let_else)]
 #![feature(nll)]
 #![feature(test)]
 #![feature(crate_visibility_modifier)]
@@ -17,8 +20,6 @@
 #![recursion_limit = "256"]
 #![warn(rustc::internal)]
 
-#[macro_use]
-extern crate lazy_static;
 #[macro_use]
 extern crate tracing;
 
@@ -31,8 +32,10 @@ extern crate tracing;
 // Dependencies listed in Cargo.toml do not need `extern crate`.
 
 extern crate rustc_ast;
+extern crate rustc_ast_lowering;
 extern crate rustc_ast_pretty;
 extern crate rustc_attr;
+extern crate rustc_const_eval;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_errors;
@@ -46,12 +49,13 @@ extern crate rustc_interface;
 extern crate rustc_lexer;
 extern crate rustc_lint;
 extern crate rustc_lint_defs;
+extern crate rustc_macros;
 extern crate rustc_metadata;
 extern crate rustc_middle;
-extern crate rustc_mir;
 extern crate rustc_parse;
 extern crate rustc_passes;
 extern crate rustc_resolve;
+extern crate rustc_serialize;
 extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
@@ -100,17 +104,13 @@ macro_rules! map {
     }}
 }
 
-#[macro_use]
-mod externalfiles;
-
 mod clean;
 mod config;
 mod core;
 mod docfs;
-mod doctree;
-#[macro_use]
-mod error;
 mod doctest;
+mod error;
+mod externalfiles;
 mod fold;
 mod formats;
 // used by the error-index generator, so it needs to be public
@@ -119,7 +119,9 @@ mod json;
 crate mod lint;
 mod markdown;
 mod passes;
+mod scrape_examples;
 mod theme;
+mod visit;
 mod visit_ast;
 mod visit_lib;
 
@@ -295,6 +297,13 @@ fn opts() -> Vec<RustcOptGroup> {
                 "NAME=URL",
             )
         }),
+        unstable("extern-html-root-takes-precedence", |o| {
+            o.optflagmulti(
+                "",
+                "extern-html-root-takes-precedence",
+                "give precedence to `--extern-html-root-url`, not `html_root_url`",
+            )
+        }),
         stable("plugin-path", |o| o.optmulti("", "plugin-path", "removed", "DIR")),
         stable("C", |o| {
             o.optmulti("C", "codegen", "pass a codegen option to rustc", "OPT[=VALUE]")
@@ -411,8 +420,12 @@ fn opts() -> Vec<RustcOptGroup> {
                 "URL",
             )
         }),
-        unstable("display-warnings", |o| {
-            o.optflagmulti("", "display-warnings", "to print code warnings when testing doc")
+        unstable("display-doctest-warnings", |o| {
+            o.optflagmulti(
+                "",
+                "display-doctest-warnings",
+                "show warnings that originate in doctests",
+            )
         }),
         stable("crate-version", |o| {
             o.optopt("", "crate-version", "crate version to print into documentation", "VERSION")
@@ -497,10 +510,11 @@ fn opts() -> Vec<RustcOptGroup> {
         unstable("disable-minification", |o| {
             o.optflagmulti("", "disable-minification", "Disable minification applied on JS files")
         }),
-        stable("warn", |o| o.optmulti("W", "warn", "Set lint warnings", "OPT")),
-        stable("allow", |o| o.optmulti("A", "allow", "Set lint allowed", "OPT")),
-        stable("deny", |o| o.optmulti("D", "deny", "Set lint denied", "OPT")),
-        stable("forbid", |o| o.optmulti("F", "forbid", "Set lint forbidden", "OPT")),
+        stable("allow", |o| o.optmulti("A", "allow", "Set lint allowed", "LINT")),
+        stable("warn", |o| o.optmulti("W", "warn", "Set lint warnings", "LINT")),
+        stable("force-warn", |o| o.optmulti("", "force-warn", "Set lint force-warn", "LINT")),
+        stable("deny", |o| o.optmulti("D", "deny", "Set lint denied", "LINT")),
+        stable("forbid", |o| o.optmulti("F", "forbid", "Set lint forbidden", "LINT")),
         stable("cap-lints", |o| {
             o.optmulti(
                 "",
@@ -509,14 +523,6 @@ fn opts() -> Vec<RustcOptGroup> {
                  More restrictive lints are capped at this \
                  level. By default, it is at `forbid` level.",
                 "LEVEL",
-            )
-        }),
-        unstable("force-warn", |o| {
-            o.optopt(
-                "",
-                "force-warn",
-                "Lints that will warn even if allowed somewhere else",
-                "LINTS",
             )
         }),
         unstable("index-page", |o| {
@@ -606,6 +612,37 @@ fn opts() -> Vec<RustcOptGroup> {
         }),
         unstable("nocapture", |o| {
             o.optflag("", "nocapture", "Don't capture stdout and stderr of tests")
+        }),
+        unstable("generate-link-to-definition", |o| {
+            o.optflag(
+                "",
+                "generate-link-to-definition",
+                "Make the identifiers in the HTML source code pages navigable",
+            )
+        }),
+        unstable("scrape-examples-output-path", |o| {
+            o.optopt(
+                "",
+                "scrape-examples-output-path",
+                "",
+                "collect function call information and output at the given path",
+            )
+        }),
+        unstable("scrape-examples-target-crate", |o| {
+            o.optmulti(
+                "",
+                "scrape-examples-target-crate",
+                "",
+                "collect function call information for functions from the target crate",
+            )
+        }),
+        unstable("with-examples", |o| {
+            o.optmulti(
+                "",
+                "with-examples",
+                "",
+                "path to function call information (for displaying examples in the documentation)",
+            )
         }),
     ]
 }
@@ -721,6 +758,7 @@ fn main_options(options: config::Options) -> MainResult {
     let externs = options.externs.clone();
     let manual_passes = options.manual_passes.clone();
     let render_options = options.render_options.clone();
+    let scrape_examples_options = options.scrape_examples_options.clone();
     let config = core::create_config(options);
 
     interface::create_compiler_and_run(config, |compiler| {
@@ -736,9 +774,9 @@ fn main_options(options: config::Options) -> MainResult {
             // We need to hold on to the complete resolver, so we cause everything to be
             // cloned for the analysis passes to use. Suboptimal, but necessary in the
             // current architecture.
-            let resolver = core::create_resolver(externs, queries, &sess);
+            let resolver = core::create_resolver(externs, queries, sess);
 
-            if sess.has_errors() {
+            if sess.diagnostic().has_errors_or_lint_errors() {
                 sess.fatal("Compilation failed, aborting rustdoc");
             }
 
@@ -756,6 +794,10 @@ fn main_options(options: config::Options) -> MainResult {
                     )
                 });
                 info!("finished with rustc");
+
+                if let Some(options) = scrape_examples_options {
+                    return scrape_examples::run(krate, render_opts, cache, tcx, options);
+                }
 
                 cache.crate_version = crate_version;
 

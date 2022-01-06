@@ -8,7 +8,6 @@
 //! https://rustc-dev-guide.rust-lang.org/traits/resolution.html#confirmation
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir::lang_items::LangItem;
-use rustc_hir::Constness;
 use rustc_index::bit_set::GrowableBitSet;
 use rustc_infer::infer::InferOk;
 use rustc_infer::infer::LateBoundRegionConversionTime::HigherRankedType;
@@ -26,12 +25,13 @@ use crate::traits::Normalized;
 use crate::traits::OutputTypeParameterMismatch;
 use crate::traits::Selection;
 use crate::traits::TraitNotObjectSafe;
+use crate::traits::VtblSegment;
 use crate::traits::{BuiltinDerivedObligation, ImplDerivedObligation};
 use crate::traits::{
-    ImplSourceAutoImplData, ImplSourceBuiltinData, ImplSourceClosureData,
+    ImplSourceAutoImplData, ImplSourceBuiltinData, ImplSourceClosureData, ImplSourceConstDropData,
     ImplSourceDiscriminantKindData, ImplSourceFnPointerData, ImplSourceGeneratorData,
     ImplSourceObjectData, ImplSourcePointeeData, ImplSourceTraitAliasData,
-    ImplSourceUserDefinedData,
+    ImplSourceTraitUpcastingData, ImplSourceUserDefinedData,
 };
 use crate::traits::{ObjectCastObligation, PredicateObligation, TraitObligation};
 use crate::traits::{Obligation, ObligationCause};
@@ -42,6 +42,7 @@ use super::SelectionCandidate::{self, *};
 use super::SelectionContext;
 
 use std::iter;
+use std::ops::ControlFlow;
 
 impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     #[instrument(level = "debug", skip(self))]
@@ -57,8 +58,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             }
 
             ParamCandidate(param) => {
-                let obligations = self.confirm_param_candidate(obligation, param.value);
-                Ok(ImplSource::Param(obligations, param.constness))
+                let obligations = self.confirm_param_candidate(obligation, param.0.value);
+                Ok(ImplSource::Param(obligations, param.0.constness))
             }
 
             ImplCandidate(impl_def_id) => {
@@ -73,7 +74,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             ProjectionCandidate(idx) => {
                 let obligations = self.confirm_projection_candidate(obligation, idx)?;
                 // FIXME(jschievink): constness
-                Ok(ImplSource::Param(obligations, Constness::NotConst))
+                Ok(ImplSource::Param(obligations, ty::BoundConstness::NotConst))
             }
 
             ObjectCandidate(idx) => {
@@ -91,7 +92,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 Ok(ImplSource::Generator(vtable_generator))
             }
 
-            FnPointerCandidate => {
+            FnPointerCandidate { .. } => {
                 let data = self.confirm_fn_pointer_candidate(obligation)?;
                 Ok(ImplSource::FnPointer(data))
             }
@@ -111,13 +112,20 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 // This indicates something like `Trait + Send: Send`. In this case, we know that
                 // this holds because that's what the object type is telling us, and there's really
                 // no additional obligations to prove and no types in particular to unify, etc.
-                Ok(ImplSource::Param(Vec::new(), Constness::NotConst))
+                Ok(ImplSource::Param(Vec::new(), ty::BoundConstness::NotConst))
             }
 
             BuiltinUnsizeCandidate => {
                 let data = self.confirm_builtin_unsize_candidate(obligation)?;
                 Ok(ImplSource::Builtin(data))
             }
+
+            TraitUpcastingUnsizeCandidate(idx) => {
+                let data = self.confirm_trait_upcasting_unsize_candidate(obligation, idx)?;
+                Ok(ImplSource::TraitUpcasting(data))
+            }
+
+            ConstDropCandidate => Ok(ImplSource::ConstDrop(ImplSourceConstDropData)),
         }
     }
 
@@ -133,6 +141,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             let placeholder_trait_predicate =
                 self.infcx().replace_bound_vars_with_placeholders(trait_predicate);
             let placeholder_self_ty = placeholder_trait_predicate.self_ty();
+            let placeholder_trait_predicate = ty::Binder::dummy(placeholder_trait_predicate);
             let (def_id, substs) = match *placeholder_self_ty.kind() {
                 ty::Projection(proj) => (proj.item_def_id, proj.substs),
                 ty::Opaque(def_id, substs) => (def_id, substs),
@@ -156,7 +165,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             obligations.extend(self.infcx.commit_if_ok(|_| {
                 self.infcx
                     .at(&obligation.cause, obligation.param_env)
-                    .sup(placeholder_trait_predicate.trait_ref.to_poly_trait_ref(), candidate.value)
+                    .sup(placeholder_trait_predicate.to_poly_trait_ref(), candidate.value)
                     .map(|InferOk { obligations, .. }| obligations)
                     .map_err(|_| Unimplemented)
             })?);
@@ -250,7 +259,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         ImplSourceBuiltinData { nested: obligations }
     }
 
-    /// This handles the case where a `auto trait Foo` impl is being used.
+    /// This handles the case where an `auto trait Foo` impl is being used.
     /// The idea is that the impl applies to `X : Foo` if the following conditions are met:
     ///
     /// 1. For each constituent type `Y` in `X`, `Y : Foo` holds
@@ -592,12 +601,11 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         Ok(ImplSourceGeneratorData { generator_def_id, substs, nested: obligations })
     }
 
+    #[instrument(skip(self), level = "debug")]
     fn confirm_closure_candidate(
         &mut self,
         obligation: &TraitObligation<'tcx>,
     ) -> Result<ImplSourceClosureData<'tcx, PredicateObligation<'tcx>>, SelectionError<'tcx>> {
-        debug!(?obligation, "confirm_closure_candidate");
-
         let kind = self
             .tcx()
             .fn_trait_kind_from_lang_item(obligation.predicate.def_id())
@@ -612,23 +620,37 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             _ => bug!("closure candidate for non-closure {:?}", obligation),
         };
 
+        let obligation_predicate = obligation.predicate.to_poly_trait_ref();
+        let Normalized { value: obligation_predicate, mut obligations } =
+            ensure_sufficient_stack(|| {
+                normalize_with_depth(
+                    self,
+                    obligation.param_env,
+                    obligation.cause.clone(),
+                    obligation.recursion_depth + 1,
+                    obligation_predicate,
+                )
+            });
+
         let trait_ref = self.closure_trait_ref_unnormalized(obligation, substs);
-        let Normalized { value: trait_ref, mut obligations } = ensure_sufficient_stack(|| {
-            normalize_with_depth(
-                self,
-                obligation.param_env,
-                obligation.cause.clone(),
-                obligation.recursion_depth + 1,
-                trait_ref,
-            )
-        });
+        let Normalized { value: trait_ref, obligations: trait_ref_obligations } =
+            ensure_sufficient_stack(|| {
+                normalize_with_depth(
+                    self,
+                    obligation.param_env,
+                    obligation.cause.clone(),
+                    obligation.recursion_depth + 1,
+                    trait_ref,
+                )
+            });
 
         debug!(?closure_def_id, ?trait_ref, ?obligations, "confirm closure candidate obligations");
 
+        obligations.extend(trait_ref_obligations);
         obligations.extend(self.confirm_poly_trait_refs(
             obligation.cause.clone(),
             obligation.param_env,
-            obligation.predicate.to_poly_trait_ref(),
+            obligation_predicate,
             trait_ref,
         )?);
 
@@ -638,7 +660,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             obligations.push(Obligation::new(
                 obligation.cause.clone(),
                 obligation.param_env,
-                ty::PredicateKind::ClosureKind(closure_def_id, substs, kind)
+                ty::Binder::dummy(ty::PredicateKind::ClosureKind(closure_def_id, substs, kind))
                     .to_predicate(self.tcx()),
             ));
         }
@@ -671,6 +693,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     /// because these output type parameters should not affect the
     /// selection of the impl. Therefore, if there is a mismatch, we
     /// report an error to the user.
+    #[instrument(skip(self), level = "trace")]
     fn confirm_poly_trait_refs(
         &mut self,
         obligation_cause: ObligationCause<'tcx>,
@@ -683,6 +706,114 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             .sup(obligation_trait_ref, expected_trait_ref)
             .map(|InferOk { obligations, .. }| obligations)
             .map_err(|e| OutputTypeParameterMismatch(expected_trait_ref, obligation_trait_ref, e))
+    }
+
+    fn confirm_trait_upcasting_unsize_candidate(
+        &mut self,
+        obligation: &TraitObligation<'tcx>,
+        idx: usize,
+    ) -> Result<ImplSourceTraitUpcastingData<'tcx, PredicateObligation<'tcx>>, SelectionError<'tcx>>
+    {
+        let tcx = self.tcx();
+
+        // `assemble_candidates_for_unsizing` should ensure there are no late-bound
+        // regions here. See the comment there for more details.
+        let source = self.infcx.shallow_resolve(obligation.self_ty().no_bound_vars().unwrap());
+        let target = obligation.predicate.skip_binder().trait_ref.substs.type_at(1);
+        let target = self.infcx.shallow_resolve(target);
+
+        debug!(?source, ?target, "confirm_trait_upcasting_unsize_candidate");
+
+        let mut nested = vec![];
+        let source_trait_ref;
+        let upcast_trait_ref;
+        match (source.kind(), target.kind()) {
+            // TraitA+Kx+'a -> TraitB+Ky+'b (trait upcasting coercion).
+            (&ty::Dynamic(ref data_a, r_a), &ty::Dynamic(ref data_b, r_b)) => {
+                // See `assemble_candidates_for_unsizing` for more info.
+                // We already checked the compatiblity of auto traits within `assemble_candidates_for_unsizing`.
+                let principal_a = data_a.principal().unwrap();
+                source_trait_ref = principal_a.with_self_ty(tcx, source);
+                upcast_trait_ref = util::supertraits(tcx, source_trait_ref).nth(idx).unwrap();
+                assert_eq!(data_b.principal_def_id(), Some(upcast_trait_ref.def_id()));
+                let existential_predicate = upcast_trait_ref.map_bound(|trait_ref| {
+                    ty::ExistentialPredicate::Trait(ty::ExistentialTraitRef::erase_self_ty(
+                        tcx, trait_ref,
+                    ))
+                });
+                let iter = Some(existential_predicate)
+                    .into_iter()
+                    .chain(
+                        data_a
+                            .projection_bounds()
+                            .map(|b| b.map_bound(ty::ExistentialPredicate::Projection)),
+                    )
+                    .chain(
+                        data_b
+                            .auto_traits()
+                            .map(ty::ExistentialPredicate::AutoTrait)
+                            .map(ty::Binder::dummy),
+                    );
+                let existential_predicates = tcx.mk_poly_existential_predicates(iter);
+                let source_trait = tcx.mk_dynamic(existential_predicates, r_b);
+
+                // Require that the traits involved in this upcast are **equal**;
+                // only the **lifetime bound** is changed.
+                let InferOk { obligations, .. } = self
+                    .infcx
+                    .at(&obligation.cause, obligation.param_env)
+                    .sup(target, source_trait)
+                    .map_err(|_| Unimplemented)?;
+                nested.extend(obligations);
+
+                // Register one obligation for 'a: 'b.
+                let cause = ObligationCause::new(
+                    obligation.cause.span,
+                    obligation.cause.body_id,
+                    ObjectCastObligation(target),
+                );
+                let outlives = ty::OutlivesPredicate(r_a, r_b);
+                nested.push(Obligation::with_depth(
+                    cause,
+                    obligation.recursion_depth + 1,
+                    obligation.param_env,
+                    obligation.predicate.rebind(outlives).to_predicate(tcx),
+                ));
+            }
+            _ => bug!(),
+        };
+
+        let vtable_segment_callback = {
+            let mut vptr_offset = 0;
+            move |segment| {
+                match segment {
+                    VtblSegment::MetadataDSA => {
+                        vptr_offset += ty::COMMON_VTABLE_ENTRIES.len();
+                    }
+                    VtblSegment::TraitOwnEntries { trait_ref, emit_vptr } => {
+                        vptr_offset += util::count_own_vtable_entries(tcx, trait_ref);
+                        if trait_ref == upcast_trait_ref {
+                            if emit_vptr {
+                                return ControlFlow::Break(Some(vptr_offset));
+                            } else {
+                                return ControlFlow::Break(None);
+                            }
+                        }
+
+                        if emit_vptr {
+                            vptr_offset += 1;
+                        }
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+        };
+
+        let vtable_vptr_slot =
+            super::super::prepare_vtable_segments(tcx, source_trait_ref, vtable_segment_callback)
+                .unwrap();
+
+        Ok(ImplSourceTraitUpcastingData { upcast_trait_ref, vtable_vptr_slot, nested })
     }
 
     fn confirm_builtin_unsize_candidate(
@@ -701,9 +832,10 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let mut nested = vec![];
         match (source.kind(), target.kind()) {
-            // Trait+Kx+'a -> Trait+Ky+'b (upcasts).
+            // Trait+Kx+'a -> Trait+Ky+'b (auto traits and lifetime subtyping).
             (&ty::Dynamic(ref data_a, r_a), &ty::Dynamic(ref data_b, r_b)) => {
                 // See `assemble_candidates_for_unsizing` for more info.
+                // We already checked the compatiblity of auto traits within `assemble_candidates_for_unsizing`.
                 let iter = data_a
                     .principal()
                     .map(|b| b.map_bound(ty::ExistentialPredicate::Trait))
@@ -781,10 +913,10 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 );
 
                 // We can only make objects from sized types.
-                let tr = ty::TraitRef::new(
+                let tr = ty::Binder::dummy(ty::TraitRef::new(
                     tcx.require_lang_item(LangItem::Sized, None),
                     tcx.mk_substs_trait(source, &[]),
-                );
+                ));
                 nested.push(predicate_to_obligation(tr.without_const().to_predicate(tcx)));
 
                 // If the type is `Foo + 'a`, ensure that the type
@@ -830,52 +962,24 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 let tail_field_ty = tcx.type_of(tail_field.did);
 
                 let mut unsizing_params = GrowableBitSet::new_empty();
-                if tcx.features().relaxed_struct_unsize {
-                    for arg in tail_field_ty.walk() {
+                for arg in tail_field_ty.walk(tcx) {
+                    if let Some(i) = maybe_unsizing_param_idx(arg) {
+                        unsizing_params.insert(i);
+                    }
+                }
+
+                // Ensure none of the other fields mention the parameters used
+                // in unsizing.
+                for field in prefix_fields {
+                    for arg in tcx.type_of(field.did).walk(tcx) {
                         if let Some(i) = maybe_unsizing_param_idx(arg) {
-                            unsizing_params.insert(i);
+                            unsizing_params.remove(i);
                         }
                     }
+                }
 
-                    // Ensure none of the other fields mention the parameters used
-                    // in unsizing.
-                    for field in prefix_fields {
-                        for arg in tcx.type_of(field.did).walk() {
-                            if let Some(i) = maybe_unsizing_param_idx(arg) {
-                                unsizing_params.remove(i);
-                            }
-                        }
-                    }
-
-                    if unsizing_params.is_empty() {
-                        return Err(Unimplemented);
-                    }
-                } else {
-                    let mut found = false;
-                    for arg in tail_field_ty.walk() {
-                        if let Some(i) = maybe_unsizing_param_idx(arg) {
-                            unsizing_params.insert(i);
-                            found = true;
-                        }
-                    }
-                    if !found {
-                        return Err(Unimplemented);
-                    }
-
-                    // Ensure none of the other fields mention the parameters used
-                    // in unsizing.
-                    // FIXME(eddyb) cache this (including computing `unsizing_params`)
-                    // by putting it in a query; it would only need the `DefId` as it
-                    // looks at declared field types, not anything substituted.
-                    for field in prefix_fields {
-                        for arg in tcx.type_of(field.did).walk() {
-                            if let Some(i) = maybe_unsizing_param_idx(arg) {
-                                if unsizing_params.contains(i) {
-                                    return Err(Unimplemented);
-                                }
-                            }
-                        }
-                    }
+                if unsizing_params.is_empty() {
+                    return Err(Unimplemented);
                 }
 
                 // Extract `TailField<T>` and `TailField<U>` from `Struct<T>` and `Struct<U>`.

@@ -20,11 +20,11 @@
 #![feature(panic_unwind)]
 #![feature(staged_api)]
 #![feature(std_internals)]
-#![feature(unwind_attributes)]
 #![feature(abi_thiscall)]
 #![feature(rustc_attrs)]
 #![panic_runtime]
 #![feature(panic_runtime)]
+#![feature(c_unwind)]
 // `real_imp` is unused with Miri, so silence warnings.
 #![cfg_attr(miri, allow(dead_code))]
 
@@ -45,7 +45,8 @@ cfg_if::cfg_if! {
     } else if #[cfg(any(
         all(target_family = "windows", target_env = "gnu"),
         target_os = "psp",
-        target_family = "unix",
+        target_os = "solid_asp3",
+        all(target_family = "unix", not(target_os = "espidf")),
         all(target_vendor = "fortanix", target_env = "sgx"),
     ))] {
         // Rust runtime's startup objects depend on these symbols, so make them public.
@@ -55,9 +56,10 @@ cfg_if::cfg_if! {
         mod real_imp;
     } else {
         // Targets that don't support unwinding.
-        // - arch=wasm32
+        // - family=wasm
         // - os=none ("bare metal" targets)
         // - os=uefi
+        // - os=espidf
         // - nvptx64-nvidia-cuda
         // - arch=avr
         #[path = "dummy.rs"]
@@ -98,8 +100,7 @@ pub unsafe extern "C" fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any
 // Entry point for raising an exception, just delegates to the platform-specific
 // implementation.
 #[rustc_std_internal_symbol]
-#[unwind(allowed)]
-pub unsafe extern "C" fn __rust_start_panic(payload: *mut &mut dyn BoxMeUp) -> u32 {
+pub unsafe extern "C-unwind" fn __rust_start_panic(payload: *mut &mut dyn BoxMeUp) -> u32 {
     let payload = Box::from_raw((*payload).take_box());
 
     imp::panic(payload)

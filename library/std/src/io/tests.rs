@@ -1,7 +1,8 @@
-use super::{repeat, Cursor, SeekFrom};
+use super::{repeat, Cursor, ReadBuf, SeekFrom};
 use crate::cmp::{self, min};
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::io::{BufRead, BufReader, Read, Seek, Write};
+use crate::mem::MaybeUninit;
 use crate::ops::Deref;
 
 #[test]
@@ -157,6 +158,28 @@ fn read_exact_slice() {
 }
 
 #[test]
+fn read_buf_exact() {
+    let mut buf = [0; 4];
+    let mut buf = ReadBuf::new(&mut buf);
+
+    let mut c = Cursor::new(&b""[..]);
+    assert_eq!(c.read_buf_exact(&mut buf).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+
+    let mut c = Cursor::new(&b"123456789"[..]);
+    c.read_buf_exact(&mut buf).unwrap();
+    assert_eq!(buf.filled(), b"1234");
+
+    buf.clear();
+
+    c.read_buf_exact(&mut buf).unwrap();
+    assert_eq!(buf.filled(), b"5678");
+
+    buf.clear();
+
+    assert_eq!(c.read_buf_exact(&mut buf).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
 fn take_eof() {
     struct R;
 
@@ -290,7 +313,7 @@ fn bench_read_to_end(b: &mut test::Bencher) {
     b.iter(|| {
         let mut lr = repeat(1).take(10000000);
         let mut vec = Vec::with_capacity(1024);
-        super::read_to_end(&mut lr, &mut vec)
+        super::default_read_to_end(&mut lr, &mut vec)
     });
 }
 
@@ -362,24 +385,12 @@ impl<'a> Read for ExampleSliceReader<'a> {
 fn test_read_to_end_capacity() -> io::Result<()> {
     let input = &b"foo"[..];
 
-    // read_to_end() generally needs to over-allocate, both for efficiency
-    // and so that it can distinguish EOF. Assert that this is the case
-    // with this simple ExampleSliceReader struct, which uses the default
-    // implementation of read_to_end. Even though vec1 is allocated with
-    // exactly enough capacity for the read, read_to_end will allocate more
-    // space here.
+    // read_to_end() takes care not to over-allocate when a buffer is the
+    // exact size needed.
     let mut vec1 = Vec::with_capacity(input.len());
     ExampleSliceReader { slice: input }.read_to_end(&mut vec1)?;
     assert_eq!(vec1.len(), input.len());
-    assert!(vec1.capacity() > input.len(), "allocated more");
-
-    // However, std::io::Take includes an implementation of read_to_end
-    // that will not allocate when the limit has already been reached. In
-    // this case, vec2 never grows.
-    let mut vec2 = Vec::with_capacity(input.len());
-    ExampleSliceReader { slice: input }.take(input.len() as u64).read_to_end(&mut vec2)?;
-    assert_eq!(vec2.len(), input.len());
-    assert_eq!(vec2.capacity(), input.len(), "did not allocate more");
+    assert_eq!(vec1.capacity(), input.len(), "did not allocate more");
 
     Ok(())
 }
@@ -570,4 +581,24 @@ fn test_write_all_vectored() {
             assert_eq!(&*writer.written, &*wanted);
         }
     }
+}
+
+#[bench]
+fn bench_take_read(b: &mut test::Bencher) {
+    b.iter(|| {
+        let mut buf = [0; 64];
+
+        [255; 128].take(64).read(&mut buf).unwrap();
+    });
+}
+
+#[bench]
+fn bench_take_read_buf(b: &mut test::Bencher) {
+    b.iter(|| {
+        let mut buf = [MaybeUninit::uninit(); 64];
+
+        let mut rbuf = ReadBuf::uninit(&mut buf);
+
+        [255; 128].take(64).read_buf(&mut rbuf).unwrap();
+    });
 }

@@ -2,11 +2,7 @@
 // normalize-stderr-test "\(limit: \d+ byte\)" -> "(limit: N byte)"
 
 #![deny(clippy::trivially_copy_pass_by_ref)]
-#![allow(
-    clippy::many_single_char_names,
-    clippy::blacklisted_name,
-    clippy::redundant_field_names
-)]
+#![allow(clippy::blacklisted_name, clippy::redundant_field_names)]
 
 #[derive(Copy, Clone)]
 struct Foo(u32);
@@ -58,6 +54,8 @@ impl Foo {
     fn bad(&self, x: &u32, y: &Foo, z: &Baz) {}
 
     fn bad2(x: &u32, y: &Foo, z: &Baz) {}
+
+    fn bad_issue7518(self, other: &Self) {}
 }
 
 impl AsRef<u32> for Foo {

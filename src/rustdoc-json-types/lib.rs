@@ -127,6 +127,7 @@ pub enum GenericArg {
     Lifetime(String),
     Type(Type),
     Const(Constant),
+    Infer,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -219,6 +220,8 @@ pub enum ItemEnum {
     /// Declarative macro_rules! macro
     Macro(String),
     ProcMacro(ProcMacro),
+
+    PrimitiveType(String),
 
     AssocConst {
         #[serde(rename = "type")]
@@ -322,7 +325,7 @@ pub struct GenericParamDef {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum GenericParamDefKind {
-    Lifetime,
+    Lifetime { outlives: Vec<String> },
     Type { bounds: Vec<GenericBound>, default: Option<Type> },
     Const { ty: Type, default: Option<String> },
 }
@@ -385,8 +388,6 @@ pub enum Type {
     },
     /// `impl TraitA + TraitB + ...`
     ImplTrait(Vec<GenericBound>),
-    /// `!`
-    Never,
     /// `_`
     Infer,
     /// `*mut u32`, `*u8`, etc.
@@ -508,6 +509,9 @@ pub struct Static {
     pub mutable: bool,
     pub expr: String,
 }
+
+/// rustdoc format-version.
+pub const FORMAT_VERSION: u32 = 9;
 
 #[cfg(test)]
 mod tests;

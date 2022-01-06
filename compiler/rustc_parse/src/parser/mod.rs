@@ -14,6 +14,7 @@ use crate::lexer::UnmatchedBrace;
 pub use attr_wrapper::AttrWrapper;
 pub use diagnostics::AttemptLocalParseRecovery;
 use diagnostics::Error;
+pub(crate) use item::FnParseMode;
 pub use pat::{RecoverColon, RecoverComma};
 pub use path::PathStyle;
 
@@ -33,7 +34,7 @@ use rustc_data_structures::sync::Lrc;
 use rustc_errors::PResult;
 use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder, FatalError};
 use rustc_session::parse::ParseSess;
-use rustc_span::source_map::{Span, DUMMY_SP};
+use rustc_span::source_map::{MultiSpan, Span, DUMMY_SP};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use tracing::debug;
 
@@ -142,6 +143,17 @@ pub struct Parser<'a> {
     /// If present, this `Parser` is not parsing Rust code but rather a macro call.
     subparser_name: Option<&'static str>,
     capture_state: CaptureState,
+    /// This allows us to recover when the user forget to add braces around
+    /// multiple statements in the closure body.
+    pub current_closure: Option<ClosureSpans>,
+}
+
+/// Stores span informations about a closure.
+#[derive(Clone)]
+pub struct ClosureSpans {
+    pub whole_closure: Span,
+    pub closing_pipe: Span,
+    pub body: Span,
 }
 
 /// Indicates a range of tokens that should be replaced by
@@ -152,7 +164,7 @@ pub struct Parser<'a> {
 /// attribute, we parse a nested AST node that has `#[cfg]` or `#[cfg_attr]`
 /// In this case, we use a `ReplaceRange` to replace the entire inner AST node
 /// with `FlatToken::AttrTarget`, allowing us to perform eager cfg-expansion
-/// on a `AttrAnnotatedTokenStream`
+/// on an `AttrAnnotatedTokenStream`
 ///
 /// 2. When we parse an inner attribute while collecting tokens. We
 /// remove inner attributes from the token stream entirely, and
@@ -165,7 +177,7 @@ pub type ReplaceRange = (Range<u32>, Vec<(FlatToken, Spacing)>);
 
 /// Controls how we capture tokens. Capturing can be expensive,
 /// so we try to avoid performing capturing in cases where
-/// we will never need a `AttrAnnotatedTokenStream`
+/// we will never need an `AttrAnnotatedTokenStream`
 #[derive(Copy, Clone)]
 pub enum Capturing {
     /// We aren't performing any capturing - this is the default mode.
@@ -440,6 +452,7 @@ impl<'a> Parser<'a> {
                 replace_ranges: Vec::new(),
                 inner_attr_ranges: Default::default(),
             },
+            current_closure: None,
         };
 
         // Make parser point to the first token.
@@ -761,8 +774,11 @@ impl<'a> Parser<'a> {
                     first = false;
                 } else {
                     match self.expect(t) {
-                        Ok(false) => {}
+                        Ok(false) => {
+                            self.current_closure.take();
+                        }
                         Ok(true) => {
+                            self.current_closure.take();
                             recovered = true;
                             break;
                         }
@@ -770,10 +786,29 @@ impl<'a> Parser<'a> {
                             let sp = self.prev_token.span.shrink_to_hi();
                             let token_str = pprust::token_kind_to_string(t);
 
-                            // Attempt to keep parsing if it was a similar separator.
-                            if let Some(ref tokens) = t.similar_tokens() {
-                                if tokens.contains(&self.token.kind) && !unclosed_delims {
-                                    self.bump();
+                            match self.current_closure.take() {
+                                Some(closure_spans) if self.token.kind == TokenKind::Semi => {
+                                    // Finding a semicolon instead of a comma
+                                    // after a closure body indicates that the
+                                    // closure body may be a block but the user
+                                    // forgot to put braces around its
+                                    // statements.
+
+                                    self.recover_missing_braces_around_closure_body(
+                                        closure_spans,
+                                        expect_err,
+                                    )?;
+
+                                    continue;
+                                }
+
+                                _ => {
+                                    // Attempt to keep parsing if it was a similar separator.
+                                    if let Some(ref tokens) = t.similar_tokens() {
+                                        if tokens.contains(&self.token.kind) && !unclosed_delims {
+                                            self.bump();
+                                        }
+                                    }
                                 }
                             }
 
@@ -806,7 +841,7 @@ impl<'a> Parser<'a> {
                                         .span_suggestion_short(
                                             sp,
                                             &format!("missing `{}`", token_str),
-                                            token_str,
+                                            token_str.into(),
                                             Applicability::MaybeIncorrect,
                                         )
                                         .emit();
@@ -837,6 +872,65 @@ impl<'a> Parser<'a> {
         }
 
         Ok((v, trailing, recovered))
+    }
+
+    fn recover_missing_braces_around_closure_body(
+        &mut self,
+        closure_spans: ClosureSpans,
+        mut expect_err: DiagnosticBuilder<'_>,
+    ) -> PResult<'a, ()> {
+        let initial_semicolon = self.token.span;
+
+        while self.eat(&TokenKind::Semi) {
+            let _ = self.parse_stmt(ForceCollect::Yes)?;
+        }
+
+        expect_err.set_primary_message(
+            "closure bodies that contain statements must be surrounded by braces",
+        );
+
+        let preceding_pipe_span = closure_spans.closing_pipe;
+        let following_token_span = self.token.span;
+
+        let mut first_note = MultiSpan::from(vec![initial_semicolon]);
+        first_note.push_span_label(
+            initial_semicolon,
+            "this `;` turns the preceding closure into a statement".to_string(),
+        );
+        first_note.push_span_label(
+            closure_spans.body,
+            "this expression is a statement because of the trailing semicolon".to_string(),
+        );
+        expect_err.span_note(first_note, "statement found outside of a block");
+
+        let mut second_note = MultiSpan::from(vec![closure_spans.whole_closure]);
+        second_note.push_span_label(
+            closure_spans.whole_closure,
+            "this is the parsed closure...".to_string(),
+        );
+        second_note.push_span_label(
+            following_token_span,
+            "...but likely you meant the closure to end here".to_string(),
+        );
+        expect_err.span_note(second_note, "the closure body may be incorrectly delimited");
+
+        expect_err.set_span(vec![preceding_pipe_span, following_token_span]);
+
+        let opening_suggestion_str = " {".to_string();
+        let closing_suggestion_str = "}".to_string();
+
+        expect_err.multipart_suggestion(
+            "try adding braces",
+            vec![
+                (preceding_pipe_span.shrink_to_hi(), opening_suggestion_str),
+                (following_token_span.shrink_to_lo(), closing_suggestion_str),
+            ],
+            Applicability::MaybeIncorrect,
+        );
+
+        expect_err.emit();
+
+        Ok(())
     }
 
     /// Parses a sequence, not including the closing delimiter. The function
@@ -1002,8 +1096,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses inline const expressions.
-    fn parse_const_block(&mut self, span: Span) -> PResult<'a, P<Expr>> {
-        self.sess.gated_spans.gate(sym::inline_const, span);
+    fn parse_const_block(&mut self, span: Span, pat: bool) -> PResult<'a, P<Expr>> {
+        if pat {
+            self.sess.gated_spans.gate(sym::inline_const_pat, span);
+        } else {
+            self.sess.gated_spans.gate(sym::inline_const, span);
+        }
         self.eat_keyword(kw::Const);
         let blk = self.parse_block()?;
         let anon_const = AnonConst {
@@ -1165,7 +1263,7 @@ impl<'a> Parser<'a> {
     /// Parses `pub`, `pub(crate)` and `pub(in path)` plus shortcuts `crate` for `pub(crate)`,
     /// `pub(self)` for `pub(in self)` and `pub(super)` for `pub(in super)`.
     /// If the following element can't be a tuple (i.e., it's a function definition), then
-    /// it's not a tuple struct field), and the contents within the parentheses isn't valid,
+    /// it's not a tuple struct field), and the contents within the parentheses aren't valid,
     /// so emit a proper diagnostic.
     // Public for rustfmt usage.
     pub fn parse_visibility(&mut self, fbt: FollowedByType) -> PResult<'a, Visibility> {
@@ -1335,8 +1433,13 @@ crate fn make_unclosed_delims_error(
     // `None` here means an `Eof` was found. We already emit those errors elsewhere, we add them to
     // `unmatched_braces` only for error recovery in the `Parser`.
     let found_delim = unmatched.found_delim?;
+    let span: MultiSpan = if let Some(sp) = unmatched.unclosed_span {
+        vec![unmatched.found_span, sp].into()
+    } else {
+        unmatched.found_span.into()
+    };
     let mut err = sess.span_diagnostic.struct_span_err(
-        unmatched.found_span,
+        span,
         &format!(
             "mismatched closing delimiter: `{}`",
             pprust::token_kind_to_string(&token::CloseDelim(found_delim)),
@@ -1362,10 +1465,10 @@ pub fn emit_unclosed_delims(unclosed_delims: &mut Vec<UnmatchedBrace>, sess: &Pa
     }
 }
 
-/// A helper struct used when building a `AttrAnnotatedTokenStream` from
+/// A helper struct used when building an `AttrAnnotatedTokenStream` from
 /// a `LazyTokenStream`. Both delimiter and non-delimited tokens
 /// are stored as `FlatToken::Token`. A vector of `FlatToken`s
-/// is then 'parsed' to build up a `AttrAnnotatedTokenStream` with nested
+/// is then 'parsed' to build up an `AttrAnnotatedTokenStream` with nested
 /// `AttrAnnotatedTokenTree::Delimited` tokens
 #[derive(Debug, Clone)]
 pub enum FlatToken {
@@ -1375,10 +1478,10 @@ pub enum FlatToken {
     /// Holds the `AttributesData` for an AST node. The
     /// `AttributesData` is inserted directly into the
     /// constructed `AttrAnnotatedTokenStream` as
-    /// a `AttrAnnotatedTokenTree::Attributes`
+    /// an `AttrAnnotatedTokenTree::Attributes`
     AttrTarget(AttributesData),
     /// A special 'empty' token that is ignored during the conversion
-    /// to a `AttrAnnotatedTokenStream`. This is used to simplify the
+    /// to an `AttrAnnotatedTokenStream`. This is used to simplify the
     /// handling of replace ranges.
     Empty,
 }

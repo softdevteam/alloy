@@ -29,11 +29,17 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             SubregionOrigin::Subtype(box TypeTrace { ref cause, .. }) => cause,
             _ => return None,
         };
-        let (parent, impl_def_id) = match &cause.code {
+        // If we added a "points at argument expression" obligation, we remove it here, we care
+        // about the original obligation only.
+        let code = match &cause.code {
+            ObligationCauseCode::FunctionArgumentObligation { parent_code, .. } => &*parent_code,
+            _ => &cause.code,
+        };
+        let (parent, impl_def_id) = match code {
             ObligationCauseCode::MatchImpl(parent, impl_def_id) => (parent, impl_def_id),
             _ => return None,
         };
-        let binding_span = match **parent {
+        let binding_span = match parent.code {
             ObligationCauseCode::BindingObligation(_def_id, binding_span) => binding_span,
             _ => return None,
         };
@@ -43,7 +49,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         multi_span
             .push_span_label(binding_span, "introduces a `'static` lifetime requirement".into());
         err.span_note(multi_span, "because this has an unmet lifetime requirement");
-        note_and_explain_region(self.tcx(), &mut err, "", sup, "...");
+        note_and_explain_region(self.tcx(), &mut err, "", sup, "...", Some(binding_span));
         if let Some(impl_node) = self.tcx().hir().get_if_local(*impl_def_id) {
             // If an impl is local, then maybe this isn't what they want. Try to
             // be as helpful as possible with implicit lifetimes.

@@ -1,5 +1,4 @@
-#![feature(plugin_registrar)]
-#![feature(box_syntax, rustc_private)]
+#![feature(rustc_private)]
 
 extern crate rustc_ast;
 
@@ -44,10 +43,10 @@ impl EarlyLintPass for Pass {
     }
 }
 
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut Registry) {
+#[no_mangle]
+fn __rustc_plugin_registrar(reg: &mut Registry) {
     reg.lint_store.register_lints(&[&TEST_RUSTC_TOOL_LINT, &TEST_LINT, &TEST_GROUP]);
-    reg.lint_store.register_early_pass(|| box Pass);
+    reg.lint_store.register_early_pass(|| Box::new(Pass));
     reg.lint_store.register_group(
         true,
         "clippy::group",

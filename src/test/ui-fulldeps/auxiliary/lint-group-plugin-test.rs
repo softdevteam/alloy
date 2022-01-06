@@ -1,7 +1,6 @@
 // force-host
 
-#![feature(plugin_registrar)]
-#![feature(box_syntax, rustc_private)]
+#![feature(rustc_private)]
 
 // Load rustc as a plugin to get macros.
 extern crate rustc_driver;
@@ -34,10 +33,10 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
     }
 }
 
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut Registry) {
+#[no_mangle]
+fn __rustc_plugin_registrar(reg: &mut Registry) {
     reg.lint_store.register_lints(&[&TEST_LINT, &PLEASE_LINT]);
-    reg.lint_store.register_late_pass(|| box Pass);
+    reg.lint_store.register_late_pass(|| Box::new(Pass));
     reg.lint_store.register_group(
         true,
         "lint_me",

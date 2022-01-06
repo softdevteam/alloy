@@ -1,13 +1,13 @@
-use crate::infer::{InferCtxt, InferOk};
-use crate::traits::query::Fallible;
-use std::fmt;
-
 use crate::infer::canonical::query_response;
-use crate::infer::canonical::QueryRegionConstraints;
+use crate::infer::{InferCtxt, InferOk};
 use crate::traits::engine::TraitEngineExt as _;
+use crate::traits::query::type_op::TypeOpOutput;
+use crate::traits::query::Fallible;
 use crate::traits::{ObligationCause, TraitEngine};
 use rustc_infer::traits::TraitEngineExt as _;
 use rustc_span::source_map::DUMMY_SP;
+
+use std::fmt;
 use std::rc::Rc;
 
 pub struct CustomTypeOp<F, G> {
@@ -35,10 +35,7 @@ where
     /// Processes the operation and all resulting obligations,
     /// returning the final result along with any region constraints
     /// (they will be given over to the NLL region solver).
-    fn fully_perform(
-        self,
-        infcx: &InferCtxt<'_, 'tcx>,
-    ) -> Fallible<(Self::Output, Option<Rc<QueryRegionConstraints<'tcx>>>)> {
+    fn fully_perform(self, infcx: &InferCtxt<'_, 'tcx>) -> Fallible<TypeOpOutput<'tcx, Self>> {
         if cfg!(debug_assertions) {
             info!("fully_perform({:?})", self);
         }
@@ -58,10 +55,10 @@ where
 
 /// Executes `op` and then scrapes out all the "old style" region
 /// constraints that result, creating query-region-constraints.
-fn scrape_region_constraints<'tcx, R>(
+fn scrape_region_constraints<'tcx, Op: super::TypeOp<'tcx, Output = R>, R>(
     infcx: &InferCtxt<'_, 'tcx>,
     op: impl FnOnce() -> Fallible<InferOk<'tcx, R>>,
-) -> Fallible<(R, Option<Rc<QueryRegionConstraints<'tcx>>>)> {
+) -> Fallible<TypeOpOutput<'tcx, Op>> {
     let mut fulfill_cx = <dyn TraitEngine<'_>>::new(infcx.tcx);
     let dummy_body_id = ObligationCause::dummy().body_id;
 
@@ -80,10 +77,11 @@ fn scrape_region_constraints<'tcx, R>(
     let InferOk { value, obligations } = infcx.commit_if_ok(|_| op())?;
     debug_assert!(obligations.iter().all(|o| o.cause.body_id == dummy_body_id));
     fulfill_cx.register_predicate_obligations(infcx, obligations);
-    if let Err(e) = fulfill_cx.select_all_or_error(infcx) {
+    let errors = fulfill_cx.select_all_or_error(infcx);
+    if !errors.is_empty() {
         infcx.tcx.sess.diagnostic().delay_span_bug(
             DUMMY_SP,
-            &format!("errors selecting obligation during MIR typeck: {:?}", e),
+            &format!("errors selecting obligation during MIR typeck: {:?}", errors),
         );
     }
 
@@ -101,8 +99,12 @@ fn scrape_region_constraints<'tcx, R>(
     );
 
     if region_constraints.is_empty() {
-        Ok((value, None))
+        Ok(TypeOpOutput { output: value, constraints: None, canonicalized_query: None })
     } else {
-        Ok((value, Some(Rc::new(region_constraints))))
+        Ok(TypeOpOutput {
+            output: value,
+            constraints: Some(Rc::new(region_constraints)),
+            canonicalized_query: None,
+        })
     }
 }

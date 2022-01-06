@@ -1,4 +1,4 @@
-//! The Rust parser and macro expander.
+//! The Rust Abstract Syntax Tree (AST).
 //!
 //! # Note
 //!
@@ -8,34 +8,25 @@
     html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/",
     test(attr(deny(warnings)))
 )]
-#![feature(box_syntax)]
 #![feature(box_patterns)]
-#![feature(const_fn_transmute)]
 #![feature(crate_visibility_modifier)]
+#![feature(if_let_guard)]
 #![feature(iter_zip)]
 #![feature(label_break_value)]
 #![feature(nll)]
 #![feature(min_specialization)]
 #![recursion_limit = "256"]
+#![feature(slice_internals)]
 
 #[macro_use]
 extern crate rustc_macros;
-
-#[macro_export]
-macro_rules! unwrap_or {
-    ($opt:expr, $default:expr) => {
-        match $opt {
-            Some(x) => x,
-            None => $default,
-        }
-    };
-}
 
 pub mod util {
     pub mod classify;
     pub mod comments;
     pub mod literal;
     pub mod parser;
+    pub mod unicode;
 }
 
 pub mod ast;

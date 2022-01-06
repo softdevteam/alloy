@@ -39,10 +39,17 @@ impl<'tcx> Cx<'tcx> {
 
         let mut expr = self.make_mirror_unadjusted(hir_expr);
 
+        let adjustment_span = match self.adjustment_span {
+            Some((hir_id, span)) if hir_id == hir_expr.hir_id => Some(span),
+            _ => None,
+        };
+
         // Now apply adjustments, if any.
         for adjustment in self.typeck_results.expr_adjustments(hir_expr) {
             debug!("make_mirror: expr={:?} applying adjustment={:?}", expr, adjustment);
-            expr = self.apply_adjustment(hir_expr, expr, adjustment);
+            let span = expr.span;
+            expr =
+                self.apply_adjustment(hir_expr, expr, adjustment, adjustment_span.unwrap_or(span));
         }
 
         // Next, wrap this up in the expr's scope.
@@ -82,8 +89,9 @@ impl<'tcx> Cx<'tcx> {
         hir_expr: &'tcx hir::Expr<'tcx>,
         mut expr: Expr<'tcx>,
         adjustment: &Adjustment<'tcx>,
+        mut span: Span,
     ) -> Expr<'tcx> {
-        let Expr { temp_lifetime, mut span, .. } = expr;
+        let Expr { temp_lifetime, .. } = expr;
 
         // Adjust the span from the block, to the last expression of the
         // block. This is a better span when returning a mutable reference
@@ -132,7 +140,7 @@ impl<'tcx> Cx<'tcx> {
                     },
                 };
 
-                let expr = box [self.thir.exprs.push(expr)];
+                let expr = Box::new([self.thir.exprs.push(expr)]);
 
                 self.overloaded_place(hir_expr, adjustment.target, Some(call), expr, deref.span)
             }
@@ -150,6 +158,7 @@ impl<'tcx> Cx<'tcx> {
 
     fn make_mirror_unadjusted(&mut self, expr: &'tcx hir::Expr<'tcx>) -> Expr<'tcx> {
         let expr_ty = self.typeck_results().expr_ty(expr);
+        let expr_span = expr.span;
         let temp_lifetime = self.region_scope_tree.temporary_scope(expr.hir_id.local_id);
 
         let kind = match expr.kind {
@@ -157,7 +166,13 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::MethodCall(_, method_span, ref args, fn_span) => {
                 // Rewrite a.b(c) into UFCS form like Trait::b(a, c)
                 let expr = self.method_callee(expr, method_span, None);
+                // When we apply adjustments to the receiver, use the span of
+                // the overall method call for better diagnostics. args[0]
+                // is guaranteed to exist, since a method call always has a receiver.
+                let old_adjustment_span = self.adjustment_span.replace((args[0].hir_id, expr_span));
+                tracing::info!("Using method span: {:?}", expr.span);
                 let args = self.mirror_exprs(args);
+                self.adjustment_span = old_adjustment_span;
                 ExprKind::Call {
                     ty: expr.ty,
                     fun: self.thir.exprs.push(expr),
@@ -190,7 +205,7 @@ impl<'tcx> Cx<'tcx> {
                     ExprKind::Call {
                         ty: method.ty,
                         fun: self.thir.exprs.push(method),
-                        args: box [self.mirror_expr(fun), tupled_args],
+                        args: Box::new([self.mirror_expr(fun), tupled_args]),
                         from_hir_call: true,
                         fn_span: expr.span,
                     }
@@ -266,7 +281,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let rhs = self.mirror_expr(rhs);
-                    self.overloaded_operator(expr, box [lhs, rhs])
+                    self.overloaded_operator(expr, Box::new([lhs, rhs]))
                 } else {
                     ExprKind::AssignOp {
                         op: bin_op(op.node),
@@ -286,7 +301,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let rhs = self.mirror_expr(rhs);
-                    self.overloaded_operator(expr, box [lhs, rhs])
+                    self.overloaded_operator(expr, Box::new([lhs, rhs]))
                 } else {
                     // FIXME overflow
                     match op.node {
@@ -317,7 +332,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let index = self.mirror_expr(index);
-                    self.overloaded_place(expr, expr_ty, None, box [lhs, index], expr.span)
+                    self.overloaded_place(expr, expr_ty, None, Box::new([lhs, index]), expr.span)
                 } else {
                     ExprKind::Index { lhs: self.mirror_expr(lhs), index: self.mirror_expr(index) }
                 }
@@ -326,7 +341,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Deref, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_place(expr, expr_ty, None, box [arg], expr.span)
+                    self.overloaded_place(expr, expr_ty, None, Box::new([arg]), expr.span)
                 } else {
                     ExprKind::Deref { arg: self.mirror_expr(arg) }
                 }
@@ -335,7 +350,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Not, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_operator(expr, box [arg])
+                    self.overloaded_operator(expr, Box::new([arg]))
                 } else {
                     ExprKind::Unary { op: UnOp::Not, arg: self.mirror_expr(arg) }
                 }
@@ -344,7 +359,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Neg, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_operator(expr, box [arg])
+                    self.overloaded_operator(expr, Box::new([arg]))
                 } else if let hir::ExprKind::Lit(ref lit) = arg.kind {
                     ExprKind::Literal {
                         literal: self.const_eval_literal(&lit.node, expr_ty, lit.span, true),
@@ -563,7 +578,7 @@ impl<'tcx> Cx<'tcx> {
 
             hir::ExprKind::ConstBlock(ref anon_const) => {
                 let anon_const_def_id = self.tcx.hir().local_def_id(anon_const.hir_id);
-                let value = ty::Const::from_anon_const(self.tcx, anon_const_def_id);
+                let value = ty::Const::from_inline_const(self.tcx, anon_const_def_id);
 
                 ExprKind::ConstBlock { value }
             }
@@ -590,7 +605,14 @@ impl<'tcx> Cx<'tcx> {
                 },
                 Err(err) => bug!("invalid loop id for continue: {}", err),
             },
+            hir::ExprKind::Let(ref pat, ref expr, _) => {
+                ExprKind::Let { expr: self.mirror_expr(expr), pat: self.pattern_from_hir(pat) }
+            }
             hir::ExprKind::If(cond, then, else_opt) => ExprKind::If {
+                if_then_scope: region::Scope {
+                    id: then.hir_id.local_id,
+                    data: region::ScopeData::IfThen,
+                },
                 cond: self.mirror_expr(cond),
                 then: self.mirror_expr(then),
                 else_opt: else_opt.map(|el| self.mirror_expr(el)),
@@ -690,11 +712,10 @@ impl<'tcx> Cx<'tcx> {
                                 // and not the beginning of discriminants (which is always `0`)
                                 let substs = InternalSubsts::identity_for_item(self.tcx(), did);
                                 let lhs = ty::Const {
-                                    val: ty::ConstKind::Unevaluated(ty::Unevaluated {
-                                        def: ty::WithOptConstParam::unknown(did),
+                                    val: ty::ConstKind::Unevaluated(ty::Unevaluated::new(
+                                        ty::WithOptConstParam::unknown(did),
                                         substs,
-                                        promoted: None,
-                                    }),
+                                    )),
                                     ty: var_ty,
                                 };
                                 let lhs = self.thir.exprs.push(mk_const(self.tcx().mk_const(lhs)));
@@ -785,7 +806,7 @@ impl<'tcx> Cx<'tcx> {
                 self.user_substs_applied_to_ty_of_hir_id(hir_id)
             }
 
-            // `Self` is used in expression as a tuple struct constructor or an unit struct constructor
+            // `Self` is used in expression as a tuple struct constructor or a unit struct constructor
             Res::SelfCtor(_) => self.user_substs_applied_to_ty_of_hir_id(hir_id),
 
             _ => bug!("user_substs_applied_to_res: unexpected res {:?} at {:?}", res, hir_id),
@@ -886,11 +907,10 @@ impl<'tcx> Cx<'tcx> {
                 debug!("convert_path_expr: (const) user_ty={:?}", user_ty);
                 ExprKind::Literal {
                     literal: self.tcx.mk_const(ty::Const {
-                        val: ty::ConstKind::Unevaluated(ty::Unevaluated {
-                            def: ty::WithOptConstParam::unknown(def_id),
+                        val: ty::ConstKind::Unevaluated(ty::Unevaluated::new(
+                            ty::WithOptConstParam::unknown(def_id),
                             substs,
-                            promoted: None,
-                        }),
+                        )),
                         ty: self.typeck_results().node_type(expr.hir_id),
                     }),
                     user_ty,
@@ -911,7 +931,7 @@ impl<'tcx> Cx<'tcx> {
                         variant_index: adt_def.variant_index_with_ctor_id(def_id),
                         substs,
                         user_ty: user_provided_type,
-                        fields: box [],
+                        fields: Box::new([]),
                         base: None,
                     })),
                     _ => bug!("unexpected ty: {:?}", ty),

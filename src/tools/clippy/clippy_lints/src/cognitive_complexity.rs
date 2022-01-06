@@ -14,15 +14,20 @@ use rustc_span::source_map::Span;
 use rustc_span::{sym, BytePos};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for methods with high cognitive complexity.
+    /// ### What it does
+    /// Checks for methods with high cognitive complexity.
     ///
-    /// **Why is this bad?** Methods of high cognitive complexity tend to be hard to
+    /// ### Why is this bad?
+    /// Methods of high cognitive complexity tend to be hard to
     /// both read and maintain. Also LLVM will tend to optimize small methods better.
     ///
-    /// **Known problems:** Sometimes it's hard to find a way to reduce the
+    /// ### Known problems
+    /// Sometimes it's hard to find a way to reduce the
     /// complexity.
     ///
-    /// **Example:** No. You'll see it when you get the warning.
+    /// ### Example
+    /// No. You'll see it when you get the warning.
+    #[clippy::version = "1.35.0"]
     pub COGNITIVE_COMPLEXITY,
     nursery,
     "functions that should be split up into multiple functions"
@@ -63,7 +68,7 @@ impl CognitiveComplexity {
         helper.visit_expr(expr);
         let CcHelper { cc, returns } = helper;
         let ret_ty = cx.typeck_results().node_type(expr.hir_id);
-        let ret_adjust = if is_type_diagnostic_item(cx, ret_ty, sym::result_type) {
+        let ret_adjust = if is_type_diagnostic_item(cx, ret_ty, sym::Result) {
             returns
         } else {
             #[allow(clippy::integer_division)]
@@ -91,7 +96,7 @@ impl CognitiveComplexity {
                     });
 
                     if let Some((low, high)) = pos {
-                        Span::new(low, high, header_span.ctxt())
+                        Span::new(low, high, header_span.ctxt(), header_span.parent())
                     } else {
                         return;
                     }

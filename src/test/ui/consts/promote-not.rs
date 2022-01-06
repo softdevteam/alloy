@@ -1,7 +1,6 @@
 // ignore-tidy-linelength
 // Test various things that we do not want to promote.
 #![allow(unconditional_panic, const_err)]
-#![feature(const_fn_union)]
 
 use std::cell::Cell;
 
@@ -40,6 +39,8 @@ const TEST_INTERIOR_MUT: () = {
     let _val: &'static _ = &(Cell::new(1), 2).1; //~ ERROR temporary value dropped while borrowed
 };
 
+const TEST_DROP: String = String::new();
+
 fn main() {
     // We must not promote things with interior mutability. Not even if we "project it away".
     let _val: &'static _ = &(Cell::new(1), 2).0; //~ ERROR temporary value dropped while borrowed
@@ -51,4 +52,17 @@ fn main() {
     let _val: &'static _ = &(1%0); //~ ERROR temporary value dropped while borrowed
     let _val: &'static _ = &(1%(1-1)); //~ ERROR temporary value dropped while borrowed
     let _val: &'static _ = &([1,2,3][4]+1); //~ ERROR temporary value dropped while borrowed
+
+    // No promotion of temporaries that need to be dropped.
+    let _val: &'static _ = &TEST_DROP;
+    //~^ ERROR temporary value dropped while borrowed
+    let _val: &'static _ = &&TEST_DROP;
+    //~^ ERROR temporary value dropped while borrowed
+    //~| ERROR temporary value dropped while borrowed
+    let _val: &'static _ = &(&TEST_DROP,);
+    //~^ ERROR temporary value dropped while borrowed
+    //~| ERROR temporary value dropped while borrowed
+    let _val: &'static _ = &[&TEST_DROP; 1];
+    //~^ ERROR temporary value dropped while borrowed
+    //~| ERROR temporary value dropped while borrowed
 }

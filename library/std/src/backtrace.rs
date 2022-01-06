@@ -35,13 +35,13 @@
 //! `BacktraceStatus` enum as a result of `Backtrace::status`.
 //!
 //! Like above with accuracy platform support is done on a best effort basis.
-//! Sometimes libraries may not be available at runtime or something may go
+//! Sometimes libraries might not be available at runtime or something may go
 //! wrong which would cause a backtrace to not be captured. Please feel free to
 //! report issues with platforms where a backtrace cannot be captured though!
 //!
 //! ## Environment Variables
 //!
-//! The `Backtrace::capture` function may not actually capture a backtrace by
+//! The `Backtrace::capture` function might not actually capture a backtrace by
 //! default. Its behavior is governed by two environment variables:
 //!
 //! * `RUST_LIB_BACKTRACE` - if this is set to `0` then `Backtrace::capture`
@@ -61,7 +61,7 @@
 //! Note that the `Backtrace::force_capture` function can be used to ignore
 //! these environment variables. Also note that the state of environment
 //! variables is cached once the first backtrace is created, so altering
-//! `RUST_LIB_BACKTRACE` or `RUST_BACKTRACE` at runtime may not actually change
+//! `RUST_LIB_BACKTRACE` or `RUST_BACKTRACE` at runtime might not actually change
 //! how backtraces are captured.
 
 #![unstable(feature = "backtrace", issue = "53487")]
@@ -110,6 +110,7 @@ use crate::vec::Vec;
 /// previous point in time. In some instances the `Backtrace` type may
 /// internally be empty due to configuration. For more information see
 /// `Backtrace::capture`.
+#[must_use]
 pub struct Backtrace {
     inner: Inner,
 }
@@ -355,6 +356,7 @@ impl Backtrace {
     /// Returns the status of this backtrace, indicating whether this backtrace
     /// request was unsupported, disabled, or a stack trace was actually
     /// captured.
+    #[must_use]
     pub fn status(&self) -> BacktraceStatus {
         match self.inner {
             Inner::Unsupported => BacktraceStatus::Unsupported,
@@ -366,6 +368,7 @@ impl Backtrace {
 
 impl<'a> Backtrace {
     /// Returns an iterator over the backtrace frames.
+    #[must_use]
     #[unstable(feature = "backtrace_frames", issue = "79676")]
     pub fn frames(&'a self) -> &'a [BacktraceFrame] {
         if let Inner::Captured(c) = &self.inner { &c.force().frames } else { &[] }

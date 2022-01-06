@@ -1,11 +1,13 @@
 use crate::infer::{InferCtxt, TyOrConstInferVar};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::obligation_forest::ProcessResult;
 use rustc_data_structures::obligation_forest::{Error, ForestObligation, Outcome};
 use rustc_data_structures::obligation_forest::{ObligationForest, ObligationProcessor};
 use rustc_errors::ErrorReported;
+use rustc_hir as hir;
 use rustc_infer::traits::{SelectionError, TraitEngine, TraitEngineExt as _, TraitObligation};
-use rustc_middle::mir::abstract_const::NotConstEvaluatable;
 use rustc_middle::mir::interpret::ErrorHandled;
+use rustc_middle::thir::abstract_const::NotConstEvaluatable;
 use rustc_middle::ty::error::{ExpectedFound, TypeError};
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::ToPredicate;
@@ -52,6 +54,9 @@ pub struct FulfillmentContext<'tcx> {
     // A list of all obligations that have been registered with this
     // fulfillment context.
     predicates: ObligationForest<PendingPredicateObligation<'tcx>>,
+
+    relationships: FxHashMap<ty::TyVid, ty::FoundRelationships>,
+
     // Should this fulfillment context register type-lives-for-region
     // obligations on its parent infcx? In some cases, region
     // obligations are either already known to hold (normalization) or
@@ -96,6 +101,7 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
     pub fn new() -> FulfillmentContext<'tcx> {
         FulfillmentContext {
             predicates: ObligationForest::new(),
+            relationships: FxHashMap::default(),
             register_region_obligations: true,
             usable_in_snapshot: false,
         }
@@ -104,6 +110,7 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
     pub fn new_in_snapshot() -> FulfillmentContext<'tcx> {
         FulfillmentContext {
             predicates: ObligationForest::new(),
+            relationships: FxHashMap::default(),
             register_region_obligations: true,
             usable_in_snapshot: true,
         }
@@ -112,16 +119,14 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
     pub fn new_ignoring_regions() -> FulfillmentContext<'tcx> {
         FulfillmentContext {
             predicates: ObligationForest::new(),
+            relationships: FxHashMap::default(),
             register_region_obligations: false,
             usable_in_snapshot: false,
         }
     }
 
     /// Attempts to select obligations using `selcx`.
-    fn select(
-        &mut self,
-        selcx: &mut SelectionContext<'a, 'tcx>,
-    ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
+    fn select(&mut self, selcx: &mut SelectionContext<'a, 'tcx>) -> Vec<FulfillmentError<'tcx>> {
         let span = debug_span!("select", obligation_forest_size = ?self.predicates.len());
         let _enter = span.enter();
 
@@ -155,7 +160,7 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
             errors.len()
         );
 
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        errors
     }
 }
 
@@ -209,35 +214,61 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
 
         assert!(!infcx.is_in_snapshot() || self.usable_in_snapshot);
 
+        super::relationships::update(self, infcx, &obligation);
+
         self.predicates
             .register_obligation(PendingPredicateObligation { obligation, stalled_on: vec![] });
     }
 
-    fn select_all_or_error(
+    fn select_all_or_error(&mut self, infcx: &InferCtxt<'_, 'tcx>) -> Vec<FulfillmentError<'tcx>> {
+        {
+            let errors = self.select_where_possible(infcx);
+            if !errors.is_empty() {
+                return errors;
+            }
+        }
+
+        self.predicates.to_errors(CodeAmbiguity).into_iter().map(to_fulfillment_error).collect()
+    }
+
+    fn select_all_with_constness_or_error(
         &mut self,
         infcx: &InferCtxt<'_, 'tcx>,
-    ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
-        self.select_where_possible(infcx)?;
+        constness: rustc_hir::Constness,
+    ) -> Vec<FulfillmentError<'tcx>> {
+        {
+            let errors = self.select_with_constness_where_possible(infcx, constness);
+            if !errors.is_empty() {
+                return errors;
+            }
+        }
 
-        let errors: Vec<_> = self
-            .predicates
-            .to_errors(CodeAmbiguity)
-            .into_iter()
-            .map(to_fulfillment_error)
-            .collect();
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        self.predicates.to_errors(CodeAmbiguity).into_iter().map(to_fulfillment_error).collect()
     }
 
     fn select_where_possible(
         &mut self,
         infcx: &InferCtxt<'_, 'tcx>,
-    ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
+    ) -> Vec<FulfillmentError<'tcx>> {
         let mut selcx = SelectionContext::new(infcx);
+        self.select(&mut selcx)
+    }
+
+    fn select_with_constness_where_possible(
+        &mut self,
+        infcx: &InferCtxt<'_, 'tcx>,
+        constness: hir::Constness,
+    ) -> Vec<FulfillmentError<'tcx>> {
+        let mut selcx = SelectionContext::with_constness(infcx, constness);
         self.select(&mut selcx)
     }
 
     fn pending_obligations(&self) -> Vec<PredicateObligation<'tcx>> {
         self.predicates.map_pending_obligations(|o| o.obligation.clone())
+    }
+
+    fn relationships(&mut self) -> &mut FxHashMap<ty::TyVid, ty::FoundRelationships> {
+        &mut self.relationships
     }
 }
 
@@ -352,7 +383,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 // Evaluation will discard candidates using the leak check.
                 // This means we need to pass it the bound version of our
                 // predicate.
-                ty::PredicateKind::Trait(trait_ref, _constness) => {
+                ty::PredicateKind::Trait(trait_ref) => {
                     let trait_obligation = obligation.with(binder.rebind(trait_ref));
 
                     self.process_trait_obligation(
@@ -376,9 +407,11 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 | ty::PredicateKind::ObjectSafe(_)
                 | ty::PredicateKind::ClosureKind(..)
                 | ty::PredicateKind::Subtype(_)
+                | ty::PredicateKind::Coerce(_)
                 | ty::PredicateKind::ConstEvaluatable(..)
                 | ty::PredicateKind::ConstEquate(..) => {
-                    let pred = infcx.replace_bound_vars_with_placeholders(binder);
+                    let pred =
+                        ty::Binder::dummy(infcx.replace_bound_vars_with_placeholders(binder));
                     ProcessResult::Changed(mk_pending(vec![
                         obligation.with(pred.to_predicate(self.selcx.tcx())),
                     ]))
@@ -388,7 +421,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 }
             },
             Some(pred) => match pred {
-                ty::PredicateKind::Trait(data, _) => {
+                ty::PredicateKind::Trait(data) => {
                     let trait_obligation = obligation.with(Binder::dummy(data));
 
                     self.process_trait_obligation(
@@ -491,11 +524,35 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                     }
                 }
 
-                ty::PredicateKind::ConstEvaluatable(def_id, substs) => {
+                ty::PredicateKind::Coerce(coerce) => {
+                    match self.selcx.infcx().coerce_predicate(
+                        &obligation.cause,
+                        obligation.param_env,
+                        Binder::dummy(coerce),
+                    ) {
+                        None => {
+                            // None means that both are unresolved.
+                            pending_obligation.stalled_on = vec![
+                                TyOrConstInferVar::maybe_from_ty(coerce.a).unwrap(),
+                                TyOrConstInferVar::maybe_from_ty(coerce.b).unwrap(),
+                            ];
+                            ProcessResult::Unchanged
+                        }
+                        Some(Ok(ok)) => ProcessResult::Changed(mk_pending(ok.obligations)),
+                        Some(Err(err)) => {
+                            let expected_found = ExpectedFound::new(false, coerce.a, coerce.b);
+                            ProcessResult::Error(FulfillmentErrorCode::CodeSubtypeError(
+                                expected_found,
+                                err,
+                            ))
+                        }
+                    }
+                }
+
+                ty::PredicateKind::ConstEvaluatable(uv) => {
                     match const_evaluatable::is_const_evaluatable(
                         self.selcx.infcx(),
-                        def_id,
-                        substs,
+                        uv,
                         obligation.param_env,
                         obligation.cause.span,
                     ) {
@@ -503,7 +560,9 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                         Err(NotConstEvaluatable::MentionsInfer) => {
                             pending_obligation.stalled_on.clear();
                             pending_obligation.stalled_on.extend(
-                                substs.iter().filter_map(TyOrConstInferVar::maybe_from_generic_arg),
+                                uv.substs(infcx.tcx)
+                                    .iter()
+                                    .filter_map(TyOrConstInferVar::maybe_from_generic_arg),
                             );
                             ProcessResult::Unchanged
                         }
@@ -518,7 +577,8 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
 
                 ty::PredicateKind::ConstEquate(c1, c2) => {
                     debug!(?c1, ?c2, "equating consts");
-                    if self.selcx.tcx().features().const_evaluatable_checked {
+                    let tcx = self.selcx.tcx();
+                    if tcx.features().generic_const_exprs {
                         // FIXME: we probably should only try to unify abstract constants
                         // if the constants depend on generic parameters.
                         //
@@ -526,11 +586,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                         if let (ty::ConstKind::Unevaluated(a), ty::ConstKind::Unevaluated(b)) =
                             (c1.val, c2.val)
                         {
-                            if self
-                                .selcx
-                                .tcx()
-                                .try_unify_abstract_consts(((a.def, a.substs), (b.def, b.substs)))
-                            {
+                            if infcx.try_unify_abstract_consts(a.shrink(), b.shrink()) {
                                 return ProcessResult::Changed(vec![]);
                             }
                         }
@@ -549,7 +605,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                                 Err(ErrorHandled::TooGeneric) => {
                                     stalled_on.extend(
                                         unevaluated
-                                            .substs
+                                            .substs(tcx)
                                             .iter()
                                             .filter_map(TyOrConstInferVar::maybe_from_generic_arg),
                                     );
@@ -620,10 +676,15 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
         stalled_on: &mut Vec<TyOrConstInferVar<'tcx>>,
     ) -> ProcessResult<PendingPredicateObligation<'tcx>, FulfillmentErrorCode<'tcx>> {
         let infcx = self.selcx.infcx();
-        if obligation.predicate.is_global() {
+        if obligation.predicate.is_known_global() {
             // no type variables present, can use evaluation for better caching.
             // FIXME: consider caching errors too.
-            if infcx.predicate_must_hold_considering_regions(obligation) {
+            //
+            // If the predicate is considered const, then we cannot use this because
+            // it will cause false negatives in the ui tests.
+            if !self.selcx.is_predicate_const(obligation.predicate)
+                && infcx.predicate_must_hold_considering_regions(obligation)
+            {
                 debug!(
                     "selecting trait at depth {} evaluated to holds",
                     obligation.recursion_depth
@@ -674,10 +735,15 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
     ) -> ProcessResult<PendingPredicateObligation<'tcx>, FulfillmentErrorCode<'tcx>> {
         let tcx = self.selcx.tcx();
 
-        if obligation.predicate.is_global() {
+        if obligation.predicate.is_global(tcx) {
             // no type variables present, can use evaluation for better caching.
             // FIXME: consider caching errors too.
-            if self.selcx.infcx().predicate_must_hold_considering_regions(obligation) {
+            //
+            // If the predicate is considered const, then we cannot use this because
+            // it will cause false negatives in the ui tests.
+            if !self.selcx.is_predicate_const(obligation.predicate)
+                && self.selcx.infcx().predicate_must_hold_considering_regions(obligation)
+            {
                 return ProcessResult::Changed(vec![]);
             } else {
                 tracing::debug!("Does NOT hold: {:?}", obligation);
@@ -708,14 +774,15 @@ fn substs_infer_vars<'a, 'tcx>(
     selcx: &mut SelectionContext<'a, 'tcx>,
     substs: ty::Binder<'tcx, SubstsRef<'tcx>>,
 ) -> impl Iterator<Item = TyOrConstInferVar<'tcx>> {
+    let tcx = selcx.tcx();
     selcx
         .infcx()
         .resolve_vars_if_possible(substs)
         .skip_binder() // ok because this check doesn't care about regions
         .iter()
         .filter(|arg| arg.has_infer_types_or_consts())
-        .flat_map(|arg| {
-            let mut walker = arg.walk();
+        .flat_map(move |arg| {
+            let mut walker = arg.walk(tcx);
             while let Some(c) = walker.next() {
                 if !c.has_infer_types_or_consts() {
                     walker.visited.remove(&c);

@@ -25,7 +25,6 @@ use rustc_span::symbol::Symbol;
 use rustc_span::{MultiSpan, Span};
 use smallvec::SmallVec;
 
-use std::array;
 use std::iter;
 use std::ops::ControlFlow;
 
@@ -250,7 +249,7 @@ fn predicates_reference_self(
     trait_def_id: DefId,
     supertraits_only: bool,
 ) -> SmallVec<[Span; 1]> {
-    let trait_ref = ty::Binder::dummy(ty::TraitRef::identity(tcx, trait_def_id));
+    let trait_ref = ty::TraitRef::identity(tcx, trait_def_id);
     let predicates = if supertraits_only {
         tcx.super_predicates_of(trait_def_id)
     } else {
@@ -278,9 +277,9 @@ fn predicate_references_self(
     (predicate, sp): (ty::Predicate<'tcx>, Span),
 ) -> Option<Span> {
     let self_ty = tcx.types.self_param;
-    let has_self_ty = |arg: &GenericArg<'_>| arg.walk().any(|arg| arg == self_ty.into());
+    let has_self_ty = |arg: &GenericArg<'tcx>| arg.walk(tcx).any(|arg| arg == self_ty.into());
     match predicate.kind().skip_binder() {
-        ty::PredicateKind::Trait(ref data, _) => {
+        ty::PredicateKind::Trait(ref data) => {
             // In the case of a trait predicate, we can skip the "self" type.
             if data.trait_ref.substs[1..].iter().any(has_self_ty) { Some(sp) } else { None }
         }
@@ -308,6 +307,7 @@ fn predicate_references_self(
         | ty::PredicateKind::RegionOutlives(..)
         | ty::PredicateKind::ClosureKind(..)
         | ty::PredicateKind::Subtype(..)
+        | ty::PredicateKind::Coerce(..)
         | ty::PredicateKind::ConstEvaluatable(..)
         | ty::PredicateKind::ConstEquate(..)
         | ty::PredicateKind::TypeWellFormedFromEnv(..) => None,
@@ -331,11 +331,12 @@ fn generics_require_sized_self(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let predicates = predicates.instantiate_identity(tcx).predicates;
     elaborate_predicates(tcx, predicates.into_iter()).any(|obligation| {
         match obligation.predicate.kind().skip_binder() {
-            ty::PredicateKind::Trait(ref trait_pred, _) => {
+            ty::PredicateKind::Trait(ref trait_pred) => {
                 trait_pred.def_id() == sized_def_id && trait_pred.self_ty().is_param(0)
             }
             ty::PredicateKind::Projection(..)
             | ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::RegionOutlives(..)
             | ty::PredicateKind::WellFormed(..)
             | ty::PredicateKind::ObjectSafe(..)
@@ -463,9 +464,9 @@ fn virtual_call_violation_for_method<'tcx>(
 
             let param_env = tcx.param_env(method.def_id);
 
-            let abi_of_ty = |ty: Ty<'tcx>| -> Option<&Abi> {
+            let abi_of_ty = |ty: Ty<'tcx>| -> Option<Abi> {
                 match tcx.layout_of(param_env.and(ty)) {
-                    Ok(layout) => Some(&layout.abi),
+                    Ok(layout) => Some(layout.abi),
                     Err(err) => {
                         // #78372
                         tcx.sess.delay_span_bug(
@@ -552,11 +553,11 @@ fn object_ty_for_trait<'tcx>(
 
     let trait_ref = ty::TraitRef::identity(tcx, trait_def_id);
 
-    let trait_predicate = ty::Binder::dummy(ty::ExistentialPredicate::Trait(
-        ty::ExistentialTraitRef::erase_self_ty(tcx, trait_ref),
-    ));
+    let trait_predicate = trait_ref.map_bound(|trait_ref| {
+        ty::ExistentialPredicate::Trait(ty::ExistentialTraitRef::erase_self_ty(tcx, trait_ref))
+    });
 
-    let mut associated_types = traits::supertraits(tcx, ty::Binder::dummy(trait_ref))
+    let mut associated_types = traits::supertraits(tcx, trait_ref)
         .flat_map(|super_trait_ref| {
             tcx.associated_items(super_trait_ref.def_id())
                 .in_definition_order()
@@ -645,9 +646,7 @@ fn receiver_is_dispatchable<'tcx>(
     debug!("receiver_is_dispatchable: method = {:?}, receiver_ty = {:?}", method, receiver_ty);
 
     let traits = (tcx.lang_items().unsize_trait(), tcx.lang_items().dispatch_from_dyn_trait());
-    let (unsize_did, dispatch_from_dyn_did) = if let (Some(u), Some(cu)) = traits {
-        (u, cu)
-    } else {
+    let (Some(unsize_did), Some(dispatch_from_dyn_did)) = traits else {
         debug!("receiver_is_dispatchable: Missing Unsize or DispatchFromDyn traits");
         return false;
     };
@@ -669,10 +668,10 @@ fn receiver_is_dispatchable<'tcx>(
         let param_env = tcx.param_env(method.def_id);
 
         // Self: Unsize<U>
-        let unsize_predicate = ty::TraitRef {
+        let unsize_predicate = ty::Binder::dummy(ty::TraitRef {
             def_id: unsize_did,
             substs: tcx.mk_substs_trait(tcx.types.self_param, &[unsized_self_ty.into()]),
-        }
+        })
         .without_const()
         .to_predicate(tcx);
 
@@ -687,24 +686,23 @@ fn receiver_is_dispatchable<'tcx>(
                     }
                 });
 
-            ty::TraitRef { def_id: unsize_did, substs }.without_const().to_predicate(tcx)
+            ty::Binder::dummy(ty::TraitRef { def_id: unsize_did, substs })
+                .without_const()
+                .to_predicate(tcx)
         };
 
-        let caller_bounds: Vec<Predicate<'tcx>> = param_env
-            .caller_bounds()
-            .iter()
-            .chain(array::IntoIter::new([unsize_predicate, trait_predicate]))
-            .collect();
+        let caller_bounds: Vec<Predicate<'tcx>> =
+            param_env.caller_bounds().iter().chain([unsize_predicate, trait_predicate]).collect();
 
         ty::ParamEnv::new(tcx.intern_predicates(&caller_bounds), param_env.reveal())
     };
 
     // Receiver: DispatchFromDyn<Receiver[Self => U]>
     let obligation = {
-        let predicate = ty::TraitRef {
+        let predicate = ty::Binder::dummy(ty::TraitRef {
             def_id: dispatch_from_dyn_did,
             substs: tcx.mk_substs_trait(receiver_ty, &[unsized_receiver_ty.into()]),
-        }
+        })
         .without_const()
         .to_predicate(tcx);
 
@@ -769,6 +767,9 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
 
     impl<'tcx> TypeVisitor<'tcx> for IllegalSelfTypeVisitor<'tcx> {
         type BreakTy = ();
+        fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+            Some(self.tcx)
+        }
 
         fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
             match t.kind() {
@@ -784,8 +785,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
 
                     // Compute supertraits of current trait lazily.
                     if self.supertraits.is_none() {
-                        let trait_ref =
-                            ty::Binder::dummy(ty::TraitRef::identity(self.tcx, self.trait_def_id));
+                        let trait_ref = ty::TraitRef::identity(self.tcx, self.trait_def_id);
                         self.supertraits = Some(
                             traits::supertraits(self.tcx, trait_ref).map(|t| t.def_id()).collect(),
                         );
@@ -815,10 +815,10 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             }
         }
 
-        fn visit_const(&mut self, ct: &ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
-            // First check if the type of this constant references `Self`.
-            self.visit_ty(ct.ty)?;
-
+        fn visit_unevaluated_const(
+            &mut self,
+            uv: ty::Unevaluated<'tcx>,
+        ) -> ControlFlow<Self::BreakTy> {
             // Constants can only influence object safety if they reference `Self`.
             // This is only possible for unevaluated constants, so we walk these here.
             //
@@ -831,45 +831,19 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             //
             // This shouldn't really matter though as we can't really use any
             // constants which are not considered const evaluatable.
-            use rustc_middle::mir::abstract_const::Node;
-            if let Ok(Some(ct)) = AbstractConst::from_const(self.tcx, ct) {
-                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
-                    Node::Leaf(leaf) => {
-                        let leaf = leaf.subst(self.tcx, ct.substs);
-                        self.visit_const(leaf)
-                    }
-                    Node::Cast(_, _, ty) => self.visit_ty(ty),
-                    Node::Binop(..) | Node::UnaryOp(..) | Node::FunctionCall(_, _) => {
-                        ControlFlow::CONTINUE
-                    }
-                })
-            } else {
-                ControlFlow::CONTINUE
-            }
-        }
-
-        fn visit_predicate(&mut self, pred: ty::Predicate<'tcx>) -> ControlFlow<Self::BreakTy> {
-            if let ty::PredicateKind::ConstEvaluatable(def, substs) = pred.kind().skip_binder() {
-                // FIXME(const_evaluatable_checked): We should probably deduplicate the logic for
-                // `AbstractConst`s here, it might make sense to change `ConstEvaluatable` to
-                // take a `ty::Const` instead.
-                use rustc_middle::mir::abstract_const::Node;
-                if let Ok(Some(ct)) = AbstractConst::new(self.tcx, def, substs) {
-                    const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
-                        Node::Leaf(leaf) => {
-                            let leaf = leaf.subst(self.tcx, ct.substs);
-                            self.visit_const(leaf)
-                        }
+            use rustc_middle::thir::abstract_const::Node;
+            if let Ok(Some(ct)) = AbstractConst::new(self.tcx, uv.shrink()) {
+                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| {
+                    match node.root(self.tcx) {
+                        Node::Leaf(leaf) => self.visit_const(leaf),
                         Node::Cast(_, _, ty) => self.visit_ty(ty),
                         Node::Binop(..) | Node::UnaryOp(..) | Node::FunctionCall(_, _) => {
                             ControlFlow::CONTINUE
                         }
-                    })
-                } else {
-                    ControlFlow::CONTINUE
-                }
+                    }
+                })
             } else {
-                pred.super_visit_with(self)
+                ControlFlow::CONTINUE
             }
         }
     }

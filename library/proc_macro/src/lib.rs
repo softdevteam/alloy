@@ -61,7 +61,7 @@ use std::{error, fmt, iter, mem};
 /// non-panicking way to detect whether the infrastructure required to use the
 /// API of proc_macro is presently available. Returns true if invoked from
 /// inside of a procedural macro, false if invoked from any other binary.
-#[unstable(feature = "proc_macro_is_available", issue = "71436")]
+#[stable(feature = "proc_macro_is_available", since = "1.57.0")]
 pub fn is_available() -> bool {
     bridge::Bridge::is_available()
 }
@@ -88,12 +88,6 @@ impl !Sync for TokenStream {}
 #[derive(Debug)]
 pub struct LexError;
 
-impl LexError {
-    fn new() -> Self {
-        LexError
-    }
-}
-
 #[stable(feature = "proc_macro_lexerror_impls", since = "1.44.0")]
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -109,6 +103,28 @@ impl !Send for LexError {}
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl !Sync for LexError {}
 
+/// Error returned from `TokenStream::expand_expr`.
+#[unstable(feature = "proc_macro_expand", issue = "90765")]
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct ExpandError;
+
+#[unstable(feature = "proc_macro_expand", issue = "90765")]
+impl fmt::Display for ExpandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("macro expansion failed")
+    }
+}
+
+#[unstable(feature = "proc_macro_expand", issue = "90765")]
+impl error::Error for ExpandError {}
+
+#[unstable(feature = "proc_macro_expand", issue = "90765")]
+impl !Send for ExpandError {}
+
+#[unstable(feature = "proc_macro_expand", issue = "90765")]
+impl !Sync for ExpandError {}
+
 impl TokenStream {
     /// Returns an empty `TokenStream` containing no token trees.
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
@@ -120,6 +136,24 @@ impl TokenStream {
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Parses this `TokenStream` as an expression and attempts to expand any
+    /// macros within it. Returns the expanded `TokenStream`.
+    ///
+    /// Currently only expressions expanding to literals will succeed, although
+    /// this may be relaxed in the future.
+    ///
+    /// NOTE: In error conditions, `expand_expr` may leave macros unexpanded,
+    /// report an error, failing compilation, and/or return an `Err(..)`. The
+    /// specific behavior for any error condition, and what conditions are
+    /// considered errors, is unspecified and may change in the future.
+    #[unstable(feature = "proc_macro_expand", issue = "90765")]
+    pub fn expand_expr(&self) -> Result<TokenStream, ExpandError> {
+        match bridge::client::TokenStream::expand_expr(&self.0) {
+            Ok(stream) => Ok(TokenStream(stream)),
+            Err(_) => Err(ExpandError),
+        }
     }
 }
 
@@ -262,7 +296,7 @@ pub mod token_stream {
 }
 
 /// `quote!(..)` accepts arbitrary tokens and expands into a `TokenStream` describing the input.
-/// For example, `quote!(a + b)` will produce a expression, that, when evaluated, constructs
+/// For example, `quote!(a + b)` will produce an expression, that, when evaluated, constructs
 /// the `TokenStream` `[Ident("a"), Punct('+', Alone), Ident("b")]`.
 ///
 /// Unquoting is done with `$`, and works by taking the single next ident as the unquoted term.
@@ -348,13 +382,25 @@ impl Span {
     /// Gets the starting line/column in the source file for this span.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn start(&self) -> LineColumn {
-        self.0.start()
+        self.0.start().add_1_to_column()
     }
 
     /// Gets the ending line/column in the source file for this span.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn end(&self) -> LineColumn {
-        self.0.end()
+        self.0.end().add_1_to_column()
+    }
+
+    /// Creates an empty span pointing to directly before this span.
+    #[unstable(feature = "proc_macro_span_shrink", issue = "87552")]
+    pub fn before(&self) -> Span {
+        Span(self.0.before())
+    }
+
+    /// Creates an empty span pointing to directly after this span.
+    #[unstable(feature = "proc_macro_span_shrink", issue = "87552")]
+    pub fn after(&self) -> Span {
+        Span(self.0.after())
     }
 
     /// Creates a new span encompassing `self` and `other`.
@@ -432,10 +478,16 @@ pub struct LineColumn {
     /// The 1-indexed line in the source file on which the span starts or ends (inclusive).
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub line: usize,
-    /// The 0-indexed column (in UTF-8 characters) in the source file on which
-    /// the span starts or ends (inclusive).
+    /// The 1-indexed column (number of bytes in UTF-8 encoding) in the source
+    /// file on which the span starts or ends (inclusive).
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub column: usize,
+}
+
+impl LineColumn {
+    fn add_1_to_column(self) -> Self {
+        LineColumn { line: self.line, column: self.column + 1 }
+    }
 }
 
 #[unstable(feature = "proc_macro_span", issue = "54725")]
@@ -467,10 +519,10 @@ impl SourceFile {
     ///
     /// ### Note
     /// If the code span associated with this `SourceFile` was generated by an external macro, this
-    /// macro, this may not be an actual path on the filesystem. Use [`is_real`] to check.
+    /// macro, this might not be an actual path on the filesystem. Use [`is_real`] to check.
     ///
     /// Also note that even if `is_real` returns `true`, if `--remap-path-prefix` was passed on
-    /// the command line, the path as given may not actually be valid.
+    /// the command line, the path as given might not actually be valid.
     ///
     /// [`is_real`]: Self::is_real
     #[unstable(feature = "proc_macro_span", issue = "54725")]
@@ -657,7 +709,7 @@ pub enum Delimiter {
     /// An implicit delimiter, that may, for example, appear around tokens coming from a
     /// "macro variable" `$var`. It is important to preserve operator priorities in cases like
     /// `$var * 3` where `$var` is `1 + 2`.
-    /// Implicit delimiters may not survive roundtrip of a token stream through a string.
+    /// Implicit delimiters might not survive roundtrip of a token stream through a string.
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
     None,
 }
@@ -973,7 +1025,7 @@ macro_rules! suffixed_int_literals {
         /// This function will create an integer like `1u32` where the integer
         /// value specified is the first part of the token and the integral is
         /// also suffixed at the end.
-        /// Literals created from negative numbers may not survive round-trips through
+        /// Literals created from negative numbers might not survive round-trips through
         /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
         ///
         /// Literals created through this method have the `Span::call_site()`
@@ -995,7 +1047,7 @@ macro_rules! unsuffixed_int_literals {
         /// specified on this token, meaning that invocations like
         /// `Literal::i8_unsuffixed(1)` are equivalent to
         /// `Literal::u32_unsuffixed(1)`.
-        /// Literals created from negative numbers may not survive rountrips through
+        /// Literals created from negative numbers might not survive rountrips through
         /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
         ///
         /// Literals created through this method have the `Span::call_site()`
@@ -1044,7 +1096,7 @@ impl Literal {
     /// This constructor is similar to those like `Literal::i8_unsuffixed` where
     /// the float's value is emitted directly into the token but no suffix is
     /// used, so it may be inferred to be a `f64` later in the compiler.
-    /// Literals created from negative numbers may not survive rountrips through
+    /// Literals created from negative numbers might not survive rountrips through
     /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
     ///
     /// # Panics
@@ -1056,7 +1108,11 @@ impl Literal {
         if !n.is_finite() {
             panic!("Invalid float literal {}", n);
         }
-        Literal(bridge::client::Literal::float(&n.to_string()))
+        let mut repr = n.to_string();
+        if !repr.contains('.') {
+            repr.push_str(".0");
+        }
+        Literal(bridge::client::Literal::float(&repr))
     }
 
     /// Creates a new suffixed floating-point literal.
@@ -1065,7 +1121,7 @@ impl Literal {
     /// specified is the preceding part of the token and `f32` is the suffix of
     /// the token. This token will always be inferred to be an `f32` in the
     /// compiler.
-    /// Literals created from negative numbers may not survive rountrips through
+    /// Literals created from negative numbers might not survive rountrips through
     /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
     ///
     /// # Panics
@@ -1085,7 +1141,7 @@ impl Literal {
     /// This constructor is similar to those like `Literal::i8_unsuffixed` where
     /// the float's value is emitted directly into the token but no suffix is
     /// used, so it may be inferred to be a `f64` later in the compiler.
-    /// Literals created from negative numbers may not survive rountrips through
+    /// Literals created from negative numbers might not survive rountrips through
     /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
     ///
     /// # Panics
@@ -1097,7 +1153,11 @@ impl Literal {
         if !n.is_finite() {
             panic!("Invalid float literal {}", n);
         }
-        Literal(bridge::client::Literal::float(&n.to_string()))
+        let mut repr = n.to_string();
+        if !repr.contains('.') {
+            repr.push_str(".0");
+        }
+        Literal(bridge::client::Literal::float(&repr))
     }
 
     /// Creates a new suffixed floating-point literal.
@@ -1106,7 +1166,7 @@ impl Literal {
     /// specified is the preceding part of the token and `f64` is the suffix of
     /// the token. This token will always be inferred to be an `f64` in the
     /// compiler.
-    /// Literals created from negative numbers may not survive rountrips through
+    /// Literals created from negative numbers might not survive rountrips through
     /// `TokenStream` or strings and may be broken into two tokens (`-` and positive literal).
     ///
     /// # Panics
@@ -1185,7 +1245,7 @@ impl FromStr for Literal {
     fn from_str(src: &str) -> Result<Self, LexError> {
         match bridge::client::Literal::from_str(src) {
             Ok(literal) => Ok(Literal(literal)),
-            Err(()) => Err(LexError::new()),
+            Err(()) => Err(LexError),
         }
     }
 }
@@ -1195,7 +1255,7 @@ impl FromStr for Literal {
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl ToString for Literal {
     fn to_string(&self) -> String {
-        TokenStream::from(TokenTree::from(self.clone())).to_string()
+        self.0.to_string()
     }
 }
 

@@ -11,7 +11,7 @@ pushd rust
 cargo install ripgrep
 
 rm -r src/test/ui/{extern/,panics/,unsized-locals/,thinlto/,simd*,*lto*.rs,linkage*,unwind-*.rs} || true
-for test in $(rg --files-with-matches "asm!|catch_unwind|should_panic|lto" src/test/ui); do
+for test in $(rg --files-with-matches "asm!|catch_unwind|should_panic|lto|// needs-asm-support" src/test/ui); do
   rm $test
 done
 
@@ -79,7 +79,6 @@ rm src/test/ui/type-alias-impl-trait/cross_crate_ice*.rs # requires removed aux 
 
 rm src/test/ui/allocator/no_std-alloc-error-handler-default.rs # missing rust_oom definition
 rm src/test/ui/cfg/cfg-panic.rs
-rm src/test/ui/default-alloc-error-hook.rs
 rm -r src/test/ui/hygiene/
 
 rm -r src/test/ui/polymorphization/ # polymorphization not yet supported

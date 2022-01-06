@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::source::snippet_opt;
-use clippy_utils::{fn_def_id, in_macro, path_to_local_id};
+use clippy_utils::{fn_def_id, path_to_local_id};
 use if_chain::if_chain;
 use rustc_ast::ast::Attribute;
 use rustc_errors::Applicability;
@@ -11,19 +11,20 @@ use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::Span;
 use rustc_span::sym;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `let`-bindings, which are subsequently
+    /// ### What it does
+    /// Checks for `let`-bindings, which are subsequently
     /// returned.
     ///
-    /// **Why is this bad?** It is just extraneous code. Remove it to make your code
+    /// ### Why is this bad?
+    /// It is just extraneous code. Remove it to make your code
     /// more rusty.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// fn foo() -> String {
     ///     let x = String::new();
@@ -36,20 +37,21 @@ declare_clippy_lint! {
     ///     String::new()
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub LET_AND_RETURN,
     style,
     "creating a let-binding and then immediately returning it like `let x = expr; x` at the end of a block"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for return statements at the end of a block.
+    /// ### What it does
+    /// Checks for return statements at the end of a block.
     ///
-    /// **Why is this bad?** Removing the `return` and semicolon will make the code
+    /// ### Why is this bad?
+    /// Removing the `return` and semicolon will make the code
     /// more rusty.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// fn foo(x: usize) -> usize {
     ///     return x;
@@ -61,6 +63,7 @@ declare_clippy_lint! {
     ///     x
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NEEDLESS_RETURN,
     style,
     "using a return statement like `return expr;` where an expression would suffice"
@@ -89,8 +92,7 @@ impl<'tcx> LateLintPass<'tcx> for Return {
             if !last_statement_borrows(cx, initexpr);
             if !in_external_macro(cx.sess(), initexpr.span);
             if !in_external_macro(cx.sess(), retexpr.span);
-            if !in_external_macro(cx.sess(), local.span);
-            if !in_macro(local.span);
+            if !local.span.from_expansion();
             then {
                 span_lint_and_then(
                     cx,
@@ -199,28 +201,19 @@ fn check_final_expr<'tcx>(
                 check_block_return(cx, ifblock);
             }
             if let Some(else_clause) = else_clause_opt {
-                check_final_expr(cx, else_clause, None, RetReplacement::Empty);
+                if expr.span.desugaring_kind() != Some(DesugaringKind::LetElse) {
+                    check_final_expr(cx, else_clause, None, RetReplacement::Empty);
+                }
             }
         },
         // a match expr, check all arms
         // an if/if let expr, check both exprs
         // note, if without else is going to be a type checking error anyways
         // (except for unit type functions) so we don't match it
-        ExprKind::Match(_, arms, source) => match source {
-            MatchSource::Normal => {
-                for arm in arms.iter() {
-                    check_final_expr(cx, arm.body, Some(arm.body.span), RetReplacement::Block);
-                }
-            },
-            MatchSource::IfLetDesugar {
-                contains_else_clause: true,
-            } => {
-                if let ExprKind::Block(ifblock, _) = arms[0].body.kind {
-                    check_block_return(cx, ifblock);
-                }
-                check_final_expr(cx, arms[1].body, None, RetReplacement::Empty);
-            },
-            _ => (),
+        ExprKind::Match(_, arms, MatchSource::Normal) => {
+            for arm in arms.iter() {
+                check_final_expr(cx, arm.body, Some(arm.body.span), RetReplacement::Block);
+            }
         },
         ExprKind::DropTemps(expr) => check_final_expr(cx, expr, None, RetReplacement::Empty),
         _ => (),
@@ -296,7 +289,7 @@ impl<'tcx> Visitor<'tcx> for BorrowVisitor<'_, 'tcx> {
                 .fn_sig(def_id)
                 .output()
                 .skip_binder()
-                .walk()
+                .walk(self.cx.tcx)
                 .any(|arg| matches!(arg.unpack(), GenericArgKind::Lifetime(_)));
         }
 

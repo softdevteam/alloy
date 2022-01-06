@@ -5,6 +5,22 @@
 //! the core `std` library. These extensions allow developers to use
 //! `std` types and idioms with Windows in a way that the normal
 //! platform-agnostic idioms would not normally support.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use std::fs::File;
+//! use std::os::windows::prelude::*;
+//!
+//! fn main() -> std::io::Result<()> {
+//!     let f = File::create("foo.txt")?;
+//!     let handle = f.as_raw_handle();
+//!
+//!     // use handle with native windows bindings
+//!
+//!     Ok(())
+//! }
+//! ```
 
 #![stable(feature = "rust1", since = "1.0.0")]
 #![doc(cfg(windows))]
@@ -32,8 +48,11 @@ pub mod prelude {
     pub use super::fs::{MetadataExt, OpenOptionsExt};
     #[doc(no_inline)]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub use super::io::{AsRawHandle, AsRawSocket, RawHandle, RawSocket};
+    pub use super::io::{
+        AsHandle, AsSocket, BorrowedHandle, BorrowedSocket, FromRawHandle, FromRawSocket,
+        HandleOrInvalid, IntoRawHandle, IntoRawSocket, OwnedHandle, OwnedSocket,
+    };
     #[doc(no_inline)]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub use super::io::{FromRawHandle, FromRawSocket, IntoRawHandle, IntoRawSocket};
+    pub use super::io::{AsRawHandle, AsRawSocket, RawHandle, RawSocket};
 }

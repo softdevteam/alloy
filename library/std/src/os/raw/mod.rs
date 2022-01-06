@@ -46,6 +46,7 @@ macro_rules! type_alias {
 }
 
 type_alias! { "char.md", c_char = u8, NonZero_c_char = NonZeroU8;
+#[doc(cfg(all()))]
 #[cfg(any(
     all(
         target_os = "linux",
@@ -68,7 +69,8 @@ type_alias! { "char.md", c_char = u8, NonZero_c_char = NonZeroU8;
             target_arch = "aarch64",
             target_arch = "arm",
             target_arch = "powerpc",
-            target_arch = "powerpc64"
+            target_arch = "powerpc64",
+            target_arch = "riscv64"
         )
     ),
     all(
@@ -88,6 +90,7 @@ type_alias! { "char.md", c_char = u8, NonZero_c_char = NonZeroU8;
     all(target_os = "fuchsia", target_arch = "aarch64")
 ))]}
 type_alias! { "char.md", c_char = i8, NonZero_c_char = NonZeroI8;
+#[doc(cfg(all()))]
 #[cfg(not(any(
     all(
         target_os = "linux",
@@ -110,7 +113,8 @@ type_alias! { "char.md", c_char = i8, NonZero_c_char = NonZeroI8;
             target_arch = "aarch64",
             target_arch = "arm",
             target_arch = "powerpc",
-            target_arch = "powerpc64"
+            target_arch = "powerpc64",
+            target_arch = "riscv64"
         )
     ),
     all(
@@ -136,12 +140,16 @@ type_alias! { "ushort.md", c_ushort = u16, NonZero_c_ushort = NonZeroU16; }
 type_alias! { "int.md", c_int = i32, NonZero_c_int = NonZeroI32; }
 type_alias! { "uint.md", c_uint = u32, NonZero_c_uint = NonZeroU32; }
 type_alias! { "long.md", c_long = i32, NonZero_c_long = NonZeroI32;
+#[doc(cfg(all()))]
 #[cfg(any(target_pointer_width = "32", windows))] }
 type_alias! { "ulong.md", c_ulong = u32, NonZero_c_ulong = NonZeroU32;
+#[doc(cfg(all()))]
 #[cfg(any(target_pointer_width = "32", windows))] }
 type_alias! { "long.md", c_long = i64, NonZero_c_long = NonZeroI64;
+#[doc(cfg(all()))]
 #[cfg(all(target_pointer_width = "64", not(windows)))] }
 type_alias! { "ulong.md", c_ulong = u64, NonZero_c_ulong = NonZeroU64;
+#[doc(cfg(all()))]
 #[cfg(all(target_pointer_width = "64", not(windows)))] }
 type_alias! { "longlong.md", c_longlong = i64, NonZero_c_longlong = NonZeroI64; }
 type_alias! { "ulonglong.md", c_ulonglong = u64, NonZero_c_ulonglong = NonZeroU64; }
@@ -151,3 +159,24 @@ type_alias_no_nz! { "double.md", c_double = f64; }
 #[stable(feature = "raw_os", since = "1.1.0")]
 #[doc(no_inline)]
 pub use core::ffi::c_void;
+
+/// Equivalent to C's `size_t` type, from `stddef.h` (or `cstddef` for C++).
+///
+/// This type is currently always [`usize`], however in the future there may be
+/// platforms where this is not the case.
+#[unstable(feature = "c_size_t", issue = "88345")]
+pub type c_size_t = usize;
+
+/// Equivalent to C's `ptrdiff_t` type, from `stddef.h` (or `cstddef` for C++).
+///
+/// This type is currently always [`isize`], however in the future there may be
+/// platforms where this is not the case.
+#[unstable(feature = "c_size_t", issue = "88345")]
+pub type c_ptrdiff_t = isize;
+
+/// Equivalent to C's `ssize_t` (on POSIX) or `SSIZE_T` (on Windows) type.
+///
+/// This type is currently always [`isize`], however in the future there may be
+/// platforms where this is not the case.
+#[unstable(feature = "c_size_t", issue = "88345")]
+pub type c_ssize_t = isize;

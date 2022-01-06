@@ -64,6 +64,8 @@ pub enum TokenKind {
     /// "ident" or "continue"
     /// At this step keywords are also considered identifiers.
     Ident,
+    /// Like the above, but containing invalid unicode codepoints.
+    InvalidIdent,
     /// "r#ident"
     RawIdent,
     /// An unknown prefix like `foo#`, `foo'`, `foo"`. Note that only the
@@ -225,14 +227,15 @@ pub fn first_token(input: &str) -> Token {
 }
 
 /// Creates an iterator that produces tokens from the input string.
-pub fn tokenize(mut input: &str) -> impl Iterator<Item = Token> + '_ {
+pub fn tokenize(input: &str) -> impl Iterator<Item = Token> + '_ {
+    let mut cursor = Cursor::new(input);
     std::iter::from_fn(move || {
-        if input.is_empty() {
-            return None;
+        if cursor.is_eof() {
+            None
+        } else {
+            cursor.reset_len_consumed();
+            Some(cursor.advance_token())
         }
-        let token = first_token(input);
-        input = &input[token.len..];
-        Some(token)
     })
 }
 
@@ -273,24 +276,14 @@ pub fn is_whitespace(c: char) -> bool {
 /// a formal definition of valid identifier name.
 pub fn is_id_start(c: char) -> bool {
     // This is XID_Start OR '_' (which formally is not a XID_Start).
-    // We also add fast-path for ascii idents
-    ('a'..='z').contains(&c)
-        || ('A'..='Z').contains(&c)
-        || c == '_'
-        || (c > '\x7f' && unicode_xid::UnicodeXID::is_xid_start(c))
+    c == '_' || unicode_xid::UnicodeXID::is_xid_start(c)
 }
 
 /// True if `c` is valid as a non-first character of an identifier.
 /// See [Rust language reference](https://doc.rust-lang.org/reference/identifiers.html) for
 /// a formal definition of valid identifier name.
 pub fn is_id_continue(c: char) -> bool {
-    // This is exactly XID_Continue.
-    // We also add fast-path for ascii idents
-    ('a'..='z').contains(&c)
-        || ('A'..='Z').contains(&c)
-        || ('0'..='9').contains(&c)
-        || c == '_'
-        || (c > '\x7f' && unicode_xid::UnicodeXID::is_xid_continue(c))
+    unicode_xid::UnicodeXID::is_xid_continue(c)
 }
 
 /// The passed string is lexically an identifier.
@@ -421,6 +414,10 @@ impl Cursor<'_> {
                 let kind = Str { terminated };
                 Literal { kind, suffix_start }
             }
+            // Identifier starting with an emoji. Only lexed for graceful error recovery.
+            c if !c.is_ascii() && unic_emoji_char::is_emoji(c) => {
+                self.fake_ident_or_unknown_prefix()
+            }
             _ => Unknown,
         };
         Token::new(token_kind, self.len_consumed())
@@ -499,10 +496,28 @@ impl Cursor<'_> {
         // Start is already eaten, eat the rest of identifier.
         self.eat_while(is_id_continue);
         // Known prefixes must have been handled earlier. So if
-        // we see a prefix here, it is definitely a unknown prefix.
+        // we see a prefix here, it is definitely an unknown prefix.
         match self.first() {
             '#' | '"' | '\'' => UnknownPrefix,
+            c if !c.is_ascii() && unic_emoji_char::is_emoji(c) => {
+                self.fake_ident_or_unknown_prefix()
+            }
             _ => Ident,
+        }
+    }
+
+    fn fake_ident_or_unknown_prefix(&mut self) -> TokenKind {
+        // Start is already eaten, eat the rest of identifier.
+        self.eat_while(|c| {
+            unicode_xid::UnicodeXID::is_xid_continue(c)
+                || (!c.is_ascii() && unic_emoji_char::is_emoji(c))
+                || c == '\u{200d}'
+        });
+        // Known prefixes must have been handled earlier. So if
+        // we see a prefix here, it is definitely an unknown prefix.
+        match self.first() {
+            '#' | '"' | '\'' => UnknownPrefix,
+            _ => InvalidIdent,
         }
     }
 
@@ -817,12 +832,5 @@ impl Cursor<'_> {
         self.bump();
 
         self.eat_while(is_id_continue);
-    }
-
-    /// Eats symbols while predicate returns true or until the end of file is reached.
-    fn eat_while(&mut self, mut predicate: impl FnMut(char) -> bool) {
-        while predicate(self.first()) && !self.is_eof() {
-            self.bump();
-        }
     }
 }

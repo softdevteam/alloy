@@ -7,7 +7,7 @@ use crate::io::prelude::*;
 
 use crate::cell::{Cell, RefCell};
 use crate::fmt;
-use crate::io::{self, BufReader, Initializer, IoSlice, IoSliceMut, LineWriter, Lines, Split};
+use crate::io::{self, BufReader, IoSlice, IoSliceMut, LineWriter, Lines, Split};
 use crate::lazy::SyncOnceCell;
 use crate::pin::Pin;
 use crate::sync::atomic::{AtomicBool, Ordering};
@@ -106,11 +106,6 @@ impl Read for StdinRaw {
     #[inline]
     fn is_read_vectored(&self) -> bool {
         self.0.is_read_vectored()
-    }
-
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -216,12 +211,12 @@ fn handle_ebadf<T>(r: io::Result<T>, default: T) -> io::Result<T> {
 /// # Examples
 ///
 /// ```no_run
-/// use std::io::{self, Read};
+/// use std::io;
 ///
 /// fn main() -> io::Result<()> {
 ///     let mut buffer = String::new();
 ///     let mut stdin = io::stdin(); // We get `Stdin` here.
-///     stdin.read_to_string(&mut buffer)?;
+///     stdin.read_line(&mut buffer)?;
 ///     Ok(())
 /// }
 /// ```
@@ -244,18 +239,19 @@ pub struct Stdin {
 /// # Examples
 ///
 /// ```no_run
-/// use std::io::{self, Read};
+/// use std::io::{self, BufRead};
 ///
 /// fn main() -> io::Result<()> {
 ///     let mut buffer = String::new();
 ///     let stdin = io::stdin(); // We get `Stdin` here.
 ///     {
 ///         let mut handle = stdin.lock(); // We get `StdinLock` here.
-///         handle.read_to_string(&mut buffer)?;
+///         handle.read_line(&mut buffer)?;
 ///     } // `StdinLock` is dropped here.
 ///     Ok(())
 /// }
 /// ```
+#[must_use = "if unused stdin will immediately unlock"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct StdinLock<'a> {
     inner: MutexGuard<'a, BufReader<StdinRaw>>,
@@ -277,11 +273,11 @@ pub struct StdinLock<'a> {
 /// Using implicit synchronization:
 ///
 /// ```no_run
-/// use std::io::{self, Read};
+/// use std::io;
 ///
 /// fn main() -> io::Result<()> {
 ///     let mut buffer = String::new();
-///     io::stdin().read_to_string(&mut buffer)?;
+///     io::stdin().read_line(&mut buffer)?;
 ///     Ok(())
 /// }
 /// ```
@@ -289,17 +285,18 @@ pub struct StdinLock<'a> {
 /// Using explicit synchronization:
 ///
 /// ```no_run
-/// use std::io::{self, Read};
+/// use std::io::{self, BufRead};
 ///
 /// fn main() -> io::Result<()> {
 ///     let mut buffer = String::new();
 ///     let stdin = io::stdin();
 ///     let mut handle = stdin.lock();
 ///
-///     handle.read_to_string(&mut buffer)?;
+///     handle.read_line(&mut buffer)?;
 ///     Ok(())
 /// }
 /// ```
+#[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn stdin() -> Stdin {
     static INSTANCE: SyncOnceCell<Mutex<BufReader<StdinRaw>>> = SyncOnceCell::new();
@@ -337,13 +334,13 @@ pub fn stdin() -> Stdin {
 ///
 /// ```no_run
 /// #![feature(stdio_locked)]
-/// use std::io::{self, Read};
+/// use std::io::{self, BufRead};
 ///
 /// fn main() -> io::Result<()> {
 ///     let mut buffer = String::new();
 ///     let mut handle = io::stdin_locked();
 ///
-///     handle.read_to_string(&mut buffer)?;
+///     handle.read_line(&mut buffer)?;
 ///     Ok(())
 /// }
 /// ```
@@ -363,14 +360,14 @@ impl Stdin {
     /// # Examples
     ///
     /// ```no_run
-    /// use std::io::{self, Read};
+    /// use std::io::{self, BufRead};
     ///
     /// fn main() -> io::Result<()> {
     ///     let mut buffer = String::new();
     ///     let stdin = io::stdin();
     ///     let mut handle = stdin.lock();
     ///
-    ///     handle.read_to_string(&mut buffer)?;
+    ///     handle.read_line(&mut buffer)?;
     ///     Ok(())
     /// }
     /// ```
@@ -432,13 +429,13 @@ impl Stdin {
     ///
     /// ```no_run
     /// #![feature(stdio_locked)]
-    /// use std::io::{self, Read};
+    /// use std::io::{self, BufRead};
     ///
     /// fn main() -> io::Result<()> {
     ///     let mut buffer = String::new();
     ///     let mut handle = io::stdin().into_locked();
     ///
-    ///     handle.read_to_string(&mut buffer)?;
+    ///     handle.read_line(&mut buffer)?;
     ///     Ok(())
     /// }
     /// ```
@@ -463,6 +460,7 @@ impl Stdin {
     ///     println!("got a line: {}", line.unwrap());
     /// }
     /// ```
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[unstable(feature = "stdin_forwarders", issue = "87096")]
     pub fn lines(self) -> Lines<StdinLock<'static>> {
         self.into_locked().lines()
@@ -485,6 +483,7 @@ impl Stdin {
     ///     println!("got a chunk: {}", String::from_utf8_lossy(&split.unwrap()));
     /// }
     /// ```
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[unstable(feature = "stdin_forwarders", issue = "87096")]
     pub fn split(self, byte: u8) -> Split<StdinLock<'static>> {
         self.into_locked().split(byte)
@@ -509,10 +508,6 @@ impl Read for Stdin {
     #[inline]
     fn is_read_vectored(&self) -> bool {
         self.lock().is_read_vectored()
-    }
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
     }
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         self.lock().read_to_end(buf)
@@ -546,11 +541,6 @@ impl Read for StdinLock<'_> {
     #[inline]
     fn is_read_vectored(&self) -> bool {
         self.inner.is_read_vectored()
-    }
-
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -624,6 +614,7 @@ pub struct Stdout {
 /// When operating in a console, the Windows implementation of this stream does not support
 /// non-UTF-8 byte sequences. Attempting to write bytes that are not valid UTF-8 will return
 /// an error.
+#[must_use = "if unused stdout will immediately unlock"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct StdoutLock<'a> {
     inner: ReentrantMutexGuard<'a, RefCell<LineWriter<StdoutRaw>>>,
@@ -670,6 +661,7 @@ static STDOUT: SyncOnceCell<ReentrantMutex<RefCell<LineWriter<StdoutRaw>>>> = Sy
 ///     Ok(())
 /// }
 /// ```
+#[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn stdout() -> Stdout {
     Stdout {
@@ -907,6 +899,7 @@ pub struct Stderr {
 /// When operating in a console, the Windows implementation of this stream does not support
 /// non-UTF-8 byte sequences. Attempting to write bytes that are not valid UTF-8 will return
 /// an error.
+#[must_use = "if unused stderr will immediately unlock"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct StderrLock<'a> {
     inner: ReentrantMutexGuard<'a, RefCell<StderrRaw>>,
@@ -949,6 +942,7 @@ pub struct StderrLock<'a> {
 ///     Ok(())
 /// }
 /// ```
+#[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn stderr() -> Stderr {
     // Note that unlike `stdout()` we don't use `at_exit` here to register a

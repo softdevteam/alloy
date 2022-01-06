@@ -186,6 +186,7 @@ impl Once {
     #[inline]
     #[stable(feature = "once_new", since = "1.2.0")]
     #[rustc_const_stable(feature = "const_once_new", since = "1.32.0")]
+    #[must_use]
     pub const fn new() -> Once {
         Once { state_and_queue: AtomicUsize::new(INCOMPLETE), _marker: marker::PhantomData }
     }
@@ -198,7 +199,7 @@ impl Once {
     /// routine is currently running.
     ///
     /// When this function returns, it is guaranteed that some initialization
-    /// has run and completed (it may not be the closure specified). It is also
+    /// has run and completed (it might not be the closure specified). It is also
     /// guaranteed that any memory writes performed by the executed closure can
     /// be reliably observed by other threads at this point (there is a
     /// happens-before relation between the closure and code executing after the

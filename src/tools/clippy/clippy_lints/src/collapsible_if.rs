@@ -22,15 +22,15 @@ use rustc_lint::{EarlyContext, EarlyLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for nested `if` statements which can be collapsed
+    /// ### What it does
+    /// Checks for nested `if` statements which can be collapsed
     /// by `&&`-combining their conditions.
     ///
-    /// **Why is this bad?** Each `if`-statement adds one level of nesting, which
+    /// ### Why is this bad?
+    /// Each `if`-statement adds one level of nesting, which
     /// makes code look more complex than it really is.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// if x {
     ///     if y {
@@ -47,21 +47,22 @@ declare_clippy_lint! {
     ///     …
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub COLLAPSIBLE_IF,
     style,
     "nested `if`s that can be collapsed (e.g., `if x { if y { ... } }`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for collapsible `else { if ... }` expressions
+    /// ### What it does
+    /// Checks for collapsible `else { if ... }` expressions
     /// that can be collapsed to `else if ...`.
     ///
-    /// **Why is this bad?** Each `if`-statement adds one level of nesting, which
+    /// ### Why is this bad?
+    /// Each `if`-statement adds one level of nesting, which
     /// makes code look more complex than it really is.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     ///
     /// if x {
@@ -82,6 +83,7 @@ declare_clippy_lint! {
     ///     …
     /// }
     /// ```
+    #[clippy::version = "1.51.0"]
     pub COLLAPSIBLE_ELSE_IF,
     style,
     "nested `else`-`if` expressions that can be collapsed (e.g., `else { if x { ... } }`)"

@@ -32,7 +32,7 @@ pre, .rustdoc.source .example-wrap {
 	background-color: #505050;
 }
 
-.logo-container.rust-logo > img {
+.rust-logo > img {
 	filter: drop-shadow(1px 0 0px #fff)
 		drop-shadow(0 1px 0 #fff)
 		drop-shadow(-1px 0 0 #fff)
@@ -44,7 +44,7 @@ pre, .rustdoc.source .example-wrap {
 	scrollbar-color: rgb(64, 65, 67) #717171;
 }
 .sidebar {
-	scrollbar-color: rgba(32,34,37,.6) transparent;
+	scrollbar-color: rgba(32,34,37,.6) #5a5a5a;
 }
 
 /* Improve the scrollbar display on webkit-based browsers */
@@ -66,7 +66,7 @@ pre, .rustdoc.source .example-wrap {
 }
 
 .source .sidebar {
-	background-color: #353535;
+	background-color: #565656;
 }
 
 .sidebar .location {
@@ -93,7 +93,7 @@ pre, .rustdoc.source .example-wrap {
 	background-color: #0a042f !important;
 }
 
-.docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5 {
+.docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5, .docblock h6 {
 	border-bottom-color: #DDD;
 }
 
@@ -174,24 +174,39 @@ nav.main .current {
 nav.main .separator {
 	border-color: #eee;
 }
-a {
-	color: #ddd;
-}
 
-.docblock:not(.type-decl) a:not(.srclink):not(.test-arrow),
-.docblock-short a:not(.srclink):not(.test-arrow), .item-info a,
-#help a {
+a {
 	color: #D2991D;
 }
-
+a.srclink,
+a#toggle-all-docs,
+a.anchor,
+.small-section-header a,
+#source-sidebar a,
+pre.rust a,
+.sidebar a,
+.in-band a {
+	color: #ddd;
+}
+.search-results a {
+	color: #ddd;
+}
 a.test-arrow {
 	color: #dedede;
+}
+body.source .example-wrap pre.rust a {
+	background: #333;
 }
 
 details.rustdoc-toggle > summary.hideme > span,
 details.rustdoc-toggle > summary::before,
 details.undocumented > summary::before {
 	color: #999;
+}
+
+details.rustdoc-toggle > summary::before,
+details.undocumented > summary::before {
+	filter: invert(100%);
 }
 
 #crate-search {
@@ -209,10 +224,6 @@ details.undocumented > summary::before {
 
 .search-input:focus {
 	border-color: #008dfd;
-}
-
-.search-input:disabled {
-	background-color: #c5c4c4;
 }
 
 #crate-search + .search-input:focus {
@@ -234,8 +245,8 @@ details.undocumented > summary::before {
 	border-color: #bfbfbf;
 }
 
-#help > div > span {
-	border-bottom-color: #bfbfbf;
+#help span.bottom, #help span.top {
+	border-color: #bfbfbf;
 }
 
 #help dt {
@@ -282,7 +293,7 @@ a.test-arrow:hover{
 	color: #999;
 }
 
-:target, :target * {
+:target, :target > * {
 	background-color: #494a3d;
 }
 
@@ -476,4 +487,23 @@ div.files > .selected {
 }
 .setting-line > .title {
 	border-bottom-color: #ddd;
+}
+
+.scraped-example .example-wrap .rust span.highlight {
+	background: rgb(91, 59, 1);
+}
+.scraped-example .example-wrap .rust span.highlight.focus {
+	background: rgb(124, 75, 15);
+}
+.scraped-example:not(.expanded) .code-wrapper:before {
+	background: linear-gradient(to bottom, rgba(53, 53, 53, 1), rgba(53, 53, 53, 0));
+}
+.scraped-example:not(.expanded) .code-wrapper:after {
+	background: linear-gradient(to top, rgba(53, 53, 53, 1), rgba(53, 53, 53, 0));
+}
+.toggle-line-inner {
+	background: #616161;
+}
+.toggle-line:hover .toggle-line-inner {
+	background: ##898989;
 }

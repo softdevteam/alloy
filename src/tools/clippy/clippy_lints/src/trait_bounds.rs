@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::source::{snippet, snippet_with_applicability};
-use clippy_utils::{in_macro, SpanlessHash};
+use clippy_utils::SpanlessHash;
 use if_chain::if_chain;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::unhash::UnhashMap;
@@ -11,14 +11,14 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** This lint warns about unnecessary type repetitions in trait bounds
+    /// ### What it does
+    /// This lint warns about unnecessary type repetitions in trait bounds
     ///
-    /// **Why is this bad?** Repeating the type for every bound makes the code
+    /// ### Why is this bad?
+    /// Repeating the type for every bound makes the code
     /// less readable than combining the bounds
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// pub fn foo<T>(t: T) where T: Copy, T: Clone {}
     /// ```
@@ -28,21 +28,22 @@ declare_clippy_lint! {
     /// ```rust
     /// pub fn foo<T>(t: T) where T: Copy + Clone {}
     /// ```
+    #[clippy::version = "1.38.0"]
     pub TYPE_REPETITION_IN_BOUNDS,
     pedantic,
     "Types are repeated unnecessary in trait bounds use `+` instead of using `T: _, T: _`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for cases where generics are being used and multiple
+    /// ### What it does
+    /// Checks for cases where generics are being used and multiple
     /// syntax specifications for trait bounds are used simultaneously.
     ///
-    /// **Why is this bad?** Duplicate bounds makes the code
+    /// ### Why is this bad?
+    /// Duplicate bounds makes the code
     /// less readable than specifing them only once.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// fn func<T: Clone + Default>(arg: T) where T: Clone + Default {}
     /// ```
@@ -57,6 +58,7 @@ declare_clippy_lint! {
     /// ```rust
     /// fn func<T>(arg: T) where T: Clone + Default {}
     /// ```
+    #[clippy::version = "1.47.0"]
     pub TRAIT_DUPLICATION_IN_BOUNDS,
     pedantic,
     "Check if the same trait bounds are specified twice during a function declaration"
@@ -93,7 +95,7 @@ fn get_trait_res_span_from_bound(bound: &GenericBound<'_>) -> Option<(Res, Span)
 
 impl TraitBounds {
     fn check_type_repetition(self, cx: &LateContext<'_>, gen: &'_ Generics<'_>) {
-        if in_macro(gen.span) {
+        if gen.span.from_expansion() {
             return;
         }
         let hash = |ty| -> u64 {
@@ -107,7 +109,7 @@ impl TraitBounds {
             if_chain! {
                 if let WherePredicate::BoundPredicate(ref p) = bound;
                 if p.bounds.len() as u64 <= self.max_trait_bounds;
-                if !in_macro(p.span);
+                if !p.span.from_expansion();
                 let h = hash(p.bounded_ty);
                 if let Some(ref v) = map.insert(h, p.bounds.iter().collect::<Vec<_>>());
 
@@ -151,7 +153,7 @@ impl TraitBounds {
 }
 
 fn check_trait_bound_duplication(cx: &LateContext<'_>, gen: &'_ Generics<'_>) {
-    if in_macro(gen.span) || gen.params.is_empty() || gen.where_clause.predicates.is_empty() {
+    if gen.span.from_expansion() || gen.params.is_empty() || gen.where_clause.predicates.is_empty() {
         return;
     }
 
@@ -170,7 +172,7 @@ fn check_trait_bound_duplication(cx: &LateContext<'_>, gen: &'_ Generics<'_>) {
     for predicate in gen.where_clause.predicates {
         if_chain! {
             if let WherePredicate::BoundPredicate(ref bound_predicate) = predicate;
-            if !in_macro(bound_predicate.span);
+            if !bound_predicate.span.from_expansion();
             if let TyKind::Path(QPath::Resolved(_, Path { segments, .. })) = bound_predicate.bounded_ty.kind;
             if let Some(segment) = segments.first();
             if let Some(trait_resolutions_direct) = map.get(&segment.ident);

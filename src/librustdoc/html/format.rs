@@ -13,14 +13,15 @@ use rustc_attr::{ConstStability, StabilityLevel};
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
+use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty;
+use rustc_middle::ty::DefIdTree;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::CRATE_DEF_INDEX;
 use rustc_target::spec::abi::Abi;
 
-use crate::clean::{
-    self, utils::find_nearest_parent_module, ExternalCrate, GetDefId, ItemId, PrimitiveType,
-};
+use crate::clean::{self, utils::find_nearest_parent_module, ExternalCrate, ItemId, PrimitiveType};
 use crate::formats::item_type::ItemType;
 use crate::html::escape::Escape;
 use crate::html::render::cache::ExternalLocation;
@@ -155,9 +156,23 @@ impl clean::GenericParamDef {
         &'a self,
         cx: &'a Context<'tcx>,
     ) -> impl fmt::Display + 'a + Captures<'tcx> {
-        display_fn(move |f| match self.kind {
-            clean::GenericParamDefKind::Lifetime => write!(f, "{}", self.name),
-            clean::GenericParamDefKind::Type { ref bounds, ref default, .. } => {
+        display_fn(move |f| match &self.kind {
+            clean::GenericParamDefKind::Lifetime { outlives } => {
+                write!(f, "{}", self.name)?;
+
+                if !outlives.is_empty() {
+                    f.write_str(": ")?;
+                    for (i, lt) in outlives.iter().enumerate() {
+                        if i != 0 {
+                            f.write_str(" + ")?;
+                        }
+                        write!(f, "{}", lt.print())?;
+                    }
+                }
+
+                Ok(())
+            }
+            clean::GenericParamDefKind::Type { bounds, default, .. } => {
                 f.write_str(&*self.name.as_str())?;
 
                 if !bounds.is_empty() {
@@ -178,7 +193,7 @@ impl clean::GenericParamDef {
 
                 Ok(())
             }
-            clean::GenericParamDefKind::Const { ref ty, ref default, .. } => {
+            clean::GenericParamDefKind::Const { ty, default, .. } => {
                 if f.alternate() {
                     write!(f, "const {}: {:#}", self.name, ty.print(cx))?;
                 } else {
@@ -256,7 +271,7 @@ crate fn print_where_clause<'a, 'tcx: 'a>(
                         0 => String::new(),
                         _ if f.alternate() => {
                             format!(
-                                "for<{:#}> ",
+                                "for&lt;{:#}&gt; ",
                                 comma_sep(bound_params.iter().map(|lt| lt.print()))
                             )
                         }
@@ -331,7 +346,7 @@ crate fn print_where_clause<'a, 'tcx: 'a>(
 
 impl clean::Lifetime {
     crate fn print(&self) -> impl fmt::Display + '_ {
-        self.get_ref()
+        self.0.as_str()
     }
 }
 
@@ -387,7 +402,7 @@ impl clean::GenericBound {
                 let modifier_str = match modifier {
                     hir::TraitBoundModifier::None => "",
                     hir::TraitBoundModifier::Maybe => "?",
-                    hir::TraitBoundModifier::MaybeConst => "?const",
+                    hir::TraitBoundModifier::MaybeConst => "~const",
                 };
                 if f.alternate() {
                     write!(f, "{}{:#}", modifier_str, ty.print(cx))
@@ -484,20 +499,39 @@ crate enum HrefError {
     NotInExternalCache,
 }
 
-crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<String>), HrefError> {
-    let cache = &cx.cache();
+crate fn href_with_root_path(
+    did: DefId,
+    cx: &Context<'_>,
+    root_path: Option<&str>,
+) -> Result<(String, ItemType, Vec<String>), HrefError> {
+    let tcx = cx.tcx();
+    let def_kind = tcx.def_kind(did);
+    let did = match def_kind {
+        DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst | DefKind::Variant => {
+            // documented on their parent's page
+            tcx.parent(did).unwrap()
+        }
+        _ => did,
+    };
+    let cache = cx.cache();
     let relative_to = &cx.current;
     fn to_module_fqp(shortty: ItemType, fqp: &[String]) -> &[String] {
-        if shortty == ItemType::Module { &fqp[..] } else { &fqp[..fqp.len() - 1] }
+        if shortty == ItemType::Module { fqp } else { &fqp[..fqp.len() - 1] }
     }
 
-    if !did.is_local() && !cache.access_levels.is_public(did) && !cache.document_private {
+    if !did.is_local()
+        && !cache.access_levels.is_public(did)
+        && !cache.document_private
+        && !cache.primitive_locations.values().any(|&id| id == did)
+    {
         return Err(HrefError::Private);
     }
 
+    let mut is_remote = false;
     let (fqp, shortty, mut url_parts) = match cache.paths.get(&did) {
         Some(&(ref fqp, shortty)) => (fqp, shortty, {
             let module_fqp = to_module_fqp(shortty, fqp);
+            debug!(?fqp, ?shortty, ?module_fqp);
             href_relative_parts(module_fqp, relative_to)
         }),
         None => {
@@ -508,8 +542,9 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<Str
                     shortty,
                     match cache.extern_locations[&did.krate] {
                         ExternalLocation::Remote(ref s) => {
+                            is_remote = true;
                             let s = s.trim_end_matches('/');
-                            let mut s = vec![&s[..]];
+                            let mut s = vec![s];
                             s.extend(module_fqp[..].iter().map(String::as_str));
                             s
                         }
@@ -522,6 +557,13 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<Str
             }
         }
     };
+    if !is_remote {
+        if let Some(root_path) = root_path {
+            let root = root_path.trim_end_matches('/');
+            url_parts.insert(0, root);
+        }
+    }
+    debug!(?url_parts);
     let last = &fqp.last().unwrap()[..];
     let filename;
     match shortty {
@@ -534,6 +576,10 @@ crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<Str
         }
     }
     Ok((url_parts.join("/"), shortty, fqp.to_vec()))
+}
+
+crate fn href(did: DefId, cx: &Context<'_>) -> Result<(String, ItemType, Vec<String>), HrefError> {
+    href_with_root_path(did, cx, None)
 }
 
 /// Both paths should only be modules.
@@ -561,9 +607,8 @@ crate fn href_relative_parts<'a>(fqp: &'a [String], relative_to_fqp: &'a [String
     }
 }
 
-/// Used when rendering a `ResolvedPath` structure. This invokes the `path`
-/// rendering function with the necessary arguments for linking to a local path.
-fn resolved_path<'a, 'cx: 'a>(
+/// Used to render a [`clean::Path`].
+fn resolved_path<'cx>(
     w: &mut fmt::Formatter<'_>,
     did: DefId,
     path: &clean::Path,
@@ -662,7 +707,7 @@ fn primitive_link(
 
 /// Helper to render type parameters
 fn tybounds<'a, 'tcx: 'a>(
-    bounds: &'a Vec<clean::PolyTrait>,
+    bounds: &'a [clean::PolyTrait],
     lt: &'a Option<clean::Lifetime>,
     cx: &'a Context<'tcx>,
 ) -> impl fmt::Display + 'a + Captures<'tcx> {
@@ -688,7 +733,7 @@ crate fn anchor<'a, 'cx: 'a>(
     text: &'a str,
     cx: &'cx Context<'_>,
 ) -> impl fmt::Display + 'a {
-    let parts = href(did.into(), cx);
+    let parts = href(did, cx);
     display_fn(move |f| {
         if let Ok((url, short_ty, fqp)) = parts {
             write!(
@@ -712,19 +757,23 @@ fn fmt_type<'cx>(
     use_absolute: bool,
     cx: &'cx Context<'_>,
 ) -> fmt::Result {
-    debug!("fmt_type(t = {:?})", t);
+    trace!("fmt_type(t = {:?})", t);
 
     match *t {
         clean::Generic(name) => write!(f, "{}", name),
-        clean::ResolvedPath { did, ref path, is_generic } => {
+        clean::Type::Path { ref path } => {
             // Paths like `T::Output` and `Self::Output` should be rendered with all segments.
-            resolved_path(f, did, path, is_generic, use_absolute, cx)
+            let did = path.def_id();
+            resolved_path(f, did, path, path.is_assoc_ty(), use_absolute, cx)
         }
         clean::DynTrait(ref bounds, ref lt) => {
             f.write_str("dyn ")?;
             fmt::Display::fmt(&tybounds(bounds, lt, cx), f)
         }
         clean::Infer => write!(f, "_"),
+        clean::Primitive(clean::PrimitiveType::Never) => {
+            primitive_link(f, PrimitiveType::Never, "!", cx)
+        }
         clean::Primitive(prim) => primitive_link(f, prim, &*prim.as_sym().as_str(), cx),
         clean::BareFunction(ref decl) => {
             if f.alternate() {
@@ -783,34 +832,22 @@ fn fmt_type<'cx>(
                 primitive_link(f, PrimitiveType::Array, &format!("; {}]", Escape(n)), cx)
             }
         }
-        clean::Never => primitive_link(f, PrimitiveType::Never, "!", cx),
         clean::RawPointer(m, ref t) => {
             let m = match m {
                 hir::Mutability::Mut => "mut",
                 hir::Mutability::Not => "const",
             };
-            match **t {
-                clean::Generic(_) | clean::ResolvedPath { is_generic: true, .. } => {
-                    if f.alternate() {
-                        primitive_link(
-                            f,
-                            clean::PrimitiveType::RawPointer,
-                            &format!("*{} {:#}", m, t.print(cx)),
-                            cx,
-                        )
-                    } else {
-                        primitive_link(
-                            f,
-                            clean::PrimitiveType::RawPointer,
-                            &format!("*{} {}", m, t.print(cx)),
-                            cx,
-                        )
-                    }
-                }
-                _ => {
-                    primitive_link(f, clean::PrimitiveType::RawPointer, &format!("*{} ", m), cx)?;
-                    fmt::Display::fmt(&t.print(cx), f)
-                }
+
+            if matches!(**t, clean::Generic(_)) || t.is_assoc_ty() {
+                let text = if f.alternate() {
+                    format!("*{} {:#}", m, t.print(cx))
+                } else {
+                    format!("*{} {}", m, t.print(cx))
+                };
+                primitive_link(f, clean::PrimitiveType::RawPointer, &text, cx)
+            } else {
+                primitive_link(f, clean::PrimitiveType::RawPointer, &format!("*{} ", m), cx)?;
+                fmt::Display::fmt(&t.print(cx), f)
             }
         }
         clean::BorrowedRef { lifetime: ref l, mutability, type_: ref ty } => {
@@ -861,7 +898,7 @@ fn fmt_type<'cx>(
                     if bounds.len() > 1 || trait_lt.is_some() =>
                 {
                     write!(f, "{}{}{}(", amp, lt, m)?;
-                    fmt_type(&ty, f, use_absolute, cx)?;
+                    fmt_type(ty, f, use_absolute, cx)?;
                     write!(f, ")")
                 }
                 clean::Generic(..) => {
@@ -871,11 +908,11 @@ fn fmt_type<'cx>(
                         &format!("{}{}{}", amp, lt, m),
                         cx,
                     )?;
-                    fmt_type(&ty, f, use_absolute, cx)
+                    fmt_type(ty, f, use_absolute, cx)
                 }
                 _ => {
                     write!(f, "{}{}{}", amp, lt, m)?;
-                    fmt_type(&ty, f, use_absolute, cx)
+                    fmt_type(ty, f, use_absolute, cx)
                 }
             }
         }
@@ -887,15 +924,10 @@ fn fmt_type<'cx>(
             }
         }
         clean::QPath { ref name, ref self_type, ref trait_, ref self_def_id } => {
-            let should_show_cast = match *trait_ {
-                box clean::ResolvedPath { ref path, .. } => {
-                    !path.segments.is_empty()
-                        && self_def_id
-                            .zip(trait_.def_id())
-                            .map_or(!self_type.is_self_type(), |(id, trait_)| id != trait_)
-                }
-                _ => true,
-            };
+            let should_show_cast = !trait_.segments.is_empty()
+                && self_def_id
+                    .zip(Some(trait_.def_id()))
+                    .map_or(!self_type.is_self_type(), |(id, trait_)| id != trait_);
             if f.alternate() {
                 if should_show_cast {
                     write!(f, "<{:#} as {:#}>::", self_type.print(cx), trait_.print(cx))?
@@ -909,36 +941,31 @@ fn fmt_type<'cx>(
                     write!(f, "{}::", self_type.print(cx))?
                 }
             };
-            match *trait_ {
-                // It's pretty unsightly to look at `<A as B>::C` in output, and
-                // we've got hyperlinking on our side, so try to avoid longer
-                // notation as much as possible by making `C` a hyperlink to trait
-                // `B` to disambiguate.
-                //
-                // FIXME: this is still a lossy conversion and there should probably
-                //        be a better way of representing this in general? Most of
-                //        the ugliness comes from inlining across crates where
-                //        everything comes in as a fully resolved QPath (hard to
-                //        look at).
-                box clean::ResolvedPath { did, .. } => {
-                    match href(did.into(), cx) {
-                        Ok((ref url, _, ref path)) if !f.alternate() => {
-                            write!(
-                                f,
-                                "<a class=\"type\" href=\"{url}#{shortty}.{name}\" \
+            // It's pretty unsightly to look at `<A as B>::C` in output, and
+            // we've got hyperlinking on our side, so try to avoid longer
+            // notation as much as possible by making `C` a hyperlink to trait
+            // `B` to disambiguate.
+            //
+            // FIXME: this is still a lossy conversion and there should probably
+            //        be a better way of representing this in general? Most of
+            //        the ugliness comes from inlining across crates where
+            //        everything comes in as a fully resolved QPath (hard to
+            //        look at).
+            match href(trait_.def_id(), cx) {
+                Ok((ref url, _, ref path)) if !f.alternate() => {
+                    write!(
+                        f,
+                        "<a class=\"type\" href=\"{url}#{shortty}.{name}\" \
                                     title=\"type {path}::{name}\">{name}</a>",
-                                url = url,
-                                shortty = ItemType::AssocType,
-                                name = name,
-                                path = path.join("::")
-                            )?;
-                        }
-                        _ => write!(f, "{}", name)?,
-                    }
-                    Ok(())
+                        url = url,
+                        shortty = ItemType::AssocType,
+                        name = name,
+                        path = path.join("::")
+                    )?;
                 }
-                _ => write!(f, "{}", name),
+                _ => write!(f, "{}", name)?,
             }
+            Ok(())
         }
     }
 }
@@ -949,6 +976,15 @@ impl clean::Type {
         cx: &'a Context<'tcx>,
     ) -> impl fmt::Display + 'b + Captures<'tcx> {
         display_fn(move |f| fmt_type(self, f, false, cx))
+    }
+}
+
+impl clean::Path {
+    crate fn print<'b, 'a: 'b, 'tcx: 'a>(
+        &'a self,
+        cx: &'a Context<'tcx>,
+    ) -> impl fmt::Display + 'b + Captures<'tcx> {
+        display_fn(move |f| resolved_path(f, self.def_id(), self, false, false, cx))
     }
 }
 
@@ -966,14 +1002,15 @@ impl clean::Impl {
             }
 
             if let Some(ref ty) = self.trait_ {
-                if self.negative_polarity {
-                    write!(f, "!")?;
+                match self.polarity {
+                    ty::ImplPolarity::Positive | ty::ImplPolarity::Reservation => {}
+                    ty::ImplPolarity::Negative => write!(f, "!")?,
                 }
                 fmt::Display::fmt(&ty.print(cx), f)?;
                 write!(f, " for ")?;
             }
 
-            if let Some(ref ty) = self.blanket_impl {
+            if let Some(ref ty) = self.kind.as_blanket_ty() {
                 fmt_type(ty, f, use_absolute, cx)?;
             } else {
                 fmt_type(&self.for_, f, use_absolute, cx)?;
@@ -1032,7 +1069,11 @@ impl clean::BareFunctionDecl {
     ) -> impl fmt::Display + 'a + Captures<'tcx> {
         display_fn(move |f| {
             if !self.generic_params.is_empty() {
-                write!(f, "for<{}> ", comma_sep(self.generic_params.iter().map(|g| g.print(cx))))
+                write!(
+                    f,
+                    "for&lt;{}&gt; ",
+                    comma_sep(self.generic_params.iter().map(|g| g.print(cx)))
+                )
             } else {
                 Ok(())
             }
@@ -1135,6 +1176,10 @@ impl clean::FnDecl {
                 if i > 0 {
                     args.push_str(" <br>");
                     args_plain.push(' ');
+                }
+                if input.is_const {
+                    args.push_str("const ");
+                    args_plain.push_str("const ");
                 }
                 if !input.name.is_empty() {
                     args.push_str(&format!("{}: ", input.name));
@@ -1308,10 +1353,7 @@ impl PrintWithSpace for hir::Mutability {
     }
 }
 
-crate fn print_constness_with_space(
-    c: &hir::Constness,
-    s: Option<&ConstStability>,
-) -> &'static str {
+crate fn print_constness_with_space(c: &hir::Constness, s: Option<ConstStability>) -> &'static str {
     match (c, s) {
         // const stable or when feature(staged_api) is not set
         (
@@ -1424,6 +1466,7 @@ impl clean::GenericArg {
             clean::GenericArg::Lifetime(lt) => fmt::Display::fmt(&lt.print(), f),
             clean::GenericArg::Type(ty) => fmt::Display::fmt(&ty.print(cx), f),
             clean::GenericArg::Const(ct) => fmt::Display::fmt(&ct.print(cx.tcx()), f),
+            clean::GenericArg::Infer => fmt::Display::fmt("_", f),
         })
     }
 }

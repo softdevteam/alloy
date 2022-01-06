@@ -1,4 +1,17 @@
+FROM ubuntu:20.04
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates
+WORKDIR /tmp
+RUN curl -f https://curl.se/ca/cacert.pem -o cacert.pem
+
 FROM ubuntu:16.04
+
+# The ca-certificates in ubuntu-16 is too old, so update the certificates
+# with something more recent.
+COPY --from=0 /tmp/cacert.pem /tmp/cacert.pem
+ENV CURL_CA_BUNDLE /tmp/cacert.pem
 
 COPY scripts/cross-apt-packages.sh /scripts/
 RUN sh /scripts/cross-apt-packages.sh
@@ -8,6 +21,7 @@ RUN sh /scripts/crosstool-ng-1.24.sh
 
 WORKDIR /build
 
+COPY scripts/musl-patch-configure.diff /build/
 COPY scripts/musl-toolchain.sh /build/
 # We need to mitigate rust-lang/rust#34978 when compiling musl itself as well
 RUN CFLAGS="-Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \

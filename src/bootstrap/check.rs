@@ -107,44 +107,47 @@ impl Step for Std {
             add_to_sysroot(&builder, &libdir, &hostdir, &libstd_stamp(builder, compiler, target));
         }
 
+        // don't run on std twice with x.py clippy
+        if builder.kind == Kind::Clippy {
+            return;
+        }
+
         // Then run cargo again, once we've put the rmeta files for the library
         // crates into the sysroot. This is needed because e.g., core's tests
         // depend on `libtest` -- Cargo presumes it will exist, but it doesn't
         // since we initialize with an empty sysroot.
         //
         // Currently only the "libtest" tree of crates does this.
+        let mut cargo = builder.cargo(
+            compiler,
+            Mode::Std,
+            SourceType::InTree,
+            target,
+            cargo_subcommand(builder.kind),
+        );
 
-        if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
-            let mut cargo = builder.cargo(
-                compiler,
-                Mode::Std,
-                SourceType::InTree,
-                target,
-                cargo_subcommand(builder.kind),
-            );
-            std_cargo(builder, target, compiler.stage, &mut cargo);
-            cargo.arg("--all-targets");
+        cargo.arg("--all-targets");
+        std_cargo(builder, target, compiler.stage, &mut cargo);
 
-            // Explicitly pass -p for all dependencies krates -- this will force cargo
-            // to also check the tests/benches/examples for these crates, rather
-            // than just the leaf crate.
-            for krate in builder.in_tree_crates("test", Some(target)) {
-                cargo.arg("-p").arg(krate.name);
-            }
-
-            builder.info(&format!(
-                "Checking stage{} std test/bench/example targets ({} -> {})",
-                builder.top_stage, &compiler.host, target
-            ));
-            run_cargo(
-                builder,
-                cargo,
-                args(builder),
-                &libstd_test_stamp(builder, compiler, target),
-                vec![],
-                true,
-            );
+        // Explicitly pass -p for all dependencies krates -- this will force cargo
+        // to also check the tests/benches/examples for these crates, rather
+        // than just the leaf crate.
+        for krate in builder.in_tree_crates("test", Some(target)) {
+            cargo.arg("-p").arg(krate.name);
         }
+
+        builder.info(&format!(
+            "Checking stage{} std test/bench/example targets ({} -> {})",
+            builder.top_stage, &compiler.host, target
+        ));
+        run_cargo(
+            builder,
+            cargo,
+            args(builder),
+            &libstd_test_stamp(builder, compiler, target),
+            vec![],
+            true,
+        );
     }
 }
 
@@ -195,7 +198,10 @@ impl Step for Rustc {
             cargo_subcommand(builder.kind),
         );
         rustc_cargo(builder, &mut cargo, target);
-        if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
+
+        // For ./x.py clippy, don't run with --all-targets because
+        // linting tests and benchmarks can produce very noisy results
+        if builder.kind != Kind::Clippy {
             cargo.arg("--all-targets");
         }
 
@@ -237,11 +243,16 @@ impl Step for CodegenBackend {
     const DEFAULT: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.paths(&["compiler/rustc_codegen_cranelift", "rustc_codegen_cranelift"])
+        run.paths(&[
+            "compiler/rustc_codegen_cranelift",
+            "rustc_codegen_cranelift",
+            "compiler/rustc_codegen_gcc",
+            "rustc_codegen_gcc",
+        ])
     }
 
     fn make_run(run: RunConfig<'_>) {
-        for &backend in &[INTERNER.intern_str("cranelift")] {
+        for &backend in &[INTERNER.intern_str("cranelift"), INTERNER.intern_str("gcc")] {
             run.builder.ensure(CodegenBackend { target: run.target, backend });
         }
     }
@@ -256,7 +267,7 @@ impl Step for CodegenBackend {
         let mut cargo = builder.cargo(
             compiler,
             Mode::Codegen,
-            SourceType::Submodule,
+            SourceType::InTree,
             target,
             cargo_subcommand(builder.kind),
         );
@@ -319,7 +330,9 @@ macro_rules! tool_check_step {
                     &[],
                 );
 
-                if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
+                // For ./x.py clippy, don't run with --all-targets because
+                // linting tests and benchmarks can produce very noisy results
+                if builder.kind != Kind::Clippy {
                     cargo.arg("--all-targets");
                 }
 

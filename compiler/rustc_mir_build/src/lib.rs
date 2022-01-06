@@ -2,11 +2,11 @@
 //!
 //! This crate also contains the match exhaustiveness and usefulness checking.
 #![feature(box_patterns)]
-#![feature(box_syntax)]
 #![feature(control_flow_enum)]
 #![feature(crate_visibility_modifier)]
 #![feature(bool_to_option)]
 #![feature(iter_zip)]
+#![feature(let_else)]
 #![feature(once_cell)]
 #![feature(min_specialization)]
 #![recursion_limit = "256"]
@@ -30,4 +30,5 @@ pub fn provide(providers: &mut Providers) {
     providers.thir_check_unsafety = check_unsafety::thir_check_unsafety;
     providers.thir_check_unsafety_for_const_arg = check_unsafety::thir_check_unsafety_for_const_arg;
     providers.thir_body = thir::cx::thir_body;
+    providers.thir_tree = thir::cx::thir_tree;
 }

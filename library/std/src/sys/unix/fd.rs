@@ -4,22 +4,15 @@
 mod tests;
 
 use crate::cmp;
-use crate::io::{self, Initializer, IoSlice, IoSliceMut, Read};
-use crate::mem;
+use crate::io::{self, IoSlice, IoSliceMut, Read, ReadBuf};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::cvt;
-use crate::sys_common::AsInner;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
 
 use libc::{c_int, c_void};
 
 #[derive(Debug)]
-#[rustc_layout_scalar_valid_range_start(0)]
-// libstd/os/raw/mod.rs assures me that every libstd-supported platform has a
-// 32-bit c_int. Below is -2, in two's complement, but that only works out
-// because c_int is 32 bits.
-#[rustc_layout_scalar_valid_range_end(0xFF_FF_FF_FE)]
-pub struct FileDesc {
-    fd: c_int,
-}
+pub struct FileDesc(OwnedFd);
 
 // The maximum read limit on most POSIX-like systems is `SSIZE_MAX`,
 // with the man page quoting that if the count of bytes to read is
@@ -67,34 +60,22 @@ const fn max_iov() -> usize {
 }
 
 impl FileDesc {
-    pub fn new(fd: c_int) -> FileDesc {
-        assert_ne!(fd, -1i32);
-        // SAFETY: we just asserted that the value is in the valid range and isn't `-1` (the only value bigger than `0xFF_FF_FF_FE` unsigned)
-        unsafe { FileDesc { fd } }
-    }
-
-    pub fn raw(&self) -> c_int {
-        self.fd
-    }
-
-    /// Extracts the actual file descriptor without closing it.
-    pub fn into_raw(self) -> c_int {
-        let fd = self.fd;
-        mem::forget(self);
-        fd
-    }
-
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ret = cvt(unsafe {
-            libc::read(self.fd, buf.as_mut_ptr() as *mut c_void, cmp::min(buf.len(), READ_LIMIT))
+            libc::read(
+                self.as_raw_fd(),
+                buf.as_mut_ptr() as *mut c_void,
+                cmp::min(buf.len(), READ_LIMIT),
+            )
         })?;
         Ok(ret as usize)
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
             libc::readv(
-                self.fd,
+                self.as_raw_fd(),
                 bufs.as_ptr() as *const libc::iovec,
                 cmp::min(bufs.len(), max_iov()) as c_int,
             )
@@ -102,9 +83,14 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(target_os = "espidf")]
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        return crate::io::default_read_vectored(|b| self.read(b), bufs);
+    }
+
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
-        true
+        cfg!(not(target_os = "espidf"))
     }
 
     pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -113,45 +99,55 @@ impl FileDesc {
     }
 
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        #[cfg(target_os = "android")]
-        use super::android::cvt_pread64;
-
-        #[cfg(not(target_os = "android"))]
-        unsafe fn cvt_pread64(
-            fd: c_int,
-            buf: *mut c_void,
-            count: usize,
-            offset: i64,
-        ) -> io::Result<isize> {
-            #[cfg(not(target_os = "linux"))]
-            use libc::pread as pread64;
-            #[cfg(target_os = "linux")]
-            use libc::pread64;
-            cvt(pread64(fd, buf, count, offset))
-        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        use libc::pread as pread64;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        use libc::pread64;
 
         unsafe {
-            cvt_pread64(
-                self.fd,
+            cvt(pread64(
+                self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut c_void,
                 cmp::min(buf.len(), READ_LIMIT),
                 offset as i64,
-            )
+            ))
             .map(|n| n as usize)
         }
     }
 
+    pub fn read_buf(&self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        let ret = cvt(unsafe {
+            libc::read(
+                self.as_raw_fd(),
+                buf.unfilled_mut().as_mut_ptr() as *mut c_void,
+                cmp::min(buf.remaining(), READ_LIMIT),
+            )
+        })?;
+
+        // Safety: `ret` bytes were written to the initialized portion of the buffer
+        unsafe {
+            buf.assume_init(ret as usize);
+        }
+        buf.add_filled(ret as usize);
+        Ok(())
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         let ret = cvt(unsafe {
-            libc::write(self.fd, buf.as_ptr() as *const c_void, cmp::min(buf.len(), READ_LIMIT))
+            libc::write(
+                self.as_raw_fd(),
+                buf.as_ptr() as *const c_void,
+                cmp::min(buf.len(), READ_LIMIT),
+            )
         })?;
         Ok(ret as usize)
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
             libc::writev(
-                self.fd,
+                self.as_raw_fd(),
                 bufs.as_ptr() as *const libc::iovec,
                 cmp::min(bufs.len(), max_iov()) as c_int,
             )
@@ -159,43 +155,36 @@ impl FileDesc {
         Ok(ret as usize)
     }
 
+    #[cfg(target_os = "espidf")]
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        return crate::io::default_write_vectored(|b| self.write(b), bufs);
+    }
+
     #[inline]
     pub fn is_write_vectored(&self) -> bool {
-        true
+        cfg!(not(target_os = "espidf"))
     }
 
     pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
-        #[cfg(target_os = "android")]
-        use super::android::cvt_pwrite64;
-
-        #[cfg(not(target_os = "android"))]
-        unsafe fn cvt_pwrite64(
-            fd: c_int,
-            buf: *const c_void,
-            count: usize,
-            offset: i64,
-        ) -> io::Result<isize> {
-            #[cfg(not(target_os = "linux"))]
-            use libc::pwrite as pwrite64;
-            #[cfg(target_os = "linux")]
-            use libc::pwrite64;
-            cvt(pwrite64(fd, buf, count, offset))
-        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        use libc::pwrite as pwrite64;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        use libc::pwrite64;
 
         unsafe {
-            cvt_pwrite64(
-                self.fd,
+            cvt(pwrite64(
+                self.as_raw_fd(),
                 buf.as_ptr() as *const c_void,
                 cmp::min(buf.len(), READ_LIMIT),
                 offset as i64,
-            )
+            ))
             .map(|n| n as usize)
         }
     }
 
     #[cfg(target_os = "linux")]
     pub fn get_cloexec(&self) -> io::Result<bool> {
-        unsafe { Ok((cvt(libc::fcntl(self.fd, libc::F_GETFD))? & libc::FD_CLOEXEC) != 0) }
+        unsafe { Ok((cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFD))? & libc::FD_CLOEXEC) != 0) }
     }
 
     #[cfg(not(any(
@@ -212,12 +201,12 @@ impl FileDesc {
     )))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
-            cvt(libc::ioctl(self.fd, libc::FIOCLEX))?;
+            cvt(libc::ioctl(self.as_raw_fd(), libc::FIOCLEX))?;
             Ok(())
         }
     }
     #[cfg(any(
-        target_env = "newlib",
+        all(target_env = "newlib", not(target_os = "espidf")),
         target_os = "solaris",
         target_os = "illumos",
         target_os = "emscripten",
@@ -230,20 +219,26 @@ impl FileDesc {
     ))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
-            let previous = cvt(libc::fcntl(self.fd, libc::F_GETFD))?;
+            let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFD))?;
             let new = previous | libc::FD_CLOEXEC;
             if new != previous {
-                cvt(libc::fcntl(self.fd, libc::F_SETFD, new))?;
+                cvt(libc::fcntl(self.as_raw_fd(), libc::F_SETFD, new))?;
             }
             Ok(())
         }
+    }
+    #[cfg(target_os = "espidf")]
+    pub fn set_cloexec(&self) -> io::Result<()> {
+        // FD_CLOEXEC is not supported in ESP-IDF but there's no need to,
+        // because ESP-IDF does not support spawning processes either.
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         unsafe {
             let v = nonblocking as c_int;
-            cvt(libc::ioctl(self.fd, libc::FIONBIO, &v))?;
+            cvt(libc::ioctl(self.as_raw_fd(), libc::FIONBIO, &v))?;
             Ok(())
         }
     }
@@ -251,14 +246,14 @@ impl FileDesc {
     #[cfg(not(target_os = "linux"))]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         unsafe {
-            let previous = cvt(libc::fcntl(self.fd, libc::F_GETFL))?;
+            let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFL))?;
             let new = if nonblocking {
                 previous | libc::O_NONBLOCK
             } else {
                 previous & !libc::O_NONBLOCK
             };
             if new != previous {
-                cvt(libc::fcntl(self.fd, libc::F_SETFL, new))?;
+                cvt(libc::fcntl(self.as_raw_fd(), libc::F_SETFL, new))?;
             }
             Ok(())
         }
@@ -268,8 +263,18 @@ impl FileDesc {
         // We want to atomically duplicate this file descriptor and set the
         // CLOEXEC flag, and currently that's done via F_DUPFD_CLOEXEC. This
         // is a POSIX flag that was added to Linux in 2.6.24.
-        let fd = cvt(unsafe { libc::fcntl(self.raw(), libc::F_DUPFD_CLOEXEC, 0) })?;
-        Ok(FileDesc::new(fd))
+        #[cfg(not(target_os = "espidf"))]
+        let cmd = libc::F_DUPFD_CLOEXEC;
+
+        // For ESP-IDF, F_DUPFD is used instead, because the CLOEXEC semantics
+        // will never be supported, as this is a bare metal framework with
+        // no capabilities for multi-process execution.  While F_DUPFD is also
+        // not supported yet, it might be (currently it returns ENOSYS).
+        #[cfg(target_os = "espidf")]
+        let cmd = libc::F_DUPFD;
+
+        let fd = cvt(unsafe { libc::fcntl(self.as_raw_fd(), cmd, 0) })?;
+        Ok(unsafe { FileDesc::from_raw_fd(fd) })
     }
 }
 
@@ -277,26 +282,46 @@ impl<'a> Read for &'a FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read(buf)
     }
+}
 
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
+impl AsInner<OwnedFd> for FileDesc {
+    fn as_inner(&self) -> &OwnedFd {
+        &self.0
     }
 }
 
-impl AsInner<c_int> for FileDesc {
-    fn as_inner(&self) -> &c_int {
-        &self.fd
+impl IntoInner<OwnedFd> for FileDesc {
+    fn into_inner(self) -> OwnedFd {
+        self.0
     }
 }
 
-impl Drop for FileDesc {
-    fn drop(&mut self) {
-        // Note that errors are ignored when closing a file descriptor. The
-        // reason for this is that if an error occurs we don't actually know if
-        // the file descriptor was closed or not, and if we retried (for
-        // something like EINTR), we might close another valid file descriptor
-        // opened after we closed ours.
-        let _ = unsafe { libc::close(self.fd) };
+impl FromInner<OwnedFd> for FileDesc {
+    fn from_inner(owned_fd: OwnedFd) -> Self {
+        Self(owned_fd)
+    }
+}
+
+impl AsFd for FileDesc {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsRawFd for FileDesc {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for FileDesc {
+    fn into_raw_fd(self) -> RawFd {
+        self.0.into_raw_fd()
+    }
+}
+
+impl FromRawFd for FileDesc {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        Self(FromRawFd::from_raw_fd(raw_fd))
     }
 }

@@ -9,11 +9,11 @@ LL |     let x: Box<dyn Foo + 'static> = Box::new(v);
 help: consider changing the trait object's explicit `'static` bound to the lifetime of argument `v`
    |
 LL | fn a(v: &[u8]) -> Box<dyn Foo + '_> {
-   |                                 ^^
+   |                                 ~~
 help: alternatively, add an explicit `'static` bound to this reference
    |
 LL | fn a(v: &'static [u8]) -> Box<dyn Foo + 'static> {
-   |         ^^^^^^^^^^^^^
+   |         ~~~~~~~~~~~~~
 
 error[E0759]: `v` has an anonymous lifetime `'_` but it needs to satisfy a `'static` lifetime requirement
   --> $DIR/region-object-lifetime-in-coercion.rs:13:14
@@ -26,11 +26,11 @@ LL |     Box::new(v)
 help: consider changing the trait object's explicit `'static` bound to the lifetime of argument `v`
    |
 LL | fn b(v: &[u8]) -> Box<dyn Foo + '_> {
-   |                                 ^^
+   |                                 ~~
 help: alternatively, add an explicit `'static` bound to this reference
    |
 LL | fn b(v: &'static [u8]) -> Box<dyn Foo + 'static> {
-   |         ^^^^^^^^^^^^^
+   |         ~~~~~~~~~~~~~
 
 error[E0759]: `v` has an anonymous lifetime `'_` but it needs to satisfy a `'static` lifetime requirement
   --> $DIR/region-object-lifetime-in-coercion.rs:19:14
@@ -44,7 +44,7 @@ LL |     Box::new(v)
 help: to declare that the trait object captures data from argument `v`, you can add an explicit `'_` lifetime bound
    |
 LL | fn c(v: &[u8]) -> Box<dyn Foo + '_> {
-   |                               ^^^^
+   |                               ++++
 
 error[E0495]: cannot infer an appropriate lifetime due to conflicting requirements
   --> $DIR/region-object-lifetime-in-coercion.rs:23:14
@@ -52,7 +52,7 @@ error[E0495]: cannot infer an appropriate lifetime due to conflicting requiremen
 LL |     Box::new(v)
    |              ^
    |
-note: first, the lifetime cannot outlive the lifetime `'a` as defined on the function body at 22:6...
+note: first, the lifetime cannot outlive the lifetime `'a` as defined here...
   --> $DIR/region-object-lifetime-in-coercion.rs:22:6
    |
 LL | fn d<'a,'b>(v: &'a [u8]) -> Box<dyn Foo+'b> {
@@ -64,12 +64,12 @@ LL |     Box::new(v)
    |              ^
    = note: expected `&[u8]`
               found `&'a [u8]`
-note: but, the lifetime must be valid for the lifetime `'b` as defined on the function body at 22:9...
+note: but, the lifetime must be valid for the lifetime `'b` as defined here...
   --> $DIR/region-object-lifetime-in-coercion.rs:22:9
    |
 LL | fn d<'a,'b>(v: &'a [u8]) -> Box<dyn Foo+'b> {
    |         ^^
-note: ...so that the expression is assignable
+note: ...so that the types are compatible
   --> $DIR/region-object-lifetime-in-coercion.rs:23:5
    |
 LL |     Box::new(v)

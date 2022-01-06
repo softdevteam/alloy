@@ -1,13 +1,11 @@
-// revisions: min_tait full_tait
-#![feature(min_type_alias_impl_trait)]
-#![cfg_attr(full_tait, feature(type_alias_impl_trait))]
-//[full_tait]~^ WARN incomplete
+#![feature(type_alias_impl_trait)]
 
 use std::fmt::Debug;
 
 fn main() {}
 
 type Two<T, U> = impl Debug;
+//~^ ERROR `T` doesn't implement `Debug`
 
 fn two<T: Debug>(t: T) -> Two<T, u32> {
     //~^ ERROR non-defining opaque type use in defining scope
@@ -29,6 +27,7 @@ impl Bar for u32 {
 }
 
 fn four<T: Debug, U: Bar>(t: T) -> Two<T, U> {
+    //~^ ERROR concrete type differs from previous
     (t, <U as Bar>::FOO)
 }
 

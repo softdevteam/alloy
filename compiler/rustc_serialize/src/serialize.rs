@@ -58,6 +58,20 @@ pub trait Encoder {
         f(self)
     }
 
+    // We put the field index in a const generic to allow the emit_usize to be
+    // compiled into a more efficient form. In practice, the variant index is
+    // known at compile-time, and that knowledge allows much more efficient
+    // codegen than we'd otherwise get. LLVM isn't always able to make the
+    // optimization that would otherwise be necessary here, likely due to the
+    // multiple levels of inlining and const-prop that are needed.
+    #[inline]
+    fn emit_fieldless_enum_variant<const ID: usize>(
+        &mut self,
+        _v_name: &str,
+    ) -> Result<(), Self::Error> {
+        self.emit_usize(ID)
+    }
+
     #[inline]
     fn emit_enum_variant_arg<F>(&mut self, _first: bool, f: F) -> Result<(), Self::Error>
     where
@@ -366,6 +380,18 @@ direct_serialize_impls! {
     char emit_char read_char
 }
 
+impl<S: Encoder> Encodable<S> for ! {
+    fn encode(&self, _s: &mut S) -> Result<(), S::Error> {
+        unreachable!()
+    }
+}
+
+impl<D: Decoder> Decodable<D> for ! {
+    fn decode(_d: &mut D) -> Result<!, D::Error> {
+        unreachable!()
+    }
+}
+
 impl<S: Encoder> Encodable<S> for ::std::num::NonZeroU32 {
     fn encode(&self, s: &mut S) -> Result<(), S::Error> {
         s.emit_u32(self.get())
@@ -644,7 +670,7 @@ impl<D: Decoder, T: Decodable<D> + Copy> Decodable<D> for Cell<T> {
 }
 
 // FIXME: #15036
-// Should use `try_borrow`, returning a
+// Should use `try_borrow`, returning an
 // `encoder.error("attempting to Encode borrowed RefCell")`
 // from `encode` when `try_borrow` returns `None`.
 
@@ -679,6 +705,6 @@ impl<S: Encoder, T: ?Sized + Encodable<S>> Encodable<S> for Box<T> {
 }
 impl<D: Decoder, T: Decodable<D>> Decodable<D> for Box<T> {
     fn decode(d: &mut D) -> Result<Box<T>, D::Error> {
-        Ok(box Decodable::decode(d)?)
+        Ok(Box::new(Decodable::decode(d)?))
     }
 }

@@ -231,10 +231,7 @@ impl ChainItem {
     }
 
     fn is_comment(&self) -> bool {
-        match self.kind {
-            ChainItemKind::Comment(..) => true,
-            _ => false,
-        }
+        matches!(self.kind, ChainItemKind::Comment(..))
     }
 
     fn rewrite_method_call(
@@ -571,7 +568,7 @@ impl<'a> ChainFormatterShared<'a> {
         } else {
             self.rewrites
                 .iter()
-                .map(|rw| utils::unicode_str_width(&rw))
+                .map(|rw| utils::unicode_str_width(rw))
                 .sum()
         } + last.tries;
         let one_line_budget = if self.child_count == 1 {
@@ -676,7 +673,7 @@ impl<'a> ChainFormatterShared<'a> {
                 ChainItemKind::Comment(_, CommentPosition::Top) => result.push_str(&connector),
                 _ => result.push_str(&connector),
             }
-            result.push_str(&rewrite);
+            result.push_str(rewrite);
         }
 
         Some(result)

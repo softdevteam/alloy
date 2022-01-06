@@ -2,6 +2,7 @@
 #![deny(rust_2018_idioms)]
 #![warn(unreachable_pub)]
 #![recursion_limit = "256"]
+#![allow(clippy::match_like_matches_macro)]
 
 #[macro_use]
 extern crate derive_new;
@@ -30,9 +31,8 @@ use std::panic;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ignore;
 use rustc_ast::ast;
-use rustc_span::{symbol, DUMMY_SP};
+use rustc_span::symbol;
 use thiserror::Error;
 
 use crate::comment::LineClasses;
@@ -96,11 +96,6 @@ mod types;
 mod vertical;
 pub(crate) mod visitor;
 
-const DEFAULT_VISIBILITY: ast::Visibility = ast::Visibility {
-    kind: ast::VisibilityKind::Inherited,
-    span: DUMMY_SP,
-    tokens: None,
-};
 /// The various errors that can occur during formatting. Note that not all of
 /// these can currently be propagated to clients.
 #[derive(Error, Debug)]
@@ -149,10 +144,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     fn is_comment(&self) -> bool {
-        match self {
-            ErrorKind::LostComment => true,
-            _ => false,
-        }
+        matches!(self, ErrorKind::LostComment)
     }
 }
 
@@ -291,7 +283,7 @@ impl FormatReport {
         writeln!(
             t,
             "{}",
-            FormatReportFormatterBuilder::new(&self)
+            FormatReportFormatterBuilder::new(self)
                 .enable_colors(true)
                 .build()
         )?;
@@ -305,7 +297,7 @@ impl FormatReport {
 impl fmt::Display for FormatReport {
     // Prints all the formatting errors.
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(fmt, "{}", FormatReportFormatterBuilder::new(&self).build())?;
+        write!(fmt, "{}", FormatReportFormatterBuilder::new(self).build())?;
         Ok(())
     }
 }

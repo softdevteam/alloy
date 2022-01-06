@@ -2,17 +2,20 @@
 
 use crate::cmp;
 use crate::io::{self, IoSlice, IoSliceMut, Read};
+use crate::lazy::SyncOnceCell;
 use crate::mem;
 use crate::net::{Shutdown, SocketAddr};
+use crate::os::windows::io::{
+    AsRawSocket, AsSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, OwnedSocket, RawSocket,
+};
 use crate::ptr;
-use crate::sync::Once;
 use crate::sys;
 use crate::sys::c;
 use crate::sys_common::net;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::time::Duration;
 
-use libc::{c_int, c_long, c_ulong};
+use libc::{c_int, c_long, c_ulong, c_ushort};
 
 pub type wrlen_t = i32;
 
@@ -24,28 +27,33 @@ pub mod netc {
     pub use crate::sys::c::*;
 }
 
-pub struct Socket(c::SOCKET);
+pub struct Socket(OwnedSocket);
 
-static INIT: Once = Once::new();
+static WSA_CLEANUP: SyncOnceCell<unsafe extern "system" fn() -> i32> = SyncOnceCell::new();
 
 /// Checks whether the Windows socket interface has been started already, and
 /// if not, starts it.
 pub fn init() {
-    INIT.call_once(|| unsafe {
+    let _ = WSA_CLEANUP.get_or_init(|| unsafe {
         let mut data: c::WSADATA = mem::zeroed();
         let ret = c::WSAStartup(
             0x202, // version 2.2
             &mut data,
         );
         assert_eq!(ret, 0);
+
+        // Only register `WSACleanup` if `WSAStartup` is actually ever called.
+        // Workaround to prevent linking to `WS2_32.dll` when no network functionality is used.
+        // See issue #85441.
+        c::WSACleanup
     });
 }
 
 pub fn cleanup() {
-    if INIT.is_completed() {
-        // only close the socket interface if it has actually been started
+    // only perform cleanup if network functionality was actually initialized
+    if let Some(cleanup) = WSA_CLEANUP.get() {
         unsafe {
-            c::WSACleanup();
+            cleanup();
         }
     }
 }
@@ -109,7 +117,7 @@ impl Socket {
         };
 
         if socket != c::INVALID_SOCKET {
-            Ok(Self(socket))
+            unsafe { Ok(Self::from_raw_socket(socket)) }
         } else {
             let error = unsafe { c::WSAGetLastError() };
 
@@ -124,9 +132,11 @@ impl Socket {
                 return Err(last_error());
             }
 
-            let socket = Self(socket);
-            socket.set_no_inherit()?;
-            Ok(socket)
+            unsafe {
+                let socket = Self::from_raw_socket(socket);
+                socket.set_no_inherit()?;
+                Ok(socket)
+            }
         }
     }
 
@@ -134,7 +144,7 @@ impl Socket {
         self.set_nonblocking(true)?;
         let result = {
             let (addrp, len) = addr.into_inner();
-            let result = unsafe { c::connect(self.0, addrp, len) };
+            let result = unsafe { c::connect(self.as_raw_socket(), addrp, len) };
             cvt(result).map(drop)
         };
         self.set_nonblocking(false)?;
@@ -160,7 +170,7 @@ impl Socket {
                 let fds = {
                     let mut fds = unsafe { mem::zeroed::<c::fd_set>() };
                     fds.fd_count = 1;
-                    fds.fd_array[0] = self.0;
+                    fds.fd_array[0] = self.as_raw_socket();
                     fds
                 };
 
@@ -194,17 +204,19 @@ impl Socket {
     }
 
     pub fn accept(&self, storage: *mut c::SOCKADDR, len: *mut c_int) -> io::Result<Socket> {
-        let socket = unsafe { c::accept(self.0, storage, len) };
+        let socket = unsafe { c::accept(self.as_raw_socket(), storage, len) };
 
         match socket {
             c::INVALID_SOCKET => Err(last_error()),
-            _ => Ok(Self(socket)),
+            _ => unsafe { Ok(Self::from_raw_socket(socket)) },
         }
     }
 
     pub fn duplicate(&self) -> io::Result<Socket> {
         let mut info = unsafe { mem::zeroed::<c::WSAPROTOCOL_INFO>() };
-        let result = unsafe { c::WSADuplicateSocketW(self.0, c::GetCurrentProcessId(), &mut info) };
+        let result = unsafe {
+            c::WSADuplicateSocketW(self.as_raw_socket(), c::GetCurrentProcessId(), &mut info)
+        };
         cvt(result)?;
         let socket = unsafe {
             c::WSASocketW(
@@ -218,7 +230,7 @@ impl Socket {
         };
 
         if socket != c::INVALID_SOCKET {
-            Ok(Self(socket))
+            unsafe { Ok(Self::from_inner(OwnedSocket::from_raw_socket(socket))) }
         } else {
             let error = unsafe { c::WSAGetLastError() };
 
@@ -241,9 +253,11 @@ impl Socket {
                 return Err(last_error());
             }
 
-            let socket = Self(socket);
-            socket.set_no_inherit()?;
-            Ok(socket)
+            unsafe {
+                let socket = Self::from_inner(OwnedSocket::from_raw_socket(socket));
+                socket.set_no_inherit()?;
+                Ok(socket)
+            }
         }
     }
 
@@ -251,7 +265,8 @@ impl Socket {
         // On unix when a socket is shut down all further reads return 0, so we
         // do the same on windows to map a shut down socket to returning EOF.
         let length = cmp::min(buf.len(), i32::MAX as usize) as i32;
-        let result = unsafe { c::recv(self.0, buf.as_mut_ptr() as *mut _, length, flags) };
+        let result =
+            unsafe { c::recv(self.as_raw_socket(), buf.as_mut_ptr() as *mut _, length, flags) };
 
         match result {
             c::SOCKET_ERROR => {
@@ -279,7 +294,7 @@ impl Socket {
         let mut flags = 0;
         let result = unsafe {
             c::WSARecv(
-                self.0,
+                self.as_raw_socket(),
                 bufs.as_mut_ptr() as *mut c::WSABUF,
                 length,
                 &mut nread,
@@ -325,7 +340,7 @@ impl Socket {
         // do the same on windows to map a shut down socket to returning EOF.
         let result = unsafe {
             c::recvfrom(
-                self.0,
+                self.as_raw_socket(),
                 buf.as_mut_ptr() as *mut _,
                 length,
                 flags,
@@ -361,7 +376,7 @@ impl Socket {
         let mut nwritten = 0;
         let result = unsafe {
             c::WSASend(
-                self.0,
+                self.as_raw_socket(),
                 bufs.as_ptr() as *const c::WSABUF as *mut _,
                 length,
                 &mut nwritten,
@@ -408,8 +423,10 @@ impl Socket {
 
     #[cfg(not(target_vendor = "uwp"))]
     fn set_no_inherit(&self) -> io::Result<()> {
-        sys::cvt(unsafe { c::SetHandleInformation(self.0 as c::HANDLE, c::HANDLE_FLAG_INHERIT, 0) })
-            .map(drop)
+        sys::cvt(unsafe {
+            c::SetHandleInformation(self.as_raw_socket() as c::HANDLE, c::HANDLE_FLAG_INHERIT, 0)
+        })
+        .map(drop)
     }
 
     #[cfg(target_vendor = "uwp")]
@@ -423,14 +440,30 @@ impl Socket {
             Shutdown::Read => c::SD_RECEIVE,
             Shutdown::Both => c::SD_BOTH,
         };
-        let result = unsafe { c::shutdown(self.0, how) };
+        let result = unsafe { c::shutdown(self.as_raw_socket(), how) };
         cvt(result).map(drop)
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let mut nonblocking = nonblocking as c_ulong;
-        let result = unsafe { c::ioctlsocket(self.0, c::FIONBIO as c_int, &mut nonblocking) };
+        let result =
+            unsafe { c::ioctlsocket(self.as_raw_socket(), c::FIONBIO as c_int, &mut nonblocking) };
         cvt(result).map(drop)
+    }
+
+    pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
+        let linger = c::linger {
+            l_onoff: linger.is_some() as c_ushort,
+            l_linger: linger.unwrap_or_default().as_secs() as c_ushort,
+        };
+
+        net::setsockopt(self, c::SOL_SOCKET, c::SO_LINGER, linger)
+    }
+
+    pub fn linger(&self) -> io::Result<Option<Duration>> {
+        let val: c::linger = net::getsockopt(self, c::SOL_SOCKET, c::SO_LINGER)?;
+
+        Ok((val.l_onoff != 0).then(|| Duration::from_secs(val.l_linger as u64)))
     }
 
     pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
@@ -446,6 +479,11 @@ impl Socket {
         let raw: c_int = net::getsockopt(self, c::SOL_SOCKET, c::SO_ERROR)?;
         if raw == 0 { Ok(None) } else { Ok(Some(io::Error::from_raw_os_error(raw as i32))) }
     }
+
+    // This is used by sys_common code to abstract over Windows and Unix.
+    pub fn as_raw(&self) -> RawSocket {
+        self.as_inner().as_raw_socket()
+    }
 }
 
 #[unstable(reason = "not public", issue = "none", feature = "fd_read")]
@@ -455,28 +493,44 @@ impl<'a> Read for &'a Socket {
     }
 }
 
-impl Drop for Socket {
-    fn drop(&mut self) {
-        let _ = unsafe { c::closesocket(self.0) };
-    }
-}
-
-impl AsInner<c::SOCKET> for Socket {
-    fn as_inner(&self) -> &c::SOCKET {
+impl AsInner<OwnedSocket> for Socket {
+    fn as_inner(&self) -> &OwnedSocket {
         &self.0
     }
 }
 
-impl FromInner<c::SOCKET> for Socket {
-    fn from_inner(sock: c::SOCKET) -> Socket {
+impl FromInner<OwnedSocket> for Socket {
+    fn from_inner(sock: OwnedSocket) -> Socket {
         Socket(sock)
     }
 }
 
-impl IntoInner<c::SOCKET> for Socket {
-    fn into_inner(self) -> c::SOCKET {
-        let ret = self.0;
-        mem::forget(self);
-        ret
+impl IntoInner<OwnedSocket> for Socket {
+    fn into_inner(self) -> OwnedSocket {
+        self.0
+    }
+}
+
+impl AsSocket for Socket {
+    fn as_socket(&self) -> BorrowedSocket<'_> {
+        self.0.as_socket()
+    }
+}
+
+impl AsRawSocket for Socket {
+    fn as_raw_socket(&self) -> RawSocket {
+        self.0.as_raw_socket()
+    }
+}
+
+impl IntoRawSocket for Socket {
+    fn into_raw_socket(self) -> RawSocket {
+        self.0.into_raw_socket()
+    }
+}
+
+impl FromRawSocket for Socket {
+    unsafe fn from_raw_socket(raw_socket: RawSocket) -> Self {
+        Self(FromRawSocket::from_raw_socket(raw_socket))
     }
 }

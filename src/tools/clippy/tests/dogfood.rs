@@ -6,6 +6,8 @@
 // Dogfood cannot run on Windows
 #![cfg(not(windows))]
 #![feature(once_cell)]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
+#![warn(rust_2018_idioms, unused_lifetimes)]
 
 use std::lazy::SyncLazy;
 use std::path::PathBuf;
@@ -13,7 +15,12 @@ use std::process::Command;
 
 mod cargo;
 
-static CLIPPY_PATH: SyncLazy<PathBuf> = SyncLazy::new(|| cargo::TARGET_LIB.join("cargo-clippy"));
+static CLIPPY_PATH: SyncLazy<PathBuf> = SyncLazy::new(|| {
+    let mut path = std::env::current_exe().unwrap();
+    assert!(path.pop()); // deps
+    path.set_file_name("cargo-clippy");
+    path
+});
 
 #[test]
 fn dogfood_clippy() {
@@ -26,7 +33,6 @@ fn dogfood_clippy() {
     let mut command = Command::new(&*CLIPPY_PATH);
     command
         .current_dir(root_dir)
-        .env("CLIPPY_DOGFOOD", "1")
         .env("CARGO_INCREMENTAL", "0")
         .arg("clippy")
         .arg("--all-targets")
@@ -72,12 +78,11 @@ fn test_no_deps_ignores_path_deps_in_workspaces() {
     // Make sure that with the `--no-deps` argument Clippy does not run on `path_dep`.
     let output = Command::new(&*CLIPPY_PATH)
         .current_dir(&cwd)
-        .env("CLIPPY_DOGFOOD", "1")
         .env("CARGO_INCREMENTAL", "0")
         .arg("clippy")
         .args(&["-p", "subcrate"])
-        .arg("--")
         .arg("--no-deps")
+        .arg("--")
         .arg("-Cdebuginfo=0") // disable debuginfo to generate less data in the target dir
         .args(&["--cfg", r#"feature="primary_package_test""#])
         .output()
@@ -92,7 +97,6 @@ fn test_no_deps_ignores_path_deps_in_workspaces() {
         // Test that without the `--no-deps` argument, `path_dep` is linted.
         let output = Command::new(&*CLIPPY_PATH)
             .current_dir(&cwd)
-            .env("CLIPPY_DOGFOOD", "1")
             .env("CARGO_INCREMENTAL", "0")
             .arg("clippy")
             .args(&["-p", "subcrate"])
@@ -119,7 +123,6 @@ fn test_no_deps_ignores_path_deps_in_workspaces() {
     let successful_build = || {
         let output = Command::new(&*CLIPPY_PATH)
             .current_dir(&cwd)
-            .env("CLIPPY_DOGFOOD", "1")
             .env("CARGO_INCREMENTAL", "0")
             .arg("clippy")
             .args(&["-p", "subcrate"])
@@ -183,7 +186,7 @@ fn run_metadata_collection_lint() {
     use std::time::SystemTime;
 
     // Setup for validation
-    let metadata_output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("util/gh-pages/metadata_collection.json");
+    let metadata_output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("util/gh-pages/lints.json");
     let start_time = SystemTime::now();
 
     // Run collection as is
@@ -221,7 +224,6 @@ fn run_clippy_for_project(project: &str) {
 
     command
         .current_dir(root_dir.join(project))
-        .env("CLIPPY_DOGFOOD", "1")
         .env("CARGO_INCREMENTAL", "0")
         .arg("clippy")
         .arg("--all-targets")

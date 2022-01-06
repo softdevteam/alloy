@@ -86,7 +86,21 @@ impl<T: RefUnwindSafe + UnwindSafe> RefUnwindSafe for SyncOnceCell<T> {}
 impl<T: UnwindSafe> UnwindSafe for SyncOnceCell<T> {}
 
 #[unstable(feature = "once_cell", issue = "74465")]
-impl<T> Default for SyncOnceCell<T> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for SyncOnceCell<T> {
+    /// Creates a new empty cell.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// #![feature(once_cell)]
+    ///
+    /// use std::lazy::SyncOnceCell;
+    ///
+    /// fn main() {
+    ///     assert_eq!(SyncOnceCell::<()>::new(), SyncOnceCell::default());
+    /// }
+    /// ```
     fn default() -> SyncOnceCell<T> {
         SyncOnceCell::new()
     }
@@ -118,6 +132,23 @@ impl<T: Clone> Clone for SyncOnceCell<T> {
 
 #[unstable(feature = "once_cell", issue = "74465")]
 impl<T> From<T> for SyncOnceCell<T> {
+    /// Create a new cell with its contents set to `value`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// #![feature(once_cell)]
+    ///
+    /// use std::lazy::SyncOnceCell;
+    ///
+    /// # fn main() -> Result<(), i32> {
+    /// let a = SyncOnceCell::from(3);
+    /// let b = SyncOnceCell::new();
+    /// b.set(3)?;
+    /// assert_eq!(a, b);
+    /// Ok(())
+    /// # }
+    /// ```
     fn from(value: T) -> Self {
         let cell = Self::new();
         match cell.set(value) {
@@ -140,6 +171,7 @@ impl<T: Eq> Eq for SyncOnceCell<T> {}
 impl<T> SyncOnceCell<T> {
     /// Creates a new empty cell.
     #[unstable(feature = "once_cell", issue = "74465")]
+    #[must_use]
     pub const fn new() -> SyncOnceCell<T> {
         SyncOnceCell {
             once: Once::new(),

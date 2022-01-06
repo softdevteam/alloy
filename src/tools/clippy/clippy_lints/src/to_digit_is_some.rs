@@ -9,12 +9,14 @@ use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `.to_digit(..).is_some()` on `char`s.
+    /// ### What it does
+    /// Checks for `.to_digit(..).is_some()` on `char`s.
     ///
-    /// **Why is this bad?** This is a convoluted way of checking if a `char` is a digit. It's
+    /// ### Why is this bad?
+    /// This is a convoluted way of checking if a `char` is a digit. It's
     /// more straight forward to use the dedicated `is_digit` method.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let c = 'c';
     /// # let radix = 10;
@@ -26,6 +28,7 @@ declare_clippy_lint! {
     /// # let radix = 10;
     /// let is_digit = c.is_digit(radix);
     /// ```
+    #[clippy::version = "1.41.0"]
     pub TO_DIGIT_IS_SOME,
     style,
     "`char.is_digit()` is clearer"

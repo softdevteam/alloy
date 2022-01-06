@@ -14,7 +14,7 @@ use rustc_hir::def::CtorKind;
 use rustc_hir::def_id::DefId;
 use rustc_hir::RangeEnd;
 use rustc_index::newtype_index;
-use rustc_index::vec::{Idx, IndexVec};
+use rustc_index::vec::IndexVec;
 use rustc_middle::infer::canonical::Canonical;
 use rustc_middle::middle::region;
 use rustc_middle::mir::{
@@ -32,6 +32,9 @@ use rustc_target::asm::InlineAsmRegOrRegClass;
 
 use std::fmt;
 use std::ops::Index;
+
+pub mod abstract_const;
+pub mod visit;
 
 newtype_index! {
     /// An index to an [`Arm`] stored in [`Thir::arms`]
@@ -223,6 +226,7 @@ pub enum ExprKind<'tcx> {
     },
     /// An `if` expression.
     If {
+        if_then_scope: region::Scope,
         cond: ExprId,
         then: ExprId,
         else_opt: Option<ExprId>,
@@ -291,6 +295,10 @@ pub enum ExprKind<'tcx> {
     /// A `loop` expression.
     Loop {
         body: ExprId,
+    },
+    Let {
+        expr: ExprId,
+        pat: Pat<'tcx>,
     },
     /// A `match` expression.
     Match {
@@ -712,17 +720,9 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                     PatKind::Variant { adt_def, variant_index, .. } => {
                         Some(&adt_def.variants[variant_index])
                     }
-                    _ => {
-                        if let ty::Adt(adt, _) = self.ty.kind() {
-                            if !adt.is_enum() {
-                                Some(&adt.variants[VariantIdx::new(0)])
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
+                    _ => self.ty.ty_adt_def().and_then(|adt| {
+                        if !adt.is_enum() { Some(adt.non_enum_variant()) } else { None }
+                    }),
                 };
 
                 if let Some(variant) = variant {

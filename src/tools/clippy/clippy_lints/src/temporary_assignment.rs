@@ -5,18 +5,19 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for construction of a structure or tuple just to
+    /// ### What it does
+    /// Checks for construction of a structure or tuple just to
     /// assign a value in it.
     ///
-    /// **Why is this bad?** Readability. If the structure is only created to be
+    /// ### Why is this bad?
+    /// Readability. If the structure is only created to be
     /// updated, why not write the structure you want in the first place?
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// (0, 0).0 = 1
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub TEMPORARY_ASSIGNMENT,
     complexity,
     "assignments to temporaries"

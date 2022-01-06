@@ -1,4 +1,4 @@
-use core::iter::{InPlaceIterable, SourceIter, TrustedRandomAccess};
+use core::iter::{InPlaceIterable, SourceIter, TrustedRandomAccessNoCoerce};
 use core::mem::{self, ManuallyDrop};
 use core::ptr::{self};
 
@@ -6,24 +6,14 @@ use super::{AsIntoIter, InPlaceDrop, SpecFromIter, SpecFromIterNested, Vec};
 
 /// Specialization marker for collecting an iterator pipeline into a Vec while reusing the
 /// source allocation, i.e. executing the pipeline in place.
-///
-/// The SourceIter parent trait is necessary for the specializing function to access the allocation
-/// which is to be reused. But it is not sufficient for the specialization to be valid. See
-/// additional bounds on the impl.
 #[rustc_unsafe_specialization_marker]
-pub(super) trait SourceIterMarker: SourceIter<Source: AsIntoIter> {}
+pub(super) trait InPlaceIterableMarker {}
 
-// The std-internal SourceIter/InPlaceIterable traits are only implemented by chains of
-// Adapter<Adapter<Adapter<IntoIter>>> (all owned by core/std). Additional bounds
-// on the adapter implementations (beyond `impl<I: Trait> Trait for Adapter<I>`) only depend on other
-// traits already marked as specialization traits (Copy, TrustedRandomAccess, FusedIterator).
-// I.e. the marker does not depend on lifetimes of user-supplied types. Modulo the Copy hole, which
-// several other specializations already depend on.
-impl<T> SourceIterMarker for T where T: SourceIter<Source: AsIntoIter> + InPlaceIterable {}
+impl<T> InPlaceIterableMarker for T where T: InPlaceIterable {}
 
 impl<T, I> SpecFromIter<T, I> for Vec<T>
 where
-    I: Iterator<Item = T> + SourceIterMarker,
+    I: Iterator<Item = T> + SourceIter<Source: AsIntoIter> + InPlaceIterableMarker,
 {
     default fn from_iter(mut iterator: I) -> Self {
         // Additional requirements which cannot expressed via trait bounds. We rely on const eval
@@ -56,7 +46,7 @@ where
 
         let src = unsafe { iterator.as_inner().as_into_iter() };
         // check if SourceIter contract was upheld
-        // caveat: if they weren't we may not even make it to this point
+        // caveat: if they weren't we might not even make it to this point
         debug_assert_eq!(src_buf, src.buf.as_ptr());
         // check InPlaceIterable contract. This is only possible if the iterator advanced the
         // source pointer at all. If it uses unchecked access via TrustedRandomAccess
@@ -71,6 +61,18 @@ where
         // drop any remaining values at the tail of the source
         // but prevent drop of the allocation itself once IntoIter goes out of scope
         // if the drop panics then we also leak any elements collected into dst_buf
+        //
+        // FIXME: Since `SpecInPlaceCollect::collect_in_place` above might use
+        // `__iterator_get_unchecked` internally, this call might be operating on
+        // a `vec::IntoIter` with incorrect internal state regarding which elements
+        // have already been “consumed”. However, the `TrustedRandomIteratorNoCoerce`
+        // implementation of `vec::IntoIter` is only present if the `Vec` elements
+        // don’t have a destructor, so it doesn’t matter if elements are “dropped multiple times”
+        // in this case.
+        // This argument technically currently lacks justification from the `# Safety` docs for
+        // `SourceIter`/`InPlaceIterable` and/or `TrustedRandomAccess`, so it might be possible that
+        // someone could inadvertently create new library unsoundness
+        // involving this `.forget_allocation_drop_remaining()` call.
         src.forget_allocation_drop_remaining();
 
         let vec = unsafe { Vec::from_raw_parts(dst_buf, len, cap) };
@@ -101,6 +103,11 @@ fn write_in_place_with_drop<T>(
 trait SpecInPlaceCollect<T, I>: Iterator<Item = T> {
     /// Collects an iterator (`self`) into the destination buffer (`dst`) and returns the number of items
     /// collected. `end` is the last writable element of the allocation and used for bounds checks.
+    ///
+    /// This method is specialized and one of its implementations makes use of
+    /// `Iterator::__iterator_get_unchecked` calls with a `TrustedRandomAccessNoCoerce` bound
+    /// on `I` which means the caller of this method must take the safety conditions
+    /// of that trait into consideration.
     fn collect_in_place(&mut self, dst: *mut T, end: *const T) -> usize;
 }
 
@@ -124,7 +131,7 @@ where
 
 impl<T, I> SpecInPlaceCollect<T, I> for I
 where
-    I: Iterator<Item = T> + TrustedRandomAccess,
+    I: Iterator<Item = T> + TrustedRandomAccessNoCoerce,
 {
     #[inline]
     fn collect_in_place(&mut self, dst_buf: *mut T, end: *const T) -> usize {

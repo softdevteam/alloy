@@ -203,6 +203,7 @@ use self::Ordering::*;
     message = "can't compare `{Self}` with `{Rhs}`",
     label = "no implementation for `{Self} == {Rhs}`"
 )]
+#[rustc_diagnostic_item = "PartialEq"]
 pub trait PartialEq<Rhs: ?Sized = Self> {
     /// This method tests for `self` and `other` values to be equal, and is used
     /// by `==`.
@@ -269,6 +270,7 @@ pub macro PartialEq($item:item) {
 #[doc(alias = "==")]
 #[doc(alias = "!=")]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "Eq"]
 pub trait Eq: PartialEq<Self> {
     // this method is used solely by #[deriving] to assert
     // that every component of a type implements #[deriving]
@@ -321,6 +323,7 @@ pub struct AssertParamIsEq<T: Eq + ?Sized> {
 /// ```
 #[derive(Clone, Copy, PartialEq, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[repr(i8)]
 pub enum Ordering {
     /// An ordering where a compared value is less than another.
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -660,6 +663,18 @@ impl<T: Clone> Clone for Reverse<T> {
 /// This trait can be used with `#[derive]`. When `derive`d on structs, it will produce a
 /// [lexicographic](https://en.wikipedia.org/wiki/Lexicographic_order) ordering based on the top-to-bottom declaration order of the struct's members.
 /// When `derive`d on enums, variants are ordered by their top-to-bottom discriminant order.
+/// This means variants at the top are less than variants at the bottom.
+/// Here's an example:
+///
+/// ```
+/// #[derive(PartialEq, PartialOrd)]
+/// enum Size {
+///     Small,
+///     Large,
+/// }
+///
+/// assert!(Size::Small < Size::Large);
+/// ```
 ///
 /// ## Lexicographical comparison
 ///
@@ -716,6 +731,7 @@ impl<T: Clone> Clone for Reverse<T> {
 #[doc(alias = "<=")]
 #[doc(alias = ">=")]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "Ord"]
 pub trait Ord: Eq + PartialOrd<Self> {
     /// This method returns an [`Ordering`] between `self` and `other`.
     ///
@@ -972,6 +988,7 @@ impl PartialOrd for Ordering {
     message = "can't compare `{Self}` with `{Rhs}`",
     label = "no implementation for `{Self} < {Rhs}` and `{Self} > {Rhs}`"
 )]
+#[rustc_diagnostic_item = "PartialOrd"]
 pub trait PartialOrd<Rhs: ?Sized = Self>: PartialEq<Rhs> {
     /// This method returns an ordering between `self` and `other` values if one exists.
     ///

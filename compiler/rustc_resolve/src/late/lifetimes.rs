@@ -357,11 +357,11 @@ enum Elide {
 #[derive(Clone, Debug)]
 crate struct ElisionFailureInfo {
     /// Where we can find the argument pattern.
-    parent: Option<hir::BodyId>,
+    crate parent: Option<hir::BodyId>,
     /// The index of the argument in the original definition.
-    index: usize,
-    lifetime_count: usize,
-    have_bound_regions: bool,
+    crate index: usize,
+    crate lifetime_count: usize,
+    crate have_bound_regions: bool,
     crate span: Span,
 }
 
@@ -445,7 +445,7 @@ fn do_resolve(
     trait_definition_only: bool,
     with_scope_for_path: bool,
 ) -> NamedRegionMap {
-    let item = tcx.hir().expect_item(tcx.hir().local_def_id_to_hir_id(local_def_id));
+    let item = tcx.hir().expect_item(local_def_id);
     let mut named_region_map = NamedRegionMap {
         defs: Default::default(),
         late_bound: Default::default(),
@@ -522,8 +522,7 @@ fn item_for(tcx: TyCtxt<'_>, local_def_id: LocalDefId) -> LocalDefId {
         _ => {}
     }
     let item = {
-        let hir = tcx.hir();
-        let mut parent_iter = hir.parent_iter(hir_id);
+        let mut parent_iter = tcx.hir().parent_iter(hir_id);
         loop {
             let node = parent_iter.next().map(|n| n.1);
             match node {
@@ -541,7 +540,7 @@ fn is_late_bound_map<'tcx>(
     def_id: LocalDefId,
 ) -> Option<(LocalDefId, &'tcx FxHashSet<ItemLocalId>)> {
     match tcx.def_kind(def_id) {
-        DefKind::AnonConst => {
+        DefKind::AnonConst | DefKind::InlineConst => {
             let mut def_id = tcx
                 .parent(def_id.to_def_id())
                 .unwrap_or_else(|| bug!("anon const or closure without a parent"));
@@ -740,6 +739,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
 
             hir::ItemKind::ExternCrate(_)
             | hir::ItemKind::Use(..)
+            | hir::ItemKind::Macro(..)
             | hir::ItemKind::Mod(..)
             | hir::ItemKind::ForeignMod { .. }
             | hir::ItemKind::GlobalAsm(..) => {
@@ -887,10 +887,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                 let (lifetimes, binders): (FxIndexMap<hir::ParamName, Region>, Vec<_>) = c
                     .generic_params
                     .iter()
-                    .filter_map(|param| match param.kind {
-                        GenericParamKind::Lifetime { .. } => Some(param),
-                        _ => None,
-                    })
+                    .filter(|param| matches!(param.kind, GenericParamKind::Lifetime { .. }))
                     .enumerate()
                     .map(|(late_bound_idx, param)| {
                         let pair = Region::late(late_bound_idx as u32, &self.tcx.hir(), param);
@@ -926,7 +923,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                     }
                 });
                 match lifetime.name {
-                    LifetimeName::Implicit => {
+                    LifetimeName::Implicit(_) => {
                         // For types like `dyn Foo`, we should
                         // generate a special form of elided.
                         span_bug!(ty.span, "object-lifetime-default expected, not implicit",);
@@ -1015,24 +1012,17 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                                 let hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
                                 // Ensure that the parent of the def is an item, not HRTB
                                 let parent_id = self.tcx.hir().get_parent_node(hir_id);
-                                let parent_is_item = if let Some(parent_def_id) =
-                                    parent_id.as_owner()
-                                {
-                                    let parent_item_id = hir::ItemId { def_id: parent_def_id };
-                                    let parent_impl_id = hir::ImplItemId { def_id: parent_def_id };
-                                    let parent_trait_id =
-                                        hir::TraitItemId { def_id: parent_def_id };
-                                    let parent_foreign_id =
-                                        hir::ForeignItemId { def_id: parent_def_id };
-                                    let krate = self.tcx.hir().krate();
-
-                                    krate.items.contains_key(&parent_item_id)
-                                        || krate.impl_items.contains_key(&parent_impl_id)
-                                        || krate.trait_items.contains_key(&parent_trait_id)
-                                        || krate.foreign_items.contains_key(&parent_foreign_id)
-                                } else {
-                                    false
-                                };
+                                // FIXME(cjgillot) Can this check be replaced by
+                                // `let parent_is_item = parent_id.is_owner();`?
+                                let parent_is_item =
+                                    if let Some(parent_def_id) = parent_id.as_owner() {
+                                        matches!(
+                                            self.tcx.hir().krate().owners.get(parent_def_id),
+                                            Some(Some(_)),
+                                        )
+                                    } else {
+                                        false
+                                    };
 
                                 if !parent_is_item {
                                     if !self.trait_definition_only {
@@ -1064,9 +1054,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                     match param.kind {
                         GenericParamKind::Lifetime { .. } => {
                             let (name, reg) = Region::early(&self.tcx.hir(), &mut index, &param);
-                            let def_id = if let Region::EarlyBound(_, def_id, _) = reg {
-                                def_id
-                            } else {
+                            let Region::EarlyBound(_, def_id, _) = reg else {
                                 bug!();
                             };
                             // We cannot predict what lifetimes are unused in opaque type.
@@ -1146,7 +1134,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                 self.missing_named_lifetime_spots.push((&trait_item.generics).into());
                 let tcx = self.tcx;
                 self.visit_early_late(
-                    Some(tcx.hir().get_parent_item(trait_item.hir_id())),
+                    Some(tcx.hir().get_parent_did(trait_item.hir_id())),
                     trait_item.hir_id(),
                     &sig.decl,
                     &trait_item.generics,
@@ -1215,7 +1203,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                 self.missing_named_lifetime_spots.push((&impl_item.generics).into());
                 let tcx = self.tcx;
                 self.visit_early_late(
-                    Some(tcx.hir().get_parent_item(impl_item.hir_id())),
+                    Some(tcx.hir().get_parent_did(impl_item.hir_id())),
                     impl_item.hir_id(),
                     &sig.decl,
                     &impl_item.generics,
@@ -1379,9 +1367,8 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                         let (lifetimes, binders): (FxIndexMap<hir::ParamName, Region>, Vec<_>) =
                             bound_generic_params
                                 .iter()
-                                .filter_map(|param| match param.kind {
-                                    GenericParamKind::Lifetime { .. } => Some(param),
-                                    _ => None,
+                                .filter(|param| {
+                                    matches!(param.kind, GenericParamKind::Lifetime { .. })
                                 })
                                 .enumerate()
                                 .map(|(late_bound_idx, param)| {
@@ -1478,10 +1465,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
         let binders_iter = trait_ref
             .bound_generic_params
             .iter()
-            .filter_map(|param| match param.kind {
-                GenericParamKind::Lifetime { .. } => Some(param),
-                _ => None,
-            })
+            .filter(|param| matches!(param.kind, GenericParamKind::Lifetime { .. }))
             .enumerate()
             .map(|(late_bound_idx, param)| {
                 let pair = Region::late(
@@ -1658,7 +1642,11 @@ fn extract_labels(ctxt: &mut LifetimeContext<'_, '_>, body: &hir::Body<'_>) {
     }
 
     fn expression_label(ex: &hir::Expr<'_>) -> Option<Ident> {
-        if let hir::ExprKind::Loop(_, Some(label), ..) = ex.kind { Some(label.ident) } else { None }
+        match ex.kind {
+            hir::ExprKind::Loop(_, Some(label), ..) => Some(label.ident),
+            hir::ExprKind::Block(_, Some(label)) => Some(label.ident),
+            _ => None,
+        }
     }
 
     fn check_if_label_shadows_lifetime(tcx: TyCtxt<'_>, mut scope: ScopeRef<'_>, label: Ident) {
@@ -1936,20 +1924,18 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                             break;
                         }
                     }
-                    hir::TyKind::Path(ref qpath) => {
-                        if let QPath::Resolved(_, path) = qpath {
-                            let last_segment = &path.segments[path.segments.len() - 1];
-                            let generics = last_segment.args();
-                            for arg in generics.args.iter() {
-                                if let GenericArg::Lifetime(lt) = arg {
-                                    if lt.name.ident() == name {
-                                        elide_use = Some(lt.span);
-                                        break;
-                                    }
+                    hir::TyKind::Path(QPath::Resolved(_, path)) => {
+                        let last_segment = &path.segments[path.segments.len() - 1];
+                        let generics = last_segment.args();
+                        for arg in generics.args.iter() {
+                            if let GenericArg::Lifetime(lt) = arg {
+                                if lt.name.ident() == name {
+                                    elide_use = Some(lt.span);
+                                    break;
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                     _ => {}
                 }
@@ -2030,7 +2016,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
         // ensure that we issue lints in a repeatable order
         def_ids.sort_by_cached_key(|&def_id| self.tcx.def_path_hash(def_id));
 
-        for def_id in def_ids {
+        'lifetimes: for def_id in def_ids {
             debug!("check_uses_for_lifetimes_defined_by_scope: def_id = {:?}", def_id);
 
             let lifetimeuseset = self.lifetime_uses.remove(&def_id);
@@ -2064,10 +2050,35 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                             if let Some(def_id) = parent_def_id.as_local() {
                                 let parent_hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
                                 // lifetimes in `derive` expansions don't count (Issue #53738)
-                                if self.tcx.hir().attrs(parent_hir_id).iter().any(|attr| {
-                                    self.tcx.sess.check_name(attr, sym::automatically_derived)
-                                }) {
+                                if self
+                                    .tcx
+                                    .hir()
+                                    .attrs(parent_hir_id)
+                                    .iter()
+                                    .any(|attr| attr.has_name(sym::automatically_derived))
+                                {
                                     continue;
+                                }
+
+                                // opaque types generated when desugaring an async function can have a single
+                                // use lifetime even if it is explicitly denied (Issue #77175)
+                                if let hir::Node::Item(hir::Item {
+                                    kind: hir::ItemKind::OpaqueTy(ref opaque),
+                                    ..
+                                }) = self.tcx.hir().get(parent_hir_id)
+                                {
+                                    if opaque.origin != hir::OpaqueTyOrigin::AsyncFn {
+                                        continue 'lifetimes;
+                                    }
+                                    // We want to do this only if the liftime identifier is already defined
+                                    // in the async function that generated this. Otherwise it could be
+                                    // an opaque type defined by the developer and we still want this
+                                    // lint to fail compilation
+                                    for p in opaque.generics.params {
+                                        if defined_by.contains_key(&p.name) {
+                                            continue 'lifetimes;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2165,7 +2176,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
     /// ordering is not important there.
     fn visit_early_late<F>(
         &mut self,
-        parent_id: Option<hir::HirId>,
+        parent_id: Option<LocalDefId>,
         hir_id: hir::HirId,
         decl: &'tcx hir::FnDecl<'tcx>,
         generics: &'tcx hir::Generics<'tcx>,
@@ -2217,19 +2228,14 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
         let binders: Vec<_> = generics
             .params
             .iter()
-            .filter_map(|param| match param.kind {
-                GenericParamKind::Lifetime { .. }
-                    if self.map.late_bound.contains(&param.hir_id) =>
-                {
-                    Some(param)
-                }
-                _ => None,
+            .filter(|param| {
+                matches!(param.kind, GenericParamKind::Lifetime { .. })
+                    && self.map.late_bound.contains(&param.hir_id)
             })
             .enumerate()
             .map(|(late_bound_idx, param)| {
                 let pair = Region::late(late_bound_idx as u32, &self.tcx.hir(), param);
-                let r = late_region_as_bound_region(self.tcx, &pair.1);
-                r
+                late_region_as_bound_region(self.tcx, &pair.1)
             })
             .collect();
         self.map.late_bound_vars.insert(hir_id, binders);
@@ -2303,7 +2309,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             match *scope {
                 Scope::Body { id, s } => {
                     // Non-static lifetimes are prohibited in anonymous constants without
-                    // `const_generics`.
+                    // `generic_const_exprs`.
                     self.maybe_emit_forbidden_non_static_lifetime_error(id, lifetime_ref);
 
                     outermost_body = Some(id);
@@ -2557,6 +2563,12 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 GenericArg::Const(ct) => {
                     self.visit_anon_const(&ct.value);
                 }
+                GenericArg::Infer(inf) => {
+                    self.visit_id(inf.hir_id);
+                    if inf.kind.is_type() {
+                        i += 1;
+                    }
+                }
             }
         }
 
@@ -2601,8 +2613,10 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                     binding.ident,
                 );
                 self.with(scope, |_, this| {
-                    let scope =
-                        Scope::Supertrait { lifetimes: lifetimes.unwrap_or(vec![]), s: this.scope };
+                    let scope = Scope::Supertrait {
+                        lifetimes: lifetimes.unwrap_or_default(),
+                        s: this.scope,
+                    };
                     this.with(scope, |_, this| this.visit_assoc_type_binding(binding));
                 });
             } else {
@@ -2658,7 +2672,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             let obligations = predicates.predicates.iter().filter_map(|&(pred, _)| {
                 let bound_predicate = pred.kind();
                 match bound_predicate.skip_binder() {
-                    ty::PredicateKind::Trait(data, _) => {
+                    ty::PredicateKind::Trait(data) => {
                         // The order here needs to match what we would get from `subst_supertrait`
                         let pred_bound_vars = bound_predicate.bound_vars();
                         let mut all_bound_vars = bound_vars.clone();
@@ -2688,15 +2702,14 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 Scope::Binder { hir_id, .. } => {
                     break *hir_id;
                 }
-                Scope::Body { id, .. } => break id.hir_id,
                 Scope::ObjectLifetimeDefault { ref s, .. }
                 | Scope::Elision { ref s, .. }
                 | Scope::Supertrait { ref s, .. }
                 | Scope::TraitRefBoundary { ref s, .. } => {
                     scope = *s;
                 }
-                Scope::Root => {
-                    // See issue #83907. Just bail out from looking inside.
+                Scope::Root | Scope::Body { .. } => {
+                    // See issues #83907 and #83693. Just bail out from looking inside.
                     self.tcx.sess.delay_span_bug(
                         rustc_span::DUMMY_SP,
                         "In fn_like_elision without appropriate scope above",
@@ -2711,6 +2724,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
         for input in inputs {
             gather.visit_ty(input);
         }
+        trace!(?gather.anon_count);
         let late_bound_vars = self.map.late_bound_vars.entry(hir_id).or_default();
         let named_late_bound_vars = late_bound_vars.len() as u32;
         late_bound_vars.extend(
@@ -2744,7 +2758,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
 
             Node::TraitItem(&hir::TraitItem { kind: hir::TraitItemKind::Fn(_, ref m), .. }) => {
                 if let hir::ItemKind::Trait(.., ref trait_items) =
-                    self.tcx.hir().expect_item(self.tcx.hir().get_parent_item(parent)).kind
+                    self.tcx.hir().expect_item(self.tcx.hir().get_parent_did(parent)).kind
                 {
                     assoc_item_kind =
                         trait_items.iter().find(|ti| ti.id.hir_id() == parent).map(|ti| ti.kind);
@@ -2757,7 +2771,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
 
             Node::ImplItem(&hir::ImplItem { kind: hir::ImplItemKind::Fn(_, body), .. }) => {
                 if let hir::ItemKind::Impl(hir::Impl { ref self_ty, ref items, .. }) =
-                    self.tcx.hir().expect_item(self.tcx.hir().get_parent_item(parent)).kind
+                    self.tcx.hir().expect_item(self.tcx.hir().get_parent_did(parent)).kind
                 {
                     impl_self = Some(self_ty);
                     assoc_item_kind =
@@ -2999,6 +3013,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 NestedVisitorMap::None
             }
 
+            #[instrument(skip(self), level = "trace")]
             fn visit_ty(&mut self, ty: &hir::Ty<'_>) {
                 // If we enter a `BareFn`, then we enter a *new* binding scope
                 if let hir::TyKind::BareFn(_) = ty.kind {
@@ -3019,6 +3034,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 intravisit::walk_generic_args(self, path_span, generic_args)
             }
 
+            #[instrument(skip(self), level = "trace")]
             fn visit_lifetime(&mut self, lifetime_ref: &hir::Lifetime) {
                 if lifetime_ref.is_elided() {
                     self.anon_count += 1;
@@ -3041,9 +3057,9 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
         let error = loop {
             match *scope {
                 // Do not assign any resolution, it will be inferred.
-                Scope::Body { .. } => return,
+                Scope::Body { .. } => break Ok(()),
 
-                Scope::Root => break None,
+                Scope::Root => break Err(None),
 
                 Scope::Binder { s, ref lifetimes, scope_type, .. } => {
                     // collect named lifetimes for suggestions
@@ -3060,49 +3076,53 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                     scope = s;
                 }
 
-                Scope::Elision { ref elide, ref s, .. } => {
-                    let lifetime = match *elide {
-                        Elide::FreshLateAnon(named_late_bound_vars, ref counter) => {
-                            for lifetime_ref in lifetime_refs {
-                                let lifetime = Region::late_anon(named_late_bound_vars, counter)
-                                    .shifted(late_depth);
+                Scope::Elision {
+                    elide: Elide::FreshLateAnon(named_late_bound_vars, ref counter),
+                    ..
+                } => {
+                    for lifetime_ref in lifetime_refs {
+                        let lifetime =
+                            Region::late_anon(named_late_bound_vars, counter).shifted(late_depth);
 
-                                self.insert_lifetime(lifetime_ref, lifetime);
-                            }
-                            return;
-                        }
-                        Elide::Exact(l) => l.shifted(late_depth),
-                        Elide::Error(ref e) => {
-                            let mut scope = s;
-                            loop {
-                                match scope {
-                                    Scope::Binder { ref lifetimes, s, .. } => {
-                                        // Collect named lifetimes for suggestions.
-                                        for name in lifetimes.keys() {
-                                            if let hir::ParamName::Plain(name) = name {
-                                                lifetime_names.insert(name.name);
-                                                lifetime_spans.push(name.span);
-                                            }
-                                        }
-                                        scope = s;
-                                    }
-                                    Scope::ObjectLifetimeDefault { ref s, .. }
-                                    | Scope::Elision { ref s, .. }
-                                    | Scope::TraitRefBoundary { ref s, .. } => {
-                                        scope = s;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            break Some(&e[..]);
-                        }
-                        Elide::Forbid => break None,
-                    };
+                        self.insert_lifetime(lifetime_ref, lifetime);
+                    }
+                    break Ok(());
+                }
+
+                Scope::Elision { elide: Elide::Exact(l), .. } => {
+                    let lifetime = l.shifted(late_depth);
                     for lifetime_ref in lifetime_refs {
                         self.insert_lifetime(lifetime_ref, lifetime);
                     }
-                    return;
+                    break Ok(());
                 }
+
+                Scope::Elision { elide: Elide::Error(ref e), ref s, .. } => {
+                    let mut scope = s;
+                    loop {
+                        match scope {
+                            Scope::Binder { ref lifetimes, s, .. } => {
+                                // Collect named lifetimes for suggestions.
+                                for name in lifetimes.keys() {
+                                    if let hir::ParamName::Plain(name) = name {
+                                        lifetime_names.insert(name.name);
+                                        lifetime_spans.push(name.span);
+                                    }
+                                }
+                                scope = s;
+                            }
+                            Scope::ObjectLifetimeDefault { ref s, .. }
+                            | Scope::Elision { ref s, .. }
+                            | Scope::TraitRefBoundary { ref s, .. } => {
+                                scope = s;
+                            }
+                            _ => break,
+                        }
+                    }
+                    break Err(Some(&e[..]));
+                }
+
+                Scope::Elision { elide: Elide::Forbid, .. } => break Err(None),
 
                 Scope::ObjectLifetimeDefault { s, .. }
                 | Scope::Supertrait { s, .. }
@@ -3110,6 +3130,14 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                     scope = s;
                 }
             }
+        };
+
+        let error = match error {
+            Ok(()) => {
+                self.report_elided_lifetime_in_ty(lifetime_refs);
+                return;
+            }
+            Err(error) => error,
         };
 
         // If we specifically need the `scope_for_path` map, then we're in the
@@ -3148,84 +3176,6 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             error.unwrap_or(&[]),
         );
         err.emit();
-    }
-
-    fn report_elision_failure(
-        &mut self,
-        db: &mut DiagnosticBuilder<'_>,
-        params: &[ElisionFailureInfo],
-    ) -> bool /* add `'static` lifetime to lifetime list */ {
-        let mut m = String::new();
-        let len = params.len();
-
-        let elided_params: Vec<_> =
-            params.iter().cloned().filter(|info| info.lifetime_count > 0).collect();
-
-        let elided_len = elided_params.len();
-
-        for (i, info) in elided_params.into_iter().enumerate() {
-            let ElisionFailureInfo { parent, index, lifetime_count: n, have_bound_regions, span } =
-                info;
-
-            db.span_label(span, "");
-            let help_name = if let Some(ident) =
-                parent.and_then(|body| self.tcx.hir().body(body).params[index].pat.simple_ident())
-            {
-                format!("`{}`", ident)
-            } else {
-                format!("argument {}", index + 1)
-            };
-
-            m.push_str(
-                &(if n == 1 {
-                    help_name
-                } else {
-                    format!(
-                        "one of {}'s {} {}lifetimes",
-                        help_name,
-                        n,
-                        if have_bound_regions { "free " } else { "" }
-                    )
-                })[..],
-            );
-
-            if elided_len == 2 && i == 0 {
-                m.push_str(" or ");
-            } else if i + 2 == elided_len {
-                m.push_str(", or ");
-            } else if i != elided_len - 1 {
-                m.push_str(", ");
-            }
-        }
-
-        if len == 0 {
-            db.help(
-                "this function's return type contains a borrowed value, \
-                 but there is no value for it to be borrowed from",
-            );
-            true
-        } else if elided_len == 0 {
-            db.help(
-                "this function's return type contains a borrowed value with \
-                 an elided lifetime, but the lifetime cannot be derived from \
-                 the arguments",
-            );
-            true
-        } else if elided_len == 1 {
-            db.help(&format!(
-                "this function's return type contains a borrowed value, \
-                 but the signature does not say which {} it is borrowed from",
-                m
-            ));
-            false
-        } else {
-            db.help(&format!(
-                "this function's return type contains a borrowed value, \
-                 but the signature does not say whether it is borrowed from {}",
-                m
-            ));
-            false
-        }
     }
 
     fn resolve_object_lifetime_default(&mut self, lifetime_ref: &'tcx hir::Lifetime) {
@@ -3332,7 +3282,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                                 ))
                                 .emit();
                         }
-                        hir::LifetimeName::Param(_) | hir::LifetimeName::Implicit => {
+                        hir::LifetimeName::Param(_) | hir::LifetimeName::Implicit(_) => {
                             self.resolve_lifetime_ref(lt);
                         }
                         hir::LifetimeName::ImplicitObjectLifetimeDefault => {

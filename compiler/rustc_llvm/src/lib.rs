@@ -1,5 +1,5 @@
 #![feature(nll)]
-#![feature(static_nobundle)]
+#![feature(native_link_modifiers)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 
 // NOTE: This crate only exists to allow linking on mingw targets.
@@ -16,6 +16,10 @@ pub struct RustString {
 impl RustString {
     pub fn len(&self) -> usize {
         self.bytes.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.borrow().is_empty()
     }
 }
 
@@ -89,6 +93,14 @@ pub fn initialize_available_targets() {
         LLVMInitializeAVRTargetMC,
         LLVMInitializeAVRAsmPrinter,
         LLVMInitializeAVRAsmParser
+    );
+    init_target!(
+        llvm_component = "m68k",
+        LLVMInitializeM68kTargetInfo,
+        LLVMInitializeM68kTarget,
+        LLVMInitializeM68kTargetMC,
+        LLVMInitializeM68kAsmPrinter,
+        LLVMInitializeM68kAsmParser
     );
     init_target!(
         llvm_component = "mips",

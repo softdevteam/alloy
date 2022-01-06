@@ -1,12 +1,21 @@
-// only-x86_64
+// needs-asm-support
+// ignore-nvptx64
+// ignore-spirv
+// ignore-wasm32
+
 #![feature(asm)]
 #![feature(llvm_asm)]
 #![feature(naked_functions)]
 #![feature(or_patterns)]
+#![feature(asm_const, asm_sym)]
 #![crate_type = "lib"]
+#![allow(deprecated)] // llvm_asm!
 
 #[repr(C)]
-pub struct P { x: u8, y: u16 }
+pub struct P {
+    x: u8,
+    y: u16,
+}
 
 #[naked]
 pub unsafe extern "C" fn patterns(
@@ -124,7 +133,7 @@ unsafe extern "C" fn invalid_options() {
 #[naked]
 unsafe extern "C" fn invalid_options_continued() {
     asm!("", options(readonly, nostack), options(pure));
-    //~^ ERROR asm with `pure` option must have at least one output
+    //~^ ERROR asm with the `pure` option must have at least one output
     //~| WARN asm options unsupported in naked functions: `nostack`, `pure`, `readonly`
     //~| WARN this was previously accepted
     //~| WARN asm in naked functions must use `noreturn` option
@@ -134,27 +143,31 @@ unsafe extern "C" fn invalid_options_continued() {
 #[naked]
 pub unsafe fn default_abi() {
     //~^ WARN Rust ABI is unsupported in naked functions
-    //~| WARN this was previously accepted
     asm!("", options(noreturn));
 }
 
 #[naked]
-pub unsafe extern "Rust" fn rust_abi() {
+pub unsafe fn rust_abi() {
     //~^ WARN Rust ABI is unsupported in naked functions
-    //~| WARN this was previously accepted
     asm!("", options(noreturn));
 }
 
 #[naked]
 pub extern "C" fn valid_a<T>() -> T {
-    unsafe { asm!("", options(noreturn)); }
+    unsafe {
+        asm!("", options(noreturn));
+    }
 }
 
 #[naked]
 pub extern "C" fn valid_b() {
-    unsafe { { {
-        asm!("", options(noreturn)); ; ; ;
-    } ; }  ; }
+    unsafe {
+        {
+            {
+                asm!("", options(noreturn));
+            };
+        };
+    }
 }
 
 #[naked]
@@ -166,4 +179,47 @@ pub unsafe extern "C" fn valid_c() {
 #[naked]
 pub unsafe extern "C" fn valid_att_syntax() {
     asm!("", options(noreturn, att_syntax));
+}
+
+#[naked]
+pub unsafe extern "C" fn inline_none() {
+    asm!("", options(noreturn));
+}
+
+#[naked]
+#[inline]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+pub unsafe extern "C" fn inline_hint() {
+    asm!("", options(noreturn));
+}
+
+#[naked]
+#[inline(always)]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+pub unsafe extern "C" fn inline_always() {
+    asm!("", options(noreturn));
+}
+
+#[naked]
+#[inline(never)]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+pub unsafe extern "C" fn inline_never() {
+    asm!("", options(noreturn));
+}
+
+#[naked]
+#[inline]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+#[inline(always)]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+#[inline(never)]
+//~^ WARN naked functions cannot be inlined
+//~| WARN this was previously accepted
+pub unsafe extern "C" fn inline_all() {
+    asm!("", options(noreturn));
 }

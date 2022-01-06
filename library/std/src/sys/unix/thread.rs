@@ -7,14 +7,35 @@ use crate::ptr;
 use crate::sys::{os, stack_overflow};
 use crate::time::Duration;
 
-#[cfg(any(target_os = "linux", target_os = "solaris", target_os = "illumos"))]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use crate::sys::weak::dlsym;
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
 use crate::sys::weak::weak;
-#[cfg(not(any(target_os = "l4re", target_os = "vxworks")))]
+#[cfg(not(any(target_os = "l4re", target_os = "vxworks", target_os = "espidf")))]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(target_os = "l4re")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 #[cfg(target_os = "vxworks")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 256 * 1024;
+#[cfg(target_os = "espidf")]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 0; // 0 indicates that the stack size configured in the ESP-IDF menuconfig system should be used
+
+#[cfg(target_os = "fuchsia")]
+mod zircon {
+    type zx_handle_t = u32;
+    type zx_status_t = i32;
+    pub const ZX_PROP_NAME: u32 = 3;
+
+    extern "C" {
+        pub fn zx_object_set_property(
+            handle: zx_handle_t,
+            property: u32,
+            value: *const libc::c_void,
+            value_size: libc::size_t,
+        ) -> zx_status_t;
+        pub fn zx_thread_self() -> zx_handle_t;
+    }
+}
 
 pub struct Thread {
     id: libc::pthread_t,
@@ -33,22 +54,35 @@ impl Thread {
         let mut attr: libc::pthread_attr_t = mem::zeroed();
         assert_eq!(libc::pthread_attr_init(&mut attr), 0);
 
-        let stack_size = cmp::max(stack, min_stack_size(&attr));
+        #[cfg(target_os = "espidf")]
+        if stack > 0 {
+            // Only set the stack if a non-zero value is passed
+            // 0 is used as an indication that the default stack size configured in the ESP-IDF menuconfig system should be used
+            assert_eq!(
+                libc::pthread_attr_setstacksize(&mut attr, cmp::max(stack, min_stack_size(&attr))),
+                0
+            );
+        }
 
-        match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
-            0 => {}
-            n => {
-                assert_eq!(n, libc::EINVAL);
-                // EINVAL means |stack_size| is either too small or not a
-                // multiple of the system page size.  Because it's definitely
-                // >= PTHREAD_STACK_MIN, it must be an alignment issue.
-                // Round up to the nearest page and try again.
-                let page_size = os::page_size();
-                let stack_size =
-                    (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
-                assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
-            }
-        };
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let stack_size = cmp::max(stack, min_stack_size(&attr));
+
+            match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
+                0 => {}
+                n => {
+                    assert_eq!(n, libc::EINVAL);
+                    // EINVAL means |stack_size| is either too small or not a
+                    // multiple of the system page size.  Because it's definitely
+                    // >= PTHREAD_STACK_MIN, it must be an alignment issue.
+                    // Round up to the nearest page and try again.
+                    let page_size = os::page_size();
+                    let stack_size =
+                        (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
+                    assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
+                }
+            };
+        }
 
         let ret = libc::pthread_create(&mut native, &attr, thread_start, p as *mut _);
         // Note: if the thread creation fails and this assert fails, then p will
@@ -134,22 +168,39 @@ impl Thread {
         }
     }
 
+    #[cfg(target_os = "fuchsia")]
+    pub fn set_name(name: &CStr) {
+        use self::zircon::*;
+        unsafe {
+            zx_object_set_property(
+                zx_thread_self(),
+                ZX_PROP_NAME,
+                name.as_ptr() as *const libc::c_void,
+                name.to_bytes().len(),
+            );
+        }
+    }
+
+    #[cfg(target_os = "haiku")]
+    pub fn set_name(name: &CStr) {
+        unsafe {
+            let thread_self = libc::find_thread(ptr::null_mut());
+            libc::rename_thread(thread_self, name.as_ptr());
+        }
+    }
+
     #[cfg(any(
         target_env = "newlib",
-        target_os = "haiku",
         target_os = "l4re",
         target_os = "emscripten",
         target_os = "redox",
         target_os = "vxworks"
     ))]
     pub fn set_name(_name: &CStr) {
-        // Newlib, Haiku, Emscripten, and VxWorks have no way to set a thread name.
-    }
-    #[cfg(target_os = "fuchsia")]
-    pub fn set_name(_name: &CStr) {
-        // FIXME: determine whether Fuchsia has a way to set a thread name.
+        // Newlib, Emscripten, and VxWorks have no way to set a thread name.
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub fn sleep(dur: Duration) {
         let mut secs = dur.as_secs();
         let mut nsecs = dur.subsec_nanos() as _;
@@ -171,6 +222,19 @@ impl Thread {
                 } else {
                     nsecs = 0;
                 }
+            }
+        }
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub fn sleep(dur: Duration) {
+        let mut micros = dur.as_micros();
+        unsafe {
+            while micros > 0 {
+                let st = if micros > u32::MAX as u128 { u32::MAX } else { micros as u32 };
+                libc::usleep(st);
+
+                micros -= st as u128;
             }
         }
     }
@@ -201,7 +265,7 @@ impl Drop for Thread {
     }
 }
 
-pub fn available_concurrency() -> io::Result<NonZeroUsize> {
+pub fn available_parallelism() -> io::Result<NonZeroUsize> {
     cfg_if::cfg_if! {
         if #[cfg(any(
             target_os = "android",
@@ -213,6 +277,14 @@ pub fn available_concurrency() -> io::Result<NonZeroUsize> {
             target_os = "solaris",
             target_os = "illumos",
         ))] {
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            {
+                let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
+                if unsafe { libc::sched_getaffinity(0, mem::size_of::<libc::cpu_set_t>(), &mut set) } == 0 {
+                    let count = unsafe { libc::CPU_COUNT(&set) };
+                    return Ok(unsafe { NonZeroUsize::new_unchecked(count as usize) });
+                }
+            }
             match unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } {
                 -1 => Err(io::Error::last_os_error()),
                 0 => Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform")),
@@ -276,8 +348,21 @@ pub fn available_concurrency() -> io::Result<NonZeroUsize> {
             }
 
             Ok(unsafe { NonZeroUsize::new_unchecked(cpus as usize) })
+        } else if #[cfg(target_os = "haiku")] {
+            // system_info cpu_count field gets the static data set at boot time with `smp_set_num_cpus`
+            // `get_system_info` calls then `smp_get_num_cpus`
+            unsafe {
+                let mut sinfo: libc::system_info = crate::mem::zeroed();
+                let res = libc::get_system_info(&mut sinfo);
+
+                if res != libc::B_OK {
+                    return Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform"));
+                }
+
+                Ok(NonZeroUsize::new_unchecked(sinfo.cpu_count as usize))
+            }
         } else {
-            // FIXME: implement on vxWorks, Redox, Haiku, l4re
+            // FIXME: implement on vxWorks, Redox, l4re
             Err(io::Error::new_const(io::ErrorKind::Unsupported, &"Getting the number of hardware threads is not supported on the target platform"))
         }
     }
@@ -519,7 +604,8 @@ pub mod guard {
                 Some(stackaddr - guardsize..stackaddr)
             } else if cfg!(all(target_os = "linux", target_env = "musl")) {
                 Some(stackaddr - guardsize..stackaddr)
-            } else if cfg!(all(target_os = "linux", target_env = "gnu")) {
+            } else if cfg!(all(target_os = "linux", any(target_env = "gnu", target_env = "uclibc")))
+            {
                 // glibc used to include the guard area within the stack, as noted in the BUGS
                 // section of `man pthread_attr_getguardsize`.  This has been corrected starting
                 // with glibc 2.27, and in some distro backports, so the guard is now placed at the
@@ -543,10 +629,12 @@ pub mod guard {
 // We need that information to avoid blowing up when a small stack
 // is created in an application with big thread-local storage requirements.
 // See #6233 for rationale and details.
-#[cfg(target_os = "linux")]
-#[allow(deprecated)]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn min_stack_size(attr: *const libc::pthread_attr_t) -> usize {
-    weak!(fn __pthread_get_minstack(*const libc::pthread_attr_t) -> libc::size_t);
+    // We use dlsym to avoid an ELF version dependency on GLIBC_PRIVATE. (#23628)
+    // We shouldn't really be using such an internal symbol, but there's currently
+    // no other way to account for the TLS size.
+    dlsym!(fn __pthread_get_minstack(*const libc::pthread_attr_t) -> libc::size_t);
 
     match __pthread_get_minstack.get() {
         None => libc::PTHREAD_STACK_MIN,
@@ -554,9 +642,8 @@ fn min_stack_size(attr: *const libc::pthread_attr_t) -> usize {
     }
 }
 
-// No point in looking up __pthread_get_minstack() on non-glibc
-// platforms.
-#[cfg(all(not(target_os = "linux"), not(target_os = "netbsd")))]
+// No point in looking up __pthread_get_minstack() on non-glibc platforms.
+#[cfg(all(not(all(target_os = "linux", target_env = "gnu")), not(target_os = "netbsd")))]
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
     libc::PTHREAD_STACK_MIN
 }

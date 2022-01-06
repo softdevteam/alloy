@@ -221,15 +221,13 @@ fn to_upvars_resolved_place_builder<'a, 'tcx>(
             let closure_hir_id = tcx.hir().local_def_id_to_hir_id(closure_def_id.expect_local());
             let closure_span = tcx.hir().span(closure_hir_id);
 
-            let (capture_index, capture) = if let Some(capture_details) =
+            let Some((capture_index, capture)) =
                 find_capture_matching_projections(
                     typeck_results,
                     var_hir_id,
                     closure_def_id,
                     &from_builder.projection,
-                ) {
-                capture_details
-            } else {
+                ) else {
                 if !enable_precise_capture(tcx, closure_span) {
                     bug!(
                         "No associated capture found for {:?}[{:#?}] even though \
@@ -507,10 +505,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         Statement {
                             source_info,
                             kind: StatementKind::AscribeUserType(
-                                box (
+                                Box::new((
                                     place,
                                     UserTypeProjection { base: annotation_index, projs: vec![] },
-                                ),
+                                )),
                                 Variance::Invariant,
                             ),
                         },
@@ -534,10 +532,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         Statement {
                             source_info,
                             kind: StatementKind::AscribeUserType(
-                                box (
+                                Box::new((
                                     Place::from(temp),
                                     UserTypeProjection { base: annotation_index, projs: vec![] },
-                                ),
+                                )),
                                 Variance::Invariant,
                             ),
                         },
@@ -565,6 +563,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::If { .. }
             | ExprKind::Loop { .. }
             | ExprKind::Block { .. }
+            | ExprKind::Let { .. }
             | ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }
             | ExprKind::Break { .. }
@@ -690,7 +689,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             lt,
             Rvalue::BinaryOp(
                 BinOp::Lt,
-                box (Operand::Copy(Place::from(index)), Operand::Copy(len)),
+                Box::new((Operand::Copy(Place::from(index)), Operand::Copy(len))),
             ),
         );
         let msg = BoundsCheck { len: Operand::Move(len), index: Operand::Copy(Place::from(index)) };

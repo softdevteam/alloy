@@ -16,18 +16,17 @@ use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::has_iter_method;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `for_each` that would be more simply written as a
+    /// ### What it does
+    /// Checks for usage of `for_each` that would be more simply written as a
     /// `for` loop.
     ///
-    /// **Why is this bad?** `for_each` may be used after applying iterator transformers like
+    /// ### Why is this bad?
+    /// `for_each` may be used after applying iterator transformers like
     /// `filter` for better readability and performance. It may also be used to fit a simple
     /// operation on one line.
     /// But when none of these apply, a simple `for` loop is more idiomatic.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let v = vec![0, 1, 2];
     /// v.iter().for_each(|elem| {
@@ -41,6 +40,7 @@ declare_clippy_lint! {
     ///     println!("{}", elem);
     /// }
     /// ```
+    #[clippy::version = "1.53.0"]
     pub NEEDLESS_FOR_EACH,
     pedantic,
     "using `for_each` where a `for` loop would be simpler"
@@ -123,7 +123,7 @@ impl LateLintPass<'_> for NeedlessForEach {
 /// 2. Detect use of `return` in `Loop` in the closure body.
 ///
 /// NOTE: The functionality of this type is similar to
-/// [`crate::utilts::visitors::find_all_ret_expressions`], but we can't use
+/// [`clippy_utils::visitors::find_all_ret_expressions`], but we can't use
 /// `find_all_ret_expressions` instead of this type. The reasons are:
 /// 1. `find_all_ret_expressions` passes the argument of `ExprKind::Ret` to a callback, but what we
 ///    need here is `ExprKind::Ret` itself.

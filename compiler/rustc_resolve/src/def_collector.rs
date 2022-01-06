@@ -7,7 +7,7 @@ use rustc_expand::expand::AstFragment;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::definitions::*;
 use rustc_span::hygiene::LocalExpnId;
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::sym;
 use rustc_span::Span;
 use tracing::debug;
 
@@ -32,7 +32,13 @@ impl<'a, 'b> DefCollector<'a, 'b> {
     fn create_def(&mut self, node_id: NodeId, data: DefPathData, span: Span) -> LocalDefId {
         let parent_def = self.parent_def;
         debug!("create_def(node_id={:?}, data={:?}, parent_def={:?})", node_id, data, parent_def);
-        self.resolver.create_def(parent_def, node_id, data, self.expansion.to_expn_id(), span)
+        self.resolver.create_def(
+            parent_def,
+            node_id,
+            data,
+            self.expansion.to_expn_id(),
+            span.with_parent(None),
+        )
     }
 
     fn with_parent<F: FnOnce(&mut Self)>(&mut self, parent_def: LocalDefId, f: F) {
@@ -86,10 +92,6 @@ impl<'a, 'b> visit::Visitor<'a> for DefCollector<'a, 'b> {
         // information we encapsulate into, the better
         let def_data = match &i.kind {
             ItemKind::Impl { .. } => DefPathData::Impl,
-            ItemKind::Mod(..) if i.ident.name == kw::Empty => {
-                // Fake crate root item from expand.
-                return visit::walk_item(self, i);
-            }
             ItemKind::Mod(..)
             | ItemKind::Trait(..)
             | ItemKind::TraitAlias(..)
@@ -339,5 +341,13 @@ impl<'a, 'b> visit::Visitor<'a> for DefCollector<'a, 'b> {
     // after expanding an attribute on it.
     fn visit_field_def(&mut self, field: &'a FieldDef) {
         self.collect_field(field, None);
+    }
+
+    fn visit_crate(&mut self, krate: &'a Crate) {
+        if let Some(id) = krate.is_placeholder {
+            self.visit_macro_invoc(id)
+        } else {
+            visit::walk_crate(self, krate)
+        }
     }
 }

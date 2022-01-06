@@ -8,15 +8,15 @@ use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for fields in struct literals where shorthands
+    /// ### What it does
+    /// Checks for fields in struct literals where shorthands
     /// could be used.
     ///
-    /// **Why is this bad?** If the field and variable names are the same,
+    /// ### Why is this bad?
+    /// If the field and variable names are the same,
     /// the field name is redundant.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let bar: u8 = 123;
     ///
@@ -30,6 +30,7 @@ declare_clippy_lint! {
     /// ```ignore
     /// let foo = Foo { bar };
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub REDUNDANT_FIELD_NAMES,
     style,
     "checks for fields in struct literals where shorthands could be used"

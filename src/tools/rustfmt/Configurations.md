@@ -47,7 +47,7 @@ Where to put a binary operator when a binary expression goes multiline.
 
 - **Default value**: `"Front"`
 - **Possible values**: `"Front"`, `"Back"`
-- **Stable**: No (tracking issue: #3368)
+- **Stable**: No (tracking issue: [#3368](https://github.com/rust-lang/rustfmt/issues/3368))
 
 #### `"Front"` (default):
 
@@ -88,7 +88,7 @@ them, additional blank lines are inserted.
 
 - **Default value**: `0`
 - **Possible values**: *unsigned integer*
-- **Stable**: No (tracking issue: #3382)
+- **Stable**: No (tracking issue: [#3382](https://github.com/rust-lang/rustfmt/issues/3382))
 
 ### Example
 Original Code (rustfmt will not change it with the default value of `0`):
@@ -128,7 +128,7 @@ lines are found, they are trimmed down to match this integer.
 
 - **Default value**: `1`
 - **Possible values**: any non-negative integer
-- **Stable**: No (tracking issue: #3381)
+- **Stable**: No (tracking issue: [#3381](https://github.com/rust-lang/rustfmt/issues/3381))
 
 ### Example
 Original Code:
@@ -186,7 +186,7 @@ Brace style for items
 
 - **Default value**: `"SameLineWhere"`
 - **Possible values**: `"AlwaysNextLine"`, `"PreferSameLine"`, `"SameLineWhere"`
-- **Stable**: No (tracking issue: #3376)
+- **Stable**: No (tracking issue: [#3376](https://github.com/rust-lang/rustfmt/issues/3376))
 
 ### Functions
 
@@ -313,7 +313,7 @@ Whether to use colored output or not.
 
 - **Default value**: `"Auto"`
 - **Possible values**: "Auto", "Always", "Never"
-- **Stable**: No (tracking issue: #3385)
+- **Stable**: No (tracking issue: [#3385](https://github.com/rust-lang/rustfmt/issues/3385))
 
 ## `combine_control_expr`
 
@@ -321,7 +321,7 @@ Combine control expressions with function calls.
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3369)
+- **Stable**: No (tracking issue: [#3369](https://github.com/rust-lang/rustfmt/issues/3369))
 
 #### `true` (default):
 
@@ -429,7 +429,7 @@ Maximum length of comments. No effect unless`wrap_comments = true`.
 
 - **Default value**: `80`
 - **Possible values**: any positive integer
-- **Stable**: No (tracking issue: #3349)
+- **Stable**: No (tracking issue: [#3349](https://github.com/rust-lang/rustfmt/issues/3349))
 
 **Note:** A value of `0` results in [`wrap_comments`](#wrap_comments) being applied regardless of a line's width.
 
@@ -452,7 +452,7 @@ Replace strings of _ wildcards by a single .. in tuple patterns
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3384)
+- **Stable**: No (tracking issue: [#3384](https://github.com/rust-lang/rustfmt/issues/3384))
 
 #### `false` (default):
 
@@ -477,7 +477,7 @@ Brace style for control flow constructs
 
 - **Default value**: `"AlwaysSameLine"`
 - **Possible values**: `"AlwaysNextLine"`, `"AlwaysSameLine"`, `"ClosingNextLine"`
-- **Stable**: No (tracking issue: #3377)
+- **Stable**: No (tracking issue: [#3377](https://github.com/rust-lang/rustfmt/issues/3377))
 
 #### `"AlwaysSameLine"` (default):
 
@@ -521,11 +521,13 @@ fn main() {
 
 ## `disable_all_formatting`
 
-Don't reformat anything
+Don't reformat anything.
+
+Note that this option may be soft-deprecated in the future once the [ignore](#ignore) option is stabilized. Nightly toolchain users are encouraged to use [ignore](#ignore) instead when possible.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3388)
+- **Stable**: Yes
 
 ## `edition`
 
@@ -549,7 +551,7 @@ Put empty-body functions and impls on a single line
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3356)
+- **Stable**: No (tracking issue: [#3356](https://github.com/rust-lang/rustfmt/issues/3356))
 
 #### `true` (default):
 
@@ -582,7 +584,7 @@ doesn't get ignored when aligning.
 
 - **Default value** : 0
 - **Possible values**: any positive integer
-- **Stable**: No (tracking issue: #3372)
+- **Stable**: No (tracking issue: [#3372](https://github.com/rust-lang/rustfmt/issues/3372))
 
 #### `0` (default):
 
@@ -628,7 +630,7 @@ using a shorter name.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3391)
+- **Stable**: No (tracking issue: [#3391](https://github.com/rust-lang/rustfmt/issues/3391))
 
 See also [`max_width`](#max_width).
 
@@ -639,7 +641,7 @@ trailing whitespaces.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3392)
+- **Stable**: No (tracking issue: [#3392](https://github.com/rust-lang/rustfmt/issues/3392))
 
 ## `fn_args_layout`
 
@@ -769,7 +771,7 @@ Put single-expression functions on a single line
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3358)
+- **Stable**: No (tracking issue: [#3358](https://github.com/rust-lang/rustfmt/issues/3358))
 
 #### `false` (default):
 
@@ -830,7 +832,7 @@ Force multiline closure and match arm bodies to be wrapped in a block
 
 - **Default value**: `false`
 - **Possible values**: `false`, `true`
-- **Stable**: No (tracking issue: #3374)
+- **Stable**: No (tracking issue: [#3374](https://github.com/rust-lang/rustfmt/issues/3374))
 
 #### `false` (default):
 
@@ -879,7 +881,7 @@ Format code snippet included in doc comments.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3348)
+- **Stable**: No (tracking issue: [#3348](https://github.com/rust-lang/rustfmt/issues/3348))
 
 #### `false` (default):
 
@@ -924,13 +926,22 @@ fn add_one(x: i32) -> i32 {
 }
 ```
 
+## `format_generated_files`
+
+Format generated files. A file is considered generated
+if any of the first five lines contains `@generated` marker.
+
+- **Default value**: `false`
+- **Possible values**: `true`, `false`
+- **Stable**: No (tracking issue: [#5080](https://github.com/rust-lang/rustfmt/issues/5080))
+
 ## `format_macro_matchers`
 
 Format the metavariable matching patterns in macros.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3354)
+- **Stable**: No (tracking issue: [#3354](https://github.com/rust-lang/rustfmt/issues/3354))
 
 #### `false` (default):
 
@@ -967,7 +978,7 @@ Format the bodies of macros.
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3355)
+- **Stable**: No (tracking issue: [#3355](https://github.com/rust-lang/rustfmt/issues/3355))
 
 #### `true` (default):
 
@@ -1000,7 +1011,7 @@ Format string literals where necessary
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3353)
+- **Stable**: No (tracking issue: [#3353](https://github.com/rust-lang/rustfmt/issues/3353))
 
 #### `false` (default):
 
@@ -1047,6 +1058,13 @@ fn lorem() -> usize {
 
 See also: [`tab_spaces`](#tab_spaces).
 
+## `hex_literal_case`
+
+Control the case of the letters in hexadecimal literal values
+
+- **Default value**: `Preserve`
+- **Possible values**: `Upper`, `Lower`
+- **Stable**: No (tracking issue: [#5081](https://github.com/rust-lang/rustfmt/issues/5081))
 
 ## `hide_parse_errors`
 
@@ -1054,7 +1072,7 @@ Do not show parse errors if the parser failed to parse files.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3390)
+- **Stable**: No (tracking issue: [#3390](https://github.com/rust-lang/rustfmt/issues/3390))
 
 ## `ignore`
 
@@ -1063,7 +1081,7 @@ The pattern format is the same as [.gitignore](https://git-scm.com/docs/gitignor
 
 - **Default value**: format every file
 - **Possible values**: See an example below
-- **Stable**: No (tracking issue: #3395)
+- **Stable**: No (tracking issue: [#3395](https://github.com/rust-lang/rustfmt/issues/3395))
 
 ### Example
 
@@ -1096,7 +1114,7 @@ Indent style of imports
 
 - **Default Value**: `"Block"`
 - **Possible values**: `"Block"`, `"Visual"`
-- **Stable**: No (tracking issue: #3360)
+- **Stable**: No (tracking issue: [#3360](https://github.com/rust-lang/rustfmt/issues/3360))
 
 #### `"Block"` (default):
 
@@ -1122,7 +1140,7 @@ Item layout inside a imports block
 
 - **Default value**: "Mixed"
 - **Possible values**: "Horizontal", "HorizontalVertical", "Mixed", "Vertical"
-- **Stable**: No (tracking issue: #3361)
+- **Stable**: No (tracking issue: [#3361](https://github.com/rust-lang/rustfmt/issues/3361))
 
 #### `"Mixed"` (default):
 
@@ -1185,7 +1203,7 @@ Indent on expressions or items.
 
 - **Default value**: `"Block"`
 - **Possible values**: `"Block"`, `"Visual"`
-- **Stable**: No (tracking issue: #3346)
+- **Stable**: No (tracking issue: [#3346](https://github.com/rust-lang/rustfmt/issues/3346))
 
 ### Array
 
@@ -1438,7 +1456,7 @@ Write an item and its attribute on the same line if their combined width is belo
 
 - **Default value**: 0
 - **Possible values**: any positive integer
-- **Stable**: No (tracking issue: #3343)
+- **Stable**: No (tracking issue: [#3343](https://github.com/rust-lang/rustfmt/issues/3343))
 
 ### Example
 
@@ -1459,7 +1477,7 @@ Check whether beginnings of files match a license template.
 
 - **Default value**: `""`
 - **Possible values**: path to a license template file
-- **Stable**: No (tracking issue: #3352)
+- **Stable**: No (tracking issue: [#3352](https://github.com/rust-lang/rustfmt/issues/3352))
 
 A license template is a plain text file which is matched literally against the
 beginning of each source file, except for `{}`-delimited blocks, which are
@@ -1475,21 +1493,29 @@ Copyright 2018 The Rust Project Developers.`, etc.:
 
 ## `match_arm_blocks`
 
-Wrap the body of arms in blocks when it does not fit on the same line with the pattern of arms
+Controls whether arm bodies are wrapped in cases where the first line of the body cannot fit on the same line as the `=>` operator.
+
+The Style Guide requires that bodies are block wrapped by default if a line break is required after the `=>`, but this option can be used to disable that behavior to prevent wrapping arm bodies in that event, so long as the body does not contain multiple statements nor line comments.
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3373)
+- **Stable**: No (tracking issue: [#3373](https://github.com/rust-lang/rustfmt/issues/3373))
 
 #### `true` (default):
 
 ```rust
 fn main() {
     match lorem {
-        true => {
+        ipsum => {
             foooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo(x)
         }
-        false => println!("{}", sit),
+        dolor => println!("{}", sit),
+        sit => foo(
+            "foooooooooooooooooooooooo",
+            "baaaaaaaaaaaaaaaaaaaaaaaarr",
+            "baaaaaaaaaaaaaaaaaaaazzzzzzzzzzzzz",
+            "qqqqqqqqquuuuuuuuuuuuuuuuuuuuuuuuuuxxx",
+        ),
     }
 }
 ```
@@ -1499,9 +1525,15 @@ fn main() {
 ```rust
 fn main() {
     match lorem {
-        true =>
+        lorem =>
             foooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo(x),
-        false => println!("{}", sit),
+        ipsum => println!("{}", sit),
+        sit => foo(
+            "foooooooooooooooooooooooo",
+            "baaaaaaaaaaaaaaaaaaaaaaaarr",
+            "baaaaaaaaaaaaaaaaaaaazzzzzzzzzzzzz",
+            "qqqqqqqqquuuuuuuuuuuuuuuuuuuuuuuuuuxxx",
+        ),
     }
 }
 ```
@@ -1596,7 +1628,7 @@ Put a trailing comma after a block based match arm (non-block arms are not affec
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3380)
+- **Stable**: Yes
 
 #### `false` (default):
 
@@ -1654,6 +1686,9 @@ pub enum Foo {}
 #### `false`:
 
 ```rust
+#[derive(Eq, PartialEq, Debug, Copy, Clone)]
+pub enum Bar {}
+
 #[derive(Eq, PartialEq)]
 #[derive(Debug)]
 #[derive(Copy, Clone)]
@@ -1665,8 +1700,8 @@ pub enum Foo {}
 How imports should be grouped into `use` statements. Imports will be merged or split to the configured level of granularity.
 
 - **Default value**: `Preserve`
-- **Possible values**: `Preserve`, `Crate`, `Module`, `Item`
-- **Stable**: No
+- **Possible values**: `Preserve`, `Crate`, `Module`, `Item`, `One`
+- **Stable**: No (tracking issue: [#4991](https://github.com/rust-lang/rustfmt/issues/4991))
 
 #### `Preserve` (default):
 
@@ -1717,6 +1752,23 @@ use foo::c;
 use foo::d::e;
 use qux::h;
 use qux::i;
+```
+
+#### `One`:
+
+Merge all imports into a single `use` statement as long as they have the same visibility.
+
+```rust
+pub use foo::{x, y};
+use {
+    bar::{
+        a,
+        b::{self, f, g},
+        c,
+        d::e,
+    },
+    qux::{h, i},
+};
 ```
 
 ## `merge_imports`
@@ -1774,7 +1826,7 @@ Convert /* */ comments to // comments where possible
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3350)
+- **Stable**: No (tracking issue: [#3350](https://github.com/rust-lang/rustfmt/issues/3350))
 
 #### `false` (default):
 
@@ -1802,7 +1854,7 @@ Convert `#![doc]` and `#[doc]` attributes to `//!` and `///` doc comments.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3351)
+- **Stable**: No (tracking issue: [#3351](https://github.com/rust-lang/rustfmt/issues/3351))
 
 #### `false` (default):
 
@@ -1810,6 +1862,9 @@ Convert `#![doc]` and `#[doc]` attributes to `//!` and `///` doc comments.
 #![doc = "Example documentation"]
 
 #[doc = "Example item documentation"]
+pub enum Bar {}
+
+/// Example item documentation
 pub enum Foo {}
 ```
 
@@ -1830,7 +1885,7 @@ instead of being indented on a new line.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3370)
+- **Stable**: No (tracking issue: [#3370](https://github.com/rust-lang/rustfmt/issues/3370))
 
 #### `false` (default):
 
@@ -1924,6 +1979,8 @@ fn main() {
 #### `false`:
 ```rust
 fn main() {
+    (foo());
+
     ((((foo()))));
 }
 ```
@@ -1935,7 +1992,7 @@ Reorder impl items. `type` and `const` are put first, then macros and methods.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3363)
+- **Stable**: No (tracking issue: [#3363](https://github.com/rust-lang/rustfmt/issues/3363))
 
 #### `false` (default)
 
@@ -1948,6 +2005,14 @@ impl Iterator for Dummy {
     }
 
     type Item = i32;
+}
+
+impl Iterator for Dummy {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
 }
 ```
 
@@ -1997,8 +2062,8 @@ use sit;
 Controls the strategy for how imports are grouped together.
 
 - **Default value**: `Preserve`
-- **Possible values**: `Preserve`, `StdExternalCrate`
-- **Stable**: No
+- **Possible values**: `Preserve`, `StdExternalCrate`, `One`
+- **Stable**: No (tracking issue: [#5083](https://github.com/rust-lang/rustfmt/issues/5083))
 
 #### `Preserve` (default):
 
@@ -2043,6 +2108,23 @@ use super::update::convert_publish_payload;
 use crate::models::Event;
 ```
 
+#### `One`:
+
+Discard existing import groups, and create a single group for everything
+
+```rust
+use super::schema::{Context, Payload};
+use super::update::convert_publish_payload;
+use crate::models::Event;
+use alloc::alloc::Layout;
+use broker::database::PooledConnection;
+use chrono::Utc;
+use core::f32;
+use juniper::{FieldError, FieldResult};
+use std::sync::Arc;
+use uuid::Uuid;
+```
+
 ## `reorder_modules`
 
 Reorder `mod` declarations alphabetically in group.
@@ -2084,7 +2166,7 @@ Report `FIXME` items in comments.
 
 - **Default value**: `"Never"`
 - **Possible values**: `"Always"`, `"Unnumbered"`, `"Never"`
-- **Stable**: No (tracking issue: #3394)
+- **Stable**: No (tracking issue: [#3394](https://github.com/rust-lang/rustfmt/issues/3394))
 
 Warns about any comments containing `FIXME` in them when set to `"Always"`. If
 it contains a `#X` (with `X` being a number) in parentheses following the
@@ -2099,7 +2181,7 @@ Report `TODO` items in comments.
 
 - **Default value**: `"Never"`
 - **Possible values**: `"Always"`, `"Unnumbered"`, `"Never"`
-- **Stable**: No (tracking issue: #3393)
+- **Stable**: No (tracking issue: [#3393](https://github.com/rust-lang/rustfmt/issues/3393))
 
 Warns about any comments containing `TODO` in them when set to `"Always"`. If
 it contains a `#X` (with `X` being a number) in parentheses following the
@@ -2114,7 +2196,7 @@ specific version of rustfmt is used in your CI, use this option.
 
 - **Default value**: `CARGO_PKG_VERSION`
 - **Possible values**: any published version (e.g. `"0.3.8"`)
-- **Stable**: No (tracking issue: #3386)
+- **Stable**: No (tracking issue: [#3386](https://github.com/rust-lang/rustfmt/issues/3386))
 
 ## `skip_children`
 
@@ -2122,7 +2204,7 @@ Don't reformat out of line modules
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3389)
+- **Stable**: No (tracking issue: [#3389](https://github.com/rust-lang/rustfmt/issues/3386))
 
 ## `single_line_if_else_max_width`
 
@@ -2142,7 +2224,7 @@ Leave a space after the colon.
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3366)
+- **Stable**: No (tracking issue: [#3366](https://github.com/rust-lang/rustfmt/issues/3366))
 
 #### `true` (default):
 
@@ -2174,7 +2256,7 @@ Leave a space before the colon.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3365)
+- **Stable**: No (tracking issue: [#3365](https://github.com/rust-lang/rustfmt/issues/3365))
 
 #### `false` (default):
 
@@ -2206,7 +2288,7 @@ Put spaces around the .., ..=, and ... range operators
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3367)
+- **Stable**: No (tracking issue: [#3367](https://github.com/rust-lang/rustfmt/issues/3367))
 
 #### `false` (default):
 
@@ -2262,7 +2344,7 @@ The maximum diff of width between struct fields to be aligned with each other.
 
 - **Default value** : 0
 - **Possible values**: any non-negative integer
-- **Stable**: No (tracking issue: #3371)
+- **Stable**: No (tracking issue: [#3371](https://github.com/rust-lang/rustfmt/issues/3371))
 
 #### `0` (default):
 
@@ -2290,7 +2372,7 @@ Put small struct literals on a single line
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3357)
+- **Stable**: No (tracking issue: [#3357](https://github.com/rust-lang/rustfmt/issues/3357))
 
 #### `true` (default):
 
@@ -2378,7 +2460,7 @@ How to handle trailing commas for lists
 
 - **Default value**: `"Vertical"`
 - **Possible values**: `"Always"`, `"Never"`, `"Vertical"`
-- **Stable**: No (tracking issue: #3379)
+- **Stable**: No (tracking issue: [#3379](https://github.com/rust-lang/rustfmt/issues/3379))
 
 #### `"Vertical"` (default):
 
@@ -2436,7 +2518,7 @@ Add trailing semicolon after break, continue and return
 
 - **Default value**: `true`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3378)
+- **Stable**: No (tracking issue: [#3378](https://github.com/rust-lang/rustfmt/issues/3378))
 
 #### `true` (default):
 ```rust
@@ -2458,7 +2540,7 @@ Determines if `+` or `=` are wrapped in spaces in the punctuation of types
 
 - **Default value**: `"Wide"`
 - **Possible values**: `"Compressed"`, `"Wide"`
-- **Stable**: No (tracking issue: #3364)
+- **Stable**: No (tracking issue: [#3364](https://github.com/rust-lang/rustfmt/issues/3364))
 
 #### `"Wide"` (default):
 
@@ -2482,7 +2564,7 @@ Enable unstable features on the unstable channel.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3387)
+- **Stable**: No (tracking issue: [#3387](https://github.com/rust-lang/rustfmt/issues/3387))
 
 ## `use_field_init_shorthand`
 
@@ -2505,7 +2587,8 @@ fn main() {
     let x = 1;
     let y = 2;
     let z = 3;
-    let a = Foo { x: x, y: y, z: z };
+    let a = Foo { x, y, z };
+    let b = Foo { x: x, y: y, z: z };
 }
 ```
 
@@ -2674,6 +2757,8 @@ Replace uses of the try! macro by the ? shorthand
 
 ```rust
 fn main() {
+    let lorem = ipsum.map(|dolor| dolor.sit())?;
+
     let lorem = try!(ipsum.map(|dolor| dolor.sit()));
 }
 ```
@@ -2694,7 +2779,7 @@ version number.
 
 - **Default value**: `One`
 - **Possible values**: `One`, `Two`
-- **Stable**: No (tracking issue: #3383)
+- **Stable**: No (tracking issue: [#3383](https://github.com/rust-lang/rustfmt/issues/3383))
 
 ### Example
 
@@ -2708,7 +2793,7 @@ Forces the `where` clause to be laid out on a single line.
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3359)
+- **Stable**: No (tracking issue: [#3359](https://github.com/rust-lang/rustfmt/issues/3359))
 
 #### `false` (default):
 
@@ -2740,11 +2825,17 @@ Break comments to fit on the line
 
 - **Default value**: `false`
 - **Possible values**: `true`, `false`
-- **Stable**: No (tracking issue: #3347)
+- **Stable**: No (tracking issue: [#3347](https://github.com/rust-lang/rustfmt/issues/3347))
 
 #### `false` (default):
 
 ```rust
+// Lorem ipsum dolor sit amet, consectetur adipiscing elit,
+// sed do eiusmod tempor incididunt ut labore et dolore
+// magna aliqua. Ut enim ad minim veniam, quis nostrud
+// exercitation ullamco laboris nisi ut aliquip ex ea
+// commodo consequat.
+
 // Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
 ```
 

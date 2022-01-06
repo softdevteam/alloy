@@ -76,6 +76,7 @@ fn main() {
         "aarch64",
         "amdgpu",
         "avr",
+        "m68k",
         "mips",
         "powerpc",
         "systemz",
@@ -182,7 +183,7 @@ fn main() {
     } else if target.contains("windows-gnu") {
         println!("cargo:rustc-link-lib=shell32");
         println!("cargo:rustc-link-lib=uuid");
-    } else if target.contains("netbsd") || target.contains("haiku") {
+    } else if target.contains("netbsd") || target.contains("haiku") || target.contains("darwin") {
         println!("cargo:rustc-link-lib=z");
     }
     cmd.args(&components);
@@ -275,8 +276,11 @@ fn main() {
         "stdc++"
     };
 
-    // RISC-V requires libatomic for sub-word atomic operations
-    if target.starts_with("riscv") {
+    // RISC-V GCC erroneously requires libatomic for sub-word
+    // atomic operations. FreeBSD uses Clang as its system
+    // compiler and provides no libatomic in its base system so
+    // does not want this.
+    if !target.contains("freebsd") && target.starts_with("riscv") {
         println!("cargo:rustc-link-lib=atomic");
     }
 
@@ -287,7 +291,7 @@ fn main() {
             let path = PathBuf::from(s);
             println!("cargo:rustc-link-search=native={}", path.parent().unwrap().display());
             if target.contains("windows") {
-                println!("cargo:rustc-link-lib=static-nobundle={}", stdcppname);
+                println!("cargo:rustc-link-lib=static:-bundle={}", stdcppname);
             } else {
                 println!("cargo:rustc-link-lib=static={}", stdcppname);
             }
@@ -301,6 +305,6 @@ fn main() {
     // Libstdc++ depends on pthread which Rust doesn't link on MinGW
     // since nothing else requires it.
     if target.contains("windows-gnu") {
-        println!("cargo:rustc-link-lib=static-nobundle=pthread");
+        println!("cargo:rustc-link-lib=static:-bundle=pthread");
     }
 }

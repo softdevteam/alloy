@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_codegen_ssa::{CodegenResults, CompiledModule, CrateInfo, ModuleKind};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
-use rustc_middle::middle::cstore::EncodedMetadata;
 use rustc_middle::mir::mono::{CodegenUnit, MonoItem};
 use rustc_session::cgu_reuse_tracker::CguReuse;
 use rustc_session::config::{DebugInfo, OutputType};
+use rustc_session::Session;
 
-use cranelift_object::ObjectModule;
+use cranelift_codegen::isa::TargetIsa;
+use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::{prelude::*, BackendConfig};
 
@@ -22,6 +24,16 @@ impl<HCX> HashStable<HCX> for ModuleCodegenResult {
     fn hash_stable(&self, _: &mut HCX, _: &mut StableHasher) {
         // do nothing
     }
+}
+
+fn make_module(sess: &Session, isa: Box<dyn TargetIsa>, name: String) -> ObjectModule {
+    let mut builder =
+        ObjectBuilder::new(isa, name + ".o", cranelift_module::default_libcall_names()).unwrap();
+    // Unlike cg_llvm, cg_clif defaults to disabling -Zfunction-sections. For cg_llvm binary size
+    // is important, while cg_clif cares more about compilation times. Enabling -Zfunction-sections
+    // can easily double the amount of time necessary to perform linking.
+    builder.per_function_section(sess.opts.debugging_opts.function_sections.unwrap_or(false));
+    ObjectModule::new(builder)
 }
 
 fn emit_module(
@@ -68,14 +80,13 @@ fn reuse_workproduct_for_cgu(
     cgu: &CodegenUnit<'_>,
     work_products: &mut FxHashMap<WorkProductId, WorkProduct>,
 ) -> CompiledModule {
-    let incr_comp_session_dir = tcx.sess.incr_comp_session_dir();
     let mut object = None;
     let work_product = cgu.work_product(tcx);
     if let Some(saved_file) = &work_product.saved_file {
         let obj_out =
             tcx.output_filenames(()).temp_path(OutputType::Object, Some(&cgu.name().as_str()));
         object = Some(obj_out.clone());
-        let source_file = rustc_incremental::in_incr_comp_dir(&incr_comp_session_dir, &saved_file);
+        let source_file = rustc_incremental::in_incr_comp_dir_sess(&tcx.sess, &saved_file);
         if let Err(err) = rustc_fs_util::link_or_copy(&source_file, &obj_out) {
             tcx.sess.err(&format!(
                 "unable to copy {} to {}: {}",
@@ -105,7 +116,7 @@ fn module_codegen(
     let mono_items = cgu.items_in_deterministic_order(tcx);
 
     let isa = crate::build_isa(tcx.sess, &backend_config);
-    let mut module = crate::backend::make_module(tcx.sess, isa, cgu_name.as_str().to_string());
+    let mut module = make_module(tcx.sess, isa, cgu_name.as_str().to_string());
 
     let mut cx = crate::CodegenCx::new(
         tcx,
@@ -213,7 +224,7 @@ pub(crate) fn run_aot(
                     tcx,
                     (backend_config.clone(), cgu.name()),
                     module_codegen,
-                    rustc_middle::dep_graph::hash_result,
+                    Some(rustc_middle::dep_graph::hash_result),
                 );
 
                 if let Some((id, product)) = work_product {
@@ -228,8 +239,7 @@ pub(crate) fn run_aot(
     tcx.sess.abort_if_errors();
 
     let isa = crate::build_isa(tcx.sess, &backend_config);
-    let mut allocator_module =
-        crate::backend::make_module(tcx.sess, isa, "allocator_shim".to_string());
+    let mut allocator_module = make_module(tcx.sess, isa, "allocator_shim".to_string());
     assert_eq!(pointer_ty(tcx), allocator_module.target_config().pointer_type());
     let mut allocator_unwind_context = UnwindContext::new(tcx, allocator_module.isa(), true);
     let created_alloc_shim =
@@ -267,9 +277,7 @@ pub(crate) fn run_aot(
             let tmp_file =
                 tcx.output_filenames(()).temp_path(OutputType::Metadata, Some(&metadata_cgu_name));
 
-            let obj = crate::backend::with_object(tcx.sess, &metadata_cgu_name, |object| {
-                crate::metadata::write_metadata(tcx, object);
-            });
+            let obj = crate::metadata::new_metadata_object(tcx, &metadata_cgu_name, &metadata);
 
             if let Err(err) = std::fs::write(&tmp_file, obj) {
                 tcx.sess.fatal(&format!("error writing metadata object file: {}", err));

@@ -7,7 +7,7 @@ use crate::mir::interpret::{Allocation, ConstValue, GlobalAlloc, Scalar};
 use crate::mir::visit::MirVisitable;
 use crate::ty::adjustment::PointerCast;
 use crate::ty::codec::{TyDecoder, TyEncoder};
-use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
+use crate::ty::fold::{FallibleTypeFolder, TypeFoldable, TypeVisitor};
 use crate::ty::print::{FmtPrinter, Printer};
 use crate::ty::subst::{Subst, SubstsRef};
 use crate::ty::{self, List, Ty, TyCtxt};
@@ -16,6 +16,7 @@ use rustc_hir::def::{CtorKind, Namespace};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::{self, GeneratorKind};
 use rustc_hir::{self as hir, HirId};
+use rustc_session::Session;
 use rustc_target::abi::{Size, VariantIdx};
 
 use polonius_engine::Atom;
@@ -40,19 +41,30 @@ use self::graph_cyclic_cache::GraphIsCyclicCache;
 use self::predecessors::{PredecessorCache, Predecessors};
 pub use self::query::*;
 
-pub mod abstract_const;
 pub mod coverage;
+mod generic_graph;
+pub mod generic_graphviz;
 mod graph_cyclic_cache;
+pub mod graphviz;
 pub mod interpret;
 pub mod mono;
+pub mod patch;
 mod predecessors;
+pub mod pretty;
 mod query;
+pub mod spanview;
 pub mod tcx;
 pub mod terminator;
 pub use terminator::*;
 pub mod traversal;
 mod type_foldable;
 pub mod visit;
+
+pub use self::generic_graph::graphviz_safe_def_name;
+pub use self::graphviz::write_mir_graphviz;
+pub use self::pretty::{
+    create_dump_file, display_allocation, dump_enabled, dump_mir, write_mir_pretty, PassWhere,
+};
 
 /// Types for locals
 pub type LocalDecls<'tcx> = IndexVec<Local, LocalDecl<'tcx>>;
@@ -72,6 +84,36 @@ impl<'tcx> HasLocalDecls<'tcx> for Body<'tcx> {
     #[inline]
     fn local_decls(&self) -> &LocalDecls<'tcx> {
         &self.local_decls
+    }
+}
+
+/// A streamlined trait that you can implement to create a pass; the
+/// pass will be named after the type, and it will consist of a main
+/// loop that goes over each available MIR and applies `run_pass`.
+pub trait MirPass<'tcx> {
+    fn name(&self) -> Cow<'_, str> {
+        let name = std::any::type_name::<Self>();
+        if let Some(tail) = name.rfind(':') {
+            Cow::from(&name[tail + 1..])
+        } else {
+            Cow::from(name)
+        }
+    }
+
+    /// Returns `true` if this pass is enabled with the current combination of compiler flags.
+    fn is_enabled(&self, _sess: &Session) -> bool {
+        true
+    }
+
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>);
+
+    /// If this pass causes the MIR to enter a new phase, return that phase.
+    fn phase_change(&self) -> Option<MirPhase> {
+        None
+    }
+
+    fn is_mir_dump_enabled(&self) -> bool {
+        true
     }
 }
 
@@ -242,6 +284,7 @@ pub struct Body<'tcx> {
 
 impl<'tcx> Body<'tcx> {
     pub fn new(
+        tcx: TyCtxt<'tcx>,
         source: MirSource<'tcx>,
         basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
         source_scopes: IndexVec<SourceScope, SourceScopeData<'tcx>>,
@@ -284,7 +327,7 @@ impl<'tcx> Body<'tcx> {
             predecessor_cache: PredecessorCache::new(),
             is_cyclic: GraphIsCyclicCache::new(),
         };
-        body.is_polymorphic = body.has_param_types_or_consts();
+        body.is_polymorphic = body.definitely_has_param_types_or_consts(tcx);
         body
     }
 
@@ -294,7 +337,7 @@ impl<'tcx> Body<'tcx> {
     /// is only useful for testing but cannot be `#[cfg(test)]` because it is used in a different
     /// crate.
     pub fn new_cfg_only(basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>) -> Self {
-        let mut body = Body {
+        Body {
             phase: MirPhase::Build,
             source: MirSource::item(DefId::local(CRATE_DEF_INDEX)),
             basic_blocks,
@@ -310,9 +353,7 @@ impl<'tcx> Body<'tcx> {
             is_polymorphic: false,
             predecessor_cache: PredecessorCache::new(),
             is_cyclic: GraphIsCyclicCache::new(),
-        };
-        body.is_polymorphic = body.has_param_types_or_consts();
-        body
+        }
     }
 
     #[inline]
@@ -412,8 +453,7 @@ impl<'tcx> Body<'tcx> {
     /// Returns an iterator over all function arguments.
     #[inline]
     pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
-        let arg_count = self.arg_count;
-        (1..arg_count + 1).map(Local::new)
+        (1..self.arg_count + 1).map(Local::new)
     }
 
     /// Returns an iterator over all user-defined variables and compiler-generated temporaries (all
@@ -422,9 +462,12 @@ impl<'tcx> Body<'tcx> {
     pub fn vars_and_temps_iter(
         &self,
     ) -> impl DoubleEndedIterator<Item = Local> + ExactSizeIterator {
-        let arg_count = self.arg_count;
-        let local_count = self.local_decls.len();
-        (arg_count + 1..local_count).map(Local::new)
+        (self.arg_count + 1..self.local_decls.len()).map(Local::new)
+    }
+
+    #[inline]
+    pub fn drain_vars_and_temps<'a>(&'a mut self) -> impl Iterator<Item = LocalDecl<'tcx>> + 'a {
+        self.local_decls.drain(self.arg_count + 1..)
     }
 
     /// Changes a statement to a nop. This is both faster than deleting instructions and avoids
@@ -775,8 +818,8 @@ pub enum ImplicitSelfKind {
 TrivialTypeFoldableAndLiftImpls! { BindingForm<'tcx>, }
 
 mod binding_form_impl {
-    use crate::ich::StableHashingContext;
     use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+    use rustc_query_system::ich::StableHashingContext;
 
     impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for super::BindingForm<'tcx> {
         fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
@@ -964,6 +1007,9 @@ pub enum LocalInfo<'tcx> {
     StaticRef { def_id: DefId, is_thread_local: bool },
     /// A temporary created that references the const with the given `DefId`
     ConstRef { def_id: DefId },
+    /// A temporary created during the creation of an aggregate
+    /// (e.g. a temporary for `foo` in `MyStruct { my_field: foo }`)
+    AggregateTemp,
 }
 
 impl<'tcx> LocalDecl<'tcx> {
@@ -1141,7 +1187,7 @@ rustc_index::newtype_index! {
     /// [CFG]: https://rustc-dev-guide.rust-lang.org/appendix/background.html#cfg
     /// [data-flow analyses]:
     ///     https://rustc-dev-guide.rust-lang.org/appendix/background.html#what-is-a-dataflow-analysis
-    /// [`CriticalCallEdges`]: ../../rustc_mir/transform/add_call_guards/enum.AddCallGuards.html#variant.CriticalCallEdges
+    /// [`CriticalCallEdges`]: ../../rustc_const_eval/transform/add_call_guards/enum.AddCallGuards.html#variant.CriticalCallEdges
     /// [guide-mir]: https://rustc-dev-guide.rust-lang.org/mir/
     pub struct BasicBlock {
         derive [HashStable]
@@ -1473,6 +1519,7 @@ impl Statement<'_> {
     }
 
     /// Changes a statement to a nop and returns the original statement.
+    #[must_use = "If you don't need the statement, use `make_nop` instead"]
     pub fn replace_nop(&mut self) -> Self {
         Statement {
             source_info: self.source_info,
@@ -1664,13 +1711,10 @@ impl Debug for Statement<'_> {
             AscribeUserType(box (ref place, ref c_ty), ref variance) => {
                 write!(fmt, "AscribeUserType({:?}, {:?}, {:?})", place, variance, c_ty)
             }
-            Coverage(box ref coverage) => {
-                if let Some(rgn) = &coverage.code_region {
-                    write!(fmt, "Coverage::{:?} for {:?}", coverage.kind, rgn)
-                } else {
-                    write!(fmt, "Coverage::{:?}", coverage.kind)
-                }
+            Coverage(box self::Coverage { ref kind, code_region: Some(ref rgn) }) => {
+                write!(fmt, "Coverage::{:?} for {:?}", kind, rgn)
             }
+            Coverage(box ref coverage) => write!(fmt, "Coverage::{:?}", coverage.kind),
             CopyNonOverlapping(box crate::mir::CopyNonOverlapping {
                 ref src,
                 ref dst,
@@ -1710,7 +1754,7 @@ pub struct Place<'tcx> {
     pub projection: &'tcx List<PlaceElem<'tcx>>,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 static_assert_size!(Place<'_>, 16);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1774,6 +1818,16 @@ impl<V, T> ProjectionElem<V, T> {
             | Self::Subslice { .. }
             | Self::Downcast(_, _) => false,
         }
+    }
+
+    /// Returns `true` if this is a `Downcast` projection with the given `VariantIdx`.
+    pub fn is_downcast_to(&self, v: VariantIdx) -> bool {
+        matches!(*self, Self::Downcast(_, x) if x == v)
+    }
+
+    /// Returns `true` if this is a `Field` projection with the given index.
+    pub fn is_field_to(&self, f: Field) -> bool {
+        matches!(*self, Self::Field(x, _) if x == f)
     }
 }
 
@@ -2036,7 +2090,7 @@ pub enum Operand<'tcx> {
     Constant(Box<Constant<'tcx>>),
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 static_assert_size!(Operand<'_>, 24);
 
 impl<'tcx> Debug for Operand<'tcx> {
@@ -2061,11 +2115,11 @@ impl<'tcx> Operand<'tcx> {
         span: Span,
     ) -> Self {
         let ty = tcx.type_of(def_id).subst(tcx, substs);
-        Operand::Constant(box Constant {
+        Operand::Constant(Box::new(Constant {
             span,
             user_ty: None,
             literal: ConstantKind::Ty(ty::Const::zero_sized(tcx, ty)),
-        })
+        }))
     }
 
     pub fn is_move(&self) -> bool {
@@ -2092,11 +2146,11 @@ impl<'tcx> Operand<'tcx> {
             };
             scalar_size == type_size
         });
-        Operand::Constant(box Constant {
+        Operand::Constant(Box::new(Constant {
             span,
             user_ty: None,
             literal: ConstantKind::Val(ConstValue::Scalar(val), ty),
-        })
+        }))
     }
 
     pub fn to_copy(&self) -> Self {
@@ -2172,9 +2226,15 @@ pub enum Rvalue<'tcx> {
     /// that `Foo` has a destructor. These rvalues can be optimized
     /// away after type-checking and before lowering.
     Aggregate(Box<AggregateKind<'tcx>>, Vec<Operand<'tcx>>),
+
+    /// Transmutes a `*mut u8` into shallow-initialized `Box<T>`.
+    ///
+    /// This is different a normal transmute because dataflow analysis will treat the box
+    /// as initialized but its content as uninitialized.
+    ShallowInitBox(Operand<'tcx>, Ty<'tcx>),
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 static_assert_size!(Rvalue<'_>, 40);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, TyEncodable, TyDecodable, Hash, HashStable)]
@@ -2200,7 +2260,7 @@ pub enum AggregateKind<'tcx> {
     Generator(DefId, SubstsRef<'tcx>, hir::Movability),
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 static_assert_size!(AggregateKind<'_>, 48);
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, TyEncodable, TyDecodable, Hash, HashStable)]
@@ -2212,8 +2272,12 @@ pub enum BinOp {
     /// The `*` operator (multiplication)
     Mul,
     /// The `/` operator (division)
+    ///
+    /// Division by zero is UB.
     Div,
     /// The `%` operator (modulus)
+    ///
+    /// Using zero as the modulus (second operand) is UB.
     Rem,
     /// The `^` operator (bitwise xor)
     BitXor,
@@ -2222,8 +2286,12 @@ pub enum BinOp {
     /// The `|` operator (bitwise or)
     BitOr,
     /// The `<<` operator (shift left)
+    ///
+    /// The offset is truncated to the size of the first operand before shifting.
     Shl,
     /// The `>>` operator (shift right)
+    ///
+    /// The offset is truncated to the size of the first operand before shifting.
     Shr,
     /// The `==` operator (equality)
     Eq,
@@ -2252,6 +2320,8 @@ impl BinOp {
 pub enum NullOp {
     /// Returns the size of a value of that type
     SizeOf,
+    /// Returns the minimum alignment of a type
+    AlignOf,
     /// Creates a new uninitialized box for a value of that type
     Box,
 }
@@ -2419,6 +2489,10 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                         }
                     }),
                 }
+            }
+
+            ShallowInitBox(ref place, ref ty) => {
+                write!(fmt, "ShallowInitBox({:?}, {:?})", place, ty)
             }
         }
     }
@@ -2625,7 +2699,7 @@ impl<'tcx> UserTypeProjections {
         mut self,
         mut f: impl FnMut(UserTypeProjection) -> UserTypeProjection,
     ) -> Self {
-        self.contents = self.contents.drain(..).map(|(proj, span)| (f(proj), span)).collect();
+        self.contents = self.contents.into_iter().map(|(proj, span)| (f(proj), span)).collect();
         self
     }
 
@@ -2712,11 +2786,14 @@ impl UserTypeProjection {
 TrivialTypeFoldableAndLiftImpls! { ProjectionKind, }
 
 impl<'tcx> TypeFoldable<'tcx> for UserTypeProjection {
-    fn super_fold_with<F: TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
-        UserTypeProjection {
-            base: self.base.fold_with(folder),
-            projs: self.projs.fold_with(folder),
-        }
+    fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
+        self,
+        folder: &mut F,
+    ) -> Result<Self, F::Error> {
+        Ok(UserTypeProjection {
+            base: self.base.try_fold_with(folder)?,
+            projs: self.projs.try_fold_with(folder)?,
+        })
     }
 
     fn super_visit_with<Vs: TypeVisitor<'tcx>>(

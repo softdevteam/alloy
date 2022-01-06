@@ -28,6 +28,7 @@ use self::header::{make_test_description, EarlyProps};
 mod tests;
 
 pub mod common;
+pub mod compute_diff;
 pub mod errors;
 pub mod header;
 mod json;
@@ -144,8 +145,10 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "enable this to generate a Rustfix coverage file, which is saved in \
                 `./<build_base>/rustfix_missing_coverage.txt`",
         )
+        .optflag("", "force-rerun", "rerun tests even if the inputs are unchanged")
         .optflag("h", "help", "show this message")
-        .reqopt("", "channel", "current Rust channel", "CHANNEL");
+        .reqopt("", "channel", "current Rust channel", "CHANNEL")
+        .optopt("", "edition", "default Rust edition", "EDITION");
 
     let (argv0, args_) = args.split_first().unwrap();
     if args.len() == 1 || args[1] == "-h" || args[1] == "--help" {
@@ -280,6 +283,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         rustfix_coverage: matches.opt_present("rustfix-coverage"),
         has_tidy,
         channel: matches.opt_str("channel").unwrap(),
+        edition: matches.opt_str("edition"),
 
         cc: matches.opt_str("cc").unwrap(),
         cxx: matches.opt_str("cxx").unwrap(),
@@ -289,6 +293,8 @@ pub fn parse_config(args: Vec<String>) -> Config {
         llvm_components: matches.opt_str("llvm-components").unwrap(),
         nodejs: matches.opt_str("nodejs"),
         npm: matches.opt_str("npm"),
+
+        force_rerun: matches.opt_present("force-rerun"),
     }
 }
 
@@ -502,6 +508,8 @@ pub fn test_opts(config: &Config) -> test::TestOpts {
             Err(_) => false,
         },
         color: config.color,
+        shuffle: false,
+        shuffle_seed: None,
         test_threads: None,
         skip: vec![],
         list: false,
@@ -644,13 +652,15 @@ fn make_test(config: &Config, testpaths: &TestPaths, inputs: &Stamp) -> Vec<test
             let test_name = crate::make_test_name(config, testpaths, revision);
             let mut desc = make_test_description(config, test_name, &test_path, src_file, cfg);
             // Ignore tests that already run and are up to date with respect to inputs.
-            desc.ignore |= is_up_to_date(
-                config,
-                testpaths,
-                &early_props,
-                revision.map(|s| s.as_str()),
-                inputs,
-            );
+            if !config.force_rerun {
+                desc.ignore |= is_up_to_date(
+                    config,
+                    testpaths,
+                    &early_props,
+                    revision.map(|s| s.as_str()),
+                    inputs,
+                );
+            }
             test::TestDescAndFn { desc, testfn: make_test_closure(config, testpaths, revision) }
         })
         .collect()

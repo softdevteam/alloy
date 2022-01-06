@@ -9,19 +9,20 @@ use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for instances of `mut mut` references.
+    /// ### What it does
+    /// Checks for instances of `mut mut` references.
     ///
-    /// **Why is this bad?** Multiple `mut`s don't add anything meaningful to the
+    /// ### Why is this bad?
+    /// Multiple `mut`s don't add anything meaningful to the
     /// source. This is either a copy'n'paste error, or it shows a fundamental
     /// misunderstanding of references.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let mut y = 1;
     /// let x = &mut &mut y;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MUT_MUT,
     pedantic,
     "usage of double-mut refs, e.g., `&mut &mut ...`"
@@ -53,7 +54,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
             return;
         }
 
-        if let Some((_, arg, body, _)) = higher::for_loop(expr) {
+        if let Some(higher::ForLoop { arg, body, .. }) = higher::ForLoop::hir(expr) {
             // A `for` loop lowers to:
             // ```rust
             // match ::std::iter::Iterator::next(&mut iter) {
@@ -82,6 +83,10 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
     }
 
     fn visit_ty(&mut self, ty: &'tcx hir::Ty<'_>) {
+        if in_external_macro(self.cx.sess(), ty.span) {
+            return;
+        }
+
         if let hir::TyKind::Rptr(
             _,
             hir::MutTy {

@@ -1,23 +1,22 @@
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::source::snippet_with_macro_callsite;
-use clippy_utils::{is_else_clause, is_lang_ctor, meets_msrv, msrvs};
+use clippy_utils::{contains_return, higher, is_else_clause, is_lang_ctor, meets_msrv, msrvs};
 use if_chain::if_chain;
 use rustc_hir::LangItem::{OptionNone, OptionSome};
-use rustc_hir::{Expr, ExprKind};
+use rustc_hir::{Expr, ExprKind, Stmt, StmtKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for if-else that could be written to `bool::then`.
+    /// ### What it does
+    /// Checks for if-else that could be written to `bool::then`.
     ///
-    /// **Why is this bad?** Looks a little redundant. Using `bool::then` helps it have less lines of code.
+    /// ### Why is this bad?
+    /// Looks a little redundant. Using `bool::then` helps it have less lines of code.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// # let v = vec![0];
     /// let a = if v.is_empty() {
@@ -37,6 +36,7 @@ declare_clippy_lint! {
     ///     42
     /// });
     /// ```
+    #[clippy::version = "1.53.0"]
     pub IF_THEN_SOME_ELSE_NONE,
     restriction,
     "Finds if-else that could be written using `bool::then`"
@@ -71,7 +71,7 @@ impl LateLintPass<'_> for IfThenSomeElseNone {
         }
 
         if_chain! {
-            if let ExprKind::If(cond, then, Some(els)) = expr.kind;
+            if let Some(higher::If { cond, then, r#else: Some(els) }) = higher::If::hir(expr);
             if let ExprKind::Block(then_block, _) = then.kind;
             if let Some(then_expr) = then_block.expr;
             if let ExprKind::Call(then_call, [then_arg]) = then_expr.kind;
@@ -82,6 +82,7 @@ impl LateLintPass<'_> for IfThenSomeElseNone {
             if let Some(els_expr) = els_block.expr;
             if let ExprKind::Path(ref qpath) = els_expr.kind;
             if is_lang_ctor(cx, qpath, OptionNone);
+            if !stmts_contains_early_return(then_block.stmts);
             then {
                 let cond_snip = snippet_with_macro_callsite(cx, cond.span, "[condition]");
                 let cond_snip = if matches!(cond.kind, ExprKind::Unary(_, _) | ExprKind::Binary(_, _, _)) {
@@ -113,4 +114,12 @@ impl LateLintPass<'_> for IfThenSomeElseNone {
     }
 
     extract_msrv_attr!(LateContext);
+}
+
+fn stmts_contains_early_return(stmts: &[Stmt<'_>]) -> bool {
+    stmts.iter().any(|stmt| {
+        let Stmt { kind: StmtKind::Semi(e), .. } = stmt else { return false };
+
+        contains_return(e)
+    })
 }

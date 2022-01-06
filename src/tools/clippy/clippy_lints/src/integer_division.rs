@@ -5,15 +5,15 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for division of integers
+    /// ### What it does
+    /// Checks for division of integers
     ///
-    /// **Why is this bad?** When outside of some very specific algorithms,
+    /// ### Why is this bad?
+    /// When outside of some very specific algorithms,
     /// integer division is very often a mistake because it discards the
     /// remainder.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Bad
     /// let x = 3 / 2;
@@ -23,6 +23,7 @@ declare_clippy_lint! {
     /// let x = 3f32 / 2f32;
     /// println!("{}", x);
     /// ```
+    #[clippy::version = "1.37.0"]
     pub INTEGER_DIVISION,
     restriction,
     "integer division may cause loss of precision"
@@ -48,7 +49,7 @@ impl<'tcx> LateLintPass<'tcx> for IntegerDivision {
 fn is_integer_division<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) -> bool {
     if_chain! {
         if let hir::ExprKind::Binary(binop, left, right) = &expr.kind;
-        if let hir::BinOpKind::Div = &binop.node;
+        if binop.node == hir::BinOpKind::Div;
         then {
             let (left_ty, right_ty) = (cx.typeck_results().expr_ty(left), cx.typeck_results().expr_ty(right));
             return left_ty.is_integral() && right_ty.is_integral();

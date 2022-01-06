@@ -11,10 +11,10 @@
 //! should be used when linking each output type requested in this session. This
 //! generally follows this set of rules:
 //!
-//!     1. Each library must appear exactly once in the output.
-//!     2. Each rlib contains only one library (it's just an object file)
-//!     3. Each dylib can contain more than one library (due to static linking),
-//!        and can also bring in many dynamic dependencies.
+//! 1. Each library must appear exactly once in the output.
+//! 2. Each rlib contains only one library (it's just an object file)
+//! 3. Each dylib can contain more than one library (due to static linking),
+//!    and can also bring in many dynamic dependencies.
 //!
 //! With these constraints in mind, it's generally a very difficult problem to
 //! find a solution that's not "all rlibs" or "all dylibs". I have suspicions
@@ -22,24 +22,24 @@
 //!
 //! The current selection algorithm below looks mostly similar to:
 //!
-//!     1. If static linking is required, then require all upstream dependencies
-//!        to be available as rlibs. If not, generate an error.
-//!     2. If static linking is requested (generating an executable), then
-//!        attempt to use all upstream dependencies as rlibs. If any are not
-//!        found, bail out and continue to step 3.
-//!     3. Static linking has failed, at least one library must be dynamically
-//!        linked. Apply a heuristic by greedily maximizing the number of
-//!        dynamically linked libraries.
-//!     4. Each upstream dependency available as a dynamic library is
-//!        registered. The dependencies all propagate, adding to a map. It is
-//!        possible for a dylib to add a static library as a dependency, but it
-//!        is illegal for two dylibs to add the same static library as a
-//!        dependency. The same dylib can be added twice. Additionally, it is
-//!        illegal to add a static dependency when it was previously found as a
-//!        dylib (and vice versa)
-//!     5. After all dynamic dependencies have been traversed, re-traverse the
-//!        remaining dependencies and add them statically (if they haven't been
-//!        added already).
+//! 1. If static linking is required, then require all upstream dependencies
+//!    to be available as rlibs. If not, generate an error.
+//! 2. If static linking is requested (generating an executable), then
+//!    attempt to use all upstream dependencies as rlibs. If any are not
+//!    found, bail out and continue to step 3.
+//! 3. Static linking has failed, at least one library must be dynamically
+//!    linked. Apply a heuristic by greedily maximizing the number of
+//!    dynamically linked libraries.
+//! 4. Each upstream dependency available as a dynamic library is
+//!    registered. The dependencies all propagate, adding to a map. It is
+//!    possible for a dylib to add a static library as a dependency, but it
+//!    is illegal for two dylibs to add the same static library as a
+//!    dependency. The same dylib can be added twice. Additionally, it is
+//!    illegal to add a static dependency when it was previously found as a
+//!    dylib (and vice versa)
+//! 5. After all dynamic dependencies have been traversed, re-traverse the
+//!    remaining dependencies and add them statically (if they haven't been
+//!    added already).
 //!
 //! While not perfect, this algorithm should help support use-cases such as leaf
 //! dependencies being static while the larger tree of inner dependencies are
@@ -55,11 +55,11 @@ use crate::creader::CStore;
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::def_id::CrateNum;
-use rustc_middle::middle::cstore::CrateDepKind;
-use rustc_middle::middle::cstore::LinkagePreference::{self, RequireDynamic, RequireStatic};
 use rustc_middle::middle::dependency_format::{Dependencies, DependencyList, Linkage};
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::CrateType;
+use rustc_session::cstore::CrateDepKind;
+use rustc_session::cstore::LinkagePreference::{self, RequireDynamic, RequireStatic};
 use rustc_target::spec::PanicStrategy;
 
 crate fn calculate(tcx: TyCtxt<'_>) -> Dependencies {
@@ -277,7 +277,7 @@ fn attempt_static(tcx: TyCtxt<'_>) -> Option<DependencyList> {
     let all_crates_available_as_rlib = tcx
         .crates(())
         .iter()
-        .cloned()
+        .copied()
         .filter_map(|cnum| {
             if tcx.dep_kind(cnum).macros_only() {
                 return None;
@@ -291,10 +291,11 @@ fn attempt_static(tcx: TyCtxt<'_>) -> Option<DependencyList> {
 
     // All crates are available in an rlib format, so we're just going to link
     // everything in explicitly so long as it's actually required.
-    let last_crate = tcx.crates(()).len();
-    let mut ret = (1..last_crate + 1)
-        .map(|cnum| {
-            if tcx.dep_kind(CrateNum::new(cnum)) == CrateDepKind::Explicit {
+    let mut ret = tcx
+        .crates(())
+        .iter()
+        .map(|&cnum| {
+            if tcx.dep_kind(cnum) == CrateDepKind::Explicit {
                 Linkage::Static
             } else {
                 Linkage::NotLinked
@@ -400,21 +401,35 @@ fn verify_ok(tcx: TyCtxt<'_>, list: &[Linkage]) {
                 continue;
             }
             let cnum = CrateNum::new(i + 1);
-            let found_strategy = tcx.panic_strategy(cnum);
-            let is_compiler_builtins = tcx.is_compiler_builtins(cnum);
-            if is_compiler_builtins || desired_strategy == found_strategy {
+            if tcx.is_compiler_builtins(cnum) {
                 continue;
             }
 
-            sess.err(&format!(
-                "the crate `{}` is compiled with the \
+            let found_strategy = tcx.panic_strategy(cnum);
+            if desired_strategy != found_strategy {
+                sess.err(&format!(
+                    "the crate `{}` is compiled with the \
                                panic strategy `{}` which is \
                                incompatible with this crate's \
                                strategy of `{}`",
-                tcx.crate_name(cnum),
-                found_strategy.desc(),
-                desired_strategy.desc()
-            ));
+                    tcx.crate_name(cnum),
+                    found_strategy.desc(),
+                    desired_strategy.desc()
+                ));
+            }
+
+            let found_drop_strategy = tcx.panic_in_drop_strategy(cnum);
+            if tcx.sess.opts.debugging_opts.panic_in_drop != found_drop_strategy {
+                sess.err(&format!(
+                    "the crate `{}` is compiled with the \
+                               panic-in-drop strategy `{}` which is \
+                               incompatible with this crate's \
+                               strategy of `{}`",
+                    tcx.crate_name(cnum),
+                    found_drop_strategy.desc(),
+                    tcx.sess.opts.debugging_opts.panic_in_drop.desc()
+                ));
+            }
         }
     }
 }

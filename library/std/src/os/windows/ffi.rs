@@ -1,4 +1,4 @@
-//! Windows-specific extensions to the primitives in the `std::ffi` module.
+//! Windows-specific extensions to primitives in the [`std::ffi`] module.
 //!
 //! # Overview
 //!
@@ -30,7 +30,7 @@
 //! [`OsString`] is the Rust wrapper for owned strings in the
 //! preferred representation of the operating system. On Windows,
 //! this struct gets augmented with an implementation of the
-//! [`OsStringExt`] trait, which has a [`OsStringExt::from_wide`] method. This
+//! [`OsStringExt`] trait, which has an [`OsStringExt::from_wide`] method. This
 //! lets you create an [`OsString`] from a `&[u16]` slice; presumably
 //! you get such a slice out of a `WCHAR` Windows API.
 //!
@@ -49,6 +49,7 @@
 //! [ill-formed-utf-16]: https://simonsapin.github.io/wtf-8/#ill-formed-utf-16
 //! [`collect`]: crate::iter::Iterator::collect
 //! [U+FFFD]: crate::char::REPLACEMENT_CHARACTER
+//! [`std::ffi`]: crate::ffi
 
 #![stable(feature = "rust1", since = "1.0.0")]
 

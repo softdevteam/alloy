@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::match_type;
-use clippy_utils::visitors::LocalUsedVisitor;
+use clippy_utils::visitors::is_local_used;
 use clippy_utils::{path_to_local_id, paths, peel_ref_operators, remove_blocks, strip_pat_refs};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
@@ -12,22 +12,25 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::sym;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for naive byte counts
+    /// ### What it does
+    /// Checks for naive byte counts
     ///
-    /// **Why is this bad?** The [`bytecount`](https://crates.io/crates/bytecount)
+    /// ### Why is this bad?
+    /// The [`bytecount`](https://crates.io/crates/bytecount)
     /// crate has methods to count your bytes faster, especially for large slices.
     ///
-    /// **Known problems:** If you have predominantly small slices, the
+    /// ### Known problems
+    /// If you have predominantly small slices, the
     /// `bytecount::count(..)` method may actually be slower. However, if you can
     /// ensure that less than 2³²-1 matches arise, the `naive_count_32(..)` can be
     /// faster in those cases.
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// # let vec = vec![1_u8];
     /// &vec.iter().filter(|x| **x == 0u8).count(); // use bytecount::count instead
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NAIVE_BYTECOUNT,
     pedantic,
     "use of naive `<slice>.filter(|&x| x == y).count()` to count byte values"
@@ -63,7 +66,7 @@ impl<'tcx> LateLintPass<'tcx> for ByteCount {
                 return;
             };
             if ty::Uint(UintTy::U8) == *cx.typeck_results().expr_ty(needle).peel_refs().kind();
-            if !LocalUsedVisitor::new(cx, arg_id).check_expr(needle);
+            if !is_local_used(cx, needle, arg_id);
             then {
                 let haystack = if let ExprKind::MethodCall(path, _, args, _) =
                         filter_recv.kind {
@@ -71,10 +74,10 @@ impl<'tcx> LateLintPass<'tcx> for ByteCount {
                     if (p == sym::iter || p == sym!(iter_mut)) && args.len() == 1 {
                         &args[0]
                     } else {
-                        &filter_recv
+                        filter_recv
                     }
                 } else {
-                    &filter_recv
+                    filter_recv
                 };
                 let mut applicability = Applicability::MaybeIncorrect;
                 span_lint_and_sugg(

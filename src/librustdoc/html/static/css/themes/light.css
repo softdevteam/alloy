@@ -43,7 +43,7 @@ pre, .rustdoc.source .example-wrap {
 	scrollbar-color: rgba(36, 37, 39, 0.6) #d9d9d9;
 }
 
-.logo-container.rust-logo > img {
+.rust-logo > img {
 	/* No need for a border in here! */
 }
 
@@ -66,7 +66,7 @@ pre, .rustdoc.source .example-wrap {
 }
 
 .source .sidebar {
-	background-color: #fff;
+	background-color: #f1f1f1;
 }
 
 .sidebar .location {
@@ -93,7 +93,7 @@ pre, .rustdoc.source .example-wrap {
 	background-color: #f6fdb0 !important;
 }
 
-.docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5 {
+.docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5, .docblock h6 {
 	border-bottom-color: #ddd;
 }
 
@@ -169,18 +169,28 @@ nav.main .current {
 nav.main .separator {
 	border: 1px solid #000;
 }
-a {
-	color: #000;
-}
 
-.docblock:not(.type-decl) a:not(.srclink):not(.test-arrow),
-.docblock-short a:not(.srclink):not(.test-arrow), .item-info a,
-#help a {
+a {
 	color: #3873AD;
 }
-
+a.srclink,
+a#toggle-all-docs,
+a.anchor,
+.small-section-header a,
+#source-sidebar a,
+pre.rust a,
+.sidebar a,
+.in-band a {
+	color: #000;
+}
+.search-results a {
+	color: initial;
+}
 a.test-arrow {
 	color: #f5f5f5;
+}
+body.source .example-wrap pre.rust a {
+	background: #eee;
 }
 
 details.rustdoc-toggle > summary.hideme > span,
@@ -206,10 +216,6 @@ details.undocumented > summary::before {
 	border-color: #66afe9;
 }
 
-.search-input:disabled {
-	background-color: #e6e6e6;
-}
-
 #crate-search + .search-input:focus {
 	box-shadow: 0 0 8px #078dd8;
 }
@@ -229,8 +235,8 @@ details.undocumented > summary::before {
 	border-color: #bfbfbf;
 }
 
-#help > div > span {
-	border-bottom-color: #bfbfbf;
+#help span.bottom, #help span.top {
+	border-color: #bfbfbf;
 }
 
 .since {
@@ -274,7 +280,7 @@ a.test-arrow:hover{
 	color: #999;
 }
 
-:target, :target * {
+:target, :target > * {
 	background: #FDFFD3;
 }
 

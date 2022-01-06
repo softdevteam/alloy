@@ -4,19 +4,20 @@ use crate::{maybe_recover_from_interpolated_ty_qpath, maybe_whole};
 
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token, TokenKind};
-use rustc_ast::{self as ast, BareFnTy, FnRetTy, GenericParam, Lifetime, MutTy, Ty, TyKind};
-use rustc_ast::{GenericBound, GenericBounds, MacCall, Mutability};
-use rustc_ast::{PolyTraitRef, TraitBoundModifier, TraitObjectSyntax};
+use rustc_ast::{
+    self as ast, BareFnTy, FnRetTy, GenericBound, GenericBounds, GenericParam, Generics, Lifetime,
+    MacCall, MutTy, Mutability, PolyTraitRef, TraitBoundModifier, TraitObjectSyntax, Ty, TyKind,
+};
 use rustc_errors::{pluralize, struct_span_err, Applicability, PResult};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym};
 
-/// Any `?` or `?const` modifiers that appear at the start of a bound.
+/// Any `?` or `~const` modifiers that appear at the start of a bound.
 struct BoundModifiers {
     /// `?Trait`.
     maybe: Option<Span>,
 
-    /// `?const Trait`.
+    /// `~const Trait`.
     maybe_const: Option<Span>,
 }
 
@@ -98,6 +99,20 @@ impl<'a> Parser<'a> {
             AllowCVariadic::No,
             RecoverQPath::Yes,
             RecoverReturnSign::Yes,
+            None,
+        )
+    }
+
+    pub(super) fn parse_ty_with_generics_recovery(
+        &mut self,
+        ty_params: &Generics,
+    ) -> PResult<'a, P<Ty>> {
+        self.parse_ty_common(
+            AllowPlus::Yes,
+            AllowCVariadic::No,
+            RecoverQPath::Yes,
+            RecoverReturnSign::Yes,
+            Some(ty_params),
         )
     }
 
@@ -110,6 +125,7 @@ impl<'a> Parser<'a> {
             AllowCVariadic::Yes,
             RecoverQPath::Yes,
             RecoverReturnSign::Yes,
+            None,
         )
     }
 
@@ -125,6 +141,7 @@ impl<'a> Parser<'a> {
             AllowCVariadic::No,
             RecoverQPath::Yes,
             RecoverReturnSign::Yes,
+            None,
         )
     }
 
@@ -135,6 +152,7 @@ impl<'a> Parser<'a> {
             AllowCVariadic::Yes,
             RecoverQPath::Yes,
             RecoverReturnSign::OnlyFatArrow,
+            None,
         )
     }
 
@@ -152,6 +170,7 @@ impl<'a> Parser<'a> {
                 AllowCVariadic::No,
                 recover_qpath,
                 recover_return_sign,
+                None,
             )?;
             FnRetTy::Ty(ty)
         } else if recover_return_sign.can_recover(&self.token.kind) {
@@ -171,6 +190,7 @@ impl<'a> Parser<'a> {
                 AllowCVariadic::No,
                 recover_qpath,
                 recover_return_sign,
+                None,
             )?;
             FnRetTy::Ty(ty)
         } else {
@@ -184,6 +204,7 @@ impl<'a> Parser<'a> {
         allow_c_variadic: AllowCVariadic,
         recover_qpath: RecoverQPath,
         recover_return_sign: RecoverReturnSign,
+        ty_generics: Option<&Generics>,
     ) -> PResult<'a, P<Ty>> {
         let allow_qpath_recovery = recover_qpath == RecoverQPath::Yes;
         maybe_recover_from_interpolated_ty_qpath!(self, allow_qpath_recovery);
@@ -226,19 +247,6 @@ impl<'a> Parser<'a> {
             }
         } else if self.eat_keyword(kw::Impl) {
             self.parse_impl_ty(&mut impl_dyn_multi)?
-        } else if self.token.is_keyword(kw::Union)
-            && self.look_ahead(1, |t| t == &token::OpenDelim(token::Brace))
-        {
-            self.bump();
-            let (fields, recovered) = self.parse_record_struct_body("union")?;
-            let span = lo.to(self.prev_token.span);
-            self.sess.gated_spans.gate(sym::unnamed_fields, span);
-            TyKind::AnonymousUnion(fields, recovered)
-        } else if self.eat_keyword(kw::Struct) {
-            let (fields, recovered) = self.parse_record_struct_body("struct")?;
-            let span = lo.to(self.prev_token.span);
-            self.sess.gated_spans.gate(sym::unnamed_fields, span);
-            TyKind::AnonymousStruct(fields, recovered)
         } else if self.is_explicit_dyn_type() {
             self.parse_dyn_ty(&mut impl_dyn_multi)?
         } else if self.eat_lt() {
@@ -246,7 +254,7 @@ impl<'a> Parser<'a> {
             let (qself, path) = self.parse_qpath(PathStyle::Type)?;
             TyKind::Path(Some(qself), path)
         } else if self.check_path() {
-            self.parse_path_start_ty(lo, allow_plus)?
+            self.parse_path_start_ty(lo, allow_plus, ty_generics)?
         } else if self.can_begin_bound() {
             self.parse_bare_trait_object(lo, allow_plus)?
         } else if self.eat(&token::DotDotDot) {
@@ -443,7 +451,7 @@ impl<'a> Parser<'a> {
     }
 
     // Parses the `typeof(EXPR)`.
-    // To avoid ambiguity, the type is surrounded by parenthesis.
+    // To avoid ambiguity, the type is surrounded by parentheses.
     fn parse_typeof_ty(&mut self) -> PResult<'a, TyKind> {
         self.expect(&token::OpenDelim(token::Paren))?;
         let expr = self.parse_anon_const_expr()?;
@@ -525,9 +533,14 @@ impl<'a> Parser<'a> {
     /// 1. a type macro, `mac!(...)`,
     /// 2. a bare trait object, `B0 + ... + Bn`,
     /// 3. or a path, `path::to::MyType`.
-    fn parse_path_start_ty(&mut self, lo: Span, allow_plus: AllowPlus) -> PResult<'a, TyKind> {
+    fn parse_path_start_ty(
+        &mut self,
+        lo: Span,
+        allow_plus: AllowPlus,
+        ty_generics: Option<&Generics>,
+    ) -> PResult<'a, TyKind> {
         // Simple path
-        let path = self.parse_path(PathStyle::Type)?;
+        let path = self.parse_path_inner(PathStyle::Type, ty_generics)?;
         if self.eat(&token::Not) {
             // Macro invocation in type position
             Ok(TyKind::MacCall(MacCall {
@@ -609,6 +622,7 @@ impl<'a> Parser<'a> {
         || self.check_lifetime()
         || self.check(&token::Not) // Used for error reporting only.
         || self.check(&token::Question)
+        || self.check(&token::Tilde)
         || self.check_keyword(kw::For)
         || self.check(&token::OpenDelim(token::Paren))
     }
@@ -655,7 +669,7 @@ impl<'a> Parser<'a> {
         let inner_lo = self.token.span;
         let is_negative = self.eat(&token::Not);
 
-        let modifiers = self.parse_ty_bound_modifiers();
+        let modifiers = self.parse_ty_bound_modifiers()?;
         let bound = if self.token.is_lifetime() {
             self.error_lt_bound_with_modifiers(modifiers);
             self.parse_generic_lt_bound(lo, inner_lo, has_parens)?
@@ -690,7 +704,7 @@ impl<'a> Parser<'a> {
         if let Some(span) = modifiers.maybe_const {
             self.struct_span_err(
                 span,
-                "`?const` may only modify trait bounds, not lifetime bounds",
+                "`~const` may only modify trait bounds, not lifetime bounds",
             )
             .emit();
         }
@@ -721,34 +735,27 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Parses the modifiers that may precede a trait in a bound, e.g. `?Trait` or `?const Trait`.
+    /// Parses the modifiers that may precede a trait in a bound, e.g. `?Trait` or `~const Trait`.
     ///
     /// If no modifiers are present, this does not consume any tokens.
     ///
     /// ```
-    /// TY_BOUND_MODIFIERS = "?" ["const" ["?"]]
+    /// TY_BOUND_MODIFIERS = ["~const"] ["?"]
     /// ```
-    fn parse_ty_bound_modifiers(&mut self) -> BoundModifiers {
-        if !self.eat(&token::Question) {
-            return BoundModifiers { maybe: None, maybe_const: None };
-        }
+    fn parse_ty_bound_modifiers(&mut self) -> PResult<'a, BoundModifiers> {
+        let maybe_const = if self.eat(&token::Tilde) {
+            let tilde = self.prev_token.span;
+            self.expect_keyword(kw::Const)?;
+            let span = tilde.to(self.prev_token.span);
+            self.sess.gated_spans.gate(sym::const_trait_impl, span);
+            Some(span)
+        } else {
+            None
+        };
 
-        // `? ...`
-        let first_question = self.prev_token.span;
-        if !self.eat_keyword(kw::Const) {
-            return BoundModifiers { maybe: Some(first_question), maybe_const: None };
-        }
+        let maybe = if self.eat(&token::Question) { Some(self.prev_token.span) } else { None };
 
-        // `?const ...`
-        let maybe_const = first_question.to(self.prev_token.span);
-        self.sess.gated_spans.gate(sym::const_trait_bound_opt_out, maybe_const);
-        if !self.eat(&token::Question) {
-            return BoundModifiers { maybe: None, maybe_const: Some(maybe_const) };
-        }
-
-        // `?const ? ...`
-        let second_question = self.prev_token.span;
-        BoundModifiers { maybe: Some(second_question), maybe_const: Some(maybe_const) }
+        Ok(BoundModifiers { maybe, maybe_const })
     }
 
     /// Parses a type bound according to:
@@ -757,7 +764,7 @@ impl<'a> Parser<'a> {
     /// TY_BOUND_NOPAREN = [TY_BOUND_MODIFIERS] [for<LT_PARAM_DEFS>] SIMPLE_PATH
     /// ```
     ///
-    /// For example, this grammar accepts `?const ?for<'a: 'b> m::Trait<'a>`.
+    /// For example, this grammar accepts `~const ?for<'a: 'b> m::Trait<'a>`.
     fn parse_generic_ty_bound(
         &mut self,
         lo: Span,

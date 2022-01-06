@@ -1,7 +1,8 @@
 // run-rustfix
-// only-x86_64
+// needs-asm-support
 
 #![feature(asm, llvm_asm)]
+#![allow(deprecated)] // llvm_asm!
 
 fn main() {
     unsafe {

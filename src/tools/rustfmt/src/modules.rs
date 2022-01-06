@@ -16,7 +16,7 @@ use crate::syntux::parser::{
     Directory, DirectoryOwnership, ModError, ModulePathSuccess, Parser, ParserError,
 };
 use crate::syntux::session::ParseSess;
-use crate::utils::contains_skip;
+use crate::utils::{contains_skip, mk_sp};
 
 mod visitor;
 
@@ -27,7 +27,6 @@ type FileModMap<'ast> = BTreeMap<FileName, Module<'ast>>;
 pub(crate) struct Module<'a> {
     ast_mod_kind: Option<Cow<'a, ast::ModKind>>,
     pub(crate) items: Cow<'a, Vec<rustc_ast::ptr::P<ast::Item>>>,
-    attrs: Cow<'a, Vec<ast::Attribute>>,
     inner_attr: Vec<ast::Attribute>,
     pub(crate) span: Span,
 }
@@ -46,7 +45,6 @@ impl<'a> Module<'a> {
             .collect();
         Module {
             items: mod_items,
-            attrs: mod_attrs,
             inner_attr,
             span: mod_span,
             ast_mod_kind,
@@ -137,10 +135,12 @@ impl<'ast, 'sess, 'c> ModResolver<'ast, 'sess> {
             self.visit_mod_from_ast(&krate.items)?;
         }
 
+        let snippet_provider = self.parse_sess.snippet_provider(krate.span);
+
         self.file_map.insert(
             root_filename,
             Module::new(
-                krate.span,
+                mk_sp(snippet_provider.start_pos(), snippet_provider.end_pos()),
                 None,
                 Cow::Borrowed(&krate.items),
                 Cow::Borrowed(&krate.attrs),
@@ -199,7 +199,7 @@ impl<'ast, 'sess, 'c> ModResolver<'ast, 'sess> {
     /// Visit modules from AST.
     fn visit_mod_from_ast(
         &mut self,
-        items: &'ast Vec<rustc_ast::ptr::P<ast::Item>>,
+        items: &'ast [rustc_ast::ptr::P<ast::Item>],
     ) -> Result<(), ModuleResolutionError> {
         for item in items {
             if is_cfg_if(item) {
@@ -292,7 +292,7 @@ impl<'ast, 'sess, 'c> ModResolver<'ast, 'sess> {
                 };
                 self.visit_sub_mod_after_directory_update(sub_mod, Some(directory))
             }
-            SubModKind::Internal(ref item) => {
+            SubModKind::Internal(item) => {
                 self.push_inline_mod_directory(item.ident, &item.attrs);
                 self.visit_sub_mod_after_directory_update(sub_mod, None)
             }
@@ -319,9 +319,11 @@ impl<'ast, 'sess, 'c> ModResolver<'ast, 'sess> {
         }
         match (sub_mod.ast_mod_kind, sub_mod.items) {
             (Some(Cow::Borrowed(ast::ModKind::Loaded(items, _, _))), _) => {
-                self.visit_mod_from_ast(&items)
+                self.visit_mod_from_ast(items)
             }
-            (Some(Cow::Owned(..)), Cow::Owned(items)) => self.visit_mod_outside_ast(items),
+            (Some(Cow::Owned(ast::ModKind::Loaded(items, _, _))), _) | (_, Cow::Owned(items)) => {
+                self.visit_mod_outside_ast(items)
+            }
             (_, _) => Ok(()),
         }
     }

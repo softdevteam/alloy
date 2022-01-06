@@ -1,5 +1,6 @@
 //! Various code related to computing outlives relations.
 
+pub mod components;
 pub mod env;
 pub mod obligations;
 pub mod verify;
@@ -19,6 +20,7 @@ pub fn explicit_outlives_bounds<'tcx>(
         .filter_map(move |kind| match kind {
             ty::PredicateKind::Projection(..)
             | ty::PredicateKind::Trait(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::Subtype(..)
             | ty::PredicateKind::WellFormed(..)
             | ty::PredicateKind::ObjectSafe(..)

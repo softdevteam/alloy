@@ -1,4 +1,6 @@
-//! WASI-specific extensions to primitives in the `std::fs` module.
+//! WASI-specific extensions to primitives in the [`std::fs`] module.
+//!
+//! [`std::fs`]: crate::fs
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![unstable(feature = "wasi_ext", issue = "71213")]
@@ -228,35 +230,35 @@ pub trait FileExt {
 
 impl FileExt for fs::File {
     fn read_vectored_at(&self, bufs: &mut [IoSliceMut<'_>], offset: u64) -> io::Result<usize> {
-        self.as_inner().fd().pread(bufs, offset)
+        self.as_inner().as_inner().pread(bufs, offset)
     }
 
     fn write_vectored_at(&self, bufs: &[IoSlice<'_>], offset: u64) -> io::Result<usize> {
-        self.as_inner().fd().pwrite(bufs, offset)
+        self.as_inner().as_inner().pwrite(bufs, offset)
     }
 
     fn tell(&self) -> io::Result<u64> {
-        self.as_inner().fd().tell()
+        self.as_inner().as_inner().tell()
     }
 
     fn fdstat_set_flags(&self, flags: u16) -> io::Result<()> {
-        self.as_inner().fd().set_flags(flags)
+        self.as_inner().as_inner().set_flags(flags)
     }
 
     fn fdstat_set_rights(&self, rights: u64, inheriting: u64) -> io::Result<()> {
-        self.as_inner().fd().set_rights(rights, inheriting)
+        self.as_inner().as_inner().set_rights(rights, inheriting)
     }
 
     fn advise(&self, offset: u64, len: u64, advice: u8) -> io::Result<()> {
-        self.as_inner().fd().advise(offset, len, advice)
+        self.as_inner().as_inner().advise(offset, len, advice)
     }
 
     fn allocate(&self, offset: u64, len: u64) -> io::Result<()> {
-        self.as_inner().fd().allocate(offset, len)
+        self.as_inner().as_inner().allocate(offset, len)
     }
 
     fn create_directory<P: AsRef<Path>>(&self, dir: P) -> io::Result<()> {
-        self.as_inner().fd().create_directory(osstr2str(dir.as_ref().as_ref())?)
+        self.as_inner().as_inner().create_directory(osstr2str(dir.as_ref().as_ref())?)
     }
 
     fn read_link<P: AsRef<Path>>(&self, path: P) -> io::Result<PathBuf> {
@@ -269,11 +271,11 @@ impl FileExt for fs::File {
     }
 
     fn remove_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        self.as_inner().fd().unlink_file(osstr2str(path.as_ref().as_ref())?)
+        self.as_inner().as_inner().unlink_file(osstr2str(path.as_ref().as_ref())?)
     }
 
     fn remove_directory<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        self.as_inner().fd().remove_directory(osstr2str(path.as_ref().as_ref())?)
+        self.as_inner().as_inner().remove_directory(osstr2str(path.as_ref().as_ref())?)
     }
 }
 
@@ -442,18 +444,22 @@ pub trait FileTypeExt {
     /// Returns `true` if this file type is a block device.
     fn is_block_device(&self) -> bool;
     /// Returns `true` if this file type is a character device.
-    fn is_character_device(&self) -> bool;
+    fn is_char_device(&self) -> bool;
     /// Returns `true` if this file type is a socket datagram.
     fn is_socket_dgram(&self) -> bool;
     /// Returns `true` if this file type is a socket stream.
     fn is_socket_stream(&self) -> bool;
+    /// Returns `true` if this file type is any type of socket.
+    fn is_socket(&self) -> bool {
+        self.is_socket_stream() || self.is_socket_dgram()
+    }
 }
 
 impl FileTypeExt for fs::FileType {
     fn is_block_device(&self) -> bool {
         self.as_inner().bits() == wasi::FILETYPE_BLOCK_DEVICE
     }
-    fn is_character_device(&self) -> bool {
+    fn is_char_device(&self) -> bool {
         self.as_inner().bits() == wasi::FILETYPE_CHARACTER_DEVICE
     }
     fn is_socket_dgram(&self) -> bool {
@@ -486,10 +492,10 @@ pub fn link<P: AsRef<Path>, U: AsRef<Path>>(
     new_fd: &File,
     new_path: U,
 ) -> io::Result<()> {
-    old_fd.as_inner().fd().link(
+    old_fd.as_inner().as_inner().link(
         old_flags,
         osstr2str(old_path.as_ref().as_ref())?,
-        new_fd.as_inner().fd(),
+        new_fd.as_inner().as_inner(),
         osstr2str(new_path.as_ref().as_ref())?,
     )
 }
@@ -503,9 +509,9 @@ pub fn rename<P: AsRef<Path>, U: AsRef<Path>>(
     new_fd: &File,
     new_path: U,
 ) -> io::Result<()> {
-    old_fd.as_inner().fd().rename(
+    old_fd.as_inner().as_inner().rename(
         osstr2str(old_path.as_ref().as_ref())?,
-        new_fd.as_inner().fd(),
+        new_fd.as_inner().as_inner(),
         osstr2str(new_path.as_ref().as_ref())?,
     )
 }
@@ -519,7 +525,7 @@ pub fn symlink<P: AsRef<Path>, U: AsRef<Path>>(
     new_path: U,
 ) -> io::Result<()> {
     fd.as_inner()
-        .fd()
+        .as_inner()
         .symlink(osstr2str(old_path.as_ref().as_ref())?, osstr2str(new_path.as_ref().as_ref())?)
 }
 

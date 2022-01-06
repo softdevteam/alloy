@@ -54,6 +54,7 @@ const ARCH_TABLE: &[(&str, &str)] = &[
     ("i386", "x86"),
     ("i586", "x86"),
     ("i686", "x86"),
+    ("m68k", "m68k"),
     ("mips", "mips"),
     ("mips64", "mips64"),
     ("mips64el", "mips64"),
@@ -95,7 +96,8 @@ pub const ASAN_SUPPORTED_TARGETS: &[&str] = &[
 ];
 
 pub const LSAN_SUPPORTED_TARGETS: &[&str] = &[
-    "aarch64-apple-darwin",
+    // FIXME: currently broken, see #88132
+    // "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -131,8 +133,10 @@ const BIG_ENDIAN: &[&str] = &[
 ];
 
 static ASM_SUPPORTED_ARCHS: &[&str] = &[
-    "x86", "x86_64", "arm", "aarch64", "riscv32", "riscv64", "nvptx64", "hexagon", "mips",
-    "mips64", "spirv", "wasm32",
+    "x86", "x86_64", "arm", "aarch64", "riscv32",
+    "riscv64",
+    // These targets require an additional asm_experimental_arch feature.
+    // "nvptx64", "hexagon", "mips", "mips64", "spirv", "wasm32",
 ];
 
 pub fn has_asm_support(triple: &str) -> bool {

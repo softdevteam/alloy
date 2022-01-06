@@ -7,16 +7,21 @@ use crate::traits::{
     ChalkEnvironmentAndGoal, FulfillmentError, FulfillmentErrorCode, ObligationCause,
     PredicateObligation, SelectionError, TraitEngine,
 };
-use rustc_data_structures::fx::FxIndexSet;
+use rustc_data_structures::fx::{FxHashMap, FxIndexSet};
 use rustc_middle::ty::{self, Ty};
 
 pub struct FulfillmentContext<'tcx> {
     obligations: FxIndexSet<PredicateObligation<'tcx>>,
+
+    relationships: FxHashMap<ty::TyVid, ty::FoundRelationships>,
 }
 
 impl FulfillmentContext<'tcx> {
     crate fn new() -> Self {
-        FulfillmentContext { obligations: FxIndexSet::default() }
+        FulfillmentContext {
+            obligations: FxIndexSet::default(),
+            relationships: FxHashMap::default(),
+        }
     }
 }
 
@@ -39,38 +44,37 @@ impl TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         assert!(!infcx.is_in_snapshot());
         let obligation = infcx.resolve_vars_if_possible(obligation);
 
+        super::relationships::update(self, infcx, &obligation);
+
         self.obligations.insert(obligation);
     }
 
-    fn select_all_or_error(
-        &mut self,
-        infcx: &InferCtxt<'_, 'tcx>,
-    ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
-        self.select_where_possible(infcx)?;
+    fn select_all_or_error(&mut self, infcx: &InferCtxt<'_, 'tcx>) -> Vec<FulfillmentError<'tcx>> {
+        {
+            let errors = self.select_where_possible(infcx);
 
-        if self.obligations.is_empty() {
-            Ok(())
-        } else {
-            let errors = self
-                .obligations
-                .iter()
-                .map(|obligation| FulfillmentError {
-                    obligation: obligation.clone(),
-                    code: FulfillmentErrorCode::CodeAmbiguity,
-                    points_at_arg_span: false,
-                    // FIXME - does Chalk have a notation of 'root obligation'?
-                    // This is just for diagnostics, so it's okay if this is wrong
-                    root_obligation: obligation.clone(),
-                })
-                .collect();
-            Err(errors)
+            if !errors.is_empty() {
+                return errors;
+            }
         }
+
+        // any remaining obligations are errors
+        self.obligations
+            .iter()
+            .map(|obligation| FulfillmentError {
+                obligation: obligation.clone(),
+                code: FulfillmentErrorCode::CodeAmbiguity,
+                // FIXME - does Chalk have a notation of 'root obligation'?
+                // This is just for diagnostics, so it's okay if this is wrong
+                root_obligation: obligation.clone(),
+            })
+            .collect()
     }
 
     fn select_where_possible(
         &mut self,
         infcx: &InferCtxt<'_, 'tcx>,
-    ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
+    ) -> Vec<FulfillmentError<'tcx>> {
         assert!(!infcx.is_in_snapshot());
 
         let mut errors = Vec::new();
@@ -112,7 +116,6 @@ impl TraitEngine<'tcx> for FulfillmentContext<'tcx> {
                                     code: FulfillmentErrorCode::CodeSelectionError(
                                         SelectionError::Unimplemented,
                                     ),
-                                    points_at_arg_span: false,
                                     // FIXME - does Chalk have a notation of 'root obligation'?
                                     // This is just for diagnostics, so it's okay if this is wrong
                                     root_obligation: obligation,
@@ -129,7 +132,6 @@ impl TraitEngine<'tcx> for FulfillmentContext<'tcx> {
                         code: FulfillmentErrorCode::CodeSelectionError(
                             SelectionError::Unimplemented,
                         ),
-                        points_at_arg_span: false,
                         // FIXME - does Chalk have a notation of 'root obligation'?
                         // This is just for diagnostics, so it's okay if this is wrong
                         root_obligation: obligation,
@@ -143,10 +145,14 @@ impl TraitEngine<'tcx> for FulfillmentContext<'tcx> {
             }
         }
 
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        errors
     }
 
     fn pending_obligations(&self) -> Vec<PredicateObligation<'tcx>> {
         self.obligations.iter().cloned().collect()
+    }
+
+    fn relationships(&mut self) -> &mut FxHashMap<ty::TyVid, ty::FoundRelationships> {
+        &mut self.relationships
     }
 }

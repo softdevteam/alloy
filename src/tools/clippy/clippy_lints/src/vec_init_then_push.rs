@@ -1,27 +1,24 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::higher::{get_vec_init_kind, VecInitKind};
 use clippy_utils::source::snippet;
-use clippy_utils::ty::is_type_diagnostic_item;
-use clippy_utils::{match_def_path, path_to_local, path_to_local_id, paths};
+use clippy_utils::{path_to_local, path_to_local_id};
 use if_chain::if_chain;
-use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
-use rustc_hir::{BindingAnnotation, Block, Expr, ExprKind, HirId, Local, PatKind, QPath, Stmt, StmtKind};
+use rustc_hir::{BindingAnnotation, Block, Expr, ExprKind, HirId, Local, PatKind, Stmt, StmtKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
-use rustc_span::{symbol::sym, Span};
-use std::convert::TryInto;
+use rustc_span::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for calls to `push` immediately after creating a new `Vec`.
+    /// ### What it does
+    /// Checks for calls to `push` immediately after creating a new `Vec`.
     ///
-    /// **Why is this bad?** The `vec![]` macro is both more performant and easier to read than
+    /// ### Why is this bad?
+    /// The `vec![]` macro is both more performant and easier to read than
     /// multiple `push` calls.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let mut v = Vec::new();
     /// v.push(0);
@@ -30,6 +27,7 @@ declare_clippy_lint! {
     /// ```rust
     /// let v = vec![0];
     /// ```
+    #[clippy::version = "1.51.0"]
     pub VEC_INIT_THEN_PUSH,
     perf,
     "`push` immediately after `Vec` creation"
@@ -42,11 +40,6 @@ pub struct VecInitThenPush {
     searcher: Option<VecPushSearcher>,
 }
 
-#[derive(Clone, Copy)]
-enum VecInitKind {
-    New,
-    WithCapacity(u64),
-}
 struct VecPushSearcher {
     local_id: HirId,
     init: VecInitKind,
@@ -59,7 +52,8 @@ impl VecPushSearcher {
     fn display_err(&self, cx: &LateContext<'_>) {
         match self.init {
             _ if self.found == 0 => return,
-            VecInitKind::WithCapacity(x) if x > self.found => return,
+            VecInitKind::WithLiteralCapacity(x) if x > self.found => return,
+            VecInitKind::WithExprCapacity(_) => return,
             _ => (),
         };
 
@@ -152,38 +146,4 @@ impl LateLintPass<'_> for VecInitThenPush {
             searcher.display_err(cx);
         }
     }
-}
-
-fn get_vec_init_kind<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) -> Option<VecInitKind> {
-    if let ExprKind::Call(func, args) = expr.kind {
-        match func.kind {
-            ExprKind::Path(QPath::TypeRelative(ty, name))
-                if is_type_diagnostic_item(cx, cx.typeck_results().node_type(ty.hir_id), sym::vec_type) =>
-            {
-                if name.ident.name == sym::new {
-                    return Some(VecInitKind::New);
-                } else if name.ident.name.as_str() == "with_capacity" {
-                    return args.get(0).and_then(|arg| {
-                        if_chain! {
-                            if let ExprKind::Lit(lit) = &arg.kind;
-                            if let LitKind::Int(num, _) = lit.node;
-                            then {
-                                Some(VecInitKind::WithCapacity(num.try_into().ok()?))
-                            } else {
-                                None
-                            }
-                        }
-                    });
-                }
-            }
-            ExprKind::Path(QPath::Resolved(_, path))
-                if match_def_path(cx, path.res.opt_def_id()?, &paths::DEFAULT_TRAIT_METHOD)
-                    && is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(expr), sym::vec_type) =>
-            {
-                return Some(VecInitKind::New);
-            }
-            _ => (),
-        }
-    }
-    None
 }

@@ -13,11 +13,11 @@ use rustc_expand::base::SyntaxExtension;
 use rustc_hir::def_id::{CrateNum, LocalDefId, StableCrateId, LOCAL_CRATE};
 use rustc_hir::definitions::Definitions;
 use rustc_index::vec::IndexVec;
-use rustc_middle::middle::cstore::{CrateDepKind, CrateSource, ExternCrate};
-use rustc_middle::middle::cstore::{ExternCrateSource, MetadataLoaderDyn};
 use rustc_middle::ty::TyCtxt;
 use rustc_serialize::json::ToJson;
 use rustc_session::config::{self, CrateType, ExternLocation};
+use rustc_session::cstore::{CrateDepKind, CrateSource, ExternCrate};
+use rustc_session::cstore::{ExternCrateSource, MetadataLoaderDyn};
 use rustc_session::lint::{self, BuiltinLintDiagnostics, ExternDepSpec};
 use rustc_session::output::validate_crate_name;
 use rustc_session::search_paths::PathKind;
@@ -29,6 +29,7 @@ use rustc_target::spec::{PanicStrategy, TargetTriple};
 
 use proc_macro::bridge::client::ProcMacro;
 use std::collections::BTreeMap;
+use std::ops::Fn;
 use std::path::Path;
 use std::{cmp, env};
 use tracing::{debug, info};
@@ -45,7 +46,7 @@ pub struct CStore {
 
     /// This map is used to verify we get no hash conflicts between
     /// `StableCrateId` values.
-    stable_crate_ids: FxHashMap<StableCrateId, CrateNum>,
+    pub(crate) stable_crate_ids: FxHashMap<StableCrateId, CrateNum>,
 
     /// Unused externs of the crate
     unused_externs: Vec<Symbol>,
@@ -450,6 +451,7 @@ impl<'a> CrateLoader<'a> {
         &self,
         locator: &mut CrateLocator<'b>,
         path_kind: PathKind,
+        host_hash: Option<Svh>,
     ) -> Result<Option<(LoadResult, Option<Library>)>, CrateError>
     where
         'a: 'b,
@@ -459,7 +461,7 @@ impl<'a> CrateLoader<'a> {
         let mut proc_macro_locator = locator.clone();
 
         // Try to load a proc macro
-        proc_macro_locator.is_proc_macro = Some(true);
+        proc_macro_locator.is_proc_macro = true;
 
         // Load the proc macro crate for the target
         let (locator, target_result) = if self.sess.opts.debugging_opts.dual_proc_macros {
@@ -471,7 +473,7 @@ impl<'a> CrateLoader<'a> {
                 Some(LoadResult::Loaded(library)) => Some(LoadResult::Loaded(library)),
                 None => return Ok(None),
             };
-            locator.hash = locator.host_hash;
+            locator.hash = host_hash;
             // Use the locator when looking for the host proc macro crate, as that is required
             // so we want it to affect the error message
             (locator, result)
@@ -482,7 +484,7 @@ impl<'a> CrateLoader<'a> {
         // Load the proc macro crate for the host
 
         locator.reset();
-        locator.is_proc_macro = Some(true);
+        locator.is_proc_macro = true;
         locator.target = &self.sess.host;
         locator.triple = TargetTriple::from_triple(config::host_triple());
         locator.filesearch = self.sess.host_filesearch(path_kind);
@@ -510,16 +512,17 @@ impl<'a> CrateLoader<'a> {
         name: Symbol,
         span: Span,
         dep_kind: CrateDepKind,
-        dep: Option<(&'b CratePaths, &'b CrateDep)>,
-    ) -> CrateNum {
-        if dep.is_none() {
-            self.used_extern_options.insert(name);
+    ) -> Option<CrateNum> {
+        self.used_extern_options.insert(name);
+        match self.maybe_resolve_crate(name, dep_kind, None) {
+            Ok(cnum) => Some(cnum),
+            Err(err) => {
+                let missing_core =
+                    self.maybe_resolve_crate(sym::core, CrateDepKind::Explicit, None).is_err();
+                err.report(&self.sess, span, missing_core);
+                None
+            }
         }
-        self.maybe_resolve_crate(name, dep_kind, dep).unwrap_or_else(|err| {
-            let missing_core =
-                self.maybe_resolve_crate(sym::core, CrateDepKind::Explicit, None).is_err();
-            err.report(&self.sess, span, missing_core)
-        })
     }
 
     fn maybe_resolve_crate<'b>(
@@ -551,21 +554,18 @@ impl<'a> CrateLoader<'a> {
                 &*self.metadata_loader,
                 name,
                 hash,
-                host_hash,
                 extra_filename,
                 false, // is_host
                 path_kind,
-                root,
-                Some(false), // is_proc_macro
             );
 
             match self.load(&mut locator)? {
                 Some(res) => (res, None),
                 None => {
                     dep_kind = CrateDepKind::MacrosOnly;
-                    match self.load_proc_macro(&mut locator, path_kind)? {
+                    match self.load_proc_macro(&mut locator, path_kind, host_hash)? {
                         Some(res) => res,
-                        None => return Err(locator.into_error()),
+                        None => return Err(locator.into_error(root.cloned())),
                     }
                 }
             }
@@ -605,7 +605,7 @@ impl<'a> CrateLoader<'a> {
         // FIXME: why is this condition necessary? It was adding in #33625 but I
         // don't know why and the original author doesn't remember ...
         let can_reuse_cratenum =
-            locator.triple == self.sess.opts.target_triple || locator.is_proc_macro == Some(true);
+            locator.triple == self.sess.opts.target_triple || locator.is_proc_macro;
         Ok(Some(if can_reuse_cratenum {
             let mut result = LoadResult::Loaded(library);
             self.cstore.iter_crate_data(|cnum, data| {
@@ -755,7 +755,7 @@ impl<'a> CrateLoader<'a> {
         };
         info!("panic runtime not found -- loading {}", name);
 
-        let cnum = self.resolve_crate(name, DUMMY_SP, CrateDepKind::Implicit, None);
+        let Some(cnum) = self.resolve_crate(name, DUMMY_SP, CrateDepKind::Implicit) else { return; };
         let data = self.cstore.get_crate_data(cnum);
 
         // Sanity check the loaded crate to ensure it is indeed a panic runtime
@@ -777,19 +777,17 @@ impl<'a> CrateLoader<'a> {
     }
 
     fn inject_profiler_runtime(&mut self, krate: &ast::Crate) {
-        let profiler_runtime = &self.sess.opts.debugging_opts.profiler_runtime;
-
-        if !(profiler_runtime.is_some()
-            && (self.sess.instrument_coverage()
+        if self.sess.opts.debugging_opts.no_profiler_runtime
+            || !(self.sess.instrument_coverage()
                 || self.sess.opts.debugging_opts.profile
-                || self.sess.opts.cg.profile_generate.enabled()))
+                || self.sess.opts.cg.profile_generate.enabled())
         {
             return;
         }
 
         info!("loading profiler");
 
-        let name = Symbol::intern(profiler_runtime.as_ref().unwrap());
+        let name = Symbol::intern(&self.sess.opts.debugging_opts.profiler_runtime);
         if name == sym::profiler_builtins && self.sess.contains_name(&krate.attrs, sym::no_core) {
             self.sess.err(
                 "`profiler_builtins` crate (required by compiler options) \
@@ -797,7 +795,7 @@ impl<'a> CrateLoader<'a> {
             );
         }
 
-        let cnum = self.resolve_crate(name, DUMMY_SP, CrateDepKind::Implicit, None);
+        let Some(cnum) = self.resolve_crate(name, DUMMY_SP, CrateDepKind::Implicit) else { return; };
         let data = self.cstore.get_crate_data(cnum);
 
         // Sanity check the loaded crate to ensure it is indeed a profiler runtime
@@ -885,7 +883,7 @@ impl<'a> CrateLoader<'a> {
                 "no global memory allocator found but one is \
                            required; link to std or \
                            add `#[global_allocator]` to a static item \
-                           that implements the GlobalAlloc trait.",
+                           that implements the GlobalAlloc trait",
             );
         }
         self.cstore.allocator_kind = Some(AllocatorKind::Default);
@@ -997,7 +995,7 @@ impl<'a> CrateLoader<'a> {
         item: &ast::Item,
         definitions: &Definitions,
         def_id: LocalDefId,
-    ) -> CrateNum {
+    ) -> Option<CrateNum> {
         match item.kind {
             ast::ItemKind::ExternCrate(orig_name) => {
                 debug!(
@@ -1017,7 +1015,7 @@ impl<'a> CrateLoader<'a> {
                     CrateDepKind::Explicit
                 };
 
-                let cnum = self.resolve_crate(name, item.span, dep_kind, None);
+                let cnum = self.resolve_crate(name, item.span, dep_kind)?;
 
                 let path_len = definitions.def_path(def_id).data.len();
                 self.update_extern_crate(
@@ -1029,14 +1027,14 @@ impl<'a> CrateLoader<'a> {
                         dependency_of: LOCAL_CRATE,
                     },
                 );
-                cnum
+                Some(cnum)
             }
             _ => bug!(),
         }
     }
 
-    pub fn process_path_extern(&mut self, name: Symbol, span: Span) -> CrateNum {
-        let cnum = self.resolve_crate(name, span, CrateDepKind::Explicit, None);
+    pub fn process_path_extern(&mut self, name: Symbol, span: Span) -> Option<CrateNum> {
+        let cnum = self.resolve_crate(name, span, CrateDepKind::Explicit)?;
 
         self.update_extern_crate(
             cnum,
@@ -1049,7 +1047,7 @@ impl<'a> CrateLoader<'a> {
             },
         );
 
-        cnum
+        Some(cnum)
     }
 
     pub fn maybe_process_path_extern(&mut self, name: Symbol) -> Option<CrateNum> {

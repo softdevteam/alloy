@@ -1,88 +1,42 @@
-use std::cmp::Ordering;
-
 use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::layout::LayoutOf;
 use rustc_middle::ty::{self, IntTy, UintTy};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
-use rustc_target::abi::LayoutOf;
 
+use clippy_utils::comparisons;
 use clippy_utils::comparisons::Rel;
-use clippy_utils::consts::{constant, Constant};
+use clippy_utils::consts::{constant_full_int, FullInt};
 use clippy_utils::diagnostics::span_lint;
 use clippy_utils::source::snippet;
-use clippy_utils::{comparisons, sext};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for comparisons where the relation is always either
+    /// ### What it does
+    /// Checks for comparisons where the relation is always either
     /// true or false, but where one side has been upcast so that the comparison is
     /// necessary. Only integer types are checked.
     ///
-    /// **Why is this bad?** An expression like `let x : u8 = ...; (x as u32) > 300`
+    /// ### Why is this bad?
+    /// An expression like `let x : u8 = ...; (x as u32) > 300`
     /// will mistakenly imply that it is possible for `x` to be outside the range of
     /// `u8`.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// https://github.com/rust-lang/rust-clippy/issues/886
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x: u8 = 1;
     /// (x as u32) > 300;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub INVALID_UPCAST_COMPARISONS,
     pedantic,
     "a comparison involving an upcast which is always true or false"
 }
 
 declare_lint_pass!(InvalidUpcastComparisons => [INVALID_UPCAST_COMPARISONS]);
-
-#[derive(Copy, Clone, Debug, Eq)]
-enum FullInt {
-    S(i128),
-    U(u128),
-}
-
-impl FullInt {
-    #[allow(clippy::cast_sign_loss)]
-    #[must_use]
-    fn cmp_s_u(s: i128, u: u128) -> Ordering {
-        if s < 0 {
-            Ordering::Less
-        } else if u > (i128::MAX as u128) {
-            Ordering::Greater
-        } else {
-            (s as u128).cmp(&u)
-        }
-    }
-}
-
-impl PartialEq for FullInt {
-    #[must_use]
-    fn eq(&self, other: &Self) -> bool {
-        self.partial_cmp(other).expect("`partial_cmp` only returns `Some(_)`") == Ordering::Equal
-    }
-}
-
-impl PartialOrd for FullInt {
-    #[must_use]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(match (self, other) {
-            (&Self::S(s), &Self::S(o)) => s.cmp(&o),
-            (&Self::U(s), &Self::U(o)) => s.cmp(&o),
-            (&Self::S(s), &Self::U(o)) => Self::cmp_s_u(s, o),
-            (&Self::U(s), &Self::S(o)) => Self::cmp_s_u(o, s).reverse(),
-        })
-    }
-}
-
-impl Ord for FullInt {
-    #[must_use]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other)
-            .expect("`partial_cmp` for FullInt can never return `None`")
-    }
-}
 
 fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_>, expr: &'a Expr<'_>) -> Option<(FullInt, FullInt)> {
     if let ExprKind::Cast(cast_exp, _) = expr.kind {
@@ -116,19 +70,6 @@ fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_>, expr: &'a Expr<'_>) -> 
     }
 }
 
-fn node_as_const_fullint<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<FullInt> {
-    let val = constant(cx, cx.typeck_results(), expr)?.0;
-    if let Constant::Int(const_int) = val {
-        match *cx.typeck_results().expr_ty(expr).kind() {
-            ty::Int(ity) => Some(FullInt::S(sext(cx.tcx, const_int, ity))),
-            ty::Uint(_) => Some(FullInt::U(const_int)),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
 fn err_upcast_comparison(cx: &LateContext<'_>, span: Span, expr: &Expr<'_>, always: bool) {
     if let ExprKind::Cast(cast_val, _) = expr.kind {
         span_lint(
@@ -154,7 +95,7 @@ fn upcast_comparison_bounds_err<'tcx>(
     invert: bool,
 ) {
     if let Some((lb, ub)) = lhs_bounds {
-        if let Some(norm_rhs_val) = node_as_const_fullint(cx, rhs) {
+        if let Some(norm_rhs_val) = constant_full_int(cx, cx.typeck_results(), rhs) {
             if rel == Rel::Eq || rel == Rel::Ne {
                 if norm_rhs_val < lb || norm_rhs_val > ub {
                     err_upcast_comparison(cx, span, lhs, rel == Rel::Ne);

@@ -12,7 +12,7 @@ use rustc_errors::ErrorReported;
 use rustc_middle::ty::fold::TypeFoldable;
 use rustc_middle::ty::{self, TyCtxt};
 
-/// Attempts to resolve an obligation to a `ImplSource`. The result is
+/// Attempts to resolve an obligation to an `ImplSource`. The result is
 /// a shallow `ImplSource` resolution, meaning that we do not
 /// (necessarily) resolve all nested obligations on the impl. Note
 /// that type check should guarantee to us that all nested
@@ -120,7 +120,8 @@ where
     // In principle, we only need to do this so long as `result`
     // contains unbound type parameters. It could be a slight
     // optimization to stop iterating early.
-    if let Err(errors) = fulfill_cx.select_all_or_error(infcx) {
+    let errors = fulfill_cx.select_all_or_error(infcx);
+    if !errors.is_empty() {
         infcx.tcx.sess.delay_span_bug(
             rustc_span::DUMMY_SP,
             &format!("Encountered errors `{:?}` resolving bounds after type-checking", errors),

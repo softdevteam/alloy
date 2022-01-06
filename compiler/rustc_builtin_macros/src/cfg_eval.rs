@@ -2,6 +2,7 @@ use crate::util::check_builtin_macro_attribute;
 
 use rustc_ast as ast;
 use rustc_ast::mut_visit::MutVisitor;
+use rustc_ast::ptr::P;
 use rustc_ast::tokenstream::CanSynthesizeMissingTokens;
 use rustc_ast::visit::Visitor;
 use rustc_ast::{mut_visit, visit};
@@ -9,10 +10,10 @@ use rustc_ast::{AstLike, Attribute};
 use rustc_expand::base::{Annotatable, ExtCtxt};
 use rustc_expand::config::StripUnconfigured;
 use rustc_expand::configure;
-use rustc_parse::parser::ForceCollect;
+use rustc_feature::Features;
+use rustc_parse::parser::{ForceCollect, Parser};
 use rustc_session::utils::FlattenNonterminals;
-
-use rustc_ast::ptr::P;
+use rustc_session::Session;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 use smallvec::SmallVec;
@@ -24,21 +25,19 @@ crate fn expand(
     annotatable: Annotatable,
 ) -> Vec<Annotatable> {
     check_builtin_macro_attribute(ecx, meta_item, sym::cfg_eval);
-    vec![cfg_eval(ecx, annotatable)]
+    vec![cfg_eval(ecx.sess, ecx.ecfg.features, annotatable)]
 }
 
-crate fn cfg_eval(ecx: &ExtCtxt<'_>, annotatable: Annotatable) -> Annotatable {
-    CfgEval {
-        cfg: &mut StripUnconfigured {
-            sess: ecx.sess,
-            features: ecx.ecfg.features,
-            config_tokens: true,
-        },
-    }
-    .configure_annotatable(annotatable)
-    // Since the item itself has already been configured by the `InvocationCollector`,
-    // we know that fold result vector will contain exactly one element.
-    .unwrap()
+crate fn cfg_eval(
+    sess: &Session,
+    features: Option<&Features>,
+    annotatable: Annotatable,
+) -> Annotatable {
+    CfgEval { cfg: &mut StripUnconfigured { sess, features, config_tokens: true } }
+        .configure_annotatable(annotatable)
+        // Since the item itself has already been configured by the `InvocationCollector`,
+        // we know that fold result vector will contain exactly one element.
+        .unwrap()
 }
 
 struct CfgEval<'a, 'b> {
@@ -78,6 +77,10 @@ fn flat_map_annotatable(
         Annotatable::Param(param) => vis.flat_map_param(param).pop().map(Annotatable::Param),
         Annotatable::FieldDef(sf) => vis.flat_map_field_def(sf).pop().map(Annotatable::FieldDef),
         Annotatable::Variant(v) => vis.flat_map_variant(v).pop().map(Annotatable::Variant),
+        Annotatable::Crate(mut krate) => {
+            vis.visit_crate(&mut krate);
+            Some(Annotatable::Crate(krate))
+        }
     }
 }
 
@@ -102,6 +105,7 @@ impl CfgFinder {
             Annotatable::Param(param) => finder.visit_param(&param),
             Annotatable::FieldDef(field) => finder.visit_field_def(&field),
             Annotatable::Variant(variant) => finder.visit_variant(&variant),
+            Annotatable::Crate(krate) => finder.visit_crate(krate),
         };
         finder.has_cfg_or_cfg_attr
     }
@@ -139,8 +143,34 @@ impl CfgEval<'_, '_> {
         // the location of `#[cfg]` and `#[cfg_attr]` in the token stream. The tokenization
         // process is lossless, so this process is invisible to proc-macros.
 
-        // FIXME - get rid of this clone
-        let nt = annotatable.clone().into_nonterminal();
+        let parse_annotatable_with: fn(&mut Parser<'_>) -> _ = match annotatable {
+            Annotatable::Item(_) => {
+                |parser| Annotatable::Item(parser.parse_item(ForceCollect::Yes).unwrap().unwrap())
+            }
+            Annotatable::TraitItem(_) => |parser| {
+                Annotatable::TraitItem(
+                    parser.parse_trait_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
+                )
+            },
+            Annotatable::ImplItem(_) => |parser| {
+                Annotatable::ImplItem(
+                    parser.parse_impl_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
+                )
+            },
+            Annotatable::ForeignItem(_) => |parser| {
+                Annotatable::ForeignItem(
+                    parser.parse_foreign_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
+                )
+            },
+            Annotatable::Stmt(_) => |parser| {
+                Annotatable::Stmt(P(parser.parse_stmt(ForceCollect::Yes).unwrap().unwrap()))
+            },
+            Annotatable::Expr(_) => {
+                |parser| Annotatable::Expr(parser.parse_expr_force_collect().unwrap())
+            }
+            _ => unreachable!(),
+        };
+        let nt = annotatable.into_nonterminal();
 
         let mut orig_tokens = rustc_parse::nt_to_tokenstream(
             &nt,
@@ -174,25 +204,7 @@ impl CfgEval<'_, '_> {
         let mut parser =
             rustc_parse::stream_to_parser(&self.cfg.sess.parse_sess, orig_tokens, None);
         parser.capture_cfg = true;
-        annotatable = match annotatable {
-            Annotatable::Item(_) => {
-                Annotatable::Item(parser.parse_item(ForceCollect::Yes).unwrap().unwrap())
-            }
-            Annotatable::TraitItem(_) => Annotatable::TraitItem(
-                parser.parse_trait_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
-            ),
-            Annotatable::ImplItem(_) => Annotatable::ImplItem(
-                parser.parse_impl_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
-            ),
-            Annotatable::ForeignItem(_) => Annotatable::ForeignItem(
-                parser.parse_foreign_item(ForceCollect::Yes).unwrap().unwrap().unwrap(),
-            ),
-            Annotatable::Stmt(_) => {
-                Annotatable::Stmt(P(parser.parse_stmt(ForceCollect::Yes).unwrap().unwrap()))
-            }
-            Annotatable::Expr(_) => Annotatable::Expr(parser.parse_expr_force_collect().unwrap()),
-            _ => unreachable!(),
-        };
+        annotatable = parse_annotatable_with(&mut parser);
 
         // Now that we have our re-parsed `AttrAnnotatedTokenStream`, recursively configuring
         // our attribute target will correctly the tokens as well.

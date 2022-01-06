@@ -13,20 +13,21 @@ use rustc_span::symbol::Ident;
 use rustc_span::Span;
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// Checks for unlikely usages of binary operators that are almost
     /// certainly typos and/or copy/paste errors, given the other usages
     /// of binary operators nearby.
-    /// **Why is this bad?**
+    ///
+    /// ### Why is this bad?
     /// They are probably bugs and if they aren't then they look like bugs
     /// and you should add a comment explaining why you are doing such an
     /// odd set of operations.
-    /// **Known problems:**
+    ///
+    /// ### Known problems
     /// There may be some false positives if you are trying to do something
     /// unusual that happens to look like a typo.
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// struct Vec3 {
     ///     x: f64,
@@ -58,6 +59,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "1.50.0"]
     pub SUSPICIOUS_OPERATION_GROUPINGS,
     nursery,
     "groupings of binary operations that look suspiciously like typos"
@@ -587,7 +589,7 @@ fn ident_difference_expr_with_base_location(
         | (ForLoop(_, _, _, _), ForLoop(_, _, _, _))
         | (While(_, _, _), While(_, _, _))
         | (If(_, _, _), If(_, _, _))
-        | (Let(_, _), Let(_, _))
+        | (Let(_, _, _), Let(_, _, _))
         | (Type(_, _), Type(_, _))
         | (Cast(_, _), Cast(_, _))
         | (Lit(_), Lit(_))
@@ -677,7 +679,7 @@ fn suggestion_with_swapped_ident(
         Some(format!(
             "{}{}{}",
             snippet_with_applicability(cx, expr.span.with_hi(current_ident.span.lo()), "..", applicability),
-            new_ident.to_string(),
+            new_ident,
             snippet_with_applicability(cx, expr.span.with_lo(current_ident.span.hi()), "..", applicability),
         ))
     })

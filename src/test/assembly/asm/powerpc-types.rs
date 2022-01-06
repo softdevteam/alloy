@@ -1,4 +1,4 @@
-// min-llvm-version: 10.0.1
+// min-llvm-version: 12.0.1
 // revisions: powerpc powerpc64
 // assembly-output: emit-asm
 //[powerpc] compile-flags: --target powerpc-unknown-linux-gnu
@@ -6,7 +6,7 @@
 //[powerpc64] compile-flags: --target powerpc64-unknown-linux-gnu
 //[powerpc64] needs-llvm-components: powerpc
 
-#![feature(no_core, lang_items, rustc_attrs, repr_simd)]
+#![feature(no_core, lang_items, rustc_attrs, repr_simd, asm_sym, asm_experimental_arch)]
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(asm_sub_register, non_camel_case_types)]
@@ -194,3 +194,15 @@ check_reg!(reg_f32_f0, f32, "0", "f0", "fmr");
 // CHECK: fmr 0, 0
 // CHECK: #NO_APP
 check_reg!(reg_f64_f0, f64, "0", "f0", "fmr");
+
+// CHECK-LABEL: reg_f32_f18:
+// CHECK: #APP
+// CHECK: fmr 18, 18
+// CHECK: #NO_APP
+check_reg!(reg_f32_f18, f32, "18", "f18", "fmr");
+
+// CHECK-LABEL: reg_f64_f18:
+// CHECK: #APP
+// CHECK: fmr 18, 18
+// CHECK: #NO_APP
+check_reg!(reg_f64_f18, f64, "18", "f18", "fmr");

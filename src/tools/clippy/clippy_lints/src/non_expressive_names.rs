@@ -1,7 +1,6 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_then};
 use rustc_ast::ast::{
-    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, FnKind, Item, ItemKind, Local, Pat,
-    PatKind,
+    self, Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, Item, ItemKind, Local, Pat, PatKind,
 };
 use rustc_ast::visit::{walk_block, walk_expr, walk_pat, Visitor};
 use rustc_lint::{EarlyContext, EarlyLintPass};
@@ -13,56 +12,59 @@ use rustc_span::symbol::{Ident, Symbol};
 use std::cmp::Ordering;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for names that are very similar and thus confusing.
+    /// ### What it does
+    /// Checks for names that are very similar and thus confusing.
     ///
-    /// **Why is this bad?** It's hard to distinguish between names that differ only
+    /// ### Why is this bad?
+    /// It's hard to distinguish between names that differ only
     /// by a single character.
     ///
-    /// **Known problems:** None?
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// let checked_exp = something;
     /// let checked_expr = something_else;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub SIMILAR_NAMES,
     pedantic,
     "similarly named items and bindings"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for too many variables whose name consists of a
+    /// ### What it does
+    /// Checks for too many variables whose name consists of a
     /// single character.
     ///
-    /// **Why is this bad?** It's hard to memorize what a variable means without a
+    /// ### Why is this bad?
+    /// It's hard to memorize what a variable means without a
     /// descriptive name.
     ///
-    /// **Known problems:** None?
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// let (a, b, c, d, e, f, g) = (...);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MANY_SINGLE_CHAR_NAMES,
-    style,
+    pedantic,
     "too many single character bindings"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks if you have variables whose name consists of just
+    /// ### What it does
+    /// Checks if you have variables whose name consists of just
     /// underscores and digits.
     ///
-    /// **Why is this bad?** It's hard to memorize what a variable means without a
+    /// ### Why is this bad?
+    /// It's hard to memorize what a variable means without a
     /// descriptive name.
     ///
-    /// **Known problems:** None?
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let _1 = 1;
     /// let ___1 = 1;
     /// let __1___2 = 11;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub JUST_UNDERSCORES_AND_DIGITS,
     style,
     "unclear name"
@@ -127,6 +129,7 @@ const ALLOWED_TO_BE_SIMILAR: &[&[&str]] = &[
     &["qpath", "path"],
     &["lit", "lint"],
     &["wparam", "lparam"],
+    &["iter", "item"],
 ];
 
 struct SimilarNamesNameVisitor<'a, 'tcx, 'b>(&'b mut SimilarNamesLocalVisitor<'a, 'tcx>);
@@ -218,7 +221,6 @@ impl<'a, 'tcx, 'b> SimilarNamesNameVisitor<'a, 'tcx, 'b> {
             if allowed_to_be_similar(&interned_name, existing_name.exemptions) {
                 continue;
             }
-            let mut split_at = None;
             match existing_name.len.cmp(&count) {
                 Ordering::Greater => {
                     if existing_name.len - count != 1
@@ -269,7 +271,6 @@ impl<'a, 'tcx, 'b> SimilarNamesNameVisitor<'a, 'tcx, 'b> {
                                 // or too many chars differ (foo_x, boo_y) or (foox, booy)
                                 continue;
                             }
-                            split_at = interned_name.char_indices().rev().next().map(|(i, _)| i);
                         }
                     } else {
                         let second_i = interned_chars.next().expect("we know we have at least two chars");
@@ -282,7 +283,6 @@ impl<'a, 'tcx, 'b> SimilarNamesNameVisitor<'a, 'tcx, 'b> {
                             // or too many chars differ (x_foo, y_boo) or (xfoo, yboo)
                             continue;
                         }
-                        split_at = interned_name.chars().next().map(char::len_utf8);
                     }
                 },
             }
@@ -293,17 +293,6 @@ impl<'a, 'tcx, 'b> SimilarNamesNameVisitor<'a, 'tcx, 'b> {
                 "binding's name is too similar to existing binding",
                 |diag| {
                     diag.span_note(existing_name.span, "existing binding defined here");
-                    if let Some(split) = split_at {
-                        diag.span_help(
-                            ident.span,
-                            &format!(
-                                "separate the discriminating character by an \
-                                 underscore like: `{}_{}`",
-                                &interned_name[..split],
-                                &interned_name[split..]
-                            ),
-                        );
-                    }
                 },
             );
             return;
@@ -330,8 +319,11 @@ impl<'a, 'b> SimilarNamesLocalVisitor<'a, 'b> {
 
 impl<'a, 'tcx> Visitor<'tcx> for SimilarNamesLocalVisitor<'a, 'tcx> {
     fn visit_local(&mut self, local: &'tcx Local) {
-        if let Some(ref init) = local.init {
-            self.apply(|this| walk_expr(this, &**init));
+        if let Some((init, els)) = &local.kind.init_else_opt() {
+            self.apply(|this| walk_expr(this, init));
+            if let Some(els) = els {
+                self.apply(|this| walk_block(this, els));
+            }
         }
         // add the pattern after the expression because the bindings aren't available
         // yet in the init
@@ -368,7 +360,12 @@ impl EarlyLintPass for NonExpressiveNames {
             return;
         }
 
-        if let ItemKind::Fn(box FnKind(_, ref sig, _, Some(ref blk))) = item.kind {
+        if let ItemKind::Fn(box ast::Fn {
+            ref sig,
+            body: Some(ref blk),
+            ..
+        }) = item.kind
+        {
             do_check(self, cx, &item.attrs, &sig.decl, blk);
         }
     }
@@ -378,7 +375,12 @@ impl EarlyLintPass for NonExpressiveNames {
             return;
         }
 
-        if let AssocItemKind::Fn(box FnKind(_, ref sig, _, Some(ref blk))) = item.kind {
+        if let AssocItemKind::Fn(box ast::Fn {
+            ref sig,
+            body: Some(ref blk),
+            ..
+        }) = item.kind
+        {
             do_check(self, cx, &item.attrs, &sig.decl, blk);
         }
     }

@@ -1,40 +1,61 @@
 //! Temporal quantification.
 //!
-//! Example:
+//! # Examples:
+//!
+//! There are multiple ways to create a new [`Duration`]:
 //!
 //! ```
-//! use std::time::Duration;
+//! # use std::time::Duration;
+//! let five_seconds = Duration::from_secs(5);
+//! assert_eq!(five_seconds, Duration::from_millis(5_000));
+//! assert_eq!(five_seconds, Duration::from_micros(5_000_000));
+//! assert_eq!(five_seconds, Duration::from_nanos(5_000_000_000));
 //!
-//! let five_seconds = Duration::new(5, 0);
-//! // both declarations are equivalent
-//! assert_eq!(Duration::new(5, 0), Duration::from_secs(5));
+//! let ten_seconds = Duration::from_secs(10);
+//! let seven_nanos = Duration::from_nanos(7);
+//! let total = ten_seconds + seven_nanos;
+//! assert_eq!(total, Duration::new(10, 7));
+//! ```
+//!
+//! Using [`Instant`] to calculate how long a function took to run:
+//!
+//! ```ignore (incomplete)
+//! let now = Instant::now();
+//!
+//! // Calling a slow function, it may take a while
+//! slow_function();
+//!
+//! let elapsed_time = now.elapsed();
+//! println!("Running slow_function() took {} seconds.", elapsed_time.as_secs());
 //! ```
 
 #![stable(feature = "time", since = "1.3.0")]
 
+mod monotonic;
 #[cfg(test)]
 mod tests;
 
-use crate::cmp;
 use crate::error::Error;
 use crate::fmt;
 use crate::ops::{Add, AddAssign, Sub, SubAssign};
 use crate::sys::time;
-use crate::sys_common::mutex::StaticMutex;
 use crate::sys_common::FromInner;
 
 #[stable(feature = "time", since = "1.3.0")]
 pub use core::time::Duration;
 
+#[unstable(feature = "duration_checked_float", issue = "83400")]
+pub use core::time::FromSecsError;
+
 /// A measurement of a monotonically nondecreasing clock.
-/// Opaque and useful only with `Duration`.
+/// Opaque and useful only with [`Duration`].
 ///
 /// Instants are always guaranteed to be no less than any previously measured
 /// instant when created, and are often useful for tasks such as measuring
 /// benchmarks or timing how long an operation takes.
 ///
 /// Note, however, that instants are not guaranteed to be **steady**. In other
-/// words, each tick of the underlying clock may not be the same length (e.g.
+/// words, each tick of the underlying clock might not be the same length (e.g.
 /// some seconds may be longer than others). An instant may jump forwards or
 /// experience time dilation (slow down or speed up), but it will never go
 /// backwards.
@@ -87,6 +108,7 @@ pub use core::time::Duration;
 /// | UNIX      | [clock_gettime (Monotonic Clock)]                                    |
 /// | Darwin    | [mach_absolute_time]                                                 |
 /// | VXWorks   | [clock_gettime (Monotonic Clock)]                                    |
+/// | SOLID     | `get_tim`                                                            |
 /// | WASI      | [__wasi_clock_time_get (Monotonic Clock)]                            |
 /// | Windows   | [QueryPerformanceCounter]                                            |
 ///
@@ -163,6 +185,7 @@ pub struct Instant(time::Instant);
 /// | UNIX      | [clock_gettime (Realtime Clock)]                                     |
 /// | Darwin    | [gettimeofday]                                                       |
 /// | VXWorks   | [clock_gettime (Realtime Clock)]                                     |
+/// | SOLID     | `SOLID_RTC_ReadTime`                                                 |
 /// | WASI      | [__wasi_clock_time_get (Realtime Clock)]                             |
 /// | Windows   | [GetSystemTimePreciseAsFileTime] / [GetSystemTimeAsFileTime]         |
 ///
@@ -216,6 +239,7 @@ impl Instant {
     ///
     /// let now = Instant::now();
     /// ```
+    #[must_use]
     #[stable(feature = "time2", since = "1.8.0")]
     pub fn now() -> Instant {
         let os_now = time::Instant::now();
@@ -245,18 +269,25 @@ impl Instant {
         //
         // To hopefully mitigate the impact of this, a few platforms are
         // excluded as "these at least haven't gone backwards yet".
+        //
+        // While issues have been seen on arm64 platforms the Arm architecture
+        // requires that the counter monotonically increases and that it must
+        // provide a uniform view of system time (e.g. it must not be possible
+        // for a core to recieve a message from another core with a time stamp
+        // and observe time going backwards (ARM DDI 0487G.b D11.1.2). While
+        // there have been a few 64bit SoCs that have bugs which cause time to
+        // not monoticially increase, these have been fixed in the Linux kernel
+        // and we shouldn't penalize all Arm SoCs for those who refuse to
+        // update their kernels:
+        // SUN50I_ERRATUM_UNKNOWN1 - Allwinner A64 / Pine A64 - fixed in 5.1
+        // FSL_ERRATUM_A008585 - Freescale LS2080A/LS1043A - fixed in 4.10
+        // HISILICON_ERRATUM_161010101 - Hisilicon 1610 - fixed in 4.11
+        // ARM64_ERRATUM_858921 - Cortex A73 - fixed in 4.12
         if time::Instant::actually_monotonic() {
             return Instant(os_now);
         }
 
-        static LOCK: StaticMutex = StaticMutex::new();
-        static mut LAST_NOW: time::Instant = time::Instant::zero();
-        unsafe {
-            let _lock = LOCK.lock();
-            let now = cmp::max(LAST_NOW, os_now);
-            LAST_NOW = now;
-            Instant(now)
-        }
+        Instant(monotonic::monotonize(os_now))
     }
 
     /// Returns the amount of time elapsed from another instant to this one.
@@ -276,6 +307,7 @@ impl Instant {
     /// let new_now = Instant::now();
     /// println!("{:?}", new_now.duration_since(now));
     /// ```
+    #[must_use]
     #[stable(feature = "time2", since = "1.8.0")]
     pub fn duration_since(&self, earlier: Instant) -> Duration {
         self.0.checked_sub_instant(&earlier.0).expect("supplied instant is later than self")
@@ -296,6 +328,7 @@ impl Instant {
     /// println!("{:?}", new_now.checked_duration_since(now));
     /// println!("{:?}", now.checked_duration_since(new_now)); // None
     /// ```
+    #[must_use]
     #[stable(feature = "checked_duration_since", since = "1.39.0")]
     pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
         self.0.checked_sub_instant(&earlier.0)
@@ -316,6 +349,7 @@ impl Instant {
     /// println!("{:?}", new_now.saturating_duration_since(now));
     /// println!("{:?}", now.saturating_duration_since(new_now)); // 0ns
     /// ```
+    #[must_use]
     #[stable(feature = "checked_duration_since", since = "1.39.0")]
     pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
         self.checked_duration_since(earlier).unwrap_or_default()
@@ -340,6 +374,7 @@ impl Instant {
     /// sleep(three_secs);
     /// assert!(instant.elapsed() >= three_secs);
     /// ```
+    #[must_use]
     #[stable(feature = "time2", since = "1.8.0")]
     pub fn elapsed(&self) -> Duration {
         Instant::now() - *self
@@ -446,6 +481,7 @@ impl SystemTime {
     ///
     /// let sys_time = SystemTime::now();
     /// ```
+    #[must_use]
     #[stable(feature = "time2", since = "1.8.0")]
     pub fn now() -> SystemTime {
         SystemTime(time::SystemTime::now())
@@ -458,7 +494,7 @@ impl SystemTime {
     /// as the system clock being adjusted either forwards or backwards).
     /// [`Instant`] can be used to measure elapsed time without this risk of failure.
     ///
-    /// If successful, [`Ok`]`(`[`Duration`]`)` is returned where the duration represents
+    /// If successful, <code>[Ok]\([Duration])</code> is returned where the duration represents
     /// the amount of time elapsed from the specified measurement to this one.
     ///
     /// Returns an [`Err`] if `earlier` is later than `self`, and the error
@@ -485,7 +521,7 @@ impl SystemTime {
     ///
     /// This function may fail as the underlying system clock is susceptible to
     /// drift and updates (e.g., the system clock could go backwards), so this
-    /// function may not always succeed. If successful, [`Ok`]`(`[`Duration`]`)` is
+    /// function might not always succeed. If successful, <code>[Ok]\([Duration])</code> is
     /// returned where the duration represents the amount of time elapsed from
     /// this time measurement to the current time.
     ///
@@ -614,6 +650,7 @@ impl SystemTimeError {
     ///     Err(e) => println!("SystemTimeError difference: {:?}", e.duration()),
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "time2", since = "1.8.0")]
     pub fn duration(&self) -> Duration {
         self.0

@@ -4,12 +4,14 @@ use crate::early_error;
 use crate::lint;
 use crate::search_paths::SearchPath;
 use crate::utils::NativeLib;
-
 use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy, SanitizerSet};
-use rustc_target::spec::{RelocModel, RelroLevel, SplitDebuginfo, TargetTriple, TlsModel};
+use rustc_target::spec::{
+    RelocModel, RelroLevel, SplitDebuginfo, StackProtector, TargetTriple, TlsModel,
+};
 
 use rustc_feature::UnstableFeatures;
 use rustc_span::edition::Edition;
+use rustc_span::RealFileName;
 use rustc_span::SourceFileHashAlgorithm;
 
 use std::collections::BTreeMap;
@@ -99,6 +101,29 @@ macro_rules! top_level_options {
     );
 }
 
+impl Options {
+    pub fn mir_opt_level(&self) -> usize {
+        self.debugging_opts
+            .mir_opt_level
+            .unwrap_or_else(|| if self.optimize != OptLevel::No { 2 } else { 1 })
+    }
+
+    pub fn instrument_coverage(&self) -> bool {
+        self.debugging_opts.instrument_coverage.unwrap_or(InstrumentCoverage::Off)
+            != InstrumentCoverage::Off
+    }
+
+    pub fn instrument_coverage_except_unused_generics(&self) -> bool {
+        self.debugging_opts.instrument_coverage.unwrap_or(InstrumentCoverage::Off)
+            == InstrumentCoverage::ExceptUnusedGenerics
+    }
+
+    pub fn instrument_coverage_except_unused_functions(&self) -> bool {
+        self.debugging_opts.instrument_coverage.unwrap_or(InstrumentCoverage::Off)
+            == InstrumentCoverage::ExceptUnusedFunctions
+    }
+}
+
 top_level_options!(
     /// The top-level command-line options struct.
     ///
@@ -149,6 +174,7 @@ top_level_options!(
         /// If `Some`, enable incremental compilation, using the given
         /// directory to store intermediate results.
         incremental: Option<PathBuf> [UNTRACKED],
+        assert_incr_state: Option<IncrementalStateAssertion> [UNTRACKED],
 
         debugging_opts: DebuggingOptions [SUBSTRUCT],
         prints: Vec<PrintRequest> [UNTRACKED],
@@ -202,7 +228,13 @@ top_level_options!(
         /// `true` if we're emitting a JSON blob containing the unused externs
         json_unused_externs: bool [UNTRACKED],
 
+        /// `true` if we're emitting a JSON job containg a future-incompat report for lints
+        json_future_incompat: bool [TRACKED],
+
         pretty: Option<PpMode> [UNTRACKED],
+
+        /// The (potentially remapped) working directory
+        working_dir: RealFileName [TRACKED],
     }
 );
 
@@ -215,7 +247,7 @@ top_level_options!(
 /// generated code to parse an option into its respective field in the struct. There are a few
 /// hand-written parsers for parsing specific types of values in this module.
 macro_rules! options {
-    ($struct_name:ident, $stat:ident, $prefix:expr, $outputname:expr,
+    ($struct_name:ident, $stat:ident, $optmod:ident, $prefix:expr, $outputname:expr,
      $($( #[$attr:meta] )* $opt:ident : $t:ty = (
         $init:expr,
         $parse:ident,
@@ -260,13 +292,15 @@ macro_rules! options {
     }
 
     pub const $stat: OptionDescrs<$struct_name> =
-        &[ $( (stringify!($opt), $opt, desc::$parse, $desc) ),* ];
+        &[ $( (stringify!($opt), $optmod::$opt, desc::$parse, $desc) ),* ];
 
+    mod $optmod {
     $(
-        fn $opt(cg: &mut $struct_name, v: Option<&str>) -> bool {
-            parse::$parse(&mut redirect_field!(cg.$opt), v)
+        pub(super) fn $opt(cg: &mut super::$struct_name, v: Option<&str>) -> bool {
+            super::parse::$parse(&mut redirect_field!(cg.$opt), v)
         }
     )*
+    }
 
 ) }
 
@@ -345,9 +379,9 @@ mod desc {
     pub const parse_threads: &str = parse_number;
     pub const parse_passes: &str = "a space-separated list of passes, or `all`";
     pub const parse_panic_strategy: &str = "either `unwind` or `abort`";
+    pub const parse_opt_panic_strategy: &str = parse_panic_strategy;
     pub const parse_relro_level: &str = "one of: `full`, `partial`, or `off`";
-    pub const parse_sanitizers: &str =
-        "comma separated list of sanitizers: `address`, `hwaddress`, `leak`, `memory` or `thread`";
+    pub const parse_sanitizers: &str = "comma separated list of sanitizers: `address`, `cfi`, `hwaddress`, `leak`, `memory` or `thread`";
     pub const parse_sanitizer_memory_track_origins: &str = "0, 1, or 2";
     pub const parse_cfguard: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc), `checks`, or `nochecks`";
@@ -363,6 +397,8 @@ mod desc {
         "either a boolean (`yes`, `no`, `on`, `off`, etc), `thin`, `fat`, or omitted";
     pub const parse_linker_plugin_lto: &str =
         "either a boolean (`yes`, `no`, `on`, `off`, etc), or the path to the linker plugin";
+    pub const parse_location_detail: &str =
+        "comma seperated list of location details to track: `file`, `line`, or `column`";
     pub const parse_switch_with_opt_path: &str =
         "an optional path to the profiling data output directory";
     pub const parse_merge_functions: &str = "one of: `disabled`, `trampolines`, or `aliases`";
@@ -377,6 +413,8 @@ mod desc {
     pub const parse_split_debuginfo: &str =
         "one of supported split-debuginfo modes (`off`, `packed`, or `unpacked`)";
     pub const parse_gcc_ld: &str = "one of: no value, `lld`";
+    pub const parse_stack_protector: &str =
+        "one of (`none` (default), `basic`, `strong`, or `all`)";
 }
 
 mod parse {
@@ -479,6 +517,25 @@ mod parse {
         }
     }
 
+    crate fn parse_location_detail(ld: &mut LocationDetail, v: Option<&str>) -> bool {
+        if let Some(v) = v {
+            ld.line = false;
+            ld.file = false;
+            ld.column = false;
+            for s in v.split(',') {
+                match s {
+                    "file" => ld.file = true,
+                    "line" => ld.line = true,
+                    "column" => ld.column = true,
+                    _ => return false,
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     crate fn parse_opt_comma_list(slot: &mut Option<Vec<String>>, v: Option<&str>) -> bool {
         match v {
             Some(s) => {
@@ -536,7 +593,7 @@ mod parse {
             v => {
                 let mut passes = vec![];
                 if parse_list(&mut passes, v) {
-                    *slot = Passes::Some(passes);
+                    slot.extend(passes);
                     true
                 } else {
                     false
@@ -545,10 +602,19 @@ mod parse {
         }
     }
 
-    crate fn parse_panic_strategy(slot: &mut Option<PanicStrategy>, v: Option<&str>) -> bool {
+    crate fn parse_opt_panic_strategy(slot: &mut Option<PanicStrategy>, v: Option<&str>) -> bool {
         match v {
             Some("unwind") => *slot = Some(PanicStrategy::Unwind),
             Some("abort") => *slot = Some(PanicStrategy::Abort),
+            _ => return false,
+        }
+        true
+    }
+
+    crate fn parse_panic_strategy(slot: &mut PanicStrategy, v: Option<&str>) -> bool {
+        match v {
+            Some("unwind") => *slot = PanicStrategy::Unwind,
+            Some("abort") => *slot = PanicStrategy::Abort,
             _ => return false,
         }
         true
@@ -570,6 +636,7 @@ mod parse {
             for s in v.split(',') {
                 *slot |= match s {
                     "address" => SanitizerSet::ADDRESS,
+                    "cfi" => SanitizerSet::CFI,
                     "leak" => SanitizerSet::LEAK,
                     "memory" => SanitizerSet::MEMORY,
                     "thread" => SanitizerSet::THREAD,
@@ -684,7 +751,7 @@ mod parse {
             Some(v) => v,
         };
 
-        *slot = Some(match v.trim_end_matches("s") {
+        *slot = Some(match v.trim_end_matches('s') {
             "statement" | "stmt" => MirSpanview::Statement,
             "terminator" | "term" => MirSpanview::Terminator,
             "block" | "basicblock" => MirSpanview::Block,
@@ -846,7 +913,7 @@ mod parse {
         match v {
             Some(s) => {
                 if !slot.is_empty() {
-                    slot.push_str(",");
+                    slot.push(',');
                 }
                 slot.push_str(s);
                 true
@@ -880,10 +947,18 @@ mod parse {
         }
         true
     }
+
+    crate fn parse_stack_protector(slot: &mut StackProtector, v: Option<&str>) -> bool {
+        match v.and_then(|s| StackProtector::from_str(s).ok()) {
+            Some(ssp) => *slot = ssp,
+            _ => return false,
+        }
+        true
+    }
 }
 
 options! {
-    CodegenOptions, CG_OPTIONS, "C", "codegen",
+    CodegenOptions, CG_OPTIONS, cgopts, "C", "codegen",
 
     // This list is in alphabetical order.
     //
@@ -956,7 +1031,7 @@ options! {
         "optimization level (0-3, s, or z; default: 0)"),
     overflow_checks: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "use overflow checks for integer arithmetic"),
-    panic: Option<PanicStrategy> = (None, parse_panic_strategy, [TRACKED],
+    panic: Option<PanicStrategy> = (None, parse_opt_panic_strategy, [TRACKED],
         "panic strategy to compile crate with"),
     passes: Vec<String> = (Vec::new(), parse_list, [TRACKED],
         "a list of extra LLVM passes to run (space separated)"),
@@ -980,6 +1055,8 @@ options! {
         "use soft float ABI (*eabihf targets only) (default: no)"),
     split_debuginfo: Option<SplitDebuginfo> = (None, parse_split_debuginfo, [TRACKED],
         "how to handle split-debuginfo, a platform-specific option"),
+    strip: Strip = (Strip::None, parse_strip, [UNTRACKED],
+        "tell the linker which information to strip (`none` (default), `debuginfo` or `symbols`)"),
     target_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select target processor (`rustc --print target-cpus` for details)"),
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
@@ -994,7 +1071,7 @@ options! {
 }
 
 options! {
-    DebuggingOptions, DB_OPTIONS, "Z", "debugging",
+    DebuggingOptions, DB_OPTIONS, dbopts, "Z", "debugging",
 
     // This list is in alphabetical order.
     //
@@ -1009,6 +1086,9 @@ options! {
         "make cfg(version) treat the current version as incomplete (default: no)"),
     asm_comments: bool = (false, parse_bool, [TRACKED],
         "generate comments into the assembly (may change behavior) (default: no)"),
+    assert_incr_state: Option<String> = (None, parse_opt_string, [UNTRACKED],
+        "assert that the incremental cache is in given state: \
+         either `loaded` or `not-loaded`."),
     ast_json: bool = (false, parse_bool, [UNTRACKED],
         "print the AST as JSON and halt (default: no)"),
     ast_json_noexpand: bool = (false, parse_bool, [UNTRACKED],
@@ -1028,6 +1108,8 @@ options! {
         "combine CGUs into a single one"),
     crate_attr: Vec<String> = (Vec::new(), parse_string_push, [TRACKED],
         "inject the given attribute in the crate"),
+    debug_info_for_profiling: bool = (false, parse_bool, [TRACKED],
+        "emit discriminators and other data necessary for AutoFDO"),
     debug_macros: bool = (false, parse_bool, [TRACKED],
         "emit line numbers debug info inside macros (default: no)"),
     deduplicate_diagnostics: bool = (true, parse_bool, [UNTRACKED],
@@ -1070,15 +1152,11 @@ options! {
         computed `block` spans (one span encompassing a block's terminator and \
         all statements). If `-Z instrument-coverage` is also enabled, create \
         an additional `.html` file showing the computed coverage spans."),
-    emit_future_incompat_report: bool = (false, parse_bool, [UNTRACKED],
-        "emits a future-incompatibility report for lints (RFC 2834)"),
     emit_stack_sizes: bool = (false, parse_bool, [UNTRACKED],
         "emit a section containing stack size metadata (default: no)"),
     fewer_names: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "reduce memory use by retaining fewer names within compilation artifacts (LLVM-IR) \
         (default: no)"),
-    force_overflow_checks: Option<bool> = (None, parse_opt_bool, [TRACKED],
-        "force overflow checks on or off"),
     force_unstable_if_unmarked: bool = (false, parse_bool, [TRACKED],
         "force all crates to be `rustc_private` unstable (default: no)"),
     fuel: Option<(String, u64)> = (None, parse_optimization_fuel, [TRACKED],
@@ -1104,6 +1182,8 @@ options! {
     incremental_info: bool = (false, parse_bool, [UNTRACKED],
         "print high-level information about incremental reuse (or the lack thereof) \
         (default: no)"),
+    incremental_relative_spans: bool = (false, parse_bool, [TRACKED],
+        "hash spans relative to their parent item for incr. comp. (default: no)"),
     incremental_verify_ich: bool = (false, parse_bool, [UNTRACKED],
         "verify incr. comp. hashes of green query instances (default: no)"),
     inline_mir: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -1136,6 +1216,9 @@ options! {
         "a list LLVM plugins to enable (space separated)"),
     llvm_time_trace: bool = (false, parse_bool, [UNTRACKED],
         "generate JSON tracing data file from LLVM data (default: no)"),
+    location_detail: LocationDetail = (LocationDetail::all(), parse_location_detail, [TRACKED],
+        "comma seperated list of location details to be tracked when using caller_location \
+        valid options are `file`, `line`, and `column` (default: all)"),
     ls: bool = (false, parse_bool, [UNTRACKED],
         "list the symbols defined by a library crate (default: no)"),
     macro_backtrace: bool = (false, parse_bool, [UNTRACKED],
@@ -1150,8 +1233,10 @@ options! {
         (default: no)"),
     mir_opt_level: Option<usize> = (None, parse_opt_number, [TRACKED],
         "MIR optimization level (0-4; default: 1 in non optimized builds and 2 in optimized builds)"),
+    move_size_limit: Option<usize> = (None, parse_opt_number, [TRACKED],
+        "the size at which the `large_assignments` lint starts to be emitted"),
     mutable_noalias: Option<bool> = (None, parse_opt_bool, [TRACKED],
-        "emit noalias metadata for mutable references (default: yes for LLVM >= 12, otherwise no)"),
+        "emit noalias metadata for mutable references (default: yes)"),
     new_llvm_pass_manager: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "use new LLVM pass manager (default: no)"),
     nll_facts: bool = (false, parse_bool, [UNTRACKED],
@@ -1172,16 +1257,27 @@ options! {
         "compile without linking"),
     no_parallel_llvm: bool = (false, parse_no_flag, [UNTRACKED],
         "run LLVM in non-parallel mode (while keeping codegen-units and ThinLTO)"),
+    no_unique_section_names: bool = (false, parse_bool, [TRACKED],
+        "do not use unique names for text and data sections when -Z function-sections is used"),
+    no_profiler_runtime: bool = (false, parse_no_flag, [TRACKED],
+        "prevent automatic injection of the profiler_builtins crate"),
     normalize_docs: bool = (false, parse_bool, [TRACKED],
         "normalize associated items in rustdoc when generating documentation"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
         "pass `-install_name @rpath/...` to the macOS linker (default: no)"),
     panic_abort_tests: bool = (false, parse_bool, [TRACKED],
         "support compiling tests with panic=abort (default: no)"),
+    panic_in_drop: PanicStrategy = (PanicStrategy::Unwind, parse_panic_strategy, [TRACKED],
+        "panic strategy for panics in drops"),
     parse_only: bool = (false, parse_bool, [UNTRACKED],
         "parse only; do not compile, assemble, or link (default: no)"),
+    partially_uninit_const_threshold: Option<usize> = (None, parse_opt_number, [TRACKED],
+        "allow generating const initializers with mixed init/uninit bytes, \
+        and set the maximum total size of a const allocation for which this is allowed (default: never)"),
     perf_stats: bool = (false, parse_bool, [UNTRACKED],
         "print some performance-related statistics (default: no)"),
+    pick_stable_methods_before_any_unstable: bool = (true, parse_bool, [TRACKED],
+        "try to pick stable methods first before picking any unstable methods (default: yes)"),
     plt: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "whether to use the PLT when calling into shared libraries;
         only has effect for PIC code on systems with ELF binaries
@@ -1217,16 +1313,22 @@ options! {
     profile_emit: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "file path to emit profiling data at runtime when using 'profile' \
         (default based on relative source path)"),
-    profiler_runtime: Option<String> = (Some(String::from("profiler_builtins")), parse_opt_string, [TRACKED],
-        "name of the profiler runtime crate to automatically inject, or None to disable"),
+    profiler_runtime: String = (String::from("profiler_builtins"), parse_string, [TRACKED],
+        "name of the profiler runtime crate to automatically inject (default: `profiler_builtins`)"),
+    profile_sample_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
+        "use the given `.prof` file for sampled profile-guided optimization (also known as AutoFDO)"),
     query_dep_graph: bool = (false, parse_bool, [UNTRACKED],
         "enable queries of the dependency graph for regression testing (default: no)"),
     query_stats: bool = (false, parse_bool, [UNTRACKED],
         "print some statistics about the query system (default: no)"),
+    randomize_layout: bool = (false, parse_bool, [TRACKED],
+        "randomize the layout of types (default: no)"),
     relax_elf_relocations: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "whether ELF relocations can be relaxed"),
     relro_level: Option<RelroLevel> = (None, parse_relro_level, [TRACKED],
         "choose which RELRO level to use"),
+    remap_cwd_prefix: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
+        "remap paths under the current working directory to this path prefix"),
     simulate_remapped_rust_src_base: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "simulate the effect of remap-debuginfo = true at bootstrapping by remapping path \
         to rust's source base directory. only meant for testing purposes"),
@@ -1252,7 +1354,7 @@ options! {
         "specify the events recorded by the self profiler;
         for example: `-Z self-profile-events=default,query-keys`
         all options: none, all, default, generic-activity, query-provider, query-cache-hit
-                     query-blocked, incr-cache-load, incr-result-hashing, query-keys, function-args, args, llvm"),
+                     query-blocked, incr-cache-load, incr-result-hashing, query-keys, function-args, args, llvm, artifact-sizes"),
     share_generics: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "make the current crate share its generic instantiations"),
     show_span: Option<String> = (None, parse_opt_string, [TRACKED],
@@ -1264,6 +1366,8 @@ options! {
         "exclude spans when debug-printing compiler state (default: no)"),
     src_hash_algorithm: Option<SourceFileHashAlgorithm> = (None, parse_src_file_hash, [TRACKED],
         "hash algorithm of source files in debug info (`md5`, `sha1`, or `sha256`)"),
+    stack_protector: StackProtector = (StackProtector::None, parse_stack_protector, [TRACKED],
+        "control stack smash protection strategy (`rustc --print stack-protector-strategies` for details)"),
     strip: Strip = (Strip::None, parse_strip, [UNTRACKED],
         "tell the linker which information to strip (`none` (default), `debuginfo` or `symbols`)"),
     split_dwarf_inlining: bool = (true, parse_bool, [UNTRACKED],
@@ -1274,6 +1378,8 @@ options! {
         "which mangling version to use for symbol names ('legacy' (default) or 'v0')"),
     teach: bool = (false, parse_bool, [TRACKED],
         "show extended diagnostic help (default: no)"),
+    temps_dir: Option<String> = (None, parse_opt_string, [UNTRACKED],
+        "the directory the intermediate files are written to"),
     terminal_width: Option<usize> = (None, parse_opt_number, [UNTRACKED],
         "set the current terminal width"),
     tune_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
@@ -1281,7 +1387,7 @@ options! {
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
     thir_unsafeck: bool = (false, parse_bool, [TRACKED],
-        "use the work-in-progress THIR unsafety checker. NOTE: this is unsound (default: no)"),
+        "use the THIR unsafety checker (default: no)"),
     /// We default to 1 here since we want to behave like
     /// a sequential compiler for now. This'll likely be adjusted
     /// in the future. Note that -Zthreads=0 is the way to get
@@ -1310,7 +1416,7 @@ options! {
         "take the brakes off const evaluation. NOTE: this is unsound (default: no)"),
     unpretty: Option<String> = (None, parse_unpretty, [UNTRACKED],
         "present the input source, unstable (and less-pretty) variants;
-        valid types are any of the types for `--pretty`, as well as:
+        `normal`, `identified`,
         `expanded`, `expanded,identified`,
         `expanded,hygiene` (with internal representations),
         `everybody_loops` (all function bodies replaced with `loop {}`),

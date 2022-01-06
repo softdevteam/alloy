@@ -102,16 +102,8 @@ fn open(builder: &Builder<'_>, path: impl AsRef<Path>) {
 // Used for deciding whether a particular step is one requested by the user on
 // the `x.py doc` command line, which determines whether `--open` will open that
 // page.
-fn components_simplified(path: &PathBuf) -> Vec<&str> {
+pub(crate) fn components_simplified(path: &PathBuf) -> Vec<&str> {
     path.iter().map(|component| component.to_str().unwrap_or("???")).collect()
-}
-
-fn is_explicit_request(builder: &Builder<'_>, path: &str) -> bool {
-    builder
-        .paths
-        .iter()
-        .map(components_simplified)
-        .any(|requested| requested.iter().copied().eq(path.split('/')))
 }
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -248,7 +240,7 @@ impl Step for TheBook {
             invoke_rustdoc(builder, compiler, target, path);
         }
 
-        if is_explicit_request(builder, "src/doc/book") {
+        if builder.was_invoked_explicitly::<Self>() {
             let out = builder.doc_out(target);
             let index = out.join("book").join("index.html");
             open(builder, &index);
@@ -408,7 +400,7 @@ impl Step for Standalone {
 
         // We open doc/index.html as the default if invoked as `x.py doc --open`
         // with no particular explicit doc requested (e.g. library/core).
-        if builder.paths.is_empty() || is_explicit_request(builder, "src/doc") {
+        if builder.paths.is_empty() || builder.was_invoked_explicitly::<Self>() {
             let index = out.join("index.html");
             open(builder, &index);
         }
@@ -537,7 +529,7 @@ impl Step for Rustc {
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
-        run.krate("rustc-main").default_condition(builder.config.docs)
+        run.krate("rustc-main").path("compiler").default_condition(builder.config.compiler_docs)
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -555,10 +547,18 @@ impl Step for Rustc {
         let target = self.target;
         builder.info(&format!("Documenting stage{} compiler ({})", stage, target));
 
-        if !builder.config.compiler_docs {
-            builder.info("\tskipping - compiler/librustdoc docs disabled");
-            return;
-        }
+        let paths = builder
+            .paths
+            .iter()
+            .map(components_simplified)
+            .filter_map(|path| {
+                if path.get(0) == Some(&"compiler") {
+                    path.get(1).map(|p| p.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
         // This is the intended out directory for compiler documentation.
         let out = builder.compiler_doc_out(target);
@@ -589,37 +589,74 @@ impl Step for Rustc {
         cargo.rustdocflag("-Zunstable-options");
         cargo.rustdocflag("-Znormalize-docs");
         cargo.rustdocflag("--show-type-layout");
+        cargo.rustdocflag("--generate-link-to-definition");
         compile::rustc_cargo(builder, &mut cargo, target);
+        cargo.arg("-Zunstable-options");
         cargo.arg("-Zskip-rustdoc-fingerprint");
 
         // Only include compiler crates, no dependencies of those, such as `libc`.
+        // Do link to dependencies on `docs.rs` however using `rustdoc-map`.
         cargo.arg("--no-deps");
+        cargo.arg("-Zrustdoc-map");
 
-        // Find dependencies for top level crates.
+        // FIXME: `-Zrustdoc-map` does not yet correctly work for transitive dependencies,
+        // once this is no longer an issue the special case for `ena` can be removed.
+        cargo.rustdocflag("--extern-html-root-url");
+        cargo.rustdocflag("ena=https://docs.rs/ena/latest/");
+
         let mut compiler_crates = HashSet::new();
-        for root_crate in &["rustc_driver", "rustc_codegen_llvm", "rustc_codegen_ssa"] {
-            compiler_crates.extend(
-                builder
-                    .in_tree_crates(root_crate, Some(target))
-                    .into_iter()
-                    .map(|krate| krate.name),
-            );
+
+        if paths.is_empty() {
+            // Find dependencies for top level crates.
+            for root_crate in &["rustc_driver", "rustc_codegen_llvm", "rustc_codegen_ssa"] {
+                compiler_crates.extend(
+                    builder
+                        .in_tree_crates(root_crate, Some(target))
+                        .into_iter()
+                        .map(|krate| krate.name),
+                );
+            }
+        } else {
+            for root_crate in paths {
+                if !builder.src.join("compiler").join(&root_crate).exists() {
+                    builder.info(&format!(
+                        "\tskipping - compiler/{} (unknown compiler crate)",
+                        root_crate
+                    ));
+                } else {
+                    compiler_crates.extend(
+                        builder
+                            .in_tree_crates(root_crate, Some(target))
+                            .into_iter()
+                            .map(|krate| krate.name),
+                    );
+                }
+            }
         }
 
+        let mut to_open = None;
         for krate in &compiler_crates {
             // Create all crate output directories first to make sure rustdoc uses
             // relative links.
             // FIXME: Cargo should probably do this itself.
             t!(fs::create_dir_all(out_dir.join(krate)));
             cargo.arg("-p").arg(krate);
+            if to_open.is_none() {
+                to_open = Some(krate);
+            }
         }
 
         builder.run(&mut cargo.into());
+        // Let's open the first crate documentation page:
+        if let Some(krate) = to_open {
+            let index = out.join(krate).join("index.html");
+            open(builder, &index);
+        }
     }
 }
 
 macro_rules! tool_doc {
-    ($tool: ident, $should_run: literal, $path: literal, [$($krate: literal),+ $(,)?], binary=$bin:expr) => {
+    ($tool: ident, $should_run: literal, $path: literal, [$($krate: literal),+ $(,)?] $(,)?) => {
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub struct $tool {
             stage: u32,
@@ -632,7 +669,8 @@ macro_rules! tool_doc {
             const ONLY_HOSTS: bool = true;
 
             fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-                run.krate($should_run)
+                let builder = run.builder;
+                run.krate($should_run).default_condition(builder.config.compiler_docs)
             }
 
             fn make_run(run: RunConfig<'_>) {
@@ -648,18 +686,20 @@ macro_rules! tool_doc {
             fn run(self, builder: &Builder<'_>) {
                 let stage = self.stage;
                 let target = self.target;
-                builder.info(&format!("Documenting stage{} {} ({})", stage, stringify!($tool).to_lowercase(), target));
+                builder.info(
+                    &format!(
+                        "Documenting stage{} {} ({})",
+                        stage,
+                        stringify!($tool).to_lowercase(),
+                        target,
+                    ),
+                );
 
                 // This is the intended out directory for compiler documentation.
                 let out = builder.compiler_doc_out(target);
                 t!(fs::create_dir_all(&out));
 
                 let compiler = builder.compiler(stage, builder.config.build);
-
-                if !builder.config.compiler_docs {
-                    builder.info("\tskipping - compiler/tool docs disabled");
-                    return;
-                }
 
                 // Build rustc docs so that we generate relative links.
                 builder.ensure(Rustc { stage, target });
@@ -688,11 +728,10 @@ macro_rules! tool_doc {
                     cargo.arg("-p").arg($krate);
                 )+
 
-                if !$bin {
-                    cargo.rustdocflag("--document-private-items");
-                }
+                cargo.rustdocflag("--document-private-items");
                 cargo.rustdocflag("--enable-index-page");
                 cargo.rustdocflag("--show-type-layout");
+                cargo.rustdocflag("--generate-link-to-definition");
                 cargo.rustdocflag("-Zunstable-options");
                 builder.run(&mut cargo.into());
             }
@@ -700,20 +739,14 @@ macro_rules! tool_doc {
     }
 }
 
-tool_doc!(
-    Rustdoc,
-    "rustdoc-tool",
-    "src/tools/rustdoc",
-    ["rustdoc", "rustdoc-json-types"],
-    binary = false
-);
+tool_doc!(Rustdoc, "rustdoc-tool", "src/tools/rustdoc", ["rustdoc", "rustdoc-json-types"]);
 tool_doc!(
     Rustfmt,
     "rustfmt-nightly",
     "src/tools/rustfmt",
     ["rustfmt-nightly", "rustfmt-config_proc_macro"],
-    binary = true
 );
+tool_doc!(Clippy, "clippy", "src/tools/clippy", ["clippy_utils"]);
 
 #[derive(Ord, PartialOrd, Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct ErrorIndex {
@@ -869,7 +902,7 @@ impl Step for RustcBook {
             name: INTERNER.intern_str("rustc"),
             src: INTERNER.intern_path(out_base),
         });
-        if is_explicit_request(builder, "src/doc/rustc") {
+        if builder.was_invoked_explicitly::<Self>() {
             let out = builder.doc_out(self.target);
             let index = out.join("rustc").join("index.html");
             open(builder, &index);

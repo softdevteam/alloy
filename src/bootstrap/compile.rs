@@ -3,7 +3,7 @@
 //!
 //! This module contains some of the real meat in the rustbuild build system
 //! which is where Cargo is used to compile the standard library, libtest, and
-//! compiler. This module is also responsible for assembling the sysroot as it
+//! the compiler. This module is also responsible for assembling the sysroot as it
 //! goes along from the output of the previous stage.
 
 use std::borrow::Cow;
@@ -23,11 +23,12 @@ use serde::Deserialize;
 use crate::builder::Cargo;
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
-use crate::config::TargetSelection;
+use crate::config::{LlvmLibunwind, TargetSelection};
 use crate::dist;
 use crate::native;
 use crate::tool::SourceType;
 use crate::util::{exe, is_debug_info, is_dylib, symlink_dir};
+use crate::LLVM_TOOLS;
 use crate::{Compiler, DependencyType, GitRepo, Mode};
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, PartialEq, Eq, Hash)]
@@ -142,6 +143,14 @@ fn copy_and_stamp(
     target_deps.push((target, dependency_type));
 }
 
+fn copy_llvm_libunwind(builder: &Builder<'_>, target: TargetSelection, libdir: &Path) -> PathBuf {
+    let libunwind_path = builder.ensure(native::Libunwind { target });
+    let libunwind_source = libunwind_path.join("libunwind.a");
+    let libunwind_target = libdir.join("libunwind.a");
+    builder.copy(&libunwind_source, &libunwind_target);
+    libunwind_target
+}
+
 /// Copies third party objects needed by various targets.
 fn copy_third_party_objects(
     builder: &Builder<'_>,
@@ -167,6 +176,15 @@ fn copy_third_party_objects(
         );
     }
 
+    if target == "x86_64-fortanix-unknown-sgx"
+        || builder.config.llvm_libunwind == LlvmLibunwind::InTree
+            && (target.contains("linux") || target.contains("fuchsia"))
+    {
+        let libunwind_path =
+            copy_llvm_libunwind(builder, target, &builder.sysroot_libdir(*compiler, target));
+        target_deps.push((libunwind_path, DependencyType::Target));
+    }
+
     target_deps
 }
 
@@ -180,7 +198,7 @@ fn copy_self_contained_objects(
     t!(fs::create_dir_all(&libdir_self_contained));
     let mut target_deps = vec![];
 
-    // Copies the CRT objects.
+    // Copies the libc and CRT objects.
     //
     // rustc historically provides a more self-contained installation for musl targets
     // not requiring the presence of a native musl toolchain. For example, it can fall back
@@ -191,7 +209,7 @@ fn copy_self_contained_objects(
         let srcdir = builder.musl_libdir(target).unwrap_or_else(|| {
             panic!("Target {:?} does not have a \"musl-libdir\" key", target.triple)
         });
-        for &obj in &["crt1.o", "Scrt1.o", "rcrt1.o", "crti.o", "crtn.o"] {
+        for &obj in &["libc.a", "crt1.o", "Scrt1.o", "rcrt1.o", "crti.o", "crtn.o"] {
             copy_and_stamp(
                 builder,
                 &libdir_self_contained,
@@ -208,6 +226,9 @@ fn copy_self_contained_objects(
             builder.copy(&src, &target);
             target_deps.push((target, DependencyType::TargetSelfContained));
         }
+
+        let libunwind_path = copy_llvm_libunwind(builder, target, &libdir_self_contained);
+        target_deps.push((libunwind_path, DependencyType::TargetSelfContained));
     } else if target.ends_with("-wasi") {
         let srcdir = builder
             .wasi_root(target)
@@ -215,7 +236,7 @@ fn copy_self_contained_objects(
                 panic!("Target {:?} does not have a \"wasi-root\" key", target.triple)
             })
             .join("lib/wasm32-wasi");
-        for &obj in &["crt1-command.o", "crt1-reactor.o"] {
+        for &obj in &["libc.a", "crt1-command.o", "crt1-reactor.o"] {
             copy_and_stamp(
                 builder,
                 &libdir_self_contained,
@@ -508,7 +529,7 @@ impl Step for Rustc {
     const DEFAULT: bool = false;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("compiler/rustc")
+        run.never()
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -797,8 +818,7 @@ impl Step for CodegenBackend {
 
         let out_dir = builder.cargo_out(compiler, Mode::Codegen, target);
 
-        let mut cargo =
-            builder.cargo(compiler, Mode::Codegen, SourceType::Submodule, target, "build");
+        let mut cargo = builder.cargo(compiler, Mode::Codegen, SourceType::InTree, target, "build");
         cargo
             .arg("--manifest-path")
             .arg(builder.src.join(format!("compiler/rustc_codegen_{}/Cargo.toml", backend)));
@@ -806,6 +826,10 @@ impl Step for CodegenBackend {
 
         let tmp_stamp = out_dir.join(".tmp.stamp");
 
+        builder.info(&format!(
+            "Building stage{} codegen backend {} ({} -> {})",
+            compiler.stage, backend, &compiler.host, target
+        ));
         let files = run_cargo(builder, cargo, vec![], &tmp_stamp, vec![], false);
         if builder.config.dry_run {
             return;
@@ -1000,9 +1024,16 @@ pub struct Assemble {
 
 impl Step for Assemble {
     type Output = Compiler;
+    const ONLY_HOSTS: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.never()
+        run.path("compiler/rustc")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(Assemble {
+            target_compiler: run.builder.compiler(run.builder.top_stage + 1, run.target),
+        });
     }
 
     /// Prepare a new compiler from the artifacts in `stage`
@@ -1113,10 +1144,14 @@ impl Step for Assemble {
             // for `-Z gcc-ld=lld`
             let gcc_ld_dir = libdir_bin.join("gcc-ld");
             t!(fs::create_dir(&gcc_ld_dir));
-            builder.copy(
-                &lld_install.join("bin").join(&src_exe),
-                &gcc_ld_dir.join(exe("ld", target_compiler.host)),
-            );
+            for flavor in ["ld", "ld64"] {
+                let lld_wrapper_exe = builder.ensure(crate::tool::LldWrapper {
+                    compiler: build_compiler,
+                    target: target_compiler.host,
+                    flavor_feature: flavor,
+                });
+                builder.copy(&lld_wrapper_exe, &gcc_ld_dir.join(exe(flavor, target_compiler.host)));
+            }
         }
 
         // Similarly, copy `llvm-dwp` into libdir for Split DWARF. Only copy it when the LLVM
@@ -1130,6 +1165,16 @@ impl Step for Assemble {
                 let llvm_bin_dir = output(Command::new(llvm_config_bin).arg("--bindir"));
                 let llvm_bin_dir = Path::new(llvm_bin_dir.trim());
                 builder.copy(&llvm_bin_dir.join(&src_exe), &libdir_bin.join(&dst_exe));
+
+                // Since we've already built the LLVM tools, install them to the sysroot.
+                // This is the equivalent of installing the `llvm-tools-preview` component via
+                // rustup, and lets developers use a locally built toolchain to
+                // build projects that expect llvm tools to be present in the sysroot
+                // (e.g. the `bootimage` crate).
+                for tool in LLVM_TOOLS {
+                    let tool_exe = exe(tool, target_compiler.host);
+                    builder.copy(&llvm_bin_dir.join(&tool_exe), &libdir_bin.join(&tool_exe));
+                }
             }
         }
 

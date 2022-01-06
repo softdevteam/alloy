@@ -37,13 +37,13 @@ pub fn target() -> Target {
         is_like_emscripten: true,
         panic_strategy: PanicStrategy::Unwind,
         post_link_args,
-        families: vec!["unix".to_string()],
+        families: vec!["unix".to_string(), "wasm".to_string()],
         ..options
     };
     Target {
         llvm_target: "wasm32-unknown-emscripten".to_string(),
         pointer_width: 32,
-        data_layout: "e-m:e-p:32:32-i64:64-n32:64-S128".to_string(),
+        data_layout: "e-m:e-p:32:32-i64:64-f128:64-n32:64-S128-ni:1:10:20".to_string(),
         arch: "wasm32".to_string(),
         options: opts,
     }

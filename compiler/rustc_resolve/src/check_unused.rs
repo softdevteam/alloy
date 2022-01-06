@@ -32,7 +32,6 @@ use rustc_ast::visit::{self, Visitor};
 use rustc_ast_lowering::ResolverAstLowering;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::pluralize;
-use rustc_middle::ty;
 use rustc_session::lint::builtin::{MACRO_USE_EXTERN_CRATE, UNUSED_IMPORTS};
 use rustc_session::lint::BuiltinLintDiagnostics;
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
@@ -63,8 +62,7 @@ impl<'a, 'b> UnusedImportCheckVisitor<'a, 'b> {
     // We have information about whether `use` (import) items are actually
     // used now. If an import is not used at all, we signal a lint error.
     fn check_import(&mut self, id: ast::NodeId) {
-        let mut used = false;
-        self.r.per_ns(|this, ns| used |= this.used_imports.contains(&(id, ns)));
+        let used = self.r.used_imports.contains(&id);
         let def_id = self.r.local_def_id(id);
         if !used {
             if self.r.maybe_unused_trait_imports.contains(&def_id) {
@@ -98,7 +96,7 @@ impl<'a, 'b> UnusedImportCheckVisitor<'a, 'b> {
 
 impl<'a, 'b> Visitor<'a> for UnusedImportCheckVisitor<'a, 'b> {
     fn visit_item(&mut self, item: &'a ast::Item) {
-        self.item_span = item.span;
+        self.item_span = item.span_with_attributes();
 
         // Ignore is_public import statements because there's no way to be sure
         // whether they're used or not. Also ignore imports with a dummy span
@@ -229,7 +227,7 @@ impl Resolver<'_> {
         for import in self.potentially_unused_imports.iter() {
             match import.kind {
                 _ if import.used.get()
-                    || import.vis.get() == ty::Visibility::Public
+                    || import.vis.get().is_public()
                     || import.span.is_dummy() =>
                 {
                     if let ImportKind::MacroUse = import.kind {

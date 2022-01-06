@@ -1,8 +1,7 @@
 //! Miscellaneous type-system utilities that are too small to deserve their own modules.
 
-use crate::ich::NodeIdHashingMode;
 use crate::middle::codegen_fn_attrs::CodegenFnAttrFlags;
-use crate::ty::fold::TypeFolder;
+use crate::ty::fold::{FallibleTypeFolder, TypeFolder};
 use crate::ty::layout::IntegerExt;
 use crate::ty::query::TyCtxtAt;
 use crate::ty::subst::{GenericArgKind, Subst, SubstsRef};
@@ -18,6 +17,7 @@ use rustc_hir as hir;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_macros::HashStable;
+use rustc_query_system::ich::NodeIdHashingMode;
 use rustc_span::symbol::sym;
 use rustc_span::DUMMY_SP;
 use rustc_target::abi::{Align, Integer, Size, TargetDataLayout};
@@ -49,18 +49,6 @@ impl<'tcx> fmt::Display for Discr<'tcx> {
     }
 }
 
-fn signed_min(size: Size) -> i128 {
-    size.sign_extend(1_u128 << (size.bits() - 1)) as i128
-}
-
-fn signed_max(size: Size) -> i128 {
-    i128::MAX >> (128 - size.bits())
-}
-
-fn unsigned_max(size: Size) -> u128 {
-    u128::MAX >> (128 - size.bits())
-}
-
 fn int_size_and_signed<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> (Size, bool) {
     let (int, signed) = match *ty.kind() {
         Int(ity) => (Integer::from_int_ty(&tcx, ity), true),
@@ -78,8 +66,8 @@ impl<'tcx> Discr<'tcx> {
     pub fn checked_add(self, tcx: TyCtxt<'tcx>, n: u128) -> (Self, bool) {
         let (size, signed) = int_size_and_signed(tcx, self.ty);
         let (val, oflo) = if signed {
-            let min = signed_min(size);
-            let max = signed_max(size);
+            let min = size.signed_int_min();
+            let max = size.signed_int_max();
             let val = size.sign_extend(self.val) as i128;
             assert!(n < (i128::MAX as u128));
             let n = n as i128;
@@ -90,7 +78,7 @@ impl<'tcx> Discr<'tcx> {
             let val = size.truncate(val);
             (val, oflo)
         } else {
-            let max = unsigned_max(size);
+            let max = size.unsigned_int_max();
             let val = self.val;
             let oflo = val > max - n;
             let val = if oflo { n - (max - val) - 1 } else { val + n };
@@ -229,13 +217,11 @@ impl<'tcx> TyCtxt<'tcx> {
                     }
                 }
 
-                ty::Tuple(tys) => {
-                    if let Some((&last_ty, _)) = tys.split_last() {
-                        ty = last_ty.expect_ty();
-                    } else {
-                        break;
-                    }
+                ty::Tuple(tys) if let Some((&last_ty, _)) = tys.split_last() => {
+                    ty = last_ty.expect_ty();
                 }
+
+                ty::Tuple(_) => break,
 
                 ty::Projection(_) | ty::Opaque(..) => {
                     let normalized = normalize(ty);
@@ -342,16 +328,16 @@ impl<'tcx> TyCtxt<'tcx> {
         self.ensure().coherent_trait(drop_trait);
 
         let ty = self.type_of(adt_did);
-        let dtor_did = self.find_map_relevant_impl(drop_trait, ty, |impl_did| {
-            if let Some(item) = self.associated_items(impl_did).in_definition_order().next() {
+        let (did, constness) = self.find_map_relevant_impl(drop_trait, ty, |impl_did| {
+            if let Some(item_id) = self.associated_item_def_ids(impl_did).first() {
                 if validate(self, impl_did).is_ok() {
-                    return Some(item.def_id);
+                    return Some((*item_id, self.impl_constness(impl_did)));
                 }
             }
             None
-        });
+        })?;
 
-        Some(ty::Destructor { did: dtor_did? })
+        Some(ty::Destructor { did, constness })
     }
 
     /// Returns the set of types that are required to be alive in
@@ -441,6 +427,15 @@ impl<'tcx> TyCtxt<'tcx> {
         matches!(self.def_kind(def_id), DefKind::Closure | DefKind::Generator)
     }
 
+    /// Returns `true` if `def_id` refers to a definition that does not have its own
+    /// type-checking context, i.e. closure, generator or inline const.
+    pub fn is_typeck_child(self, def_id: DefId) -> bool {
+        matches!(
+            self.def_kind(def_id),
+            DefKind::Closure | DefKind::Generator | DefKind::InlineConst
+        )
+    }
+
     /// Returns `true` if `def_id` refers to a trait (i.e., `trait Foo { ... }`).
     pub fn is_trait(self, def_id: DefId) -> bool {
         self.def_kind(def_id) == DefKind::Trait
@@ -458,16 +453,19 @@ impl<'tcx> TyCtxt<'tcx> {
         matches!(self.def_kind(def_id), DefKind::Ctor(..))
     }
 
-    /// Given the def-ID of a fn or closure, returns the def-ID of
-    /// the innermost fn item that the closure is contained within.
-    /// This is a significant `DefId` because, when we do
-    /// type-checking, we type-check this fn item and all of its
-    /// (transitive) closures together. Therefore, when we fetch the
+    /// Given the `DefId`, returns the `DefId` of the innermost item that
+    /// has its own type-checking context or "inference enviornment".
+    ///
+    /// For example, a closure has its own `DefId`, but it is type-checked
+    /// with the containing item. Similarly, an inline const block has its
+    /// own `DefId` but it is type-checked together with the containing item.
+    ///
+    /// Therefore, when we fetch the
     /// `typeck` the closure, for example, we really wind up
     /// fetching the `typeck` the enclosing fn item.
-    pub fn closure_base_def_id(self, def_id: DefId) -> DefId {
+    pub fn typeck_root_def_id(self, def_id: DefId) -> DefId {
         let mut def_id = def_id;
-        while self.is_closure(def_id) {
+        while self.is_typeck_child(def_id) {
             def_id = self.parent(def_id).unwrap_or_else(|| {
                 bug!("closure {:?} has no parent", def_id);
             });
@@ -534,6 +532,7 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     /// Expands the given impl trait type, stopping if the type is recursive.
+    #[instrument(skip(self), level = "debug")]
     pub fn try_expand_impl_trait_type(
         self,
         def_id: DefId,
@@ -544,11 +543,13 @@ impl<'tcx> TyCtxt<'tcx> {
             expanded_cache: FxHashMap::default(),
             primary_def_id: Some(def_id),
             found_recursion: false,
+            found_any_recursion: false,
             check_recursion: true,
             tcx: self,
         };
 
         let expanded_type = visitor.expand_opaque_ty(def_id, substs).unwrap();
+        trace!(?expanded_type);
         if visitor.found_recursion { Err(expanded_type) } else { Ok(expanded_type) }
     }
 }
@@ -564,6 +565,7 @@ struct OpaqueTypeExpander<'tcx> {
     expanded_cache: FxHashMap<(DefId, SubstsRef<'tcx>), Ty<'tcx>>,
     primary_def_id: Option<DefId>,
     found_recursion: bool,
+    found_any_recursion: bool,
     /// Whether or not to check for recursive opaque types.
     /// This is `true` when we're explicitly checking for opaque type
     /// recursion, and 'false' otherwise to avoid unnecessary work.
@@ -573,7 +575,7 @@ struct OpaqueTypeExpander<'tcx> {
 
 impl<'tcx> OpaqueTypeExpander<'tcx> {
     fn expand_opaque_ty(&mut self, def_id: DefId, substs: SubstsRef<'tcx>) -> Option<Ty<'tcx>> {
-        if self.found_recursion {
+        if self.found_any_recursion {
             return None;
         }
         let substs = substs.fold_with(self);
@@ -595,6 +597,7 @@ impl<'tcx> OpaqueTypeExpander<'tcx> {
         } else {
             // If another opaque type that we contain is recursive, then it
             // will report the error, so we don't have to.
+            self.found_any_recursion = true;
             self.found_recursion = def_id == *self.primary_def_id.as_ref().unwrap();
             None
         }
@@ -624,7 +627,8 @@ impl<'tcx> ty::TyS<'tcx> {
         let val = match self.kind() {
             ty::Int(_) | ty::Uint(_) => {
                 let (size, signed) = int_size_and_signed(tcx, self);
-                let val = if signed { signed_max(size) as u128 } else { unsigned_max(size) };
+                let val =
+                    if signed { size.signed_int_max() as u128 } else { size.unsigned_int_max() };
                 Some(val)
             }
             ty::Char => Some(std::char::MAX as u128),
@@ -643,7 +647,7 @@ impl<'tcx> ty::TyS<'tcx> {
         let val = match self.kind() {
             ty::Int(_) | ty::Uint(_) => {
                 let (size, signed) = int_size_and_signed(tcx, self);
-                let val = if signed { size.truncate(signed_min(size) as u128) } else { 0 };
+                let val = if signed { size.truncate(size.signed_int_min() as u128) } else { 0 };
                 Some(val)
             }
             ty::Char => Some(0),
@@ -693,7 +697,7 @@ impl<'tcx> ty::TyS<'tcx> {
     }
 
     /// Checks whether values of this type `T` implement the `Freeze`
-    /// trait -- frozen types are those that do not contain a
+    /// trait -- frozen types are those that do not contain an
     /// `UnsafeCell` anywhere. This is a language concept used to
     /// distinguish "true immutability", which is relevant to
     /// optimization as well as the rules around static values. Note
@@ -841,10 +845,14 @@ impl<'tcx> ty::TyS<'tcx> {
                     [component_ty] => component_ty,
                     _ => self,
                 };
+
                 // This doesn't depend on regions, so try to minimize distinct
                 // query keys used.
-                let erased = tcx.normalize_erasing_regions(param_env, query_ty);
-                tcx.needs_drop_raw(param_env.and(erased))
+                // If normalization fails, we just use `query_ty`.
+                let query_ty =
+                    tcx.try_normalize_erasing_regions(param_env, query_ty).unwrap_or(query_ty);
+
+                tcx.needs_drop_raw(param_env.and(query_ty))
             }
         }
     }
@@ -948,7 +956,7 @@ impl<'tcx> ty::TyS<'tcx> {
             let target_offset = layout.fields.offset(usize::from(i));
 
             let layout_cx = LayoutCx { tcx, param_env };
-            let field = layout.field(&layout_cx, i).unwrap();
+            let field = layout.field(&layout_cx, i);
 
             if field.size < w_size {
                 // If a field is smaller than a word, it will either be shuffled
@@ -1185,25 +1193,31 @@ pub fn fold_list<'tcx, F, T>(
     list: &'tcx ty::List<T>,
     folder: &mut F,
     intern: impl FnOnce(TyCtxt<'tcx>, &[T]) -> &'tcx ty::List<T>,
-) -> &'tcx ty::List<T>
+) -> Result<&'tcx ty::List<T>, F::Error>
 where
-    F: TypeFolder<'tcx>,
+    F: FallibleTypeFolder<'tcx>,
     T: TypeFoldable<'tcx> + PartialEq + Copy,
 {
     let mut iter = list.iter();
     // Look for the first element that changed
-    if let Some((i, new_t)) = iter.by_ref().enumerate().find_map(|(i, t)| {
-        let new_t = t.fold_with(folder);
-        if new_t == t { None } else { Some((i, new_t)) }
+    match iter.by_ref().enumerate().find_map(|(i, t)| match t.try_fold_with(folder) {
+        Ok(new_t) if new_t == t => None,
+        new_t => Some((i, new_t)),
     }) {
-        // An element changed, prepare to intern the resulting list
-        let mut new_list = SmallVec::<[_; 8]>::with_capacity(list.len());
-        new_list.extend_from_slice(&list[..i]);
-        new_list.push(new_t);
-        new_list.extend(iter.map(|t| t.fold_with(folder)));
-        intern(folder.tcx(), &new_list)
-    } else {
-        list
+        Some((i, Ok(new_t))) => {
+            // An element changed, prepare to intern the resulting list
+            let mut new_list = SmallVec::<[_; 8]>::with_capacity(list.len());
+            new_list.extend_from_slice(&list[..i]);
+            new_list.push(new_t);
+            for t in iter {
+                new_list.push(t.try_fold_with(folder)?)
+            }
+            Ok(intern(folder.tcx(), &new_list))
+        }
+        Some((_, Err(err))) => {
+            return Err(err);
+        }
+        None => Ok(list),
     }
 }
 
@@ -1221,6 +1235,7 @@ pub fn normalize_opaque_types(
         expanded_cache: FxHashMap::default(),
         primary_def_id: None,
         found_recursion: false,
+        found_any_recursion: false,
         check_recursion: false,
         tcx,
     };

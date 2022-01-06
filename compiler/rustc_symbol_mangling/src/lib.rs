@@ -91,6 +91,7 @@
 #![feature(never_type)]
 #![feature(nll)]
 #![feature(in_band_lifetimes)]
+#![feature(iter_zip)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -102,8 +103,9 @@ use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use rustc_middle::mir::mono::{InstantiationMode, MonoItem};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::SubstsRef;
-use rustc_middle::ty::{self, Instance, TyCtxt};
+use rustc_middle::ty::{self, Instance, Ty, TyCtxt};
 use rustc_session::config::SymbolManglingVersion;
+use rustc_target::abi::call::FnAbi;
 
 use tracing::debug;
 
@@ -149,6 +151,11 @@ fn symbol_name_provider(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> ty::Symb
     ty::SymbolName::new(tcx, &symbol_name)
 }
 
+/// This function computes the typeid for the given function ABI.
+pub fn typeid_for_fnabi(tcx: TyCtxt<'tcx>, fn_abi: &FnAbi<'tcx, Ty<'tcx>>) -> String {
+    v0::mangle_typeid_for_fnabi(tcx, fn_abi)
+}
+
 /// Computes the symbol name for the given instance. This function will call
 /// `compute_instantiating_crate` if it needs to factor the instantiating crate
 /// into the symbol name.
@@ -164,10 +171,6 @@ fn compute_symbol_name(
 
     // FIXME(eddyb) Precompute a custom symbol name based on attributes.
     let is_foreign = if let Some(def_id) = def_id.as_local() {
-        if tcx.plugin_registrar_fn(()) == Some(def_id) {
-            let stable_crate_id = tcx.sess.local_stable_crate_id();
-            return tcx.sess.generate_plugin_registrar_symbol(stable_crate_id);
-        }
         if tcx.proc_macro_decls_static(()) == Some(def_id) {
             let stable_crate_id = tcx.sess.local_stable_crate_id();
             return tcx.sess.generate_proc_macro_decls_symbol(stable_crate_id);
@@ -249,10 +252,18 @@ fn compute_symbol_name(
         tcx.symbol_mangling_version(mangling_version_crate)
     };
 
-    match mangling_version {
+    let symbol = match mangling_version {
         SymbolManglingVersion::Legacy => legacy::mangle(tcx, instance, instantiating_crate),
         SymbolManglingVersion::V0 => v0::mangle(tcx, instance, instantiating_crate),
-    }
+    };
+
+    debug_assert!(
+        rustc_demangle::try_demangle(&symbol).is_ok(),
+        "compute_symbol_name: `{}` cannot be demangled",
+        symbol
+    );
+
+    symbol
 }
 
 fn is_generic(substs: SubstsRef<'_>) -> bool {

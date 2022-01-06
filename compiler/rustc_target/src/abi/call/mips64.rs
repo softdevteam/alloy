@@ -1,9 +1,11 @@
-use crate::abi::call::{ArgAbi, ArgExtension, CastTarget, FnAbi, PassMode, Reg, RegKind, Uniform};
-use crate::abi::{self, HasDataLayout, LayoutOf, Size, TyAndLayout, TyAndLayoutMethods};
+use crate::abi::call::{
+    ArgAbi, ArgAttribute, ArgAttributes, ArgExtension, CastTarget, FnAbi, PassMode, Reg, Uniform,
+};
+use crate::abi::{self, HasDataLayout, Size, TyAbiInterface};
 
 fn extend_integer_width_mips<Ty>(arg: &mut ArgAbi<'_, Ty>, bits: u64) {
     // Always sign extend u32 values on 64-bit mips
-    if let abi::Abi::Scalar(ref scalar) = arg.layout.abi {
+    if let abi::Abi::Scalar(scalar) = arg.layout.abi {
         if let abi::Int(i, signed) = scalar.value {
             if !signed && i.size().bits() == 32 {
                 if let PassMode::Direct(ref mut attrs) = arg.mode {
@@ -19,11 +21,11 @@ fn extend_integer_width_mips<Ty>(arg: &mut ArgAbi<'_, Ty>, bits: u64) {
 
 fn float_reg<'a, Ty, C>(cx: &C, ret: &ArgAbi<'a, Ty>, i: usize) -> Option<Reg>
 where
-    Ty: TyAndLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout,
 {
     match ret.layout.field(cx, i).abi {
-        abi::Abi::Scalar(ref scalar) => match scalar.value {
+        abi::Abi::Scalar(scalar) => match scalar.value {
             abi::F32 => Some(Reg::f32()),
             abi::F64 => Some(Reg::f64()),
             _ => None,
@@ -34,8 +36,8 @@ where
 
 fn classify_ret<'a, Ty, C>(cx: &C, ret: &mut ArgAbi<'a, Ty>)
 where
-    Ty: TyAndLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout,
 {
     if !ret.layout.is_aggregate() {
         extend_integer_width_mips(ret, 64);
@@ -74,8 +76,8 @@ where
 
 fn classify_arg<'a, Ty, C>(cx: &C, arg: &mut ArgAbi<'a, Ty>)
 where
-    Ty: TyAndLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout,
 {
     if !arg.layout.is_aggregate() {
         extend_integer_width_mips(arg, 64);
@@ -107,7 +109,7 @@ where
                 let offset = arg.layout.fields.offset(i);
 
                 // We only care about aligned doubles
-                if let abi::Abi::Scalar(ref scalar) = field.abi {
+                if let abi::Abi::Scalar(scalar) = field.abi {
                     if let abi::F64 = scalar.value {
                         if offset.is_aligned(dl.f64_align.abi) {
                             // Insert enough integers to cover [last_offset, offset)
@@ -115,7 +117,7 @@ where
                             for _ in 0..((offset - last_offset).bits() / 64)
                                 .min((prefix.len() - prefix_index) as u64)
                             {
-                                prefix[prefix_index] = Some(RegKind::Integer);
+                                prefix[prefix_index] = Some(Reg::i64());
                                 prefix_index += 1;
                             }
 
@@ -123,7 +125,7 @@ where
                                 break;
                             }
 
-                            prefix[prefix_index] = Some(RegKind::Float);
+                            prefix[prefix_index] = Some(Reg::f64());
                             prefix_index += 1;
                             last_offset = offset + Reg::f64().size;
                         }
@@ -137,15 +139,20 @@ where
     let rest_size = size - Size::from_bytes(8) * prefix_index as u64;
     arg.cast_to(CastTarget {
         prefix,
-        prefix_chunk_size: Size::from_bytes(8),
         rest: Uniform { unit: Reg::i64(), total: rest_size },
+        attrs: ArgAttributes {
+            regular: ArgAttribute::default(),
+            arg_ext: ArgExtension::None,
+            pointee_size: Size::ZERO,
+            pointee_align: None,
+        },
     });
 }
 
 pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
 where
-    Ty: TyAndLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAbiInterface<'a, C> + Copy,
+    C: HasDataLayout,
 {
     if !fn_abi.ret.is_ignore() {
         classify_ret(cx, &mut fn_abi.ret);

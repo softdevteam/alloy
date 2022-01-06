@@ -3,16 +3,16 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::ptr::get_spans;
 use clippy_utils::source::snippet_opt;
-use clippy_utils::ty::{is_type_diagnostic_item, match_type, walk_ptrs_hir_ty};
-use clippy_utils::{expr_path_res, is_lint_allowed, match_any_def_paths, paths};
+use clippy_utils::ty::walk_ptrs_hir_ty;
+use clippy_utils::{expr_path_res, is_lint_allowed, match_any_diagnostic_items, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
+use rustc_hir::def::Res;
 use rustc_hir::{
-    BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, HirId, Impl, ImplItem, ImplItemKind, Item,
-    ItemKind, Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitFn, TraitItem, TraitItemKind, Ty, TyKind,
+    BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, Impl, ImplItem, ImplItemKind, Item, ItemKind,
+    Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitFn, TraitItem, TraitItemKind, Ty, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::Symbol;
@@ -20,16 +20,19 @@ use rustc_span::{sym, MultiSpan};
 use std::borrow::Cow;
 
 declare_clippy_lint! {
-    /// **What it does:** This lint checks for function arguments of type `&String`
+    /// ### What it does
+    /// This lint checks for function arguments of type `&String`
     /// or `&Vec` unless the references are mutable. It will also suggest you
     /// replace `.clone()` calls with the appropriate `.to_owned()`/`to_string()`
     /// calls.
     ///
-    /// **Why is this bad?** Requiring the argument to be of the specific size
+    /// ### Why is this bad?
+    /// Requiring the argument to be of the specific size
     /// makes the function less useful for no benefit; slices in the form of `&[T]`
     /// or `&str` usually suffice and can be obtained from other types, too.
     ///
-    /// **Known problems:** The lint does not follow data. So if you have an
+    /// ### Known problems
+    /// The lint does not follow data. So if you have an
     /// argument `x` and write `let y = x; y.clone()` the lint will not suggest
     /// changing that `.clone()` to `.to_owned()`.
     ///
@@ -59,7 +62,7 @@ declare_clippy_lint! {
     /// other crates referencing it, of which you may not be aware. Carefully
     /// deprecate the function before applying the lint suggestions in this case.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// // Bad
     /// fn foo(&Vec<u32>) { .. }
@@ -67,21 +70,22 @@ declare_clippy_lint! {
     /// // Good
     /// fn foo(&[u32]) { .. }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub PTR_ARG,
     style,
     "fn arguments of the type `&Vec<...>` or `&String`, suggesting to use `&[...]` or `&str` instead, respectively"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint checks for equality comparisons with `ptr::null`
+    /// ### What it does
+    /// This lint checks for equality comparisons with `ptr::null`
     ///
-    /// **Why is this bad?** It's easier and more readable to use the inherent
+    /// ### Why is this bad?
+    /// It's easier and more readable to use the inherent
     /// `.is_null()`
     /// method instead
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// // Bad
     /// if x == ptr::null {
@@ -93,49 +97,56 @@ declare_clippy_lint! {
     ///     ..
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub CMP_NULL,
     style,
     "comparing a pointer to a null pointer, suggesting to use `.is_null()` instead"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint checks for functions that take immutable
+    /// ### What it does
+    /// This lint checks for functions that take immutable
     /// references and return mutable ones.
     ///
-    /// **Why is this bad?** This is trivially unsound, as one can create two
+    /// ### Why is this bad?
+    /// This is trivially unsound, as one can create two
     /// mutable references from the same (immutable!) source.
     /// This [error](https://github.com/rust-lang/rust/issues/39465)
     /// actually lead to an interim Rust release 1.15.1.
     ///
-    /// **Known problems:** To be on the conservative side, if there's at least one
+    /// ### Known problems
+    /// To be on the conservative side, if there's at least one
     /// mutable reference with the output lifetime, this lint will not trigger.
     /// In practice, this case is unlikely anyway.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// fn foo(&Foo) -> &mut Bar { .. }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MUT_FROM_REF,
     correctness,
     "fns that create mutable refs from immutable ref args"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** This lint checks for invalid usages of `ptr::null`.
+    /// ### What it does
+    /// This lint checks for invalid usages of `ptr::null`.
     ///
-    /// **Why is this bad?** This causes undefined behavior.
+    /// ### Why is this bad?
+    /// This causes undefined behavior.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// // Bad. Undefined behavior
     /// unsafe { std::slice::from_raw_parts(ptr::null(), 0); }
     /// ```
     ///
+    /// ```ignore
     /// // Good
     /// unsafe { std::slice::from_raw_parts(NonNull::dangling().as_ptr(), 0); }
     /// ```
+    #[clippy::version = "1.53.0"]
     pub INVALID_NULL_PTR_USAGE,
     correctness,
     "invalid usage of a null pointer, suggesting `NonNull::dangling()` instead"
@@ -146,7 +157,7 @@ declare_lint_pass!(Ptr => [PTR_ARG, CMP_NULL, MUT_FROM_REF, INVALID_NULL_PTR_USA
 impl<'tcx> LateLintPass<'tcx> for Ptr {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
         if let ItemKind::Fn(ref sig, _, body_id) = item.kind {
-            check_fn(cx, sig.decl, item.hir_id(), Some(body_id));
+            check_fn(cx, sig.decl, Some(body_id));
         }
     }
 
@@ -158,7 +169,7 @@ impl<'tcx> LateLintPass<'tcx> for Ptr {
                     return; // ignore trait impls
                 }
             }
-            check_fn(cx, sig.decl, item.hir_id(), Some(body_id));
+            check_fn(cx, sig.decl, Some(body_id));
         }
     }
 
@@ -169,7 +180,7 @@ impl<'tcx> LateLintPass<'tcx> for Ptr {
             } else {
                 None
             };
-            check_fn(cx, sig.decl, item.hir_id(), body_id);
+            check_fn(cx, sig.decl, body_id);
         }
     }
 
@@ -237,13 +248,10 @@ fn check_invalid_ptr_usage<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: Option<BodyId>) {
-    let fn_def_id = cx.tcx.hir().local_def_id(fn_id);
-    let sig = cx.tcx.fn_sig(fn_def_id);
-    let fn_ty = sig.skip_binder();
+fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, opt_body_id: Option<BodyId>) {
     let body = opt_body_id.map(|id| cx.tcx.hir().body(id));
 
-    for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
+    for (idx, arg) in decl.inputs.iter().enumerate() {
         // Honor the allow attribute on parameters. See issue 5644.
         if let Some(body) = &body {
             if is_lint_allowed(cx, PTR_ARG, body.params[idx].hir_id) {
@@ -251,8 +259,20 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
             }
         }
 
-        if let ty::Ref(_, ty, Mutability::Not) = ty.kind() {
-            if is_type_diagnostic_item(cx, ty, sym::vec_type) {
+        let (item_name, path) = if_chain! {
+            if let TyKind::Rptr(_, MutTy { ty, mutbl: Mutability::Not }) = arg.kind;
+            if let TyKind::Path(QPath::Resolved(_, path)) = ty.kind;
+            if let Res::Def(_, did) = path.res;
+            if let Some(item_name) = cx.tcx.get_diagnostic_name(did);
+            then {
+                (item_name, path)
+            } else {
+                continue
+            }
+        };
+
+        match item_name {
+            sym::Vec => {
                 if let Some(spans) = get_spans(cx, opt_body_id, idx, &[("clone", ".to_owned()")]) {
                     span_lint_and_then(
                         cx,
@@ -282,7 +302,8 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
                         },
                     );
                 }
-            } else if is_type_diagnostic_item(cx, ty, sym::string_type) {
+            },
+            sym::String => {
                 if let Some(spans) = get_spans(cx, opt_body_id, idx, &[("clone", ".to_string()"), ("as_str", "")]) {
                     span_lint_and_then(
                         cx,
@@ -304,7 +325,8 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
                         },
                     );
                 }
-            } else if is_type_diagnostic_item(cx, ty, sym::PathBuf) {
+            },
+            sym::PathBuf => {
                 if let Some(spans) = get_spans(cx, opt_body_id, idx, &[("clone", ".to_path_buf()"), ("as_path", "")]) {
                     span_lint_and_then(
                         cx,
@@ -331,11 +353,10 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
                         },
                     );
                 }
-            } else if match_type(cx, ty, &paths::COW) {
+            },
+            sym::Cow => {
                 if_chain! {
-                    if let TyKind::Rptr(_, MutTy { ty, ..} ) = arg.kind;
-                    if let TyKind::Path(QPath::Resolved(None, pp)) = ty.kind;
-                    if let [ref bx] = *pp.segments;
+                    if let [ref bx] = *path.segments;
                     if let Some(params) = bx.args;
                     if !params.parenthesized;
                     if let Some(inner) = params.args.iter().find_map(|arg| match arg {
@@ -356,7 +377,8 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
                         );
                     }
                 }
-            }
+            },
+            _ => {},
         }
     }
 
@@ -366,7 +388,7 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
             for (_, ref mutbl, ref argspan) in decl
                 .inputs
                 .iter()
-                .filter_map(|ty| get_rptr_lm(ty))
+                .filter_map(get_rptr_lm)
                 .filter(|&(lt, _, _)| lt.name == out.name)
             {
                 if *mutbl == Mutability::Mut {
@@ -419,7 +441,7 @@ fn get_rptr_lm<'tcx>(ty: &'tcx Ty<'tcx>) -> Option<(&'tcx Lifetime, Mutability, 
 fn is_null_path(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     if let ExprKind::Call(pathexp, []) = expr.kind {
         expr_path_res(cx, pathexp).opt_def_id().map_or(false, |id| {
-            match_any_def_paths(cx, id, &[&paths::PTR_NULL, &paths::PTR_NULL_MUT]).is_some()
+            match_any_diagnostic_items(cx, id, &[sym::ptr_null, sym::ptr_null_mut]).is_some()
         })
     } else {
         false

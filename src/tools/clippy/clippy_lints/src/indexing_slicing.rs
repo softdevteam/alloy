@@ -10,14 +10,17 @@ use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for out of bounds array indexing with a constant
+    /// ### What it does
+    /// Checks for out of bounds array indexing with a constant
     /// index.
     ///
-    /// **Why is this bad?** This will always panic at runtime.
+    /// ### Why is this bad?
+    /// This will always panic at runtime.
     ///
-    /// **Known problems:** Hopefully none.
+    /// ### Known problems
+    /// Hopefully none.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// # #![allow(const_err)]
     /// let x = [1, 2, 3, 4];
@@ -30,22 +33,26 @@ declare_clippy_lint! {
     /// x[0];
     /// x[3];
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub OUT_OF_BOUNDS_INDEXING,
     correctness,
     "out of bounds constant indexing"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of indexing or slicing. Arrays are special cases, this lint
+    /// ### What it does
+    /// Checks for usage of indexing or slicing. Arrays are special cases, this lint
     /// does report on arrays if we can tell that slicing operations are in bounds and does not
     /// lint on constant `usize` indexing on arrays because that is handled by rustc's `const_err` lint.
     ///
-    /// **Why is this bad?** Indexing and slicing can panic at runtime and there are
+    /// ### Why is this bad?
+    /// Indexing and slicing can panic at runtime and there are
     /// safe alternatives.
     ///
-    /// **Known problems:** Hopefully none.
+    /// ### Known problems
+    /// Hopefully none.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,no_run
     /// // Vector
     /// let x = vec![0; 5];
@@ -79,6 +86,7 @@ declare_clippy_lint! {
     /// y.get(10..);
     /// y.get(..100);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub INDEXING_SLICING,
     restriction,
     "indexing/slicing usage"
@@ -90,7 +98,7 @@ impl<'tcx> LateLintPass<'tcx> for IndexingSlicing {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Index(array, index) = &expr.kind {
             let ty = cx.typeck_results().expr_ty(array).peel_refs();
-            if let Some(range) = higher::range(index) {
+            if let Some(range) = higher::Range::hir(index) {
                 // Ranged indexes, i.e., &x[n..m], &x[n..], &x[..n] and &x[..]
                 if let ty::Array(_, s) = ty.kind() {
                     let size: u128 = if let Some(size) = s.try_eval_usize(cx.tcx, cx.param_env) {

@@ -103,9 +103,12 @@ pub trait DoubleEndedIterator: Iterator {
     /// elements the iterator is advanced by before running out of elements (i.e. the length
     /// of the iterator). Note that `k` is always less than `n`.
     ///
-    /// Calling `advance_back_by(0)` does not consume any elements and always returns [`Ok(())`].
+    /// Calling `advance_back_by(0)` can do meaningful work, for example [`Flatten`] can advance its
+    /// outer iterator until it finds an inner iterator that is not empty, which then often
+    /// allows it to return a more accurate `size_hint()` than in its initial state.
     ///
     /// [`advance_by`]: Iterator::advance_by
+    /// [`Flatten`]: crate::iter::Flatten
     /// [`next_back`]: DoubleEndedIterator::next_back
     ///
     /// # Examples

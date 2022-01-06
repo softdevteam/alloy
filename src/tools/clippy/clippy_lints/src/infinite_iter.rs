@@ -1,43 +1,49 @@
 use clippy_utils::diagnostics::span_lint;
-use clippy_utils::ty::{implements_trait, match_type};
+use clippy_utils::ty::{implements_trait, is_type_diagnostic_item};
 use clippy_utils::{get_trait_def_id, higher, is_qpath_def_path, paths};
 use rustc_hir::{BorrowKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::symbol::{sym, Symbol};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for iteration that is guaranteed to be infinite.
+    /// ### What it does
+    /// Checks for iteration that is guaranteed to be infinite.
     ///
-    /// **Why is this bad?** While there may be places where this is acceptable
+    /// ### Why is this bad?
+    /// While there may be places where this is acceptable
     /// (e.g., in event streams), in most cases this is simply an error.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// use std::iter;
     ///
     /// iter::repeat(1_u8).collect::<Vec<_>>();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub INFINITE_ITER,
     correctness,
     "infinite iteration"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for iteration that may be infinite.
+    /// ### What it does
+    /// Checks for iteration that may be infinite.
     ///
-    /// **Why is this bad?** While there may be places where this is acceptable
+    /// ### Why is this bad?
+    /// While there may be places where this is acceptable
     /// (e.g., in event streams), in most cases this is simply an error.
     ///
-    /// **Known problems:** The code may have a condition to stop iteration, but
+    /// ### Known problems
+    /// The code may have a condition to stop iteration, but
     /// this lint is not clever enough to analyze it.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let infinite_iter = 0..;
     /// [0..].iter().zip(infinite_iter.take_while(|x| *x > 5));
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MAYBE_INFINITE_ITER,
     pedantic,
     "possible infinite iteration"
@@ -168,7 +174,7 @@ fn is_infinite(cx: &LateContext<'_>, expr: &Expr<'_>) -> Finiteness {
                 Finite
             }
         },
-        ExprKind::Struct(..) => higher::range(expr).map_or(false, |r| r.end.is_none()).into(),
+        ExprKind::Struct(..) => higher::Range::hir(expr).map_or(false, |r| r.end.is_none()).into(),
         _ => Finite,
     }
 }
@@ -202,15 +208,15 @@ const COMPLETING_METHODS: [(&str, usize); 12] = [
 ];
 
 /// the paths of types that are known to be infinitely allocating
-const INFINITE_COLLECTORS: [&[&str]; 8] = [
-    &paths::BINARY_HEAP,
-    &paths::BTREEMAP,
-    &paths::BTREESET,
-    &paths::HASHMAP,
-    &paths::HASHSET,
-    &paths::LINKED_LIST,
-    &paths::VEC,
-    &paths::VEC_DEQUE,
+const INFINITE_COLLECTORS: &[Symbol] = &[
+    sym::BinaryHeap,
+    sym::BTreeMap,
+    sym::BTreeSet,
+    sym::HashMap,
+    sym::HashSet,
+    sym::LinkedList,
+    sym::Vec,
+    sym::VecDeque,
 ];
 
 fn complete_infinite_iter(cx: &LateContext<'_>, expr: &Expr<'_>) -> Finiteness {
@@ -235,7 +241,10 @@ fn complete_infinite_iter(cx: &LateContext<'_>, expr: &Expr<'_>) -> Finiteness {
                 }
             } else if method.ident.name == sym!(collect) {
                 let ty = cx.typeck_results().expr_ty(expr);
-                if INFINITE_COLLECTORS.iter().any(|path| match_type(cx, ty, path)) {
+                if INFINITE_COLLECTORS
+                    .iter()
+                    .any(|diag_item| is_type_diagnostic_item(cx, ty, *diag_item))
+                {
                     return is_infinite(cx, &args[0]);
                 }
             }

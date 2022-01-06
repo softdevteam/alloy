@@ -2,8 +2,9 @@ use crate::os::windows::prelude::*;
 
 use crate::ffi::OsString;
 use crate::fmt;
-use crate::io::{self, Error, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, Error, IoSlice, IoSliceMut, ReadBuf, SeekFrom};
 use crate::mem;
+use crate::os::windows::io::{AsHandle, BorrowedHandle};
 use crate::path::{Path, PathBuf};
 use crate::ptr;
 use crate::slice;
@@ -11,8 +12,9 @@ use crate::sync::Arc;
 use crate::sys::handle::Handle;
 use crate::sys::time::SystemTime;
 use crate::sys::{c, cvt};
-use crate::sys_common::FromInner;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
 
+use super::path::maybe_verbatim;
 use super::to_u16s;
 
 pub struct File {
@@ -280,7 +282,7 @@ impl OpenOptions {
 
 impl File {
     pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        let path = to_u16s(path)?;
+        let path = maybe_verbatim(path)?;
         let handle = unsafe {
             c::CreateFileW(
                 path.as_ptr(),
@@ -295,12 +297,12 @@ impl File {
         if handle == c::INVALID_HANDLE_VALUE {
             Err(Error::last_os_error())
         } else {
-            Ok(File { handle: Handle::new(handle) })
+            unsafe { Ok(File { handle: Handle::from_raw_handle(handle) }) }
         }
     }
 
     pub fn fsync(&self) -> io::Result<()> {
-        cvt(unsafe { c::FlushFileBuffers(self.handle.raw()) })?;
+        cvt(unsafe { c::FlushFileBuffers(self.handle.as_raw_handle()) })?;
         Ok(())
     }
 
@@ -313,7 +315,7 @@ impl File {
         let size = mem::size_of_val(&info);
         cvt(unsafe {
             c::SetFileInformationByHandle(
-                self.handle.raw(),
+                self.handle.as_raw_handle(),
                 c::FileEndOfFileInfo,
                 &mut info as *mut _ as *mut _,
                 size as c::DWORD,
@@ -326,7 +328,7 @@ impl File {
     pub fn file_attr(&self) -> io::Result<FileAttr> {
         unsafe {
             let mut info: c::BY_HANDLE_FILE_INFORMATION = mem::zeroed();
-            cvt(c::GetFileInformationByHandle(self.handle.raw(), &mut info))?;
+            cvt(c::GetFileInformationByHandle(self.handle.as_raw_handle(), &mut info))?;
             let mut reparse_tag = 0;
             if info.dwFileAttributes & c::FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 let mut b = [0; c::MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
@@ -356,7 +358,7 @@ impl File {
             let mut info: c::FILE_BASIC_INFO = mem::zeroed();
             let size = mem::size_of_val(&info);
             cvt(c::GetFileInformationByHandleEx(
-                self.handle.raw(),
+                self.handle.as_raw_handle(),
                 c::FileBasicInfo,
                 &mut info as *mut _ as *mut libc::c_void,
                 size as c::DWORD,
@@ -384,7 +386,7 @@ impl File {
             let mut info: c::FILE_STANDARD_INFO = mem::zeroed();
             let size = mem::size_of_val(&info);
             cvt(c::GetFileInformationByHandleEx(
-                self.handle.raw(),
+                self.handle.as_raw_handle(),
                 c::FileStandardInfo,
                 &mut info as *mut _ as *mut libc::c_void,
                 size as c::DWORD,
@@ -418,6 +420,10 @@ impl File {
         self.handle.read_at(buf, offset)
     }
 
+    pub fn read_buf(&self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        self.handle.read_buf(buf)
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.handle.write(buf)
     }
@@ -449,20 +455,12 @@ impl File {
         };
         let pos = pos as c::LARGE_INTEGER;
         let mut newpos = 0;
-        cvt(unsafe { c::SetFilePointerEx(self.handle.raw(), pos, &mut newpos, whence) })?;
+        cvt(unsafe { c::SetFilePointerEx(self.handle.as_raw_handle(), pos, &mut newpos, whence) })?;
         Ok(newpos as u64)
     }
 
     pub fn duplicate(&self) -> io::Result<File> {
         Ok(File { handle: self.handle.duplicate(0, false, c::DUPLICATE_SAME_ACCESS)? })
-    }
-
-    pub fn handle(&self) -> &Handle {
-        &self.handle
-    }
-
-    pub fn into_handle(self) -> Handle {
-        self.handle
     }
 
     fn reparse_point<'a>(
@@ -473,7 +471,7 @@ impl File {
             let mut bytes = 0;
             cvt({
                 c::DeviceIoControl(
-                    self.handle.raw(),
+                    self.handle.as_raw_handle(),
                     c::FSCTL_GET_REPARSE_POINT,
                     ptr::null_mut(),
                     0,
@@ -541,7 +539,7 @@ impl File {
         let size = mem::size_of_val(&info);
         cvt(unsafe {
             c::SetFileInformationByHandle(
-                self.handle.raw(),
+                self.handle.as_raw_handle(),
                 c::FileBasicInfo,
                 &mut info as *mut _ as *mut _,
                 size as c::DWORD,
@@ -551,9 +549,45 @@ impl File {
     }
 }
 
-impl FromInner<c::HANDLE> for File {
-    fn from_inner(handle: c::HANDLE) -> File {
-        File { handle: Handle::new(handle) }
+impl AsInner<Handle> for File {
+    fn as_inner(&self) -> &Handle {
+        &self.handle
+    }
+}
+
+impl IntoInner<Handle> for File {
+    fn into_inner(self) -> Handle {
+        self.handle
+    }
+}
+
+impl FromInner<Handle> for File {
+    fn from_inner(handle: Handle) -> File {
+        File { handle }
+    }
+}
+
+impl AsHandle for File {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.as_inner().as_handle()
+    }
+}
+
+impl AsRawHandle for File {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.as_inner().as_raw_handle()
+    }
+}
+
+impl IntoRawHandle for File {
+    fn into_raw_handle(self) -> RawHandle {
+        self.into_inner().into_raw_handle()
+    }
+}
+
+impl FromRawHandle for File {
+    unsafe fn from_raw_handle(raw_handle: RawHandle) -> Self {
+        Self { handle: FromInner::from_inner(FromRawHandle::from_raw_handle(raw_handle)) }
     }
 }
 
@@ -561,7 +595,7 @@ impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // FIXME(#24570): add more info here (e.g., mode)
         let mut b = f.debug_struct("File");
-        b.field("handle", &self.handle.raw());
+        b.field("handle", &self.handle.as_raw_handle());
         if let Ok(path) = get_path(&self) {
             b.field("path", &path);
         }
@@ -643,7 +677,7 @@ impl FilePermissions {
 
 impl FileType {
     fn new(attrs: c::DWORD, reparse_tag: c::DWORD) -> FileType {
-        FileType { attributes: attrs, reparse_tag: reparse_tag }
+        FileType { attributes: attrs, reparse_tag }
     }
     pub fn is_dir(&self) -> bool {
         !self.is_symlink() && self.is_directory()
@@ -677,7 +711,7 @@ impl DirBuilder {
     }
 
     pub fn mkdir(&self, p: &Path) -> io::Result<()> {
-        let p = to_u16s(p)?;
+        let p = maybe_verbatim(p)?;
         cvt(unsafe { c::CreateDirectoryW(p.as_ptr(), ptr::null_mut()) })?;
         Ok(())
     }
@@ -686,7 +720,7 @@ impl DirBuilder {
 pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     let root = p.to_path_buf();
     let star = p.join("*");
-    let path = to_u16s(&star)?;
+    let path = maybe_verbatim(&star)?;
 
     unsafe {
         let mut wfd = mem::zeroed();
@@ -704,20 +738,20 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
-    let p_u16s = to_u16s(p)?;
+    let p_u16s = maybe_verbatim(p)?;
     cvt(unsafe { c::DeleteFileW(p_u16s.as_ptr()) })?;
     Ok(())
 }
 
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
-    let old = to_u16s(old)?;
-    let new = to_u16s(new)?;
+    let old = maybe_verbatim(old)?;
+    let new = maybe_verbatim(new)?;
     cvt(unsafe { c::MoveFileExW(old.as_ptr(), new.as_ptr(), c::MOVEFILE_REPLACE_EXISTING) })?;
     Ok(())
 }
 
 pub fn rmdir(p: &Path) -> io::Result<()> {
-    let p = to_u16s(p)?;
+    let p = maybe_verbatim(p)?;
     cvt(unsafe { c::RemoveDirectoryW(p.as_ptr()) })?;
     Ok(())
 }
@@ -765,7 +799,7 @@ pub fn symlink(original: &Path, link: &Path) -> io::Result<()> {
 
 pub fn symlink_inner(original: &Path, link: &Path, dir: bool) -> io::Result<()> {
     let original = to_u16s(original)?;
-    let link = to_u16s(link)?;
+    let link = maybe_verbatim(link)?;
     let flags = if dir { c::SYMBOLIC_LINK_FLAG_DIRECTORY } else { 0 };
     // Formerly, symlink creation required the SeCreateSymbolicLink privilege. For the Windows 10
     // Creators Update, Microsoft loosened this to allow unprivileged symlink creation if the
@@ -794,8 +828,8 @@ pub fn symlink_inner(original: &Path, link: &Path, dir: bool) -> io::Result<()> 
 
 #[cfg(not(target_vendor = "uwp"))]
 pub fn link(original: &Path, link: &Path) -> io::Result<()> {
-    let original = to_u16s(original)?;
-    let link = to_u16s(link)?;
+    let original = maybe_verbatim(original)?;
+    let link = maybe_verbatim(link)?;
     cvt(unsafe { c::CreateHardLinkW(link.as_ptr(), original.as_ptr(), ptr::null_mut()) })?;
     Ok(())
 }
@@ -828,7 +862,7 @@ pub fn lstat(path: &Path) -> io::Result<FileAttr> {
 }
 
 pub fn set_perm(p: &Path, perm: FilePermissions) -> io::Result<()> {
-    let p = to_u16s(p)?;
+    let p = maybe_verbatim(p)?;
     unsafe {
         cvt(c::SetFileAttributesW(p.as_ptr(), perm.attrs))?;
         Ok(())
@@ -838,7 +872,7 @@ pub fn set_perm(p: &Path, perm: FilePermissions) -> io::Result<()> {
 fn get_path(f: &File) -> io::Result<PathBuf> {
     super::fill_utf16_buf(
         |buf, sz| unsafe {
-            c::GetFinalPathNameByHandleW(f.handle.raw(), buf, sz, c::VOLUME_NAME_DOS)
+            c::GetFinalPathNameByHandleW(f.handle.as_raw_handle(), buf, sz, c::VOLUME_NAME_DOS)
         },
         |buf| PathBuf::from(OsString::from_wide(buf)),
     )
@@ -871,8 +905,8 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
         }
         c::PROGRESS_CONTINUE
     }
-    let pfrom = to_u16s(from)?;
-    let pto = to_u16s(to)?;
+    let pfrom = maybe_verbatim(from)?;
+    let pto = maybe_verbatim(to)?;
     let mut size = 0i64;
     cvt(unsafe {
         c::CopyFileExW(
@@ -909,7 +943,7 @@ fn symlink_junction_inner(original: &Path, junction: &Path) -> io::Result<()> {
     opts.write(true);
     opts.custom_flags(c::FILE_FLAG_OPEN_REPARSE_POINT | c::FILE_FLAG_BACKUP_SEMANTICS);
     let f = File::open(junction, &opts)?;
-    let h = f.handle().raw();
+    let h = f.as_inner().as_raw_handle();
 
     unsafe {
         let mut data = [0u8; c::MAXIMUM_REPARSE_DATA_BUFFER_SIZE];

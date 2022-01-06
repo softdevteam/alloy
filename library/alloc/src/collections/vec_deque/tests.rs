@@ -42,6 +42,39 @@ fn bench_pop_back_100(b: &mut test::Bencher) {
 
 #[bench]
 #[cfg_attr(miri, ignore)] // isolated Miri does not support benchmarks
+fn bench_retain_whole_10000(b: &mut test::Bencher) {
+    let v = (1..100000).collect::<VecDeque<u32>>();
+
+    b.iter(|| {
+        let mut v = v.clone();
+        v.retain(|x| *x > 0)
+    })
+}
+
+#[bench]
+#[cfg_attr(miri, ignore)] // isolated Miri does not support benchmarks
+fn bench_retain_odd_10000(b: &mut test::Bencher) {
+    let v = (1..100000).collect::<VecDeque<u32>>();
+
+    b.iter(|| {
+        let mut v = v.clone();
+        v.retain(|x| x & 1 == 0)
+    })
+}
+
+#[bench]
+#[cfg_attr(miri, ignore)] // isolated Miri does not support benchmarks
+fn bench_retain_half_10000(b: &mut test::Bencher) {
+    let v = (1..100000).collect::<VecDeque<u32>>();
+
+    b.iter(|| {
+        let mut v = v.clone();
+        v.retain(|x| *x > 50000)
+    })
+}
+
+#[bench]
+#[cfg_attr(miri, ignore)] // isolated Miri does not support benchmarks
 fn bench_pop_front_100(b: &mut test::Bencher) {
     let mut deq = VecDeque::<i32>::with_capacity(101);
 
@@ -472,6 +505,36 @@ fn test_from_vec_zst_overflow() {
     let vd = VecDeque::from(vec.clone()); // no room for +1
     assert!(vd.cap().is_power_of_two());
     assert_eq!(vd.len(), vec.len());
+}
+
+#[test]
+fn test_from_array() {
+    fn test<const N: usize>() {
+        let mut array: [usize; N] = [0; N];
+
+        for i in 0..N {
+            array[i] = i;
+        }
+
+        let deq: VecDeque<_> = array.into();
+
+        for i in 0..N {
+            assert_eq!(deq[i], i);
+        }
+
+        assert!(deq.cap().is_power_of_two());
+        assert_eq!(deq.len(), N);
+    }
+    test::<0>();
+    test::<1>();
+    test::<2>();
+    test::<32>();
+    test::<35>();
+
+    let array = [(); MAXIMUM_ZST_CAPACITY - 1];
+    let deq = VecDeque::from(array);
+    assert!(deq.cap().is_power_of_two());
+    assert_eq!(deq.len(), MAXIMUM_ZST_CAPACITY - 1);
 }
 
 #[test]

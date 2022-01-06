@@ -24,6 +24,9 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! [`OsStr`]: crate::ffi::OsStr
+//! [`OsString`]: crate::ffi::OsString
 
 #![stable(feature = "rust1", since = "1.0.0")]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -32,6 +35,7 @@
 pub mod ffi;
 pub mod fs;
 pub mod io;
+pub mod net;
 
 /// A prelude for conveniently writing platform-specific code.
 ///
@@ -49,5 +53,5 @@ pub mod prelude {
     pub use super::fs::{DirEntryExt, FileExt, MetadataExt, OpenOptionsExt};
     #[doc(no_inline)]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub use super::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+    pub use super::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 }

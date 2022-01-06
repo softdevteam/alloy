@@ -1,7 +1,6 @@
 use crate::context::{CheckLintNameResult, LintStore};
 use crate::late::unerased_lint_store;
 use rustc_ast as ast;
-use rustc_ast::unwrap_or;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
@@ -33,14 +32,11 @@ fn lint_levels(tcx: TyCtxt<'_>, (): ()) -> LintLevelMap {
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
 
-    builder.levels.id_to_set.reserve(krate.exported_macros.len() + 1);
+    builder.levels.id_to_set.reserve(krate.owners.len() + 1);
 
     let push = builder.levels.push(tcx.hir().attrs(hir::CRATE_HIR_ID), &store, true);
     builder.levels.register_id(hir::CRATE_HIR_ID);
-    for macro_def in krate.exported_macros {
-        builder.levels.register_id(macro_def.hir_id());
-    }
-    intravisit::walk_crate(&mut builder, krate);
+    tcx.hir().walk_toplevel_module(&mut builder);
     builder.levels.pop(push);
 
     builder.levels.build_map()
@@ -231,14 +227,13 @@ impl<'s> LintLevelsBuilder<'s> {
         let sess = self.sess;
         let bad_attr = |span| struct_span_err!(sess, span, E0452, "malformed lint attribute input");
         for attr in attrs {
-            let level = match Level::from_symbol(attr.name_or_empty()) {
-                None => continue,
-                Some(lvl) => lvl,
+            let Some(level) = Level::from_symbol(attr.name_or_empty()) else {
+                continue
             };
 
-            self.sess.mark_attr_used(attr);
-
-            let mut metas = unwrap_or!(attr.meta_item_list(), continue);
+            let Some(mut metas) = attr.meta_item_list() else {
+                continue
+            };
 
             if metas.is_empty() {
                 // FIXME (#55112): issue unused-attributes lint for `#[level()]`
@@ -484,9 +479,8 @@ impl<'s> LintLevelsBuilder<'s> {
                     continue;
                 }
 
-                let (lint_attr_name, lint_attr_span) = match *src {
-                    LintLevelSource::Node(name, span, _) => (name, span),
-                    _ => continue,
+                let LintLevelSource::Node(lint_attr_name, lint_attr_span, _) = *src else {
+                    continue
                 };
 
                 let lint = builtin::UNUSED_ATTRIBUTES;
@@ -576,7 +570,7 @@ pub fn is_known_lint_tool(m_item: Symbol, sess: &Session, attrs: &[ast::Attribut
     // NOTE: does no error handling; error handling is done by rustc_resolve.
     sess.filter_by_name(attrs, sym::register_tool)
         .filter_map(|attr| attr.meta_item_list())
-        .flat_map(std::convert::identity)
+        .flatten()
         .filter_map(|nested_meta| nested_meta.ident())
         .map(|ident| ident.name)
         .any(|name| name == m_item)

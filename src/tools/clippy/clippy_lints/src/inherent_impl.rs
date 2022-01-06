@@ -1,22 +1,22 @@
 //! lint on inherent implementations
 
 use clippy_utils::diagnostics::span_lint_and_note;
-use clippy_utils::{in_macro, is_lint_allowed};
+use clippy_utils::is_lint_allowed;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_hir::{def_id::LocalDefId, Crate, Item, ItemKind, Node};
+use rustc_hir::{def_id::LocalDefId, Item, ItemKind, Node};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
 use std::collections::hash_map::Entry;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for multiple inherent implementations of a struct
+    /// ### What it does
+    /// Checks for multiple inherent implementations of a struct
     ///
-    /// **Why is this bad?** Splitting the implementation of a type makes the code harder to navigate.
+    /// ### Why is this bad?
+    /// Splitting the implementation of a type makes the code harder to navigate.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// struct X;
     /// impl X {
@@ -36,6 +36,7 @@ declare_clippy_lint! {
     ///     fn other() {}
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MULTIPLE_INHERENT_IMPL,
     restriction,
     "Multiple inherent impl that could be grouped"
@@ -44,7 +45,7 @@ declare_clippy_lint! {
 declare_lint_pass!(MultipleInherentImpl => [MULTIPLE_INHERENT_IMPL]);
 
 impl<'tcx> LateLintPass<'tcx> for MultipleInherentImpl {
-    fn check_crate_post(&mut self, cx: &LateContext<'tcx>, _: &'tcx Crate<'_>) {
+    fn check_crate_post(&mut self, cx: &LateContext<'tcx>) {
         // Map from a type to it's first impl block. Needed to distinguish generic arguments.
         // e.g. `Foo<Bar>` and `Foo<Baz>`
         let mut type_map = FxHashMap::default();
@@ -123,8 +124,10 @@ fn get_impl_span(cx: &LateContext<'_>, id: LocalDefId) -> Option<Span> {
         ..
     }) = cx.tcx.hir().get(id)
     {
-        (!in_macro(span) && impl_item.generics.params.is_empty() && !is_lint_allowed(cx, MULTIPLE_INHERENT_IMPL, id))
-            .then(|| span)
+        (!span.from_expansion()
+            && impl_item.generics.params.is_empty()
+            && !is_lint_allowed(cx, MULTIPLE_INHERENT_IMPL, id))
+        .then(|| span)
     } else {
         None
     }

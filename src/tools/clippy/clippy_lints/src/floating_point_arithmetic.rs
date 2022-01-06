@@ -3,7 +3,8 @@ use clippy_utils::consts::{
     Constant::{Int, F32, F64},
 };
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::{eq_expr_value, get_parent_expr, numeric_literal, sugg};
+use clippy_utils::higher;
+use clippy_utils::{eq_expr_value, get_parent_expr, in_constant, numeric_literal, sugg};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{BinOpKind, Expr, ExprKind, PathSegment, UnOp};
@@ -18,16 +19,15 @@ use std::f64::consts as f64_consts;
 use sugg::Sugg;
 
 declare_clippy_lint! {
-    /// **What it does:** Looks for floating-point expressions that
+    /// ### What it does
+    /// Looks for floating-point expressions that
     /// can be expressed using built-in methods to improve accuracy
     /// at the cost of performance.
     ///
-    /// **Why is this bad?** Negatively impacts accuracy.
+    /// ### Why is this bad?
+    /// Negatively impacts accuracy.
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let a = 3f32;
     /// let _ = a.powf(1.0 / 3.0);
@@ -43,22 +43,22 @@ declare_clippy_lint! {
     /// let _ = a.ln_1p();
     /// let _ = a.exp_m1();
     /// ```
+    #[clippy::version = "1.43.0"]
     pub IMPRECISE_FLOPS,
     nursery,
     "usage of imprecise floating point operations"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Looks for floating-point expressions that
+    /// ### What it does
+    /// Looks for floating-point expressions that
     /// can be expressed using built-in methods to improve both
     /// accuracy and performance.
     ///
-    /// **Why is this bad?** Negatively impacts accuracy and performance.
+    /// ### Why is this bad?
+    /// Negatively impacts accuracy and performance.
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// use std::f32::consts::E;
     ///
@@ -100,6 +100,7 @@ declare_clippy_lint! {
     /// let _ = a.abs();
     /// let _ = -a.abs();
     /// ```
+    #[clippy::version = "1.43.0"]
     pub SUBOPTIMAL_FLOPS,
     nursery,
     "usage of sub-optimal floating point operations"
@@ -333,8 +334,6 @@ fn check_powi(cx: &LateContext<'_>, expr: &Expr<'_>, args: &[Expr<'_>]) {
                         ),
                         Applicability::MachineApplicable,
                     );
-
-                    return;
                 }
             }
         }
@@ -365,22 +364,22 @@ fn detect_hypot(cx: &LateContext<'_>, args: &[Expr<'_>]) -> Option<String> {
         if_chain! {
             if let ExprKind::MethodCall(
                 PathSegment { ident: lmethod_name, .. },
-                ref _lspan,
-                largs,
+                _lspan,
+                [largs_0, largs_1, ..],
                 _
-            ) = add_lhs.kind;
+            ) = &add_lhs.kind;
             if let ExprKind::MethodCall(
                 PathSegment { ident: rmethod_name, .. },
-                ref _rspan,
-                rargs,
+                _rspan,
+                [rargs_0, rargs_1, ..],
                 _
-            ) = add_rhs.kind;
+            ) = &add_rhs.kind;
             if lmethod_name.as_str() == "powi" && rmethod_name.as_str() == "powi";
-            if let Some((lvalue, _)) = constant(cx, cx.typeck_results(), &largs[1]);
-            if let Some((rvalue, _)) = constant(cx, cx.typeck_results(), &rargs[1]);
+            if let Some((lvalue, _)) = constant(cx, cx.typeck_results(), largs_1);
+            if let Some((rvalue, _)) = constant(cx, cx.typeck_results(), rargs_1);
             if Int(2) == lvalue && Int(2) == rvalue;
             then {
-                return Some(format!("{}.hypot({})", Sugg::hir(cx, &largs[0], ".."), Sugg::hir(cx, &rargs[0], "..")));
+                return Some(format!("{}.hypot({})", Sugg::hir(cx, largs_0, ".."), Sugg::hir(cx, rargs_0, "..")));
             }
         }
     }
@@ -410,8 +409,8 @@ fn check_expm1(cx: &LateContext<'_>, expr: &Expr<'_>) {
         if cx.typeck_results().expr_ty(lhs).is_floating_point();
         if let Some((value, _)) = constant(cx, cx.typeck_results(), rhs);
         if F32(1.0) == value || F64(1.0) == value;
-        if let ExprKind::MethodCall(path, _, method_args, _) = lhs.kind;
-        if cx.typeck_results().expr_ty(&method_args[0]).is_floating_point();
+        if let ExprKind::MethodCall(path, _, [self_arg, ..], _) = &lhs.kind;
+        if cx.typeck_results().expr_ty(self_arg).is_floating_point();
         if path.ident.name.as_str() == "exp";
         then {
             span_lint_and_sugg(
@@ -422,7 +421,7 @@ fn check_expm1(cx: &LateContext<'_>, expr: &Expr<'_>) {
                 "consider using",
                 format!(
                     "{}.exp_m1()",
-                    Sugg::hir(cx, &method_args[0], "..")
+                    Sugg::hir(cx, self_arg, "..")
                 ),
                 Applicability::MachineApplicable,
             );
@@ -547,11 +546,11 @@ fn are_negated<'a>(cx: &LateContext<'_>, expr1: &'a Expr<'a>, expr2: &'a Expr<'a
 
 fn check_custom_abs(cx: &LateContext<'_>, expr: &Expr<'_>) {
     if_chain! {
-        if let ExprKind::If(cond, body, else_body) = expr.kind;
-        if let ExprKind::Block(block, _) = body.kind;
+        if let Some(higher::If { cond, then, r#else }) = higher::If::hir(expr);
+        if let ExprKind::Block(block, _) = then.kind;
         if block.stmts.is_empty();
         if let Some(if_body_expr) = block.expr;
-        if let Some(ExprKind::Block(else_block, _)) = else_body.map(|el| &el.kind);
+        if let Some(ExprKind::Block(else_block, _)) = r#else.map(|el| &el.kind);
         if else_block.stmts.is_empty();
         if let Some(else_body_expr) = else_block.expr;
         if let Some((if_expr_positive, body)) = are_negated(cx, if_body_expr, else_body_expr);
@@ -620,8 +619,8 @@ fn check_log_division(cx: &LateContext<'_>, expr: &Expr<'_>) {
             rhs,
         ) = &expr.kind;
         if are_same_base_logs(cx, lhs, rhs);
-        if let ExprKind::MethodCall(_, _, largs, _) = lhs.kind;
-        if let ExprKind::MethodCall(_, _, rargs, _) = rhs.kind;
+        if let ExprKind::MethodCall(_, _, [largs_self, ..], _) = &lhs.kind;
+        if let ExprKind::MethodCall(_, _, [rargs_self, ..], _) = &rhs.kind;
         then {
             span_lint_and_sugg(
                 cx,
@@ -629,7 +628,7 @@ fn check_log_division(cx: &LateContext<'_>, expr: &Expr<'_>) {
                 expr.span,
                 "log base can be expressed more clearly",
                 "consider using",
-                format!("{}.log({})", Sugg::hir(cx, &largs[0], ".."), Sugg::hir(cx, &rargs[0], ".."),),
+                format!("{}.log({})", Sugg::hir(cx, largs_self, ".."), Sugg::hir(cx, rargs_self, ".."),),
                 Applicability::MachineApplicable,
             );
         }
@@ -688,6 +687,11 @@ fn check_radians(cx: &LateContext<'_>, expr: &Expr<'_>) {
 
 impl<'tcx> LateLintPass<'tcx> for FloatingPointArithmetic {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
+        // All of these operations are currently not const.
+        if in_constant(cx, expr.hir_id) {
+            return;
+        }
+
         if let ExprKind::MethodCall(path, _, args, _) = &expr.kind {
             let recv_ty = cx.typeck_results().expr_ty(&args[0]);
 
