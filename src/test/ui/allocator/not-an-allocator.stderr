@@ -46,11 +46,6 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    | ^^^^^^^^^^^^^^^^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-note: required by `std::alloc::GlobalAlloc::alloc_untraceable`
-  --> $SRC_DIR/core/src/alloc/global.rs:LL:COL
-   |
-LL |     unsafe fn alloc_untraceable(&self, layout: Layout) -> *mut u8 {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `usize: GlobalAlloc` is not satisfied
@@ -61,11 +56,6 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    | ^^^^^^^^^^^^^^^^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-note: required by `std::alloc::GlobalAlloc::alloc_conservative`
-  --> $SRC_DIR/core/src/alloc/global.rs:LL:COL
-   |
-LL |     fn alloc_conservative(&self, layout: Layout) -> *mut u8 {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `usize: GlobalAlloc` is not satisfied
@@ -76,11 +66,6 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    | ^^^^^^^^^^^^^^^^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-note: required by `std::alloc::GlobalAlloc::alloc_precise`
-  --> $SRC_DIR/core/src/alloc/global.rs:LL:COL
-   |
-LL |     unsafe fn alloc_precise(&self, layout: Layout, _bitmap: usize, _bitmap_size: usize) -> *mut u8 {
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 7 previous errors
