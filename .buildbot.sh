@@ -13,11 +13,11 @@ TARBALL_NAME=rustgc-${CI_TRACER_KIND}-stage2-${COMMIT_HASH}.tar.bz2
 SYMLINK_NAME=rustgc-${CI_TRACER_KIND}-stage2-latest.tar.bz2
 SNAP_DIR=/opt/rustgc-bin-snapshots
 
-/usr/bin/time -v ./x.py test --stage 2 --config .buildbot.config.toml --exclude rustdoc-json --exclude debuginfo
+/usr/bin/time -v python3 x.py test --stage 2 --config .buildbot.config.toml --exclude rustdoc-json --exclude debuginfo
 
 # Build extended tools and install into TARBALL_TOPDIR.
 mkdir -p ${TARBALL_TOPDIR}
-/usr/bin/time -v ./x.py install --config .buildbot.config.toml
+/usr/bin/time -v python3 x.py install --config .buildbot.config.toml
 
 # Check that the install looks feasible.
 for i in rustc cargo rustdoc; do
