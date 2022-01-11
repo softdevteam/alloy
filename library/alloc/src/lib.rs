@@ -117,6 +117,7 @@
 #![feature(pattern)]
 #![feature(ptr_internals)]
 #![feature(receiver_trait)]
+#![feature(rustc_private)]
 #![feature(set_ptr_value)]
 #![feature(slice_group_by)]
 #![feature(slice_ptr_get)]
