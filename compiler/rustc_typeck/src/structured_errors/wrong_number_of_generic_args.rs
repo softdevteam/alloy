@@ -1,6 +1,7 @@
 use crate::structured_errors::StructuredDiagnostic;
 use rustc_errors::{pluralize, Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_hir as hir;
+use rustc_middle::hir::map::fn_sig;
 use rustc_middle::middle::resolve_lifetime::LifetimeScopeForPath;
 use rustc_middle::ty::{self as ty, TyCtxt};
 use rustc_session::Session;
@@ -136,10 +137,7 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
             AngleBrackets::Missing => 0,
             // Only lifetime arguments can be implied
             AngleBrackets::Implied => self.gen_args.args.len(),
-            AngleBrackets::Available => self.gen_args.args.iter().fold(0, |acc, arg| match arg {
-                hir::GenericArg::Lifetime(_) => acc + 1,
-                _ => acc,
-            }),
+            AngleBrackets::Available => self.gen_args.num_lifetime_params(),
         }
     }
 
@@ -148,10 +146,7 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
             AngleBrackets::Missing => 0,
             // Only lifetime arguments can be implied
             AngleBrackets::Implied => 0,
-            AngleBrackets::Available => self.gen_args.args.iter().fold(0, |acc, arg| match arg {
-                hir::GenericArg::Type(_) | hir::GenericArg::Const(_) => acc + 1,
-                _ => acc,
-            }),
+            AngleBrackets::Available => self.gen_args.num_generic_params(),
         }
     }
 
@@ -298,12 +293,30 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
         &self,
         num_params_to_take: usize,
     ) -> String {
+        let fn_sig = self.tcx.hir().get_if_local(self.def_id).and_then(fn_sig);
+        let is_used_in_input = |def_id| {
+            fn_sig.map_or(false, |fn_sig| {
+                fn_sig.decl.inputs.iter().any(|ty| match ty.kind {
+                    hir::TyKind::Path(hir::QPath::Resolved(
+                        None,
+                        hir::Path { res: hir::def::Res::Def(_, id), .. },
+                    )) => *id == def_id,
+                    _ => false,
+                })
+            })
+        };
         self.gen_params
             .params
             .iter()
             .skip(self.params_offset + self.num_provided_type_or_const_args())
             .take(num_params_to_take)
-            .map(|param| param.name.to_string())
+            .map(|param| match param.kind {
+                // This is being infered from the item's inputs, no need to set it.
+                ty::GenericParamDefKind::Type { .. } if is_used_in_input(param.def_id) => {
+                    "_".to_string()
+                }
+                _ => param.name.to_string(),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -651,7 +664,9 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
             let mut found_redundant = false;
             for arg in self.gen_args.args {
                 match arg {
-                    hir::GenericArg::Type(_) | hir::GenericArg::Const(_) => {
+                    hir::GenericArg::Type(_)
+                    | hir::GenericArg::Const(_)
+                    | hir::GenericArg::Infer(_) => {
                         gen_arg_spans.push(arg.span());
                         if gen_arg_spans.len() > self.num_expected_type_or_const_args() {
                             found_redundant = true;
@@ -716,7 +731,11 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
     /// Builds the `type defined here` message.
     fn show_definition(&self, err: &mut DiagnosticBuilder<'_>) {
         let mut spans: MultiSpan = if let Some(def_span) = self.tcx.def_ident_span(self.def_id) {
-            def_span.into()
+            if self.tcx.sess.source_map().span_to_snippet(def_span).is_ok() {
+                def_span.into()
+            } else {
+                return;
+            }
         } else {
             return;
         };

@@ -6,21 +6,22 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for erasing operations, e.g., `x * 0`.
+    /// ### What it does
+    /// Checks for erasing operations, e.g., `x * 0`.
     ///
-    /// **Why is this bad?** The whole expression can be replaced by zero.
+    /// ### Why is this bad?
+    /// The whole expression can be replaced by zero.
     /// This is most likely not the intended outcome and should probably be
     /// corrected
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x = 1;
     /// 0 / x;
     /// 0 * x;
     /// x & 0;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub ERASING_OP,
     correctness,
     "using erasing operations, e.g., `x * 0` or `y & 0`"
@@ -47,7 +48,7 @@ impl<'tcx> LateLintPass<'tcx> for ErasingOp {
 }
 
 fn check(cx: &LateContext<'_>, e: &Expr<'_>, span: Span) {
-    if let Some(Constant::Int(0)) = constant_simple(cx, cx.typeck_results(), e) {
+    if constant_simple(cx, cx.typeck_results(), e) == Some(Constant::Int(0)) {
         span_lint(
             cx,
             ERASING_OP,

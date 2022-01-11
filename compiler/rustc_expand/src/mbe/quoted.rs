@@ -72,7 +72,7 @@ pub(super) fn parse(
                                             // this with just `span.edition()`. A
                                             // `SyntaxContext::root()` from the current crate will
                                             // have the edition of the current crate, and a
-                                            // `SyntaxxContext::root()` from a foreign crate will
+                                            // `SyntaxContext::root()` from a foreign crate will
                                             // have the edition of that crate (which we manually
                                             // retrieve via the `edition` parameter).
                                             if span.ctxt() == SyntaxContext::root() {
@@ -204,7 +204,7 @@ fn parse_tree(
                         pprust::token_to_string(&token),
                     );
                     sess.span_diagnostic.span_err(token.span, &msg);
-                    TokenTree::MetaVar(token.span, Ident::invalid())
+                    TokenTree::MetaVar(token.span, Ident::empty())
                 }
 
                 // There are no more tokens. Just return the `$` we already have.

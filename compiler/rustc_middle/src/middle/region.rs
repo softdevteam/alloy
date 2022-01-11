@@ -6,14 +6,13 @@
 //!
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/borrow_check.html
 
-use crate::ich::{NodeIdHashingMode, StableHashingContext};
 use crate::ty::TyCtxt;
-use rustc_hir as hir;
-use rustc_hir::Node;
-
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+use rustc_hir as hir;
+use rustc_hir::Node;
 use rustc_macros::HashStable;
+use rustc_query_system::ich::{NodeIdHashingMode, StableHashingContext};
 use rustc_span::{Span, DUMMY_SP};
 
 use std::fmt;
@@ -94,6 +93,7 @@ impl fmt::Debug for Scope {
             ScopeData::CallSite => write!(fmt, "CallSite({:?})", self.id),
             ScopeData::Arguments => write!(fmt, "Arguments({:?})", self.id),
             ScopeData::Destruction => write!(fmt, "Destruction({:?})", self.id),
+            ScopeData::IfThen => write!(fmt, "IfThen({:?})", self.id),
             ScopeData::Remainder(fsi) => write!(
                 fmt,
                 "Remainder {{ block: {:?}, first_statement_index: {}}}",
@@ -119,6 +119,10 @@ pub enum ScopeData {
 
     /// Scope of destructors for temporaries of node-id.
     Destruction,
+
+    /// Scope of the condition and then block of an if expression
+    /// Used for variables introduced in an if-let expression.
+    IfThen,
 
     /// Scope following a `let id = expr;` binding in a block.
     Remainder(FirstStatementIndex),
@@ -151,7 +155,7 @@ rustc_index::newtype_index! {
 static_assert_size!(ScopeData, 4);
 
 impl Scope {
-    /// Returns a item-local ID associated with this scope.
+    /// Returns an item-local ID associated with this scope.
     ///
     /// N.B., likely to be replaced as API is refined; e.g., pnkfelix
     /// anticipates `fn entry_node_id` and `fn each_exit_node_id`.
@@ -189,7 +193,7 @@ impl Scope {
                 // To avoid issues with macro-generated spans, the span
                 // of the statement must be nested in that of the block.
                 if span.lo() <= stmt_span.lo() && stmt_span.lo() <= span.hi() {
-                    return Span::new(stmt_span.lo(), span.hi(), span.ctxt());
+                    return span.with_lo(stmt_span.lo());
                 }
             }
         }
@@ -204,11 +208,6 @@ pub type ScopeDepth = u32;
 pub struct ScopeTree {
     /// If not empty, this body is the root of this region hierarchy.
     pub root_body: Option<hir::HirId>,
-
-    /// The parent of the root body owner, if the latter is an
-    /// an associated const or method, as impls/traits can also
-    /// have lifetime parameters free in this body.
-    pub root_parent: Option<hir::HirId>,
 
     /// Maps from a scope ID to the enclosing scope id;
     /// this is usually corresponding to the lexical nesting, though
@@ -252,7 +251,8 @@ pub struct ScopeTree {
     /// ```
     ///
     /// With the HIR tree (calls numbered for expository purposes)
-    /// ```
+    ///
+    /// ```text
     ///     Call#0(foo, [Call#1(f), Yield(y), Call#2(bar, Call#3(g))])
     /// ```
     ///
@@ -439,7 +439,6 @@ impl<'a> HashStable<StableHashingContext<'a>> for ScopeTree {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         let ScopeTree {
             root_body,
-            root_parent,
             ref body_expr_count,
             ref parent_map,
             ref var_map,
@@ -449,8 +448,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for ScopeTree {
         } = *self;
 
         hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
-            root_body.hash_stable(hcx, hasher);
-            root_parent.hash_stable(hcx, hasher);
+            root_body.hash_stable(hcx, hasher)
         });
 
         body_expr_count.hash_stable(hcx, hasher);

@@ -195,6 +195,15 @@
     test(no_crate_inject, attr(deny(warnings))),
     test(attr(allow(dead_code, deprecated, unused_variables, unused_mut)))
 )]
+#![cfg_attr(
+    not(bootstrap),
+    doc(cfg_hide(
+        not(test),
+        not(any(test, bootstrap)),
+        no_global_oom_handling,
+        not(no_global_oom_handling)
+    ))
+)]
 // Don't link to std. We are std.
 #![no_std]
 #![warn(deprecated_in_future)]
@@ -207,10 +216,7 @@
 // std may use features in a platform-specific way
 #![allow(unused_features)]
 #![feature(rustc_allow_const_fn_unstable)]
-#![cfg_attr(
-    test,
-    feature(internal_output_capture, print_internals, update_panic_count, thread_local_const_init)
-)]
+#![cfg_attr(test, feature(internal_output_capture, print_internals, update_panic_count))]
 #![cfg_attr(
     all(target_vendor = "fortanix", target_env = "sgx"),
     feature(slice_index_methods, coerce_unsized, sgx_platform)
@@ -234,7 +240,9 @@
 #![feature(atomic_mut_ptr)]
 #![feature(auto_traits)]
 #![feature(bench_black_box)]
+#![feature(bool_to_option)]
 #![feature(box_syntax)]
+#![feature(c_unwind)]
 #![feature(c_variadic)]
 #![feature(cfg_accessible)]
 #![feature(cfg_eval)]
@@ -242,23 +250,29 @@
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
 #![feature(char_internals)]
+#![cfg_attr(not(bootstrap), feature(concat_bytes))]
 #![feature(concat_idents)]
 #![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_fn_ptr_basics)]
-#![feature(const_fn_transmute)]
+#![feature(const_fn_trait_bound)]
+#![feature(const_format_args)]
 #![feature(const_io_structs)]
 #![feature(const_ip)]
 #![feature(const_ipv4)]
 #![feature(const_ipv6)]
-#![feature(const_raw_ptr_deref)]
+#![feature(const_option)]
+#![feature(const_mut_refs)]
 #![feature(const_socketaddr)]
+#![feature(const_trait_impl)]
 #![feature(container_error_extra)]
 #![feature(core_intrinsics)]
+#![feature(core_panic)]
 #![feature(custom_test_frameworks)]
 #![feature(decl_macro)]
 #![feature(doc_cfg)]
-#![feature(doc_keyword)]
+#![feature(doc_cfg_hide)]
+#![feature(rustdoc_internals)]
 #![feature(doc_masked)]
 #![feature(doc_notable_trait)]
 #![feature(dropck_eyepatch)]
@@ -268,8 +282,8 @@
 #![feature(exact_size_is_empty)]
 #![feature(exhaustive_patterns)]
 #![feature(extend_one)]
-#![feature(float_interpolation)]
 #![feature(fn_traits)]
+#![feature(float_minimum_maximum)]
 #![feature(format_args_nl)]
 #![feature(gen_future)]
 #![feature(generator_trait)]
@@ -290,7 +304,10 @@
 #![feature(maybe_uninit_extra)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array)]
+#![feature(maybe_uninit_write_slice)]
 #![feature(min_specialization)]
+#![feature(mixed_integer_ops)]
+#![feature(must_not_suspend)]
 #![feature(needs_panic_runtime)]
 #![feature(negative_impls)]
 #![feature(never_type)]
@@ -302,12 +319,13 @@
 #![feature(panic_internals)]
 #![feature(panic_unwind)]
 #![feature(pin_static_ref)]
+#![feature(portable_simd)]
 #![feature(prelude_import)]
+#![feature(ptr_as_uninit)]
 #![feature(ptr_internals)]
-#![feature(ready_macro)]
 #![feature(rustc_attrs)]
 #![feature(rustc_private)]
-#![feature(shrink_to)]
+#![feature(saturating_int_impl)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
 #![feature(slice_ptr_get)]
@@ -324,10 +342,8 @@
 #![feature(total_cmp)]
 #![feature(trace_macros)]
 #![feature(try_blocks)]
-#![feature(try_reserve)]
+#![feature(try_reserve_kind)]
 #![feature(unboxed_closures)]
-#![feature(unsafe_cell_raw_get)]
-#![feature(unwind_attributes)]
 #![feature(unwrap_infallible)]
 #![feature(vec_into_raw_parts)]
 #![feature(gc)]
@@ -457,6 +473,8 @@ pub use core::pin;
 pub use core::ptr;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::result;
+#[unstable(feature = "portable_simd", issue = "86656")]
+pub use core::simd;
 #[unstable(feature = "async_stream", issue = "79024")]
 pub use core::stream;
 #[stable(feature = "i128", since = "1.26.0")]
@@ -518,19 +536,19 @@ pub mod task {
     pub use alloc::task::*;
 }
 
-// Platform-abstraction modules
+// The runtime entry point and a few unstable public functions used by the
+// compiler
 #[macro_use]
-mod sys_common;
+pub mod rt;
+
+// Platform-abstraction modules
 mod sys;
+mod sys_common;
 
 pub mod alloc;
 
 // Private support modules
 mod panicking;
-
-// The runtime entry point and a few unstable public functions used by the
-// compiler
-pub mod rt;
 
 #[path = "../../backtrace/src/lib.rs"]
 #[allow(dead_code, unused_attributes)]
@@ -559,10 +577,18 @@ pub use core::{
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 #[allow(deprecated)]
 pub use core::{
-    assert, assert_matches, cfg, column, compile_error, concat, concat_idents, env, file,
-    format_args, format_args_nl, include, include_bytes, include_str, line, llvm_asm, log_syntax,
-    module_path, option_env, stringify, trace_macros,
+    assert, assert_matches, cfg, column, compile_error, concat, concat_idents, const_format_args,
+    env, file, format_args, format_args_nl, include, include_bytes, include_str, line, llvm_asm,
+    log_syntax, module_path, option_env, stringify, trace_macros,
 };
+
+#[unstable(
+    feature = "concat_bytes",
+    issue = "87555",
+    reason = "`concat_bytes` is not stable enough for use and is subject to change"
+)]
+#[cfg(not(bootstrap))]
+pub use core::concat_bytes;
 
 #[stable(feature = "core_primitive", since = "1.43.0")]
 pub use core::primitive;

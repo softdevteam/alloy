@@ -66,7 +66,7 @@ fn source_string(file: Lrc<SourceFile>, line: &Line) -> String {
 /// Maps `Diagnostic::Level` to `snippet::AnnotationType`
 fn annotation_type_for_level(level: Level) -> AnnotationType {
     match level {
-        Level::Bug | Level::Fatal | Level::Error => AnnotationType::Error,
+        Level::Bug | Level::Fatal | Level::Error { .. } => AnnotationType::Error,
         Level::Warning => AnnotationType::Warning,
         Level::Note => AnnotationType::Note,
         Level::Help => AnnotationType::Help,
@@ -126,7 +126,7 @@ impl AnnotateSnippetEmitterWriter {
             }
             // owned: line source, line index, annotations
             type Owned = (String, usize, Vec<crate::snippet::Annotation>);
-            let filename = primary_lo.file.name.prefer_local();
+            let filename = source_map.filename_for_diagnostics(&primary_lo.file.name);
             let origin = filename.to_string_lossy();
             let annotated_files: Vec<Owned> = annotated_files
                 .into_iter()

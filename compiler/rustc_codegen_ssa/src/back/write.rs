@@ -21,8 +21,8 @@ use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_incremental::{
     copy_cgu_workproduct_to_incr_comp_cache_dir, in_incr_comp_dir, in_incr_comp_dir_sess,
 };
+use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
-use rustc_middle::middle::cstore::EncodedMetadata;
 use rustc_middle::middle::exported_symbols::SymbolExportLevel;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::cgu_reuse_tracker::CguReuseTracker;
@@ -83,6 +83,8 @@ pub struct ModuleConfig {
 
     pub pgo_gen: SwitchWithOptPath,
     pub pgo_use: Option<PathBuf>,
+    pub pgo_sample_use: Option<PathBuf>,
+    pub debug_info_for_profiling: bool,
     pub instrument_coverage: bool,
     pub instrument_gcov: bool,
 
@@ -176,6 +178,8 @@ impl ModuleConfig {
                 SwitchWithOptPath::Disabled
             ),
             pgo_use: if_regular!(sess.opts.cg.profile_use.clone(), None),
+            pgo_sample_use: if_regular!(sess.opts.debugging_opts.profile_sample_use.clone(), None),
+            debug_info_for_profiling: sess.opts.debugging_opts.debug_info_for_profiling,
             instrument_coverage: if_regular!(sess.instrument_coverage(), false),
             instrument_gcov: if_regular!(
                 // compiler_builtins overrides the codegen-units settings,
@@ -306,6 +310,7 @@ pub struct CodegenContext<B: WriteBackendMethods> {
     pub no_landing_pads: bool,
     pub save_temps: bool,
     pub fewer_names: bool,
+    pub time_trace: bool,
     pub exported_symbols: Option<Arc<ExportedSymbols>>,
     pub opts: Arc<config::Options>,
     pub crate_types: Vec<CrateType>,
@@ -392,7 +397,6 @@ fn generate_lto_work<B: ExtraBackendMethods>(
 
 pub struct CompiledModules {
     pub modules: Vec<CompiledModule>,
-    pub metadata_module: Option<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
 }
 
@@ -420,6 +424,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     tcx: TyCtxt<'_>,
     target_cpu: String,
     metadata: EncodedMetadata,
+    metadata_module: Option<CompiledModule>,
     total_cgus: usize,
 ) -> OngoingCodegen<B> {
     let (coordinator_send, coordinator_receive) = channel();
@@ -459,6 +464,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     OngoingCodegen {
         backend,
         metadata,
+        metadata_module,
         crate_info,
 
         coordinator_send,
@@ -635,12 +641,6 @@ fn produce_final_output_artifacts(
         }
 
         if !user_wants_bitcode {
-            if let Some(ref metadata_module) = compiled_modules.metadata_module {
-                if let Some(ref path) = metadata_module.bytecode {
-                    ensure_removed(sess.diagnostic(), &path);
-                }
-            }
-
             if let Some(ref allocator_module) = compiled_modules.allocator_module {
                 if let Some(ref path) = allocator_module.bytecode {
                     ensure_removed(sess.diagnostic(), path);
@@ -1035,6 +1035,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         no_landing_pads: sess.panic_strategy() == PanicStrategy::Abort,
         fewer_names: sess.fewer_names(),
         save_temps: sess.opts.cg.save_temps,
+        time_trace: sess.opts.debugging_opts.llvm_time_trace,
         opts: Arc::new(sess.opts.clone()),
         prof: sess.prof.clone(),
         exported_symbols,
@@ -1194,7 +1195,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     // Each LLVM module is automatically sent back to the coordinator for LTO if
     // necessary. There's already optimizations in place to avoid sending work
     // back to the coordinator if LTO isn't requested.
-    return thread::spawn(move || {
+    return B::spawn_thread(cgcx.time_trace, move || {
         let mut worker_id_counter = 0;
         let mut free_worker_ids = Vec::new();
         let mut get_worker_id = |free_worker_ids: &mut Vec<usize>| {
@@ -1210,7 +1211,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
         // This is where we collect codegen units that have gone all the way
         // through codegen and LLVM.
         let mut compiled_modules = vec![];
-        let mut compiled_metadata_module = None;
         let mut compiled_allocator_module = None;
         let mut needs_link = Vec::new();
         let mut needs_fat_lto = Vec::new();
@@ -1469,14 +1469,11 @@ fn start_executing_work<B: ExtraBackendMethods>(
                         ModuleKind::Regular => {
                             compiled_modules.push(compiled_module);
                         }
-                        ModuleKind::Metadata => {
-                            assert!(compiled_metadata_module.is_none());
-                            compiled_metadata_module = Some(compiled_module);
-                        }
                         ModuleKind::Allocator => {
                             assert!(compiled_allocator_module.is_none());
                             compiled_allocator_module = Some(compiled_module);
                         }
+                        ModuleKind::Metadata => bug!("Should be handled separately"),
                     }
                 }
                 Message::NeedsLink { module, worker_id } => {
@@ -1533,7 +1530,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
 
         Ok(CompiledModules {
             modules: compiled_modules,
-            metadata_module: compiled_metadata_module,
             allocator_module: compiled_allocator_module,
         })
     });
@@ -1611,59 +1607,57 @@ fn start_executing_work<B: ExtraBackendMethods>(
 pub struct WorkerFatalError;
 
 fn spawn_work<B: ExtraBackendMethods>(cgcx: CodegenContext<B>, work: WorkItem<B>) {
-    let builder = thread::Builder::new().name(work.short_description());
-    builder
-        .spawn(move || {
-            // Set up a destructor which will fire off a message that we're done as
-            // we exit.
-            struct Bomb<B: ExtraBackendMethods> {
-                coordinator_send: Sender<Box<dyn Any + Send>>,
-                result: Option<Result<WorkItemResult<B>, FatalError>>,
-                worker_id: usize,
+    B::spawn_named_thread(cgcx.time_trace, work.short_description(), move || {
+        // Set up a destructor which will fire off a message that we're done as
+        // we exit.
+        struct Bomb<B: ExtraBackendMethods> {
+            coordinator_send: Sender<Box<dyn Any + Send>>,
+            result: Option<Result<WorkItemResult<B>, FatalError>>,
+            worker_id: usize,
+        }
+        impl<B: ExtraBackendMethods> Drop for Bomb<B> {
+            fn drop(&mut self) {
+                let worker_id = self.worker_id;
+                let msg = match self.result.take() {
+                    Some(Ok(WorkItemResult::Compiled(m))) => {
+                        Message::Done::<B> { result: Ok(m), worker_id }
+                    }
+                    Some(Ok(WorkItemResult::NeedsLink(m))) => {
+                        Message::NeedsLink::<B> { module: m, worker_id }
+                    }
+                    Some(Ok(WorkItemResult::NeedsFatLTO(m))) => {
+                        Message::NeedsFatLTO::<B> { result: m, worker_id }
+                    }
+                    Some(Ok(WorkItemResult::NeedsThinLTO(name, thin_buffer))) => {
+                        Message::NeedsThinLTO::<B> { name, thin_buffer, worker_id }
+                    }
+                    Some(Err(FatalError)) => {
+                        Message::Done::<B> { result: Err(Some(WorkerFatalError)), worker_id }
+                    }
+                    None => Message::Done::<B> { result: Err(None), worker_id },
+                };
+                drop(self.coordinator_send.send(Box::new(msg)));
             }
-            impl<B: ExtraBackendMethods> Drop for Bomb<B> {
-                fn drop(&mut self) {
-                    let worker_id = self.worker_id;
-                    let msg = match self.result.take() {
-                        Some(Ok(WorkItemResult::Compiled(m))) => {
-                            Message::Done::<B> { result: Ok(m), worker_id }
-                        }
-                        Some(Ok(WorkItemResult::NeedsLink(m))) => {
-                            Message::NeedsLink::<B> { module: m, worker_id }
-                        }
-                        Some(Ok(WorkItemResult::NeedsFatLTO(m))) => {
-                            Message::NeedsFatLTO::<B> { result: m, worker_id }
-                        }
-                        Some(Ok(WorkItemResult::NeedsThinLTO(name, thin_buffer))) => {
-                            Message::NeedsThinLTO::<B> { name, thin_buffer, worker_id }
-                        }
-                        Some(Err(FatalError)) => {
-                            Message::Done::<B> { result: Err(Some(WorkerFatalError)), worker_id }
-                        }
-                        None => Message::Done::<B> { result: Err(None), worker_id },
-                    };
-                    drop(self.coordinator_send.send(Box::new(msg)));
-                }
-            }
+        }
 
-            let mut bomb = Bomb::<B> {
-                coordinator_send: cgcx.coordinator_send.clone(),
-                result: None,
-                worker_id: cgcx.worker,
-            };
+        let mut bomb = Bomb::<B> {
+            coordinator_send: cgcx.coordinator_send.clone(),
+            result: None,
+            worker_id: cgcx.worker,
+        };
 
-            // Execute the work itself, and if it finishes successfully then flag
-            // ourselves as a success as well.
-            //
-            // Note that we ignore any `FatalError` coming out of `execute_work_item`,
-            // as a diagnostic was already sent off to the main thread - just
-            // surface that there was an error in this worker.
-            bomb.result = {
-                let _prof_timer = work.start_profiling(&cgcx);
-                Some(execute_work_item(&cgcx, work))
-            };
-        })
-        .expect("failed to spawn thread");
+        // Execute the work itself, and if it finishes successfully then flag
+        // ourselves as a success as well.
+        //
+        // Note that we ignore any `FatalError` coming out of `execute_work_item`,
+        // as a diagnostic was already sent off to the main thread - just
+        // surface that there was an error in this worker.
+        bomb.result = {
+            let _prof_timer = work.start_profiling(&cgcx);
+            Some(execute_work_item(&cgcx, work))
+        };
+    })
+    .expect("failed to spawn thread");
 }
 
 enum SharedEmitterMessage {
@@ -1753,7 +1747,7 @@ impl SharedEmitterMain {
                     let msg = msg.strip_prefix("error: ").unwrap_or(&msg);
 
                     let mut err = match level {
-                        Level::Error => sess.struct_err(&msg),
+                        Level::Error { lint: false } => sess.struct_err(&msg),
                         Level::Warning => sess.struct_warn(&msg),
                         Level::Note => sess.struct_note_without_error(&msg),
                         _ => bug!("Invalid inline asm diagnostic level"),
@@ -1796,6 +1790,7 @@ impl SharedEmitterMain {
 pub struct OngoingCodegen<B: ExtraBackendMethods> {
     pub backend: B,
     pub metadata: EncodedMetadata,
+    pub metadata_module: Option<CompiledModule>,
     pub crate_info: CrateInfo,
     pub coordinator_send: Sender<Box<dyn Any + Send>>,
     pub codegen_worker_receive: Receiver<Message<B>>,
@@ -1842,7 +1837,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
 
                 modules: compiled_modules.modules,
                 allocator_module: compiled_modules.allocator_module,
-                metadata_module: compiled_modules.metadata_module,
+                metadata_module: self.metadata_module,
             },
             work_products,
         )

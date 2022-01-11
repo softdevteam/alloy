@@ -25,7 +25,7 @@ fn diagnostic_hir_wf_check<'tcx>(
         WellFormedLoc::Ty(def_id) => def_id,
         WellFormedLoc::Param { function, param_idx: _ } => function,
     };
-    let hir_id = HirId::make_owner(def_id);
+    let hir_id = hir.local_def_id_to_hir_id(def_id);
 
     // HIR wfcheck should only ever happen as part of improving an existing error
     tcx.sess
@@ -38,20 +38,20 @@ fn diagnostic_hir_wf_check<'tcx>(
     // given the type `Option<MyStruct<u8>>`, we will check
     // `Option<MyStruct<u8>>`, `MyStruct<u8>`, and `u8`.
     // For each type, we perform a well-formed check, and see if we get
-    // an erorr that matches our expected predicate. We keep save
+    // an error that matches our expected predicate. We save
     // the `ObligationCause` corresponding to the *innermost* type,
     // which is the most specific type that we can point to.
     // In general, the different components of an `hir::Ty` may have
-    // completely differentr spans due to macro invocations. Pointing
+    // completely different spans due to macro invocations. Pointing
     // to the most accurate part of the type can be the difference
     // between a useless span (e.g. the macro invocation site)
-    // and a useful span (e.g. a user-provided type passed in to the macro).
+    // and a useful span (e.g. a user-provided type passed into the macro).
     //
     // This approach is quite inefficient - we redo a lot of work done
     // by the normal WF checker. However, this code is run at most once
     // per reported error - it will have no impact when compilation succeeds,
-    // and should only have an impact if a very large number of errors are
-    // displaydd to the user.
+    // and should only have an impact if a very large number of errors is
+    // displayed to the user.
     struct HirWfCheck<'tcx> {
         tcx: TyCtxt<'tcx>,
         predicate: ty::Predicate<'tcx>,
@@ -83,11 +83,13 @@ fn diagnostic_hir_wf_check<'tcx>(
                     traits::Obligation::new(
                         cause,
                         self.param_env,
-                        ty::PredicateKind::WellFormed(tcx_ty.into()).to_predicate(self.tcx),
+                        ty::Binder::dummy(ty::PredicateKind::WellFormed(tcx_ty.into()))
+                            .to_predicate(self.tcx),
                     ),
                 );
 
-                if let Err(errors) = fulfill.select_all_or_error(&infcx) {
+                let errors = fulfill.select_all_or_error(&infcx);
+                if !errors.is_empty() {
                     tracing::debug!("Wf-check got errors for {:?}: {:?}", ty, errors);
                     for error in errors {
                         if error.obligation.predicate == self.predicate {
@@ -126,10 +128,12 @@ fn diagnostic_hir_wf_check<'tcx>(
         WellFormedLoc::Ty(_) => match hir.get(hir_id) {
             hir::Node::ImplItem(item) => match item.kind {
                 hir::ImplItemKind::TyAlias(ty) => Some(ty),
+                hir::ImplItemKind::Const(ty, _) => Some(ty),
                 ref item => bug!("Unexpected ImplItem {:?}", item),
             },
             hir::Node::TraitItem(item) => match item.kind {
                 hir::TraitItemKind::Type(_, ty) => ty,
+                hir::TraitItemKind::Const(ty, _) => Some(ty),
                 ref item => bug!("Unexpected TraitItem {:?}", item),
             },
             hir::Node::Item(item) => match item.kind {
@@ -140,6 +144,7 @@ fn diagnostic_hir_wf_check<'tcx>(
                 }
                 ref item => bug!("Unexpected item {:?}", item),
             },
+            hir::Node::Field(field) => Some(field.ty),
             ref node => bug!("Unexpected node {:?}", node),
         },
         WellFormedLoc::Param { function: _, param_idx } => {

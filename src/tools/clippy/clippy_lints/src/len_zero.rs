@@ -18,17 +18,17 @@ use rustc_span::{
 };
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for getting the length of something via `.len()`
+    /// ### What it does
+    /// Checks for getting the length of something via `.len()`
     /// just to compare to zero, and suggests using `.is_empty()` where applicable.
     ///
-    /// **Why is this bad?** Some structures can answer `.is_empty()` much faster
+    /// ### Why is this bad?
+    /// Some structures can answer `.is_empty()` much faster
     /// than calculating their length. So it is good to get into the habit of using
     /// `.is_empty()`, and having it is cheap.
     /// Besides, it makes the intent clearer than a manual comparison in some contexts.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// if x.len() == 0 {
     ///     ..
@@ -46,24 +46,25 @@ declare_clippy_lint! {
     ///     ..
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub LEN_ZERO,
     style,
     "checking `.len() == 0` or `.len() > 0` (or similar) when `.is_empty()` could be used instead"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for items that implement `.len()` but not
+    /// ### What it does
+    /// Checks for items that implement `.len()` but not
     /// `.is_empty()`.
     ///
-    /// **Why is this bad?** It is good custom to have both methods, because for
+    /// ### Why is this bad?
+    /// It is good custom to have both methods, because for
     /// some data structures, asking about the length will be a costly operation,
     /// whereas `.is_empty()` can usually answer in constant time. Also it used to
     /// lead to false positives on the [`len_zero`](#len_zero) lint – currently that
     /// lint will ignore such entities.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// impl X {
     ///     pub fn len(&self) -> usize {
@@ -71,23 +72,24 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub LEN_WITHOUT_IS_EMPTY,
     style,
     "traits or impls with a public `len` method but no corresponding `is_empty` method"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for comparing to an empty slice such as `""` or `[]`,
+    /// ### What it does
+    /// Checks for comparing to an empty slice such as `""` or `[]`,
     /// and suggests using `.is_empty()` where applicable.
     ///
-    /// **Why is this bad?** Some structures can answer `.is_empty()` much faster
+    /// ### Why is this bad?
+    /// Some structures can answer `.is_empty()` much faster
     /// than checking for equality. So it is good to get into the habit of using
     /// `.is_empty()`, and having it is cheap.
     /// Besides, it makes the intent clearer than a manual comparison in some contexts.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     ///
     /// ```ignore
     /// if s == "" {
@@ -108,6 +110,7 @@ declare_clippy_lint! {
     ///     ..
     /// }
     /// ```
+    #[clippy::version = "1.49.0"]
     pub COMPARISON_TO_EMPTY,
     style,
     "checking `x == \"\"` or `x == []` (or similar) when `.is_empty()` could be used instead"
@@ -131,7 +134,7 @@ impl<'tcx> LateLintPass<'tcx> for LenZero {
             if item.ident.name == sym::len;
             if let ImplItemKind::Fn(sig, _) = &item.kind;
             if sig.decl.implicit_self.has_implicit_self();
-            if cx.access_levels.is_exported(item.hir_id());
+            if cx.access_levels.is_exported(item.def_id);
             if matches!(sig.decl.output, FnRetTy::Return(_));
             if let Some(imp) = get_parent_as_impl(cx.tcx, item.hir_id());
             if imp.of_trait.is_none();
@@ -207,8 +210,7 @@ fn check_trait_items(cx: &LateContext<'_>, visited_trait: &Item<'_>, trait_items
         }
     }
 
-    if cx.access_levels.is_exported(visited_trait.hir_id())
-        && trait_items.iter().any(|i| is_named_self(cx, i, sym::len))
+    if cx.access_levels.is_exported(visited_trait.def_id) && trait_items.iter().any(|i| is_named_self(cx, i, sym::len))
     {
         let mut current_and_super_traits = DefIdSet::default();
         fill_trait_set(visited_trait.def_id.to_def_id(), &mut current_and_super_traits, cx);
@@ -246,10 +248,10 @@ enum LenOutput<'tcx> {
 fn parse_len_output(cx: &LateContext<'_>, sig: FnSig<'tcx>) -> Option<LenOutput<'tcx>> {
     match *sig.output().kind() {
         ty::Int(_) | ty::Uint(_) => Some(LenOutput::Integral),
-        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::option_type, adt.did) => {
+        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::Option, adt.did) => {
             subs.type_at(0).is_integral().then(|| LenOutput::Option(adt.did))
         },
-        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::result_type, adt.did) => subs
+        ty::Adt(adt, subs) if cx.tcx.is_diagnostic_item(sym::Result, adt.did) => subs
             .type_at(0)
             .is_integral()
             .then(|| LenOutput::Result(adt.did, subs.type_at(1))),
@@ -331,21 +333,15 @@ fn check_for_is_empty(
             None,
             None,
         ),
-        Some(is_empty)
-            if !cx
-                .access_levels
-                .is_exported(cx.tcx.hir().local_def_id_to_hir_id(is_empty.def_id.expect_local())) =>
-        {
-            (
-                format!(
-                    "{} `{}` has a public `len` method, but a private `is_empty` method",
-                    item_kind,
-                    item_name.as_str(),
-                ),
-                Some(cx.tcx.def_span(is_empty.def_id)),
-                None,
-            )
-        },
+        Some(is_empty) if !cx.access_levels.is_exported(is_empty.def_id.expect_local()) => (
+            format!(
+                "{} `{}` has a public `len` method, but a private `is_empty` method",
+                item_kind,
+                item_name.as_str(),
+            ),
+            Some(cx.tcx.def_span(is_empty.def_id)),
+            None,
+        ),
         Some(is_empty)
             if !(is_empty.fn_has_self_parameter
                 && check_is_empty_sig(cx.tcx.fn_sig(is_empty.def_id).skip_binder(), self_kind, output)) =>
@@ -462,14 +458,10 @@ fn is_empty_array(expr: &Expr<'_>) -> bool {
 fn has_is_empty(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     /// Gets an `AssocItem` and return true if it matches `is_empty(self)`.
     fn is_is_empty(cx: &LateContext<'_>, item: &ty::AssocItem) -> bool {
-        if let ty::AssocKind::Fn = item.kind {
-            if item.ident.name.as_str() == "is_empty" {
-                let sig = cx.tcx.fn_sig(item.def_id);
-                let ty = sig.skip_binder();
-                ty.inputs().len() == 1
-            } else {
-                false
-            }
+        if item.kind == ty::AssocKind::Fn && item.ident.name.as_str() == "is_empty" {
+            let sig = cx.tcx.fn_sig(item.def_id);
+            let ty = sig.skip_binder();
+            ty.inputs().len() == 1
         } else {
             false
         }

@@ -1,11 +1,13 @@
 use crate::clean;
 use crate::core::DocContext;
-use crate::fold::{self, DocFolder};
 use crate::html::markdown::{find_testable_code, ErrorCodes};
-use crate::passes::doc_test_lints::{should_have_doc_example, Tests};
+use crate::passes::check_doc_test_visibility::{should_have_doc_example, Tests};
 use crate::passes::Pass;
+use crate::visit::DocVisitor;
+use rustc_hir as hir;
 use rustc_lint::builtin::MISSING_DOCS;
 use rustc_middle::lint::LintLevelSource;
+use rustc_middle::ty::DefIdTree;
 use rustc_session::lint;
 use rustc_span::FileName;
 use serde::Serialize;
@@ -21,7 +23,7 @@ crate const CALCULATE_DOC_COVERAGE: Pass = Pass {
 
 fn calculate_doc_coverage(krate: clean::Crate, ctx: &mut DocContext<'_>) -> clean::Crate {
     let mut calc = CoverageCalculator { items: Default::default(), ctx };
-    let krate = calc.fold_crate(krate);
+    calc.visit_crate(&krate);
 
     calc.print_results();
 
@@ -180,17 +182,18 @@ impl<'a, 'b> CoverageCalculator<'a, 'b> {
     }
 }
 
-impl<'a, 'b> fold::DocFolder for CoverageCalculator<'a, 'b> {
-    fn fold_item(&mut self, i: clean::Item) -> Option<clean::Item> {
+impl<'a, 'b> DocVisitor for CoverageCalculator<'a, 'b> {
+    fn visit_item(&mut self, i: &clean::Item) {
+        if !i.def_id.is_local() {
+            // non-local items are skipped because they can be out of the users control,
+            // especially in the case of trait impls, which rustdoc eagerly inlines
+            return;
+        }
+
         match *i.kind {
-            _ if !i.def_id.is_local() => {
-                // non-local items are skipped because they can be out of the users control,
-                // especially in the case of trait impls, which rustdoc eagerly inlines
-                return Some(i);
-            }
             clean::StrippedItem(..) => {
                 // don't count items in stripped modules
-                return Some(i);
+                return;
             }
             // docs on `use` and `extern crate` statements are not displayed, so they're not
             // worth counting
@@ -221,10 +224,42 @@ impl<'a, 'b> fold::DocFolder for CoverageCalculator<'a, 'b> {
                     .hir()
                     .local_def_id_to_hir_id(i.def_id.expect_def_id().expect_local());
                 let (level, source) = self.ctx.tcx.lint_level_at_node(MISSING_DOCS, hir_id);
+
+                // In case we have:
+                //
+                // ```
+                // enum Foo { Bar(u32) }
+                // // or:
+                // struct Bar(u32);
+                // ```
+                //
+                // there is no need to require documentation on the fields of tuple variants and
+                // tuple structs.
+                let should_be_ignored = i
+                    .def_id
+                    .as_def_id()
+                    .and_then(|def_id| self.ctx.tcx.parent(def_id))
+                    .and_then(|def_id| self.ctx.tcx.hir().get_if_local(def_id))
+                    .map(|node| {
+                        matches!(
+                            node,
+                            hir::Node::Variant(hir::Variant {
+                                data: hir::VariantData::Tuple(_, _),
+                                ..
+                            }) | hir::Node::Item(hir::Item {
+                                kind: hir::ItemKind::Struct(hir::VariantData::Tuple(_, _), _),
+                                ..
+                            })
+                        )
+                    })
+                    .unwrap_or(false);
+
                 // `missing_docs` is allow-by-default, so don't treat this as ignoring the item
-                // unless the user had an explicit `allow`
-                let should_have_docs =
-                    level != lint::Level::Allow || matches!(source, LintLevelSource::Default);
+                // unless the user had an explicit `allow`.
+                //
+                let should_have_docs = !should_be_ignored
+                    && (level != lint::Level::Allow || matches!(source, LintLevelSource::Default));
+
                 debug!("counting {:?} {:?} in {:?}", i.type_(), i.name, filename);
                 self.items.entry(filename).or_default().count_item(
                     has_docs,
@@ -235,6 +270,6 @@ impl<'a, 'b> fold::DocFolder for CoverageCalculator<'a, 'b> {
             }
         }
 
-        Some(self.fold_item_recur(i))
+        self.visit_item_recur(i)
     }
 }

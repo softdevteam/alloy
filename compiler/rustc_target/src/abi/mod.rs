@@ -5,14 +5,14 @@ use crate::spec::Target;
 
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
+use std::iter::Step;
 use std::num::NonZeroUsize;
-use std::ops::{Add, AddAssign, Deref, Mul, Range, RangeInclusive, Sub};
+use std::ops::{Add, AddAssign, Deref, Mul, RangeInclusive, Sub};
 use std::str::FromStr;
 
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_macros::HashStable_Generic;
 use rustc_serialize::json::{Json, ToJson};
-use rustc_span::Span;
 
 pub mod call;
 
@@ -36,6 +36,9 @@ pub struct TargetDataLayout {
     pub vector_align: Vec<(Size, AbiAndPrefAlign)>,
 
     pub instruction_address_space: AddressSpace,
+
+    /// Minimum size of #[repr(C)] enums (default I32 bits)
+    pub c_enum_min_size: Integer,
 }
 
 impl Default for TargetDataLayout {
@@ -60,6 +63,7 @@ impl Default for TargetDataLayout {
                 (Size::from_bits(128), AbiAndPrefAlign::new(align(128))),
             ],
             instruction_address_space: AddressSpace::DATA,
+            c_enum_min_size: Integer::I32,
         }
     }
 }
@@ -173,6 +177,8 @@ impl TargetDataLayout {
             ));
         }
 
+        dl.c_enum_min_size = Integer::from_size(Size::from_bits(target.c_enum_min_bits))?;
+
         Ok(dl)
     }
 
@@ -187,6 +193,7 @@ impl TargetDataLayout {
     /// to represent object size in bits. It would need to be 1 << 61 to account for this, but is
     /// currently conservatively bounded to 1 << 47 as that is enough to cover the current usable
     /// address space on 64-bit ARMv8 and x86_64.
+    #[inline]
     pub fn obj_size_bound(&self) -> u64 {
         match self.pointer_size.bits() {
             16 => 1 << 15,
@@ -196,6 +203,7 @@ impl TargetDataLayout {
         }
     }
 
+    #[inline]
     pub fn ptr_sized_integer(&self) -> Integer {
         match self.pointer_size.bits() {
             16 => I16,
@@ -205,6 +213,7 @@ impl TargetDataLayout {
         }
     }
 
+    #[inline]
     pub fn vector_align(&self, vec_size: Size) -> AbiAndPrefAlign {
         for &(size, align) in &self.vector_align {
             if size == vec_size {
@@ -383,6 +392,21 @@ impl Size {
         // Truncate (shift left to drop out leftover values, shift right to fill with zeroes).
         (value << shift) >> shift
     }
+
+    #[inline]
+    pub fn signed_int_min(&self) -> i128 {
+        self.sign_extend(1_u128 << (self.bits() - 1)) as i128
+    }
+
+    #[inline]
+    pub fn signed_int_max(&self) -> i128 {
+        i128::MAX >> (128 - self.bits())
+    }
+
+    #[inline]
+    pub fn unsigned_int_max(&self) -> u128 {
+        u128::MAX >> (128 - self.bits())
+    }
 }
 
 // Panicking addition, subtraction and multiplication for convenience.
@@ -431,6 +455,43 @@ impl AddAssign for Size {
     #[inline]
     fn add_assign(&mut self, other: Size) {
         *self = *self + other;
+    }
+}
+
+impl Step for Size {
+    #[inline]
+    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+        u64::steps_between(&start.bytes(), &end.bytes())
+    }
+
+    #[inline]
+    fn forward_checked(start: Self, count: usize) -> Option<Self> {
+        u64::forward_checked(start.bytes(), count).map(Self::from_bytes)
+    }
+
+    #[inline]
+    fn forward(start: Self, count: usize) -> Self {
+        Self::from_bytes(u64::forward(start.bytes(), count))
+    }
+
+    #[inline]
+    unsafe fn forward_unchecked(start: Self, count: usize) -> Self {
+        Self::from_bytes(u64::forward_unchecked(start.bytes(), count))
+    }
+
+    #[inline]
+    fn backward_checked(start: Self, count: usize) -> Option<Self> {
+        u64::backward_checked(start.bytes(), count).map(Self::from_bytes)
+    }
+
+    #[inline]
+    fn backward(start: Self, count: usize) -> Self {
+        Self::from_bytes(u64::backward(start.bytes(), count))
+    }
+
+    #[inline]
+    unsafe fn backward_unchecked(start: Self, count: usize) -> Self {
+        Self::from_bytes(u64::backward_unchecked(start.bytes(), count))
     }
 }
 
@@ -518,14 +579,17 @@ pub struct AbiAndPrefAlign {
 }
 
 impl AbiAndPrefAlign {
+    #[inline]
     pub fn new(align: Align) -> AbiAndPrefAlign {
         AbiAndPrefAlign { abi: align, pref: align }
     }
 
+    #[inline]
     pub fn min(self, other: AbiAndPrefAlign) -> AbiAndPrefAlign {
         AbiAndPrefAlign { abi: self.abi.min(other.abi), pref: self.pref.min(other.pref) }
     }
 
+    #[inline]
     pub fn max(self, other: AbiAndPrefAlign) -> AbiAndPrefAlign {
         AbiAndPrefAlign { abi: self.abi.max(other.abi), pref: self.pref.max(other.pref) }
     }
@@ -542,6 +606,7 @@ pub enum Integer {
 }
 
 impl Integer {
+    #[inline]
     pub fn size(self) -> Size {
         match self {
             I8 => Size::from_bytes(1),
@@ -565,6 +630,7 @@ impl Integer {
     }
 
     /// Finds the smallest Integer type which can represent the signed value.
+    #[inline]
     pub fn fit_signed(x: i128) -> Integer {
         match x {
             -0x0000_0000_0000_0080..=0x0000_0000_0000_007f => I8,
@@ -576,6 +642,7 @@ impl Integer {
     }
 
     /// Finds the smallest Integer type which can represent the unsigned value.
+    #[inline]
     pub fn fit_unsigned(x: u128) -> Integer {
         match x {
             0..=0x0000_0000_0000_00ff => I8,
@@ -609,6 +676,20 @@ impl Integer {
             }
         }
         I8
+    }
+
+    // FIXME(eddyb) consolidate this and other methods that find the appropriate
+    // `Integer` given some requirements.
+    #[inline]
+    fn from_size(size: Size) -> Result<Self, String> {
+        match size.bits() {
+            8 => Ok(Integer::I8),
+            16 => Ok(Integer::I16),
+            32 => Ok(Integer::I32),
+            64 => Ok(Integer::I64),
+            128 => Ok(Integer::I128),
+            _ => Err(format!("rust does not support integers with {} bits", size.bits())),
+        }
     }
 }
 
@@ -651,58 +732,106 @@ impl Primitive {
         }
     }
 
+    // FIXME(eddyb) remove, it's trivial thanks to `matches!`.
+    #[inline]
     pub fn is_float(self) -> bool {
         matches!(self, F32 | F64)
     }
 
+    // FIXME(eddyb) remove, it's completely unused.
+    #[inline]
     pub fn is_int(self) -> bool {
         matches!(self, Int(..))
     }
 }
 
+/// Inclusive wrap-around range of valid values, that is, if
+/// start > end, it represents `start..=MAX`,
+/// followed by `0..=end`.
+///
+/// That is, for an i8 primitive, a range of `254..=2` means following
+/// sequence:
+///
+///    254 (-2), 255 (-1), 0, 1, 2
+///
+/// This is intended specifically to mirror LLVM’s `!range` metadata semantics.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(HashStable_Generic)]
+pub struct WrappingRange {
+    pub start: u128,
+    pub end: u128,
+}
+
+impl WrappingRange {
+    /// Returns `true` if `v` is contained in the range.
+    #[inline(always)]
+    pub fn contains(&self, v: u128) -> bool {
+        if self.start <= self.end {
+            self.start <= v && v <= self.end
+        } else {
+            self.start <= v || v <= self.end
+        }
+    }
+
+    /// Returns `self` with replaced `start`
+    #[inline(always)]
+    pub fn with_start(mut self, start: u128) -> Self {
+        self.start = start;
+        self
+    }
+
+    /// Returns `self` with replaced `end`
+    #[inline(always)]
+    pub fn with_end(mut self, end: u128) -> Self {
+        self.end = end;
+        self
+    }
+
+    /// Returns `true` if `size` completely fills the range.
+    #[inline]
+    pub fn is_full_for(&self, size: Size) -> bool {
+        let max_value = size.unsigned_int_max();
+        debug_assert!(self.start <= max_value && self.end <= max_value);
+        self.start == (self.end.wrapping_add(1) & max_value)
+    }
+}
+
+impl fmt::Debug for WrappingRange {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.start > self.end {
+            write!(fmt, "(..={}) | ({}..)", self.end, self.start)?;
+        } else {
+            write!(fmt, "{}..={}", self.start, self.end)?;
+        }
+        Ok(())
+    }
+}
+
 /// Information about one scalar component of a Rust type.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub struct Scalar {
     pub value: Primitive,
 
-    /// Inclusive wrap-around range of valid values, that is, if
-    /// start > end, it represents `start..=MAX`,
-    /// followed by `0..=end`.
-    ///
-    /// That is, for an i8 primitive, a range of `254..=2` means following
-    /// sequence:
-    ///
-    ///    254 (-2), 255 (-1), 0, 1, 2
-    ///
-    /// This is intended specifically to mirror LLVM’s `!range` metadata,
-    /// semantics.
     // FIXME(eddyb) always use the shortest range, e.g., by finding
     // the largest space between two consecutive valid values and
     // taking everything else as the (shortest) valid range.
-    pub valid_range: RangeInclusive<u128>,
+    pub valid_range: WrappingRange,
 }
 
 impl Scalar {
+    #[inline]
     pub fn is_bool(&self) -> bool {
-        matches!(self.value, Int(I8, false)) && self.valid_range == (0..=1)
+        matches!(
+            self,
+            Scalar { value: Int(I8, false), valid_range: WrappingRange { start: 0, end: 1 } }
+        )
     }
 
-    /// Returns the valid range as a `x..y` range.
-    ///
-    /// If `x` and `y` are equal, the range is full, not empty.
-    pub fn valid_range_exclusive<C: HasDataLayout>(&self, cx: &C) -> Range<u128> {
-        // For a (max) value of -1, max will be `-1 as usize`, which overflows.
-        // However, that is fine here (it would still represent the full range),
-        // i.e., if the range is everything.
-        let bits = self.value.size(cx).bits();
-        assert!(bits <= 128);
-        let mask = !0u128 >> (128 - bits);
-        let start = *self.valid_range.start();
-        let end = *self.valid_range.end();
-        assert_eq!(start, start & mask);
-        assert_eq!(end, end & mask);
-        start..(end.wrapping_add(1) & mask)
+    /// Returns `true` if all possible numbers are valid, i.e `valid_range` covers the whole layout
+    #[inline]
+    pub fn is_always_valid<C: HasDataLayout>(&self, cx: &C) -> bool {
+        self.valid_range.is_full_for(self.value.size(cx))
     }
 }
 
@@ -749,6 +878,7 @@ pub enum FieldsShape {
 }
 
 impl FieldsShape {
+    #[inline]
     pub fn count(&self) -> usize {
         match *self {
             FieldsShape::Primitive => 0,
@@ -758,6 +888,7 @@ impl FieldsShape {
         }
     }
 
+    #[inline]
     pub fn offset(&self, i: usize) -> Size {
         match *self {
             FieldsShape::Primitive => {
@@ -781,6 +912,7 @@ impl FieldsShape {
         }
     }
 
+    #[inline]
     pub fn memory_index(&self, i: usize) -> usize {
         match *self {
             FieldsShape::Primitive => {
@@ -838,7 +970,7 @@ impl AddressSpace {
 
 /// Describes how values of the type are passed by target ABIs,
 /// in terms of categories of C types there are ABI rules for.
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum Abi {
     Uninhabited,
     Scalar(Scalar),
@@ -864,9 +996,10 @@ impl Abi {
     }
 
     /// Returns `true` if this is a single signed integer scalar
+    #[inline]
     pub fn is_signed(&self) -> bool {
-        match *self {
-            Abi::Scalar(ref scal) => match scal.value {
+        match self {
+            Abi::Scalar(scal) => match scal.value {
                 Primitive::Int(_, signed) => signed,
                 _ => false,
             },
@@ -935,7 +1068,7 @@ pub enum TagEncoding {
     },
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct Niche {
     pub offset: Size,
     pub scalar: Scalar,
@@ -948,47 +1081,71 @@ impl Niche {
     }
 
     pub fn available<C: HasDataLayout>(&self, cx: &C) -> u128 {
-        let Scalar { value, valid_range: ref v } = self.scalar;
-        let bits = value.size(cx).bits();
-        assert!(bits <= 128);
-        let max_value = !0u128 >> (128 - bits);
+        let Scalar { value, valid_range: v } = self.scalar;
+        let size = value.size(cx);
+        assert!(size.bits() <= 128);
+        let max_value = size.unsigned_int_max();
 
         // Find out how many values are outside the valid range.
-        let niche = v.end().wrapping_add(1)..*v.start();
+        let niche = v.end.wrapping_add(1)..v.start;
         niche.end.wrapping_sub(niche.start) & max_value
     }
 
     pub fn reserve<C: HasDataLayout>(&self, cx: &C, count: u128) -> Option<(u128, Scalar)> {
         assert!(count > 0);
 
-        let Scalar { value, valid_range: ref v } = self.scalar;
-        let bits = value.size(cx).bits();
-        assert!(bits <= 128);
-        let max_value = !0u128 >> (128 - bits);
+        let Scalar { value, valid_range: v } = self.scalar;
+        let size = value.size(cx);
+        assert!(size.bits() <= 128);
+        let max_value = size.unsigned_int_max();
 
-        if count > max_value {
+        let niche = v.end.wrapping_add(1)..v.start;
+        let available = niche.end.wrapping_sub(niche.start) & max_value;
+        if count > available {
             return None;
         }
 
-        // Compute the range of invalid values being reserved.
-        let start = v.end().wrapping_add(1) & max_value;
-        let end = v.end().wrapping_add(count) & max_value;
-
-        // If the `end` of our range is inside the valid range,
-        // then we ran out of invalid values.
-        // FIXME(eddyb) abstract this with a wraparound range type.
-        let valid_range_contains = |x| {
-            if v.start() <= v.end() {
-                *v.start() <= x && x <= *v.end()
-            } else {
-                *v.start() <= x || x <= *v.end()
-            }
+        // Extend the range of valid values being reserved by moving either `v.start` or `v.end` bound.
+        // Given an eventual `Option<T>`, we try to maximize the chance for `None` to occupy the niche of zero.
+        // This is accomplished by prefering enums with 2 variants(`count==1`) and always taking the shortest path to niche zero.
+        // Having `None` in niche zero can enable some special optimizations.
+        //
+        // Bound selection criteria:
+        // 1. Select closest to zero given wrapping semantics.
+        // 2. Avoid moving past zero if possible.
+        //
+        // In practice this means that enums with `count > 1` are unlikely to claim niche zero, since they have to fit perfectly.
+        // If niche zero is already reserved, the selection of bounds are of little interest.
+        let move_start = |v: WrappingRange| {
+            let start = v.start.wrapping_sub(count) & max_value;
+            Some((start, Scalar { value, valid_range: v.with_start(start) }))
         };
-        if valid_range_contains(end) {
-            return None;
+        let move_end = |v: WrappingRange| {
+            let start = v.end.wrapping_add(1) & max_value;
+            let end = v.end.wrapping_add(count) & max_value;
+            Some((start, Scalar { value, valid_range: v.with_end(end) }))
+        };
+        let distance_end_zero = max_value - v.end;
+        if v.start > v.end {
+            // zero is unavailable because wrapping occurs
+            move_end(v)
+        } else if v.start <= distance_end_zero {
+            if count <= v.start {
+                move_start(v)
+            } else {
+                // moved past zero, use other bound
+                move_end(v)
+            }
+        } else {
+            let end = v.end.wrapping_add(count) & max_value;
+            let overshot_zero = (1..=v.end).contains(&end);
+            if overshot_zero {
+                // moved past zero, use other bound
+                move_start(v)
+            } else {
+                move_end(v)
+            }
         }
-
-        Some((start, Scalar { value, valid_range: *v.start()..=end }))
     }
 }
 
@@ -1025,7 +1182,7 @@ pub struct Layout {
 
 impl Layout {
     pub fn scalar<C: HasDataLayout>(cx: &C, scalar: Scalar) -> Self {
-        let largest_niche = Niche::from_scalar(cx, Size::ZERO, scalar.clone());
+        let largest_niche = Niche::from_scalar(cx, Size::ZERO, scalar);
         let size = scalar.value.size(cx);
         let align = scalar.value.align(cx);
         Layout {
@@ -1046,7 +1203,7 @@ impl Layout {
 /// to that obtained from `layout_of(ty)`, as we need to produce
 /// layouts for which Rust types do not exist, such as enum variants
 /// or synthetic fields of enums (i.e., discriminants) and fat pointers.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable_Generic)]
 pub struct TyAndLayout<'a, Ty> {
     pub ty: Ty,
     pub layout: &'a Layout,
@@ -1056,49 +1213,6 @@ impl<'a, Ty> Deref for TyAndLayout<'a, Ty> {
     type Target = &'a Layout;
     fn deref(&self) -> &&'a Layout {
         &self.layout
-    }
-}
-
-/// Trait for context types that can compute layouts of things.
-pub trait LayoutOf {
-    type Ty;
-    type TyAndLayout;
-
-    fn layout_of(&self, ty: Self::Ty) -> Self::TyAndLayout;
-    fn spanned_layout_of(&self, ty: Self::Ty, _span: Span) -> Self::TyAndLayout {
-        self.layout_of(ty)
-    }
-}
-
-/// The `TyAndLayout` above will always be a `MaybeResult<TyAndLayout<'_, Self>>`.
-/// We can't add the bound due to the lifetime, but this trait is still useful when
-/// writing code that's generic over the `LayoutOf` impl.
-pub trait MaybeResult<T> {
-    type Error;
-
-    fn from(x: Result<T, Self::Error>) -> Self;
-    fn to_result(self) -> Result<T, Self::Error>;
-}
-
-impl<T> MaybeResult<T> for T {
-    type Error = !;
-
-    fn from(Ok(x): Result<T, Self::Error>) -> Self {
-        x
-    }
-    fn to_result(self) -> Result<T, Self::Error> {
-        Ok(self)
-    }
-}
-
-impl<T, E> MaybeResult<T> for Result<T, E> {
-    type Error = E;
-
-    fn from(x: Result<T, Self::Error>) -> Self {
-        x
-    }
-    fn to_result(self) -> Result<T, Self::Error> {
-        self
     }
 }
 
@@ -1125,41 +1239,42 @@ pub struct PointeeInfo {
     pub address_space: AddressSpace,
 }
 
-pub trait TyAndLayoutMethods<'a, C: LayoutOf<Ty = Self>>: Sized {
-    fn for_variant(
+/// Trait that needs to be implemented by the higher-level type representation
+/// (e.g. `rustc_middle::ty::Ty`), to provide `rustc_target::abi` functionality.
+pub trait TyAbiInterface<'a, C>: Sized {
+    fn ty_and_layout_for_variant(
         this: TyAndLayout<'a, Self>,
         cx: &C,
         variant_index: VariantIdx,
     ) -> TyAndLayout<'a, Self>;
-    fn field(this: TyAndLayout<'a, Self>, cx: &C, i: usize) -> C::TyAndLayout;
-    fn pointee_info_at(this: TyAndLayout<'a, Self>, cx: &C, offset: Size) -> Option<PointeeInfo>;
+    fn ty_and_layout_field(this: TyAndLayout<'a, Self>, cx: &C, i: usize) -> TyAndLayout<'a, Self>;
+    fn ty_and_layout_pointee_info_at(
+        this: TyAndLayout<'a, Self>,
+        cx: &C,
+        offset: Size,
+    ) -> Option<PointeeInfo>;
 }
 
 impl<'a, Ty> TyAndLayout<'a, Ty> {
     pub fn for_variant<C>(self, cx: &C, variant_index: VariantIdx) -> Self
     where
-        Ty: TyAndLayoutMethods<'a, C>,
-        C: LayoutOf<Ty = Ty>,
+        Ty: TyAbiInterface<'a, C>,
     {
-        Ty::for_variant(self, cx, variant_index)
+        Ty::ty_and_layout_for_variant(self, cx, variant_index)
     }
 
-    /// Callers might want to use `C: LayoutOf<Ty=Ty, TyAndLayout: MaybeResult<Self>>`
-    /// to allow recursion (see `might_permit_zero_init` below for an example).
-    pub fn field<C>(self, cx: &C, i: usize) -> C::TyAndLayout
+    pub fn field<C>(self, cx: &C, i: usize) -> Self
     where
-        Ty: TyAndLayoutMethods<'a, C>,
-        C: LayoutOf<Ty = Ty>,
+        Ty: TyAbiInterface<'a, C>,
     {
-        Ty::field(self, cx, i)
+        Ty::ty_and_layout_field(self, cx, i)
     }
 
     pub fn pointee_info_at<C>(self, cx: &C, offset: Size) -> Option<PointeeInfo>
     where
-        Ty: TyAndLayoutMethods<'a, C>,
-        C: LayoutOf<Ty = Ty>,
+        Ty: TyAbiInterface<'a, C>,
     {
-        Ty::pointee_info_at(self, cx, offset)
+        Ty::ty_and_layout_pointee_info_at(self, cx, offset)
     }
 }
 
@@ -1187,37 +1302,33 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
     /// FIXME: Once we removed all the conservatism, we could alternatively
     /// create an all-0/all-undef constant and run the const value validator to see if
     /// this is a valid value for the given type.
-    pub fn might_permit_raw_init<C, E>(self, cx: &C, zero: bool) -> Result<bool, E>
+    pub fn might_permit_raw_init<C>(self, cx: &C, zero: bool) -> bool
     where
         Self: Copy,
-        Ty: TyAndLayoutMethods<'a, C>,
-        C: LayoutOf<Ty = Ty, TyAndLayout: MaybeResult<Self, Error = E>> + HasDataLayout,
+        Ty: TyAbiInterface<'a, C>,
+        C: HasDataLayout,
     {
-        let scalar_allows_raw_init = move |s: &Scalar| -> bool {
+        let scalar_allows_raw_init = move |s: Scalar| -> bool {
             if zero {
-                let range = &s.valid_range;
                 // The range must contain 0.
-                range.contains(&0) || (*range.start() > *range.end()) // wrap-around allows 0
+                s.valid_range.contains(0)
             } else {
-                // The range must include all values. `valid_range_exclusive` handles
-                // the wrap-around using target arithmetic; with wrap-around then the full
-                // range is one where `start == end`.
-                let range = s.valid_range_exclusive(cx);
-                range.start == range.end
+                // The range must include all values.
+                s.is_always_valid(cx)
             }
         };
 
         // Check the ABI.
-        let valid = match &self.abi {
+        let valid = match self.abi {
             Abi::Uninhabited => false, // definitely UB
             Abi::Scalar(s) => scalar_allows_raw_init(s),
             Abi::ScalarPair(s1, s2) => scalar_allows_raw_init(s1) && scalar_allows_raw_init(s2),
-            Abi::Vector { element: s, count } => *count == 0 || scalar_allows_raw_init(s),
+            Abi::Vector { element: s, count } => count == 0 || scalar_allows_raw_init(s),
             Abi::Aggregate { .. } => true, // Fields are checked below.
         };
         if !valid {
             // This is definitely not okay.
-            return Ok(false);
+            return false;
         }
 
         // If we have not found an error yet, we need to recursively descend into fields.
@@ -1228,16 +1339,15 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
             }
             FieldsShape::Arbitrary { offsets, .. } => {
                 for idx in 0..offsets.len() {
-                    let field = self.field(cx, idx).to_result()?;
-                    if !field.might_permit_raw_init(cx, zero)? {
+                    if !self.field(cx, idx).might_permit_raw_init(cx, zero) {
                         // We found a field that is unhappy with this kind of initialization.
-                        return Ok(false);
+                        return false;
                     }
                 }
             }
         }
 
         // FIXME(#66151): For now, we are conservative and do not check `self.variants`.
-        Ok(true)
+        true
     }
 }

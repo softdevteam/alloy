@@ -30,7 +30,7 @@ use crate::hash::Hasher;
 /// [arc]: ../../std/sync/struct.Arc.html
 /// [ub]: ../../reference/behavior-considered-undefined.html
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg_attr(not(test), rustc_diagnostic_item = "send_trait")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "Send")]
 #[rustc_on_unimplemented(
     message = "`{Self}` cannot be sent between threads safely",
     label = "`{Self}` cannot be sent between threads safely"
@@ -99,17 +99,15 @@ pub trait Sized {
 /// `Unsize<dyn fmt::Debug>`.
 ///
 /// All implementations of `Unsize` are provided automatically by the compiler.
+/// Those implementations are:
 ///
-/// `Unsize` is implemented for:
-///
-/// - `[T; N]` is `Unsize<[T]>`
-/// - `T` is `Unsize<dyn Trait>` when `T: Trait`
-/// - `Foo<..., T, ...>` is `Unsize<Foo<..., U, ...>>` if:
-///   - `T: Unsize<U>`
-///   - Foo is a struct
-///   - Only the last field of `Foo` has a type involving `T`
-///   - `T` is not part of the type of any other fields
-///   - `Bar<T>: Unsize<Bar<U>>`, if the last field of `Foo` has type `Bar<T>`
+/// - Arrays `[T; N]` implement `Unsize<[T]>`.
+/// - Types implementing a trait `Trait` also implement `Unsize<dyn Trait>`.
+/// - Structs `Foo<..., T, ...>` implement `Unsize<Foo<..., U, ...>>` if all of these conditions
+///   are met:
+///   - `T: Unsize<U>`.
+///   - Only the last field of `Foo` has a type involving `T`.
+///   - `Bar<T>: Unsize<Bar<U>>`, where `Bar<T>` stands for the actual type of that last field.
 ///
 /// `Unsize` is used along with [`ops::CoerceUnsized`] to allow
 /// "user-defined" containers such as [`Rc`] to contain dynamically-sized
@@ -361,7 +359,6 @@ pub trait StructuralEq {
 ///
 /// * Function item types (i.e., the distinct types defined for each function)
 /// * Function pointer types (e.g., `fn() -> i32`)
-/// * Array types, for all sizes, if the item type also implements `Copy` (e.g., `[i32; 123456]`)
 /// * Tuple types, if each component also implements `Copy` (e.g., `()`, `(i32, bool)`)
 /// * Closure types, if they capture no value from the environment
 ///   or if all such captured values implement `Copy` themselves.
@@ -382,6 +379,7 @@ pub trait StructuralEq {
 // existing specializations on `Copy` that already exist in the standard
 // library, and there's no way to safely have this behavior right now.
 #[rustc_unsafe_specialization_marker]
+#[rustc_diagnostic_item = "Copy"]
 pub trait Copy: Clone {
     // Empty.
 }
@@ -460,7 +458,7 @@ pub macro Copy($item:item) {
 /// [transmute]: crate::mem::transmute
 /// [nomicon-send-and-sync]: ../../nomicon/send-and-sync.html
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg_attr(not(test), rustc_diagnostic_item = "sync_trait")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "Sync")]
 #[lang = "sync"]
 #[rustc_on_unimplemented(
     message = "`{Self}` cannot be shared between threads safely",
@@ -528,7 +526,8 @@ macro_rules! impls {
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<T: ?Sized> Default for $t<T> {
+        #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+        impl<T: ?Sized> const Default for $t<T> {
             fn default() -> Self {
                 Self
             }

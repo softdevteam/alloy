@@ -1,5 +1,10 @@
 # needs-profiler-support
-# min-llvm-version: 11.0
+
+# Rust coverage maps support LLVM Coverage Mapping Format versions 5 and 6,
+# corresponding with LLVM versions 12 and 13, respectively.
+# When upgrading LLVM versions, consider whether to enforce a minimum LLVM
+# version during testing, with an additional directive at the top of this file
+# that sets, for example: `min-llvm-version: 12.0`
 
 -include ../coverage/coverage_tools.mk
 
@@ -22,7 +27,6 @@ DEFINE_INTERNAL=define internal
 ifdef IS_WINDOWS
 	LLVM_FILECHECK_OPTIONS=\
 		-check-prefixes=CHECK,WINDOWS \
-		-DPRIVATE_GLOBAL='internal global' \
 		-DDEFINE_INTERNAL='$(DEFINE_INTERNAL)' \
 		-DCOMDAT_IF_SUPPORTED='$(COMDAT_IF_SUPPORTED)' \
 		-DINSTR_PROF_DATA='.lprfd$$M' \
@@ -36,7 +40,6 @@ ifdef IS_WINDOWS
 else
 	LLVM_FILECHECK_OPTIONS=\
 		-check-prefixes=CHECK \
-		-DPRIVATE_GLOBAL='private global' \
 		-DDEFINE_INTERNAL='$(DEFINE_INTERNAL)' \
 		-DCOMDAT_IF_SUPPORTED='$(COMDAT_IF_SUPPORTED)' \
 		-DINSTR_PROF_DATA='$(DATA_SECTION_PREFIX)__llvm_prf_data$(INSTR_PROF_DATA_SUFFIX)' \

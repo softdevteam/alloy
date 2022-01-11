@@ -2,7 +2,7 @@
 
 #![allow(unused_imports)] // lots of cfg code here
 
-#[cfg(all(test, target_env = "gnu"))]
+#[cfg(test)]
 mod tests;
 
 use crate::os::unix::prelude::*;
@@ -97,6 +97,7 @@ pub fn errno() -> i32 {
 }
 
 #[cfg(target_os = "dragonfly")]
+#[allow(dead_code)]
 pub fn set_errno(e: i32) {
     extern "C" {
         #[thread_local]
@@ -128,6 +129,12 @@ pub fn error_string(errno: i32) -> String {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn getcwd() -> io::Result<PathBuf> {
+    Ok(PathBuf::from("/"))
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn getcwd() -> io::Result<PathBuf> {
     let mut buf = Vec::with_capacity(512);
     loop {
@@ -154,6 +161,12 @@ pub fn getcwd() -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "espidf")]
+pub fn chdir(p: &path::Path) -> io::Result<()> {
+    super::unsupported::unsupported()
+}
+
+#[cfg(not(target_os = "espidf"))]
 pub fn chdir(p: &path::Path) -> io::Result<()> {
     let p: &OsStr = p.as_ref();
     let p = CString::new(p.as_bytes())?;
@@ -350,17 +363,14 @@ pub fn current_exe() -> io::Result<PathBuf> {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn current_exe() -> io::Result<PathBuf> {
-    extern "C" {
-        fn _NSGetExecutablePath(buf: *mut libc::c_char, bufsize: *mut u32) -> libc::c_int;
-    }
     unsafe {
         let mut sz: u32 = 0;
-        _NSGetExecutablePath(ptr::null_mut(), &mut sz);
+        libc::_NSGetExecutablePath(ptr::null_mut(), &mut sz);
         if sz == 0 {
             return Err(io::Error::last_os_error());
         }
         let mut v: Vec<u8> = Vec::with_capacity(sz as usize);
-        let err = _NSGetExecutablePath(v.as_mut_ptr() as *mut i8, &mut sz);
+        let err = libc::_NSGetExecutablePath(v.as_mut_ptr() as *mut i8, &mut sz);
         if err != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -371,66 +381,45 @@ pub fn current_exe() -> io::Result<PathBuf> {
 
 #[cfg(any(target_os = "solaris", target_os = "illumos"))]
 pub fn current_exe() -> io::Result<PathBuf> {
-    extern "C" {
-        fn getexecname() -> *const c_char;
-    }
-    unsafe {
-        let path = getexecname();
-        if path.is_null() {
-            Err(io::Error::last_os_error())
-        } else {
-            let filename = CStr::from_ptr(path).to_bytes();
-            let path = PathBuf::from(<OsStr as OsStrExt>::from_bytes(filename));
+    if let Ok(path) = crate::fs::read_link("/proc/self/path/a.out") {
+        Ok(path)
+    } else {
+        extern "C" {
+            fn getexecname() -> *const c_char;
+        }
+        unsafe {
+            let path = getexecname();
+            if path.is_null() {
+                Err(io::Error::last_os_error())
+            } else {
+                let filename = CStr::from_ptr(path).to_bytes();
+                let path = PathBuf::from(<OsStr as OsStrExt>::from_bytes(filename));
 
-            // Prepend a current working directory to the path if
-            // it doesn't contain an absolute pathname.
-            if filename[0] == b'/' { Ok(path) } else { getcwd().map(|cwd| cwd.join(path)) }
+                // Prepend a current working directory to the path if
+                // it doesn't contain an absolute pathname.
+                if filename[0] == b'/' { Ok(path) } else { getcwd().map(|cwd| cwd.join(path)) }
+            }
         }
     }
 }
 
 #[cfg(target_os = "haiku")]
 pub fn current_exe() -> io::Result<PathBuf> {
-    // Use Haiku's image info functions
-    #[repr(C)]
-    struct image_info {
-        id: i32,
-        type_: i32,
-        sequence: i32,
-        init_order: i32,
-        init_routine: *mut libc::c_void, // function pointer
-        term_routine: *mut libc::c_void, // function pointer
-        device: libc::dev_t,
-        node: libc::ino_t,
-        name: [libc::c_char; 1024], // MAXPATHLEN
-        text: *mut libc::c_void,
-        data: *mut libc::c_void,
-        text_size: i32,
-        data_size: i32,
-        api_version: i32,
-        abi: i32,
-    }
-
     unsafe {
-        extern "C" {
-            fn _get_next_image_info(
-                team_id: i32,
-                cookie: *mut i32,
-                info: *mut image_info,
-                size: i32,
-            ) -> i32;
-        }
-
-        let mut info: image_info = mem::zeroed();
+        let mut info: mem::MaybeUninit<libc::image_info> = mem::MaybeUninit::uninit();
         let mut cookie: i32 = 0;
         // the executable can be found at team id 0
-        let result =
-            _get_next_image_info(0, &mut cookie, &mut info, mem::size_of::<image_info>() as i32);
+        let result = libc::_get_next_image_info(
+            0,
+            &mut cookie,
+            info.as_mut_ptr(),
+            mem::size_of::<libc::image_info>(),
+        );
         if result != 0 {
             use crate::io::ErrorKind;
             Err(io::Error::new_const(ErrorKind::Uncategorized, &"Error getting executable path"))
         } else {
-            let name = CStr::from_ptr(info.name.as_ptr()).to_bytes();
+            let name = CStr::from_ptr((*info.as_ptr()).name.as_ptr()).to_bytes();
             Ok(PathBuf::from(OsStr::from_bytes(name)))
         }
     }
@@ -460,6 +449,11 @@ pub fn current_exe() -> io::Result<PathBuf> {
     path.canonicalize()
 }
 
+#[cfg(target_os = "espidf")]
+pub fn current_exe() -> io::Result<PathBuf> {
+    super::unsupported::unsupported()
+}
+
 pub struct Env {
     iter: vec::IntoIter<(OsString, OsString)>,
 }
@@ -479,10 +473,7 @@ impl Iterator for Env {
 
 #[cfg(target_os = "macos")]
 pub unsafe fn environ() -> *mut *const *const c_char {
-    extern "C" {
-        fn _NSGetEnviron() -> *mut *const *const c_char;
-    }
-    _NSGetEnviron()
+    libc::_NSGetEnviron() as *mut *const *const c_char
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -535,19 +526,18 @@ pub fn env() -> Env {
     }
 }
 
-pub fn getenv(k: &OsStr) -> io::Result<Option<OsString>> {
+pub fn getenv(k: &OsStr) -> Option<OsString> {
     // environment variables with a nul byte can't be set, so their value is
     // always None as well
-    let k = CString::new(k.as_bytes())?;
+    let k = CString::new(k.as_bytes()).ok()?;
     unsafe {
         let _guard = env_read_lock();
         let s = libc::getenv(k.as_ptr()) as *const libc::c_char;
-        let ret = if s.is_null() {
+        if s.is_null() {
             None
         } else {
             Some(OsStringExt::from_vec(CStr::from_ptr(s).to_bytes().to_vec()))
-        };
-        Ok(ret)
+        }
     }
 }
 
@@ -570,6 +560,7 @@ pub fn unsetenv(n: &OsStr) -> io::Result<()> {
     }
 }
 
+#[cfg(not(target_os = "espidf"))]
 pub fn page_size() -> usize {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
 }
@@ -592,7 +583,8 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "ios",
         target_os = "emscripten",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     unsafe fn fallback() -> Option<OsString> {
         None
@@ -602,7 +594,8 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "ios",
         target_os = "emscripten",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     )))]
     unsafe fn fallback() -> Option<OsString> {
         let amt = match libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) {
@@ -641,22 +634,14 @@ pub fn getppid() -> u32 {
     unsafe { libc::getppid() as u32 }
 }
 
-#[cfg(all(target_env = "gnu", not(target_os = "vxworks")))]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub fn glibc_version() -> Option<(usize, usize)> {
-    if let Some(Ok(version_str)) = glibc_version_cstr().map(CStr::to_str) {
+    extern "C" {
+        fn gnu_get_libc_version() -> *const libc::c_char;
+    }
+    let version_cstr = unsafe { CStr::from_ptr(gnu_get_libc_version()) };
+    if let Ok(version_str) = version_cstr.to_str() {
         parse_glibc_version(version_str)
-    } else {
-        None
-    }
-}
-
-#[cfg(all(target_env = "gnu", not(target_os = "vxworks")))]
-fn glibc_version_cstr() -> Option<&'static CStr> {
-    weak! {
-        fn gnu_get_libc_version() -> *const libc::c_char
-    }
-    if let Some(f) = gnu_get_libc_version.get() {
-        unsafe { Some(CStr::from_ptr(f())) }
     } else {
         None
     }
@@ -664,7 +649,7 @@ fn glibc_version_cstr() -> Option<&'static CStr> {
 
 // Returns Some((major, minor)) if the string is a valid "x.y" version,
 // ignoring any extra dot-separated parts. Otherwise return None.
-#[cfg(all(target_env = "gnu", not(target_os = "vxworks")))]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn parse_glibc_version(version: &str) -> Option<(usize, usize)> {
     let mut parsed_ints = version.split('.').map(str::parse::<usize>).fuse();
     match (parsed_ints.next(), parsed_ints.next()) {

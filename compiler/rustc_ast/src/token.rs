@@ -295,6 +295,7 @@ impl TokenKind {
         match *self {
             Comma => Some(vec![Dot, Lt, Semi]),
             Semi => Some(vec![Colon, Comma]),
+            FatArrow => Some(vec![Eq, RArrow]),
             _ => None,
         }
     }
@@ -495,7 +496,7 @@ impl Token {
         self.lifetime().is_some()
     }
 
-    /// Returns `true` if the token is a identifier whose name is the given
+    /// Returns `true` if the token is an identifier whose name is the given
     /// string slice.
     pub fn is_ident_named(&self, name: Symbol) -> bool {
         self.ident().map_or(false, |(ident, _)| ident.name == name)
@@ -584,6 +585,13 @@ impl Token {
     /// Returns `true` if the token is the identifier `true` or `false`.
     pub fn is_bool_lit(&self) -> bool {
         self.is_non_raw_ident_where(|id| id.name.is_bool_lit())
+    }
+
+    pub fn is_numeric_lit(&self) -> bool {
+        matches!(
+            self.kind,
+            Literal(Lit { kind: LitKind::Integer, .. }) | Literal(Lit { kind: LitKind::Float, .. })
+        )
     }
 
     /// Returns `true` if the token is a non-raw identifier for which `pred` holds.

@@ -1,10 +1,12 @@
 //! Code to save/load the dep-graph from files.
 
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::memmap::Mmap;
 use rustc_middle::dep_graph::{SerializedDepGraph, WorkProduct, WorkProductId};
 use rustc_middle::ty::OnDiskCache;
 use rustc_serialize::opaque::Decoder;
 use rustc_serialize::Decodable;
+use rustc_session::config::IncrementalStateAssertion;
 use rustc_session::Session;
 use std::path::Path;
 
@@ -15,6 +17,7 @@ use super::work_product;
 
 type WorkProductMap = FxHashMap<WorkProductId, WorkProduct>;
 
+#[derive(Debug)]
 pub enum LoadResult<T> {
     Ok { data: T },
     DataOutOfDate,
@@ -23,6 +26,26 @@ pub enum LoadResult<T> {
 
 impl<T: Default> LoadResult<T> {
     pub fn open(self, sess: &Session) -> T {
+        // Check for errors when using `-Zassert-incremental-state`
+        match (sess.opts.assert_incr_state, &self) {
+            (Some(IncrementalStateAssertion::NotLoaded), LoadResult::Ok { .. }) => {
+                sess.fatal(
+                    "We asserted that the incremental cache should not be loaded, \
+                         but it was loaded.",
+                );
+            }
+            (
+                Some(IncrementalStateAssertion::Loaded),
+                LoadResult::Error { .. } | LoadResult::DataOutOfDate,
+            ) => {
+                sess.fatal(
+                    "We asserted that an existing incremental cache directory should \
+                         be successfully loaded, but it was not.",
+                );
+            }
+            _ => {}
+        };
+
         match self {
             LoadResult::Error { message } => {
                 sess.warn(&message);
@@ -32,7 +55,7 @@ impl<T: Default> LoadResult<T> {
                 if let Err(err) = delete_all_session_dir_contents(sess) {
                     sess.err(&format!(
                         "Failed to delete invalidated or incompatible \
-                                      incremental compilation session directory contents `{}`: {}.",
+                         incremental compilation session directory contents `{}`: {}.",
                         dep_graph_path(sess).display(),
                         err
                     ));
@@ -48,7 +71,7 @@ fn load_data(
     report_incremental_info: bool,
     path: &Path,
     nightly_build: bool,
-) -> LoadResult<(Vec<u8>, usize)> {
+) -> LoadResult<(Mmap, usize)> {
     match file_format::read_file(report_incremental_info, path, nightly_build) {
         Ok(Some(data_and_pos)) => LoadResult::Ok { data: data_and_pos },
         Ok(None) => {
@@ -104,7 +127,7 @@ pub fn load_dep_graph(sess: &Session) -> DepGraphFuture {
 
     // Calling `sess.incr_comp_session_dir()` will panic if `sess.opts.incremental.is_none()`.
     // Fortunately, we just checked that this isn't the case.
-    let path = dep_graph_path_from(&sess.incr_comp_session_dir());
+    let path = dep_graph_path(&sess);
     let report_incremental_info = sess.opts.debugging_opts.incremental_info;
     let expected_hash = sess.opts.dep_tracking_hash(false);
 

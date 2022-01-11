@@ -186,7 +186,7 @@ pub enum GenericKind<'tcx> {
 ///        ('a: min) || ('b: min)
 ///     }
 ///
-/// This is described with a `AnyRegion('a, 'b)` node.
+/// This is described with an `AnyRegion('a, 'b)` node.
 #[derive(Debug, Clone)]
 pub enum VerifyBound<'tcx> {
     /// Given a kind K and a bound B, expands to a function like the
@@ -445,6 +445,11 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         self.var_infos[vid].universe
     }
 
+    /// Returns the origin for the given variable.
+    pub fn var_origin(&self, vid: RegionVid) -> RegionVariableOrigin {
+        self.var_infos[vid].origin
+    }
+
     fn add_constraint(&mut self, constraint: Constraint<'tcx>, origin: SubregionOrigin<'tcx>) {
         // cannot add constraints once regions are resolved
         debug!("RegionConstraintCollector: add_constraint({:?})", constraint);
@@ -535,6 +540,7 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         });
     }
 
+    #[instrument(skip(self, origin), level = "debug")]
     pub fn make_subregion(
         &mut self,
         origin: SubregionOrigin<'tcx>,
@@ -542,10 +548,7 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         sup: Region<'tcx>,
     ) {
         // cannot add constraints once regions are resolved
-        debug!(
-            "RegionConstraintCollector: make_subregion({:?}, {:?}) due to {:?}",
-            sub, sup, origin
-        );
+        debug!("origin = {:#?}", origin);
 
         match (sub, sup) {
             (&ReLateBound(..), _) | (_, &ReLateBound(..)) => {

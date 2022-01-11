@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::{multispan_sugg, span_lint, span_lint_and_then};
 use clippy_utils::source::snippet;
 use clippy_utils::ty::{implements_trait, is_copy};
-use clippy_utils::{ast_utils::is_useless_with_eq_exprs, eq_expr_value, higher, in_macro, is_expn_of};
+use clippy_utils::{ast_utils::is_useless_with_eq_exprs, eq_expr_value, higher, is_expn_of, is_in_test_function};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{BinOpKind, BorrowKind, Expr, ExprKind, StmtKind};
@@ -9,18 +9,21 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for equal operands to comparison, logical and
+    /// ### What it does
+    /// Checks for equal operands to comparison, logical and
     /// bitwise, difference and division binary operators (`==`, `>`, etc., `&&`,
     /// `||`, `&`, `|`, `^`, `-` and `/`).
     ///
-    /// **Why is this bad?** This is usually just a typo or a copy and paste error.
+    /// ### Why is this bad?
+    /// This is usually just a typo or a copy and paste error.
     ///
-    /// **Known problems:** False negatives: We had some false positives regarding
+    /// ### Known problems
+    /// False negatives: We had some false positives regarding
     /// calls (notably [racer](https://github.com/phildawes/racer) had one instance
     /// of `x.pop() && x.pop()`), so we removed matching any function or method
     /// calls. We may introduce a list of known pure functions in the future.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let x = 1;
     /// if x + 1 == x + 1 {}
@@ -31,21 +34,25 @@ declare_clippy_lint! {
     /// # let b = 4;
     /// assert_eq!(a, a);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub EQ_OP,
     correctness,
     "equal operands on both sides of a comparison or bitwise combination (e.g., `x == x`)"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for arguments to `==` which have their address
+    /// ### What it does
+    /// Checks for arguments to `==` which have their address
     /// taken to satisfy a bound
     /// and suggests to dereference the other argument instead
     ///
-    /// **Why is this bad?** It is more idiomatic to dereference the other argument.
+    /// ### Why is this bad?
+    /// It is more idiomatic to dereference the other argument.
     ///
-    /// **Known problems:** None
+    /// ### Known problems
+    /// None
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// // Bad
     /// &x == y
@@ -53,6 +60,7 @@ declare_clippy_lint! {
     /// // Good
     /// x == *y
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub OP_REF,
     style,
     "taking a reference to satisfy the type constraints on `==`"
@@ -75,7 +83,7 @@ impl<'tcx> LateLintPass<'tcx> for EqOp {
                         if macro_args.len() == 2;
                         let (lhs, rhs) = (macro_args[0], macro_args[1]);
                         if eq_expr_value(cx, lhs, rhs);
-
+                        if !is_in_test_function(cx.tcx, e.hir_id);
                         then {
                             span_lint(
                                 cx,
@@ -94,7 +102,7 @@ impl<'tcx> LateLintPass<'tcx> for EqOp {
             }
             let macro_with_not_op = |expr_kind: &ExprKind<'_>| {
                 if let ExprKind::Unary(_, expr) = *expr_kind {
-                    in_macro(expr.span)
+                    expr.span.from_expansion()
                 } else {
                     false
                 }
@@ -102,7 +110,10 @@ impl<'tcx> LateLintPass<'tcx> for EqOp {
             if macro_with_not_op(&left.kind) || macro_with_not_op(&right.kind) {
                 return;
             }
-            if is_useless_with_eq_exprs(op.node.into()) && eq_expr_value(cx, left, right) {
+            if is_useless_with_eq_exprs(op.node.into())
+                && eq_expr_value(cx, left, right)
+                && !is_in_test_function(cx.tcx, e.hir_id)
+            {
                 span_lint(
                     cx,
                     EQ_OP,

@@ -10,32 +10,34 @@ use rustc_span::source_map::Span;
 use unicode_normalization::UnicodeNormalization;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for invisible Unicode characters in the code.
+    /// ### What it does
+    /// Checks for invisible Unicode characters in the code.
     ///
-    /// **Why is this bad?** Having an invisible character in the code makes for all
+    /// ### Why is this bad?
+    /// Having an invisible character in the code makes for all
     /// sorts of April fools, but otherwise is very much frowned upon.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:** You don't see it, but there may be a zero-width space or soft hyphen
+    /// ### Example
+    /// You don't see it, but there may be a zero-width space or soft hyphen
     /// some­where in this text.
+    #[clippy::version = "1.49.0"]
     pub INVISIBLE_CHARACTERS,
     correctness,
     "using an invisible character in a string literal, which is confusing"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for non-ASCII characters in string literals.
+    /// ### What it does
+    /// Checks for non-ASCII characters in string and char literals.
     ///
-    /// **Why is this bad?** Yeah, we know, the 90's called and wanted their charset
+    /// ### Why is this bad?
+    /// Yeah, we know, the 90's called and wanted their charset
     /// back. Even so, there still are editors and other programs out there that
     /// don't work well with Unicode. So if the code is meant to be used
     /// internationally, on multiple operating systems, or has other portability
     /// requirements, activating this lint could be useful.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x = String::from("€");
     /// ```
@@ -43,23 +45,26 @@ declare_clippy_lint! {
     /// ```rust
     /// let x = String::from("\u{20ac}");
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NON_ASCII_LITERAL,
-    pedantic,
+    restriction,
     "using any literal non-ASCII chars in a string literal instead of using the `\\u` escape"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for string literals that contain Unicode in a form
+    /// ### What it does
+    /// Checks for string literals that contain Unicode in a form
     /// that is not equal to its
     /// [NFC-recomposition](http://www.unicode.org/reports/tr15/#Norm_Forms).
     ///
-    /// **Why is this bad?** If such a string is compared to another, the results
+    /// ### Why is this bad?
+    /// If such a string is compared to another, the results
     /// may be surprising.
     ///
-    /// **Known problems** None.
-    ///
-    /// **Example:** You may not see it, but "à"" and "à"" aren't the same string. The
+    /// ### Example
+    /// You may not see it, but "à"" and "à"" aren't the same string. The
     /// former when escaped is actually `"a\u{300}"` while the latter is `"\u{e0}"`.
+    #[clippy::version = "pre 1.29.0"]
     pub UNICODE_NOT_NFC,
     pedantic,
     "using a Unicode literal not in NFC normal form (see [Unicode tr15](http://www.unicode.org/reports/tr15/) for further information)"
@@ -70,7 +75,7 @@ declare_lint_pass!(Unicode => [INVISIBLE_CHARACTERS, NON_ASCII_LITERAL, UNICODE_
 impl LateLintPass<'_> for Unicode {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &'_ Expr<'_>) {
         if let ExprKind::Lit(ref lit) = expr.kind {
-            if let LitKind::Str(_, _) = lit.node {
+            if let LitKind::Str(_, _) | LitKind::Char(_) = lit.node {
                 check_str(cx, lit.span, expr.hir_id);
             }
         }
@@ -101,9 +106,9 @@ fn check_str(cx: &LateContext<'_>, span: Span, id: HirId) {
             "invisible character detected",
             "consider replacing the string with",
             string
-                .replace("\u{200B}", "\\u{200B}")
-                .replace("\u{ad}", "\\u{AD}")
-                .replace("\u{2060}", "\\u{2060}"),
+                .replace('\u{200B}', "\\u{200B}")
+                .replace('\u{ad}', "\\u{AD}")
+                .replace('\u{2060}', "\\u{2060}"),
             Applicability::MachineApplicable,
         );
     }

@@ -9,27 +9,36 @@
 #![feature(cfg_target_has_atomic)]
 #![feature(const_assume)]
 #![feature(const_cell_into_inner)]
+#![feature(const_convert)]
+#![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_maybe_uninit_assume_init)]
 #![feature(const_ptr_read)]
 #![feature(const_ptr_write)]
 #![feature(const_ptr_offset)]
+#![feature(const_trait_impl)]
+#![feature(const_num_from_num)]
 #![feature(core_intrinsics)]
 #![feature(core_private_bignum)]
 #![feature(core_private_diy_float)]
 #![feature(dec2flt)]
 #![feature(div_duration)]
-#![feature(duration_consts_2)]
+#![feature(duration_consts_float)]
 #![feature(duration_constants)]
 #![feature(exact_size_is_empty)]
 #![feature(extern_types)]
 #![feature(flt2dec)]
 #![feature(fmt_internals)]
+#![feature(float_minimum_maximum)]
+#![feature(future_join)]
+#![feature(future_poll_fn)]
+#![feature(array_from_fn)]
 #![feature(hashmap_internals)]
 #![feature(try_find)]
 #![feature(is_sorted)]
 #![feature(pattern)]
 #![feature(sort_internals)]
 #![feature(slice_partition_at_index)]
+#![feature(slice_take)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(maybe_uninit_extra)]
@@ -49,23 +58,28 @@
 #![feature(iter_intersperse)]
 #![feature(iter_is_partitioned)]
 #![feature(iter_order_by)]
-#![feature(iter_map_while)]
+#![feature(iterator_try_reduce)]
 #![feature(const_mut_refs)]
 #![feature(const_pin)]
 #![feature(const_slice_from_raw_parts)]
-#![feature(const_raw_ptr_deref)]
 #![feature(never_type)]
 #![feature(unwrap_infallible)]
-#![feature(option_result_unwrap_unchecked)]
 #![feature(result_into_ok_or_err)]
+#![feature(portable_simd)]
 #![feature(ptr_metadata)]
 #![feature(once_cell)]
 #![feature(unsized_tuple_coercion)]
 #![feature(const_option)]
+#![feature(const_result)]
 #![feature(integer_atomics)]
+#![feature(int_roundings)]
 #![feature(slice_group_by)]
+#![feature(split_array)]
 #![feature(trusted_random_access)]
 #![feature(unsize)]
+#![feature(unzip_option)]
+#![feature(const_array_from_ref)]
+#![feature(const_slice_from_ref)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate test;
@@ -82,6 +96,7 @@ mod clone;
 mod cmp;
 mod const_ptr;
 mod fmt;
+mod future;
 mod hash;
 mod intrinsics;
 mod iter;
@@ -97,6 +112,7 @@ mod pattern;
 mod pin;
 mod ptr;
 mod result;
+mod simd;
 mod slice;
 mod str;
 mod str_lossy;

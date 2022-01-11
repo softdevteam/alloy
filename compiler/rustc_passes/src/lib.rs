@@ -8,8 +8,9 @@
 #![feature(crate_visibility_modifier)]
 #![feature(in_band_lifetimes)]
 #![feature(iter_zip)]
-#![feature(nll)]
+#![feature(map_try_insert)]
 #![feature(min_specialization)]
+#![feature(nll)]
 #![feature(try_blocks)]
 #![recursion_limit = "256"]
 

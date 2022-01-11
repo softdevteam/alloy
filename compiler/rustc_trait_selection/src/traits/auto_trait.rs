@@ -187,9 +187,11 @@ impl<'tcx> AutoTraitFinder<'tcx> {
             // an additional sanity check.
             let mut fulfill = FulfillmentContext::new();
             fulfill.register_bound(&infcx, full_env, ty, trait_did, ObligationCause::dummy());
-            fulfill.select_all_or_error(&infcx).unwrap_or_else(|e| {
-                panic!("Unable to fulfill trait {:?} for '{:?}': {:?}", trait_did, ty, e)
-            });
+            let errors = fulfill.select_all_or_error(&infcx);
+
+            if !errors.is_empty() {
+                panic!("Unable to fulfill trait {:?} for '{:?}': {:?}", trait_did, ty, errors);
+            }
 
             let body_id_map: FxHashMap<_, _> = infcx
                 .inner
@@ -285,6 +287,9 @@ impl AutoTraitFinder<'tcx> {
                 def_id: trait_did,
                 substs: infcx.tcx.mk_substs_trait(ty, &[]),
             },
+            constness: ty::BoundConstness::NotConst,
+            // Auto traits are positive
+            polarity: ty::ImplPolarity::Positive,
         }));
 
         let computed_preds = param_env.caller_bounds().iter();
@@ -344,10 +349,7 @@ impl AutoTraitFinder<'tcx> {
                 Err(SelectionError::Unimplemented) => {
                     if self.is_param_no_infer(pred.skip_binder().trait_ref.substs) {
                         already_visited.remove(&pred);
-                        self.add_user_pred(
-                            &mut user_computed_preds,
-                            pred.without_const().to_predicate(self.tcx),
-                        );
+                        self.add_user_pred(&mut user_computed_preds, pred.to_predicate(self.tcx));
                         predicates.push_back(pred);
                     } else {
                         debug!(
@@ -414,10 +416,8 @@ impl AutoTraitFinder<'tcx> {
     ) {
         let mut should_add_new = true;
         user_computed_preds.retain(|&old_pred| {
-            if let (
-                ty::PredicateKind::Trait(new_trait, _),
-                ty::PredicateKind::Trait(old_trait, _),
-            ) = (new_pred.kind().skip_binder(), old_pred.kind().skip_binder())
+            if let (ty::PredicateKind::Trait(new_trait), ty::PredicateKind::Trait(old_trait)) =
+                (new_pred.kind().skip_binder(), old_pred.kind().skip_binder())
             {
                 if new_trait.def_id() == old_trait.def_id() {
                     let new_substs = new_trait.trait_ref.substs;
@@ -638,7 +638,7 @@ impl AutoTraitFinder<'tcx> {
 
             let bound_predicate = predicate.kind();
             match bound_predicate.skip_binder() {
-                ty::PredicateKind::Trait(p, _) => {
+                ty::PredicateKind::Trait(p) => {
                     // Add this to `predicates` so that we end up calling `select`
                     // with it. If this predicate ends up being unimplemented,
                     // then `evaluate_predicates` will handle adding it the `ParamEnv`

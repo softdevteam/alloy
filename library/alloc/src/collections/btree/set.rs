@@ -1,6 +1,7 @@
 // This is pretty much entirely stolen from TreeSet, since BTreeMap has an identical interface
 // to TreeMap
 
+use crate::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering::{Equal, Greater, Less};
 use core::cmp::{max, min};
@@ -22,9 +23,9 @@ use super::Recover;
 /// It is a logic error for an item to be modified in such a way that the item's ordering relative
 /// to any other item, as determined by the [`Ord`] trait, changes while it is in the set. This is
 /// normally only possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
-/// The behavior resulting from such a logic error is not specified, but will not result in
-/// undefined behavior. This could include panics, incorrect results, aborts, memory leaks, and
-/// non-termination.
+/// The behavior resulting from such a logic error is not specified (it could include panics,
+/// incorrect results, aborts, memory leaks, or non-termination) but will not be undefined
+/// behavior.
 ///
 /// [`Ord`]: core::cmp::Ord
 /// [`Cell`]: core::cell::Cell
@@ -59,6 +60,14 @@ use super::Recover;
 ///     println!("{}", book);
 /// }
 /// ```
+///
+/// A `BTreeSet` with a known list of items can be initialized from an array:
+///
+/// ```
+/// use std::collections::BTreeSet;
+///
+/// let set = BTreeSet::from([1, 2, 3]);
+/// ```
 #[derive(Hash, PartialEq, Eq, Ord, PartialOrd)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "BTreeSet")]
@@ -83,6 +92,7 @@ impl<T: Clone> Clone for BTreeSet<T> {
 /// See its documentation for more.
 ///
 /// [`iter`]: BTreeSet::iter
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, T: 'a> {
     iter: Keys<'a, T, ()>,
@@ -98,9 +108,10 @@ impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
 /// An owning iterator over the items of a `BTreeSet`.
 ///
 /// This `struct` is created by the [`into_iter`] method on [`BTreeSet`]
-/// (provided by the `IntoIterator` trait). See its documentation for more.
+/// (provided by the [`IntoIterator`] trait). See its documentation for more.
 ///
 /// [`into_iter`]: BTreeSet#method.into_iter
+/// [`IntoIterator`]: core::iter::IntoIterator
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
 pub struct IntoIter<T> {
@@ -113,6 +124,7 @@ pub struct IntoIter<T> {
 /// See its documentation for more.
 ///
 /// [`range`]: BTreeSet::range
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[derive(Debug)]
 #[stable(feature = "btree_range", since = "1.17.0")]
 pub struct Range<'a, T: 'a> {
@@ -125,6 +137,8 @@ pub struct Range<'a, T: 'a> {
 /// See its documentation for more.
 ///
 /// [`difference`]: BTreeSet::difference
+#[must_use = "this returns the difference as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Difference<'a, T: 'a> {
     inner: DifferenceInner<'a, T>,
@@ -157,6 +171,8 @@ impl<T: fmt::Debug> fmt::Debug for Difference<'_, T> {
 /// [`BTreeSet`]. See its documentation for more.
 ///
 /// [`symmetric_difference`]: BTreeSet::symmetric_difference
+#[must_use = "this returns the difference as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct SymmetricDifference<'a, T: 'a>(MergeIterInner<Iter<'a, T>>);
 
@@ -173,6 +189,8 @@ impl<T: fmt::Debug> fmt::Debug for SymmetricDifference<'_, T> {
 /// See its documentation for more.
 ///
 /// [`intersection`]: BTreeSet::intersection
+#[must_use = "this returns the intersection as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Intersection<'a, T: 'a> {
     inner: IntersectionInner<'a, T>,
@@ -205,6 +223,8 @@ impl<T: fmt::Debug> fmt::Debug for Intersection<'_, T> {
 /// See its documentation for more.
 ///
 /// [`union`]: BTreeSet::union
+#[must_use = "this returns the union as an iterator, \
+              without modifying either input set"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Union<'a, T: 'a>(MergeIterInner<Iter<'a, T>>);
 
@@ -238,10 +258,8 @@ impl<T> BTreeSet<T> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
-    pub const fn new() -> BTreeSet<T>
-    where
-        T: Ord,
-    {
+    #[must_use]
+    pub const fn new() -> BTreeSet<T> {
         BTreeSet { map: BTreeMap::new() }
     }
 
@@ -527,6 +545,7 @@ impl<T> BTreeSet<T> {
     /// b.insert(1);
     /// assert_eq!(a.is_disjoint(&b), false);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_disjoint(&self, other: &BTreeSet<T>) -> bool
     where
@@ -552,6 +571,7 @@ impl<T> BTreeSet<T> {
     /// set.insert(4);
     /// assert_eq!(set.is_subset(&sup), false);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_subset(&self, other: &BTreeSet<T>) -> bool
     where
@@ -631,6 +651,7 @@ impl<T> BTreeSet<T> {
     /// set.insert(2);
     /// assert_eq!(set.is_superset(&sub), true);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_superset(&self, other: &BTreeSet<T>) -> bool
     where
@@ -657,6 +678,7 @@ impl<T> BTreeSet<T> {
     /// set.insert(2);
     /// assert_eq!(set.first(), Some(&1));
     /// ```
+    #[must_use]
     #[unstable(feature = "map_first_last", issue = "62924")]
     pub fn first(&self) -> Option<&T>
     where
@@ -683,6 +705,7 @@ impl<T> BTreeSet<T> {
     /// set.insert(2);
     /// assert_eq!(set.last(), Some(&2));
     /// ```
+    #[must_use]
     #[unstable(feature = "map_first_last", issue = "62924")]
     pub fn last(&self) -> Option<&T>
     where
@@ -846,6 +869,7 @@ impl<T> BTreeSet<T> {
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` such that `f(&e)` returns `false`.
+    /// The elements are visited in ascending order.
     ///
     /// # Examples
     ///
@@ -1022,6 +1046,7 @@ impl<T> BTreeSet<T> {
     /// v.insert(1);
     /// assert_eq!(v.len(), 1);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
     pub const fn len(&self) -> usize {
@@ -1040,6 +1065,7 @@ impl<T> BTreeSet<T> {
     /// v.insert(1);
     /// assert!(!v.is_empty());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
     pub const fn is_empty(&self) -> bool {
@@ -1050,9 +1076,39 @@ impl<T> BTreeSet<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> FromIterator<T> for BTreeSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> BTreeSet<T> {
-        let mut set = BTreeSet::new();
-        set.extend(iter);
-        set
+        let mut inputs: Vec<_> = iter.into_iter().collect();
+
+        if inputs.is_empty() {
+            return BTreeSet::new();
+        }
+
+        // use stable sort to preserve the insertion order.
+        inputs.sort();
+        let iter = inputs.into_iter().map(|k| (k, ()));
+        let map = BTreeMap::bulk_build_from_sorted_iter(iter);
+        BTreeSet { map }
+    }
+}
+
+#[stable(feature = "std_collections_from_array", since = "1.56.0")]
+impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let set1 = BTreeSet::from([1, 2, 3, 4]);
+    /// let set2: BTreeSet<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(set1, set2);
+    /// ```
+    fn from(mut arr: [T; N]) -> Self {
+        if N == 0 {
+            return BTreeSet::new();
+        }
+
+        // use stable sort to preserve the insertion order.
+        arr.sort();
+        let iter = IntoIterator::into_iter(arr).map(|k| (k, ()));
+        let map = BTreeMap::bulk_build_from_sorted_iter(iter);
+        BTreeSet { map }
     }
 }
 
@@ -1169,7 +1225,7 @@ impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Ord> Default for BTreeSet<T> {
+impl<T> Default for BTreeSet<T> {
     /// Creates an empty `BTreeSet`.
     fn default() -> BTreeSet<T> {
         BTreeSet::new()

@@ -1,6 +1,10 @@
-#![feature(no_core, lang_items)]
+#![feature(no_core, lang_items, rustdoc_internals)]
 #![no_core]
 #![crate_type="rlib"]
+
+#[doc(primitive = "char")]
+/// Some char docs
+mod char {}
 
 #[lang = "char"]
 impl char {

@@ -1,12 +1,14 @@
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
 #![feature(destructuring_assignment)]
-#![feature(format_args_capture)]
+#![feature(if_let_guard)]
 #![feature(iter_zip)]
+#![feature(let_else)]
 #![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_span)]
 #![feature(try_blocks)]
+#![recursion_limit = "256"]
 
 #[macro_use]
 extern crate rustc_macros;

@@ -1,5 +1,4 @@
-#![unstable(feature = "raw_vec_internals", reason = "implementation detail", issue = "none")]
-#![doc(hidden)]
+#![unstable(feature = "raw_vec_internals", reason = "unstable const warnings", issue = "none")]
 
 use core::alloc::LayoutError;
 use core::cmp;
@@ -14,7 +13,8 @@ use core::slice;
 use crate::alloc::handle_alloc_error;
 use crate::alloc::{Allocator, Global, Layout};
 use crate::boxed::Box;
-use crate::collections::TryReserveError::{self, *};
+use crate::collections::TryReserveError;
+use crate::collections::TryReserveErrorKind::*;
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +50,7 @@ enum AllocInit {
 /// `usize::MAX`. This means that you need to be careful when round-tripping this type with a
 /// `Box<[T]>`, since `capacity()` won't yield the length.
 #[allow(missing_debug_implementations)]
-pub struct RawVec<T, A: Allocator = Global> {
+pub(crate) struct RawVec<T, A: Allocator = Global> {
     ptr: Unique<T>,
     cap: usize,
     alloc: A,
@@ -69,6 +69,7 @@ impl<T> RawVec<T, Global> {
     /// `RawVec` with capacity `0`. If `T` is zero-sized, then it makes a
     /// `RawVec` with capacity `usize::MAX`. Useful for implementing
     /// delayed allocation.
+    #[must_use]
     pub const fn new() -> Self {
         Self::new_in(Global)
     }
@@ -86,30 +87,19 @@ impl<T> RawVec<T, Global> {
     /// # Aborts
     ///
     /// Aborts on OOM.
-    #[cfg(not(no_global_oom_handling))]
+    #[cfg(not(any(no_global_oom_handling, test)))]
+    #[must_use]
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_in(capacity, Global)
     }
 
     /// Like `with_capacity`, but guarantees the buffer is zeroed.
-    #[cfg(not(no_global_oom_handling))]
+    #[cfg(not(any(no_global_oom_handling, test)))]
+    #[must_use]
     #[inline]
     pub fn with_capacity_zeroed(capacity: usize) -> Self {
         Self::with_capacity_zeroed_in(capacity, Global)
-    }
-
-    /// Reconstitutes a `RawVec` from a pointer and capacity.
-    ///
-    /// # Safety
-    ///
-    /// The `ptr` must be allocated (on the system heap), and with the given `capacity`.
-    /// The `capacity` cannot exceed `isize::MAX` for sized types. (only a concern on 32-bit
-    /// systems). ZST vectors may have a capacity up to `usize::MAX`.
-    /// If the `ptr` and `capacity` come from a `RawVec`, then this is guaranteed.
-    #[inline]
-    pub unsafe fn from_raw_parts(ptr: *mut T, capacity: usize) -> Self {
-        unsafe { Self::from_raw_parts_in(ptr, capacity, Global) }
     }
 }
 
@@ -149,14 +139,6 @@ impl<T, A: Allocator> RawVec<T, A> {
     #[inline]
     pub fn with_capacity_zeroed_in(capacity: usize, alloc: A) -> Self {
         Self::allocate_in(capacity, AllocInit::Zeroed, alloc)
-    }
-
-    /// Converts a `Box<[T]>` into a `RawVec<T>`.
-    pub fn from_box(slice: Box<[T], A>) -> Self {
-        unsafe {
-            let (slice, alloc) = Box::into_raw_with_allocator(slice);
-            RawVec::from_raw_parts_in(slice.as_mut_ptr(), slice.len(), alloc)
-        }
     }
 
     /// Converts the entire buffer into `Box<[MaybeUninit<T>]>` with the specified `len`.
@@ -287,43 +269,12 @@ impl<T, A: Allocator> RawVec<T, A> {
     /// # Aborts
     ///
     /// Aborts on OOM.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #![feature(raw_vec_internals)]
-    /// # extern crate alloc;
-    /// # use std::ptr;
-    /// # use alloc::raw_vec::RawVec;
-    /// struct MyVec<T> {
-    ///     buf: RawVec<T>,
-    ///     len: usize,
-    /// }
-    ///
-    /// impl<T: Clone> MyVec<T> {
-    ///     pub fn push_all(&mut self, elems: &[T]) {
-    ///         self.buf.reserve(self.len, elems.len());
-    ///         // reserve would have aborted or panicked if the len exceeded
-    ///         // `isize::MAX` so this is safe to do unchecked now.
-    ///         for x in elems {
-    ///             unsafe {
-    ///                 ptr::write(self.buf.ptr().add(self.len), x.clone());
-    ///             }
-    ///             self.len += 1;
-    ///         }
-    ///     }
-    /// }
-    /// # fn main() {
-    /// #   let mut vector = MyVec { buf: RawVec::new(), len: 0 };
-    /// #   vector.push_all(&[1, 3, 5, 7, 9]);
-    /// # }
-    /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline]
     pub fn reserve(&mut self, len: usize, additional: usize) {
         // Callers expect this function to be very cheap when there is already sufficient capacity.
         // Therefore, we move all the resizing and error-handling logic from grow_amortized and
-        // handle_reserve behind a call, while making sure that the this function is likely to be
+        // handle_reserve behind a call, while making sure that this function is likely to be
         // inlined as just a comparison and a call if the comparison fails.
         #[cold]
         fn do_reserve_and_handle<T, A: Allocator>(
@@ -337,6 +288,14 @@ impl<T, A: Allocator> RawVec<T, A> {
         if self.needs_to_grow(len, additional) {
             do_reserve_and_handle(self, len, additional);
         }
+    }
+
+    /// A specialized version of `reserve()` used only by the hot and
+    /// oft-instantiated `Vec::push()`, which does its own capacity check.
+    #[cfg(not(no_global_oom_handling))]
+    #[inline(never)]
+    pub fn reserve_for_push(&mut self, len: usize) {
+        handle_reserve(self.grow_amortized(len, 1));
     }
 
     /// The same as `reserve`, but returns on errors instead of panicking or aborting.
@@ -426,7 +385,7 @@ impl<T, A: Allocator> RawVec<T, A> {
         if mem::size_of::<T>() == 0 {
             // Since we return a capacity of `usize::MAX` when `elem_size` is
             // 0, getting to here necessarily means the `RawVec` is overfull.
-            return Err(CapacityOverflow);
+            return Err(CapacityOverflow.into());
         }
 
         // Nothing we can really do about these checks, sadly.
@@ -452,7 +411,7 @@ impl<T, A: Allocator> RawVec<T, A> {
         if mem::size_of::<T>() == 0 {
             // Since we return a capacity of `usize::MAX` when the type size is
             // 0, getting to here necessarily means the `RawVec` is overfull.
-            return Err(CapacityOverflow);
+            return Err(CapacityOverflow.into());
         }
 
         let cap = len.checked_add(additional).ok_or(CapacityOverflow)?;
@@ -472,10 +431,9 @@ impl<T, A: Allocator> RawVec<T, A> {
 
         let ptr = unsafe {
             let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
-            self.alloc.shrink(ptr, layout, new_layout).map_err(|_| TryReserveError::AllocError {
-                layout: new_layout,
-                non_exhaustive: (),
-            })?
+            self.alloc
+                .shrink(ptr, layout, new_layout)
+                .map_err(|_| AllocError { layout: new_layout, non_exhaustive: () })?
         };
         self.set_ptr(ptr);
         Ok(())
@@ -511,7 +469,7 @@ where
         alloc.allocate(new_layout)
     };
 
-    memory.map_err(|_| AllocError { layout: new_layout, non_exhaustive: () })
+    memory.map_err(|_| AllocError { layout: new_layout, non_exhaustive: () }.into())
 }
 
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for RawVec<T, A> {
@@ -527,7 +485,7 @@ unsafe impl<#[may_dangle] T, A: Allocator> Drop for RawVec<T, A> {
 #[cfg(not(no_global_oom_handling))]
 #[inline]
 fn handle_reserve(result: Result<(), TryReserveError>) {
-    match result {
+    match result.map_err(|e| e.kind()) {
         Err(CapacityOverflow) => capacity_overflow(),
         Err(AllocError { layout, .. }) => handle_alloc_error(layout),
         Ok(()) => { /* yay */ }
@@ -546,7 +504,7 @@ fn handle_reserve(result: Result<(), TryReserveError>) {
 #[inline]
 fn alloc_guard(alloc_size: usize) -> Result<(), TryReserveError> {
     if usize::BITS < 64 && alloc_size > isize::MAX as usize {
-        Err(CapacityOverflow)
+        Err(CapacityOverflow.into())
     } else {
         Ok(())
     }

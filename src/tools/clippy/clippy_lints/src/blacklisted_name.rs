@@ -5,18 +5,19 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of blacklisted names for variables, such
+    /// ### What it does
+    /// Checks for usage of blacklisted names for variables, such
     /// as `foo`.
     ///
-    /// **Why is this bad?** These names are usually placeholder names and should be
+    /// ### Why is this bad?
+    /// These names are usually placeholder names and should be
     /// avoided.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let foo = 3.14;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub BLACKLISTED_NAME,
     style,
     "usage of a blacklisted/placeholder name"

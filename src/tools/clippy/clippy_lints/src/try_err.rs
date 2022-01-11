@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::source::{snippet, snippet_with_macro_callsite};
+use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::is_type_diagnostic_item;
-use clippy_utils::{differing_macro_contexts, get_parent_expr, in_macro, is_lang_ctor, match_def_path, paths};
+use clippy_utils::{get_parent_expr, is_lang_ctor, match_def_path, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::LangItem::ResultErr;
@@ -10,19 +10,19 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::sym;
+use rustc_span::{hygiene, sym};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usages of `Err(x)?`.
+    /// ### What it does
+    /// Checks for usages of `Err(x)?`.
     ///
-    /// **Why is this bad?** The `?` operator is designed to allow calls that
+    /// ### Why is this bad?
+    /// The `?` operator is designed to allow calls that
     /// can fail to be easily chained. For example, `foo()?.bar()` or
     /// `foo(bar()?)`. Because `Err(x)?` can't be used that way (it will
     /// always return), it is more clear to write `return Err(x)`.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// fn foo(fail: bool) -> Result<i32, String> {
     ///     if fail {
@@ -41,6 +41,7 @@ declare_clippy_lint! {
     ///     Ok(0)
     /// }
     /// ```
+    #[clippy::version = "1.38.0"]
     pub TRY_ERR,
     style,
     "return errors explicitly rather than hiding them behind a `?`"
@@ -93,15 +94,9 @@ impl<'tcx> LateLintPass<'tcx> for TryErr {
                 };
 
                 let expr_err_ty = cx.typeck_results().expr_ty(err_arg);
-                let differing_contexts = differing_macro_contexts(expr.span, err_arg.span);
-
-                let origin_snippet = if in_macro(expr.span) && in_macro(err_arg.span) && differing_contexts {
-                    snippet(cx, err_arg.span.ctxt().outer_expn_data().call_site, "_")
-                } else if err_arg.span.from_expansion() && !in_macro(expr.span) {
-                    snippet_with_macro_callsite(cx, err_arg.span, "_")
-                } else {
-                    snippet(cx, err_arg.span, "_")
-                };
+                let span = hygiene::walk_chain(err_arg.span, try_arg.span.ctxt());
+                let mut applicability = Applicability::MachineApplicable;
+                let origin_snippet = snippet_with_applicability(cx, span, "_", &mut applicability);
                 let ret_prefix = if get_parent_expr(cx, expr).map_or(false, |e| matches!(e.kind, ExprKind::Ret(_))) {
                     "" // already returns
                 } else {
@@ -120,7 +115,7 @@ impl<'tcx> LateLintPass<'tcx> for TryErr {
                     "returning an `Err(_)` with the `?` operator",
                     "try this",
                     suggestion,
-                    Applicability::MachineApplicable
+                    applicability,
                 );
             }
         }
@@ -143,7 +138,7 @@ fn find_return_type<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx ExprKind<'_>) -> O
 fn result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<Ty<'tcx>> {
     if_chain! {
         if let ty::Adt(_, subst) = ty.kind();
-        if is_type_diagnostic_item(cx, ty, sym::result_type);
+        if is_type_diagnostic_item(cx, ty, sym::Result);
         then {
             Some(subst.type_at(1))
         } else {
@@ -160,7 +155,7 @@ fn poll_result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> Option<
         let ready_ty = subst.type_at(0);
 
         if let ty::Adt(ready_def, ready_subst) = ready_ty.kind();
-        if cx.tcx.is_diagnostic_item(sym::result_type, ready_def.did);
+        if cx.tcx.is_diagnostic_item(sym::Result, ready_def.did);
         then {
             Some(ready_subst.type_at(1))
         } else {
@@ -177,11 +172,11 @@ fn poll_option_result_error_type<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> 
         let ready_ty = subst.type_at(0);
 
         if let ty::Adt(ready_def, ready_subst) = ready_ty.kind();
-        if cx.tcx.is_diagnostic_item(sym::option_type, ready_def.did);
+        if cx.tcx.is_diagnostic_item(sym::Option, ready_def.did);
         let some_ty = ready_subst.type_at(0);
 
         if let ty::Adt(some_def, some_subst) = some_ty.kind();
-        if cx.tcx.is_diagnostic_item(sym::result_type, some_def.did);
+        if cx.tcx.is_diagnostic_item(sym::Result, some_def.did);
         then {
             Some(some_subst.type_at(1))
         } else {

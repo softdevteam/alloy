@@ -62,7 +62,7 @@ impl NestedMetaItem {
         self.meta_item().and_then(|meta_item| meta_item.ident())
     }
     pub fn name_or_empty(&self) -> Symbol {
-        self.ident().unwrap_or_else(Ident::invalid).name
+        self.ident().unwrap_or_else(Ident::empty).name
     }
 
     /// Gets the string value if `self` is a `MetaItem` and the `MetaItem` is a
@@ -131,7 +131,7 @@ impl Attribute {
         }
     }
     pub fn name_or_empty(&self) -> Symbol {
-        self.ident().unwrap_or_else(Ident::invalid).name
+        self.ident().unwrap_or_else(Ident::empty).name
     }
 
     pub fn value_str(&self) -> Option<Symbol> {
@@ -166,7 +166,7 @@ impl MetaItem {
         if self.path.segments.len() == 1 { Some(self.path.segments[0].ident) } else { None }
     }
     pub fn name_or_empty(&self) -> Symbol {
-        self.ident().unwrap_or_else(Ident::invalid).name
+        self.ident().unwrap_or_else(Ident::empty).name
     }
 
     // Example:
@@ -367,7 +367,7 @@ impl MetaItem {
             let is_first = i == 0;
             if !is_first {
                 let mod_sep_span =
-                    Span::new(last_pos, segment.ident.span.lo(), segment.ident.span.ctxt());
+                    Span::new(last_pos, segment.ident.span.lo(), segment.ident.span.ctxt(), None);
                 idents.push(TokenTree::token(token::ModSep, mod_sep_span).into());
             }
             idents.push(TokenTree::Token(Token::from_ast_ident(segment.ident)).into());
@@ -564,11 +564,11 @@ impl NestedMetaItem {
         I: Iterator<Item = TokenTree>,
     {
         match tokens.peek() {
-            Some(TokenTree::Token(token)) => {
-                if let Ok(lit) = Lit::from_token(token) {
-                    tokens.next();
-                    return Some(NestedMetaItem::Literal(lit));
-                }
+            Some(TokenTree::Token(token))
+                if let Ok(lit) = Lit::from_token(token) =>
+            {
+                tokens.next();
+                return Some(NestedMetaItem::Literal(lit));
             }
             Some(TokenTree::Delimited(_, token::NoDelim, inner_tokens)) => {
                 let inner_tokens = inner_tokens.clone();

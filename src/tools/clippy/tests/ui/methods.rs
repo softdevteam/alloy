@@ -1,5 +1,4 @@
 // aux-build:option_helpers.rs
-// edition:2018
 
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(
@@ -32,7 +31,7 @@ use std::ops::Mul;
 use std::rc::{self, Rc};
 use std::sync::{self, Arc};
 
-use option_helpers::IteratorFalsePositives;
+use option_helpers::{IteratorFalsePositives, IteratorMethodFalsePositives};
 
 struct Lt<'a> {
     foo: &'a u32,
@@ -131,6 +130,9 @@ fn filter_next() {
     // Check that we don't lint if the caller is not an `Iterator`.
     let foo = IteratorFalsePositives { foo: 0 };
     let _ = foo.filter().next();
+
+    let foo = IteratorMethodFalsePositives {};
+    let _ = foo.filter(42).next();
 }
 
 fn main() {

@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::sugg::Sugg;
-use clippy_utils::ty::is_type_diagnostic_item;
+use clippy_utils::ty::{implements_trait, is_type_diagnostic_item};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{Expr, ExprKind, Mutability, Param, Pat, PatKind, Path, PathSegment, QPath};
@@ -12,21 +12,20 @@ use rustc_span::symbol::Ident;
 use std::iter;
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// Detects uses of `Vec::sort_by` passing in a closure
     /// which compares the two arguments, either directly or indirectly.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// It is more clear to use `Vec::sort_by_key` (or `Vec::sort` if
     /// possible) than to use `Vec::sort_by` and a more complicated
     /// closure.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// If the suggested `Vec::sort_by_key` uses Reverse and it isn't already
     /// imported by a use statement, then it will need to be added manually.
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// # struct A;
     /// # impl A { fn foo(&self) {} }
@@ -40,6 +39,7 @@ declare_clippy_lint! {
     /// # let mut vec: Vec<A> = Vec::new();
     /// vec.sort_by_key(|a| a.foo());
     /// ```
+    #[clippy::version = "1.46.0"]
     pub UNNECESSARY_SORT_BY,
     complexity,
     "Use of `Vec::sort_by` when `Vec::sort_by_key` or `Vec::sort` would be clearer"
@@ -169,7 +169,7 @@ fn detect_lint(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<LintTrigger> {
         if let name = name_ident.ident.name.to_ident_string();
         if name == "sort_by" || name == "sort_unstable_by";
         if let [vec, Expr { kind: ExprKind::Closure(_, _, closure_body_id, _, _), .. }] = args;
-        if is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(vec), sym::vec_type);
+        if is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(vec), sym::Vec);
         if let closure_body = cx.tcx.hir().body(*closure_body_id);
         if let &[
             Param { pat: Pat { kind: PatKind::Binding(_, _, left_ident, _), .. }, ..},
@@ -194,10 +194,15 @@ fn detect_lint(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<LintTrigger> {
             let vec_name = Sugg::hir(cx, &args[0], "..").to_string();
             let unstable = name == "sort_unstable_by";
 
+            if_chain! {
             if let ExprKind::Path(QPath::Resolved(_, Path {
                 segments: [PathSegment { ident: left_name, .. }], ..
-            })) = &left_expr.kind {
-                if left_name == left_ident {
+            })) = &left_expr.kind;
+            if left_name == left_ident;
+            if cx.tcx.get_diagnostic_item(sym::Ord).map_or(false, |id| {
+                implements_trait(cx, cx.typeck_results().expr_ty(left_expr), id, &[])
+            });
+                then {
                     return Some(LintTrigger::Sort(SortDetection { vec_name, unstable }));
                 }
             }
@@ -219,7 +224,10 @@ fn detect_lint(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<LintTrigger> {
 
 fn expr_borrows(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     let ty = cx.typeck_results().expr_ty(expr);
-    matches!(ty.kind(), ty::Ref(..)) || ty.walk().any(|arg| matches!(arg.unpack(), GenericArgKind::Lifetime(_)))
+    matches!(ty.kind(), ty::Ref(..))
+        || ty
+            .walk(cx.tcx)
+            .any(|arg| matches!(arg.unpack(), GenericArgKind::Lifetime(_)))
 }
 
 impl LateLintPass<'_> for UnnecessarySortBy {

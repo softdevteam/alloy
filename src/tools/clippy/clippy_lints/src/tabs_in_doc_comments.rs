@@ -7,16 +7,16 @@ use rustc_span::source_map::{BytePos, Span};
 use std::convert::TryFrom;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks doc comments for usage of tab characters.
+    /// ### What it does
+    /// Checks doc comments for usage of tab characters.
     ///
-    /// **Why is this bad?** The rust style-guide promotes spaces instead of tabs for indentation.
+    /// ### Why is this bad?
+    /// The rust style-guide promotes spaces instead of tabs for indentation.
     /// To keep a consistent view on the source, also doc comments should not have tabs.
     /// Also, explaining ascii-diagrams containing tabs can get displayed incorrectly when the
     /// display settings of the author and reader differ.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// ///
     /// /// Struct to hold two strings:
@@ -51,6 +51,7 @@ declare_clippy_lint! {
     ///    second_string: String,
     ///}
     /// ```
+    #[clippy::version = "1.41.0"]
     pub TABS_IN_DOC_COMMENTS,
     style,
     "using tabs in doc comments is not recommended"
@@ -69,6 +70,7 @@ impl TabsInDocComments {
                     attr.span.lo() + BytePos(3 + lo),
                     attr.span.lo() + BytePos(3 + hi),
                     attr.span.ctxt(),
+                    attr.span.parent(),
                 );
                 span_lint_and_sugg(
                     cx,

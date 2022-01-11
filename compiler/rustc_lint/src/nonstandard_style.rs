@@ -118,7 +118,7 @@ fn to_camel_case(s: &str) -> String {
         })
         .fold((String::new(), None), |(acc, prev): (String, Option<String>), next| {
             // separate two components with an underscore if their boundary cannot
-            // be distinguished using a uppercase/lowercase case distinction
+            // be distinguished using an uppercase/lowercase case distinction
             let join = if let Some(prev) = prev {
                 let l = prev.chars().last().unwrap();
                 let f = next.chars().next().unwrap();
@@ -391,9 +391,14 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
         _: Span,
         id: hir::HirId,
     ) {
+        let attrs = cx.tcx.hir().attrs(id);
         match &fk {
-            FnKind::Method(ident, ..) => match method_context(cx, id) {
+            FnKind::Method(ident, sig, ..) => match method_context(cx, id) {
                 MethodLateContext::PlainImpl => {
+                    if sig.header.abi != Abi::Rust && cx.sess().contains_name(attrs, sym::no_mangle)
+                    {
+                        return;
+                    }
                     self.check_snake_case(cx, "method", ident);
                 }
                 MethodLateContext::TraitAutoImpl => {
@@ -402,7 +407,6 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
                 _ => (),
             },
             FnKind::ItemFn(ident, _, header, _) => {
-                let attrs = cx.tcx.hir().attrs(id);
                 // Skip foreign-ABI #[no_mangle] functions (Issue #31924)
                 if header.abi != Abi::Rust && cx.sess().contains_name(attrs, sym::no_mangle) {
                     return;
@@ -433,12 +437,13 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
             if let hir::Node::Pat(parent_pat) = cx.tcx.hir().get(cx.tcx.hir().get_parent_node(hid))
             {
                 if let PatKind::Struct(_, field_pats, _) = &parent_pat.kind {
-                    for field in field_pats.iter() {
-                        if field.ident != ident {
-                            // Only check if a new name has been introduced, to avoid warning
-                            // on both the struct definition and this pattern.
-                            self.check_snake_case(cx, "variable", &ident);
-                        }
+                    if field_pats
+                        .iter()
+                        .any(|field| !field.is_shorthand && field.pat.hir_id == p.hir_id)
+                    {
+                        // Only check if a new name has been introduced, to avoid warning
+                        // on both the struct definition and this pattern.
+                        self.check_snake_case(cx, "variable", &ident);
                     }
                     return;
                 }

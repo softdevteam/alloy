@@ -2,15 +2,16 @@ use crate::os::unix::prelude::*;
 
 use crate::ffi::{CStr, CString, OsStr, OsString};
 use crate::fmt;
-use crate::io::{self, Error, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, Error, IoSlice, IoSliceMut, ReadBuf, SeekFrom};
 use crate::mem;
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd};
 use crate::path::{Path, PathBuf};
 use crate::ptr;
 use crate::sync::Arc;
 use crate::sys::fd::FileDesc;
 use crate::sys::time::SystemTime;
 use crate::sys::{cvt, cvt_r};
-use crate::sys_common::{AsInner, FromInner};
+use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
 
 #[cfg(any(
     all(target_os = "linux", target_env = "gnu"),
@@ -45,8 +46,8 @@ use libc::fstatat64;
 use libc::readdir_r as readdir64_r;
 #[cfg(target_os = "android")]
 use libc::{
-    dirent as dirent64, fstat as fstat64, fstatat as fstatat64, lseek64, lstat as lstat64,
-    open as open64, stat as stat64,
+    dirent as dirent64, fstat as fstat64, fstatat as fstatat64, ftruncate64, lseek64,
+    lstat as lstat64, off64_t, open as open64, stat as stat64,
 };
 #[cfg(not(any(
     target_os = "linux",
@@ -312,7 +313,7 @@ impl FileAttr {
 
 #[cfg(not(target_os = "netbsd"))]
 impl FileAttr {
-    #[cfg(not(target_os = "vxworks"))]
+    #[cfg(all(not(target_os = "vxworks"), not(target_os = "espidf")))]
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_mtime as libc::time_t,
@@ -320,7 +321,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(target_os = "vxworks")]
+    #[cfg(any(target_os = "vxworks", target_os = "espidf"))]
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_mtime as libc::time_t,
@@ -328,7 +329,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(not(target_os = "vxworks"))]
+    #[cfg(all(not(target_os = "vxworks"), not(target_os = "espidf")))]
     pub fn accessed(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_atime as libc::time_t,
@@ -336,7 +337,7 @@ impl FileAttr {
         }))
     }
 
-    #[cfg(target_os = "vxworks")]
+    #[cfg(any(target_os = "vxworks", target_os = "espidf"))]
     pub fn accessed(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_atime as libc::time_t,
@@ -505,7 +506,8 @@ impl Iterator for ReadDir {
             let mut ret = DirEntry { entry: mem::zeroed(), dir: Arc::clone(&self.inner) };
             let mut entry_ptr = ptr::null_mut();
             loop {
-                if readdir64_r(self.inner.dirp.0, &mut ret.entry, &mut entry_ptr) != 0 {
+                let err = readdir64_r(self.inner.dirp.0, &mut ret.entry, &mut entry_ptr);
+                if err != 0 {
                     if entry_ptr.is_null() {
                         // We encountered an error (which will be returned in this iteration), but
                         // we also reached the end of the directory stream. The `end_of_stream`
@@ -513,7 +515,7 @@ impl Iterator for ReadDir {
                         // (instead of looping forever)
                         self.end_of_stream = true;
                     }
-                    return Some(Err(Error::last_os_error()));
+                    return Some(Err(Error::from_raw_os_error(err)));
                 }
                 if entry_ptr.is_null() {
                     return None;
@@ -609,7 +611,8 @@ impl DirEntry {
         target_os = "l4re",
         target_os = "fuchsia",
         target_os = "redox",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     pub fn ino(&self) -> u64 {
         self.entry.d_ino as u64
@@ -648,7 +651,8 @@ impl DirEntry {
         target_os = "emscripten",
         target_os = "l4re",
         target_os = "haiku",
-        target_os = "vxworks"
+        target_os = "vxworks",
+        target_os = "espidf"
     ))]
     fn name_bytes(&self) -> &[u8] {
         unsafe { CStr::from_ptr(self.entry.d_name.as_ptr()).to_bytes() }
@@ -762,11 +766,11 @@ impl File {
         // However, since this is a variadic function, C integer promotion rules mean that on
         // the ABI level, this still gets passed as `c_int` (aka `u32` on Unix platforms).
         let fd = cvt_r(|| unsafe { open64(path.as_ptr(), flags, opts.mode as c_int) })?;
-        Ok(File(FileDesc::new(fd)))
+        Ok(File(unsafe { FileDesc::from_raw_fd(fd) }))
     }
 
     pub fn file_attr(&self) -> io::Result<FileAttr> {
-        let fd = self.0.raw();
+        let fd = self.as_raw_fd();
 
         cfg_has_statx! {
             if let Some(ret) = unsafe { try_statx(
@@ -785,7 +789,7 @@ impl File {
     }
 
     pub fn fsync(&self) -> io::Result<()> {
-        cvt_r(|| unsafe { os_fsync(self.0.raw()) })?;
+        cvt_r(|| unsafe { os_fsync(self.as_raw_fd()) })?;
         return Ok(());
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -799,7 +803,7 @@ impl File {
     }
 
     pub fn datasync(&self) -> io::Result<()> {
-        cvt_r(|| unsafe { os_datasync(self.0.raw()) })?;
+        cvt_r(|| unsafe { os_datasync(self.as_raw_fd()) })?;
         return Ok(());
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -831,16 +835,10 @@ impl File {
     }
 
     pub fn truncate(&self, size: u64) -> io::Result<()> {
-        #[cfg(target_os = "android")]
-        return crate::sys::android::ftruncate64(self.0.raw(), size);
-
-        #[cfg(not(target_os = "android"))]
-        {
-            use crate::convert::TryInto;
-            let size: off64_t =
-                size.try_into().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            cvt_r(|| unsafe { ftruncate64(self.0.raw(), size) }).map(drop)
-        }
+        use crate::convert::TryInto;
+        let size: off64_t =
+            size.try_into().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        cvt_r(|| unsafe { ftruncate64(self.as_raw_fd(), size) }).map(drop)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -858,6 +856,10 @@ impl File {
 
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         self.0.read_at(buf, offset)
+    }
+
+    pub fn read_buf(&self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        self.0.read_buf(buf)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
@@ -889,7 +891,7 @@ impl File {
             SeekFrom::End(off) => (libc::SEEK_END, off),
             SeekFrom::Current(off) => (libc::SEEK_CUR, off),
         };
-        let n = cvt(unsafe { lseek64(self.0.raw(), pos, whence) })?;
+        let n = cvt(unsafe { lseek64(self.as_raw_fd(), pos, whence) })?;
         Ok(n as u64)
     }
 
@@ -897,16 +899,8 @@ impl File {
         self.0.duplicate().map(File)
     }
 
-    pub fn fd(&self) -> &FileDesc {
-        &self.0
-    }
-
-    pub fn into_fd(self) -> FileDesc {
-        self.0
-    }
-
     pub fn set_permissions(&self, perm: FilePermissions) -> io::Result<()> {
-        cvt_r(|| unsafe { libc::fchmod(self.0.raw(), perm.mode) })?;
+        cvt_r(|| unsafe { libc::fchmod(self.as_raw_fd(), perm.mode) })?;
         Ok(())
     }
 }
@@ -931,15 +925,57 @@ fn cstr(path: &Path) -> io::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)
 }
 
-impl FromInner<c_int> for File {
-    fn from_inner(fd: c_int) -> File {
-        File(FileDesc::new(fd))
+impl AsInner<FileDesc> for File {
+    fn as_inner(&self) -> &FileDesc {
+        &self.0
+    }
+}
+
+impl AsInnerMut<FileDesc> for File {
+    fn as_inner_mut(&mut self) -> &mut FileDesc {
+        &mut self.0
+    }
+}
+
+impl IntoInner<FileDesc> for File {
+    fn into_inner(self) -> FileDesc {
+        self.0
+    }
+}
+
+impl FromInner<FileDesc> for File {
+    fn from_inner(file_desc: FileDesc) -> Self {
+        Self(file_desc)
+    }
+}
+
+impl AsFd for File {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsRawFd for File {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for File {
+    fn into_raw_fd(self) -> RawFd {
+        self.0.into_raw_fd()
+    }
+}
+
+impl FromRawFd for File {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        Self(FromRawFd::from_raw_fd(raw_fd))
     }
 }
 
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "netbsd"))]
         fn get_path(fd: c_int) -> Option<PathBuf> {
             let mut p = PathBuf::from("/proc/self/fd");
             p.push(&fd.to_string());
@@ -976,7 +1012,12 @@ impl fmt::Debug for File {
             Some(PathBuf::from(OsString::from_vec(buf)))
         }
 
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "vxworks")))]
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "vxworks",
+            target_os = "netbsd"
+        )))]
         fn get_path(_fd: c_int) -> Option<PathBuf> {
             // FIXME(#24570): implement this for other Unix platforms
             None
@@ -1002,7 +1043,7 @@ impl fmt::Debug for File {
             None
         }
 
-        let fd = self.0.raw();
+        let fd = self.as_raw_fd();
         let mut b = f.debug_struct("File");
         b.field("fd", &fd);
         if let Some(path) = get_path(fd) {
@@ -1101,8 +1142,8 @@ pub fn link(original: &Path, link: &Path) -> io::Result<()> {
     let original = cstr(original)?;
     let link = cstr(link)?;
     cfg_if::cfg_if! {
-        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android"))] {
-            // VxWorks and Redox lack `linkat`, so use `link` instead. POSIX leaves
+        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf"))] {
+            // VxWorks, Redox and ESP-IDF lack `linkat`, so use `link` instead. POSIX leaves
             // it implementation-defined whether `link` follows symlinks, so rely on the
             // `symlink_hard_link` test in library/std/src/fs/tests.rs to check the behavior.
             // Android has `linkat` on newer versions, but we happen to know `link`
@@ -1111,7 +1152,7 @@ pub fn link(original: &Path, link: &Path) -> io::Result<()> {
         } else if #[cfg(target_os = "macos")] {
             // On MacOS, older versions (<=10.9) lack support for linkat while newer
             // versions have it. We want to use linkat if it is available, so we use weak!
-            // to check. `linkat` is preferable to `link` ecause it gives us a flag to
+            // to check. `linkat` is preferable to `link` because it gives us a flag to
             // specify how symlinks should be handled. We pass 0 as the flags argument,
             // meaning it shouldn't follow symlinks.
             weak!(fn linkat(c_int, *const c_char, c_int, *const c_char, c_int) -> c_int);
@@ -1194,6 +1235,18 @@ fn open_from(from: &Path) -> io::Result<(crate::fs::File, crate::fs::Metadata)> 
     Ok((reader, metadata))
 }
 
+#[cfg(target_os = "espidf")]
+fn open_to_and_set_permissions(
+    to: &Path,
+    reader_metadata: crate::fs::Metadata,
+) -> io::Result<(crate::fs::File, crate::fs::Metadata)> {
+    use crate::fs::OpenOptions;
+    let writer = OpenOptions::new().open(to)?;
+    let writer_metadata = writer.metadata()?;
+    Ok((writer, writer_metadata))
+}
+
+#[cfg(not(target_os = "espidf"))]
 fn open_to_and_set_permissions(
     to: &Path,
     reader_metadata: crate::fs::Metadata,
@@ -1359,6 +1412,23 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
         )
     })?;
     Ok(bytes_copied as u64)
+}
+
+pub fn chown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    let path = cstr(path)?;
+    cvt(unsafe { libc::chown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
+    Ok(())
+}
+
+pub fn fchown(fd: c_int, uid: u32, gid: u32) -> io::Result<()> {
+    cvt(unsafe { libc::fchown(fd, uid as libc::uid_t, gid as libc::gid_t) })?;
+    Ok(())
+}
+
+pub fn lchown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    let path = cstr(path)?;
+    cvt(unsafe { libc::lchown(path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) })?;
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "fuchsia", target_os = "vxworks")))]

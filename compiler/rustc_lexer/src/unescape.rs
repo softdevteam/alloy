@@ -7,7 +7,7 @@ use std::str::Chars;
 #[cfg(test)]
 mod tests;
 
-/// Errors that can occur during string unescaping.
+/// Errors and warnings that can occur during string unescaping.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EscapeError {
     /// Expected 1 char, but 0 were found.
@@ -56,6 +56,23 @@ pub enum EscapeError {
     NonAsciiCharInByte,
     /// Non-ascii character in byte string literal.
     NonAsciiCharInByteString,
+
+    /// After a line ending with '\', the next line contains whitespace
+    /// characters that are not skipped.
+    UnskippedWhitespaceWarning,
+
+    /// After a line ending with '\', multiple lines are skipped.
+    MultipleSkippedLinesWarning,
+}
+
+impl EscapeError {
+    /// Returns true for actual errors, as opposed to warnings.
+    pub fn is_fatal(&self) -> bool {
+        !matches!(
+            self,
+            EscapeError::UnskippedWhitespaceWarning | EscapeError::MultipleSkippedLinesWarning
+        )
+    }
 }
 
 /// Takes a contents of a literal (without quotes) and produces a
@@ -283,7 +300,7 @@ where
                         // if unescaped '\' character is followed by '\n'.
                         // For details see [Rust language reference]
                         // (https://doc.rust-lang.org/reference/tokens.html#string-literals).
-                        skip_ascii_whitespace(&mut chars);
+                        skip_ascii_whitespace(&mut chars, start, callback);
                         continue;
                     }
                     _ => scan_escape(first_char, &mut chars, mode),
@@ -297,13 +314,30 @@ where
         callback(start..end, unescaped_char);
     }
 
-    fn skip_ascii_whitespace(chars: &mut Chars<'_>) {
-        let str = chars.as_str();
-        let first_non_space = str
+    fn skip_ascii_whitespace<F>(chars: &mut Chars<'_>, start: usize, callback: &mut F)
+    where
+        F: FnMut(Range<usize>, Result<char, EscapeError>),
+    {
+        let tail = chars.as_str();
+        let first_non_space = tail
             .bytes()
             .position(|b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r')
-            .unwrap_or(str.len());
-        *chars = str[first_non_space..].chars()
+            .unwrap_or(tail.len());
+        if tail[1..first_non_space].contains('\n') {
+            // The +1 accounts for the escaping slash.
+            let end = start + first_non_space + 1;
+            callback(start..end, Err(EscapeError::MultipleSkippedLinesWarning));
+        }
+        let tail = &tail[first_non_space..];
+        if let Some(c) = tail.chars().nth(0) {
+            // For error reporting, we would like the span to contain the character that was not
+            // skipped.  The +1 is necessary to account for the leading \ that started the escape.
+            let end = start + first_non_space + c.len_utf8() + 1;
+            if c.is_whitespace() {
+                callback(start..end, Err(EscapeError::UnskippedWhitespaceWarning));
+            }
+        }
+        *chars = tail.chars();
     }
 }
 

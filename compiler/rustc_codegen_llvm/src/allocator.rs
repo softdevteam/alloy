@@ -3,19 +3,22 @@ use libc::c_uint;
 use rustc_ast::expand::allocator::{AllocatorKind, AllocatorTy, ALLOCATOR_METHODS};
 use rustc_middle::bug;
 use rustc_middle::ty::TyCtxt;
+use rustc_session::config::DebugInfo;
 use rustc_span::symbol::sym;
 
+use crate::debuginfo;
 use crate::llvm::{self, False, True};
 use crate::ModuleLlvm;
 
 pub(crate) unsafe fn codegen(
     tcx: TyCtxt<'_>,
-    mods: &mut ModuleLlvm,
+    module_llvm: &mut ModuleLlvm,
+    module_name: &str,
     kind: AllocatorKind,
     has_alloc_error_handler: bool,
 ) {
-    let llcx = &*mods.llcx;
-    let llmod = mods.llmod();
+    let llcx = &*module_llvm.llcx;
+    let llmod = module_llvm.llmod();
     let usize = match tcx.sess.target.pointer_width {
         16 => llvm::LLVMInt16TypeInContext(llcx),
         32 => llvm::LLVMInt32TypeInContext(llcx),
@@ -78,8 +81,14 @@ pub(crate) unsafe fn codegen(
             .enumerate()
             .map(|(i, _)| llvm::LLVMGetParam(llfn, i as c_uint))
             .collect::<Vec<_>>();
-        let ret =
-            llvm::LLVMRustBuildCall(llbuilder, callee, args.as_ptr(), args.len() as c_uint, None);
+        let ret = llvm::LLVMRustBuildCall(
+            llbuilder,
+            ty,
+            callee,
+            args.as_ptr(),
+            args.len() as c_uint,
+            None,
+        );
         llvm::LLVMSetTailCall(ret, True);
         if output.is_some() {
             llvm::LLVMBuildRet(llbuilder, ret);
@@ -121,8 +130,15 @@ pub(crate) unsafe fn codegen(
         .enumerate()
         .map(|(i, _)| llvm::LLVMGetParam(llfn, i as c_uint))
         .collect::<Vec<_>>();
-    let ret = llvm::LLVMRustBuildCall(llbuilder, callee, args.as_ptr(), args.len() as c_uint, None);
+    let ret =
+        llvm::LLVMRustBuildCall(llbuilder, ty, callee, args.as_ptr(), args.len() as c_uint, None);
     llvm::LLVMSetTailCall(ret, True);
     llvm::LLVMBuildRetVoid(llbuilder);
     llvm::LLVMDisposeBuilder(llbuilder);
+
+    if tcx.sess.opts.debuginfo != DebugInfo::None {
+        let dbg_cx = debuginfo::CrateDebugContext::new(llmod);
+        debuginfo::metadata::compile_unit_metadata(tcx, module_name, &dbg_cx);
+        dbg_cx.finalize(tcx.sess);
+    }
 }

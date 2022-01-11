@@ -30,6 +30,10 @@ impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSource<'tcx, N> {
             super::ImplSource::Builtin(ref d) => write!(f, "{:?}", d),
 
             super::ImplSource::TraitAlias(ref d) => write!(f, "{:?}", d),
+
+            super::ImplSource::TraitUpcasting(ref d) => write!(f, "{:?}", d),
+
+            super::ImplSource::ConstDrop(ref d) => write!(f, "{:?}", d),
         }
     }
 }
@@ -67,6 +71,16 @@ impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceClosureData<'tcx, N> 
 impl<N: fmt::Debug> fmt::Debug for traits::ImplSourceBuiltinData<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ImplSourceBuiltinData(nested={:?})", self.nested)
+    }
+}
+
+impl<N: fmt::Debug> fmt::Debug for traits::ImplSourceTraitUpcastingData<'tcx, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ImplSourceTraitUpcastingData(upcast={:?}, vtable_vptr_slot={:?}, nested={:?})",
+            self.upcast_trait_ref, self.vtable_vptr_slot, self.nested
+        )
     }
 }
 
@@ -113,4 +127,5 @@ TrivialTypeFoldableAndLiftImpls! {
     super::IfExpressionCause,
     super::ImplSourceDiscriminantKindData,
     super::ImplSourcePointeeData,
+    super::ImplSourceConstDropData,
 }

@@ -3,59 +3,57 @@ use clippy_utils::diagnostics::{span_lint, span_lint_and_help};
 use clippy_utils::{match_def_path, paths};
 use if_chain::if_chain;
 use rustc_ast::ast::{LitKind, StrStyle};
-use rustc_data_structures::fx::FxHashSet;
-use rustc_hir::{BorrowKind, Expr, ExprKind, HirId};
+use rustc_hir::{BorrowKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::{BytePos, Span};
 use std::convert::TryFrom;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks [regex](https://crates.io/crates/regex) creation
+    /// ### What it does
+    /// Checks [regex](https://crates.io/crates/regex) creation
     /// (with `Regex::new`, `RegexBuilder::new`, or `RegexSet::new`) for correct
     /// regex syntax.
     ///
-    /// **Why is this bad?** This will lead to a runtime panic.
+    /// ### Why is this bad?
+    /// This will lead to a runtime panic.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// Regex::new("|")
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub INVALID_REGEX,
     correctness,
     "invalid regular expressions"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for trivial [regex](https://crates.io/crates/regex)
+    /// ### What it does
+    /// Checks for trivial [regex](https://crates.io/crates/regex)
     /// creation (with `Regex::new`, `RegexBuilder::new`, or `RegexSet::new`).
     ///
-    /// **Why is this bad?** Matching the regex can likely be replaced by `==` or
+    /// ### Why is this bad?
+    /// Matching the regex can likely be replaced by `==` or
     /// `str::starts_with`, `str::ends_with` or `std::contains` or other `str`
     /// methods.
     ///
-    /// **Known problems:** If the same regex is going to be applied to multiple
+    /// ### Known problems
+    /// If the same regex is going to be applied to multiple
     /// inputs, the precomputations done by `Regex` construction can give
     /// significantly better performance than any of the `str`-based methods.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// Regex::new("^foobar")
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub TRIVIAL_REGEX,
     nursery,
     "trivial regular expressions"
 }
 
-#[derive(Clone, Default)]
-pub struct Regex {
-    spans: FxHashSet<Span>,
-    last: Option<HirId>,
-}
-
-impl_lint_pass!(Regex => [INVALID_REGEX, TRIVIAL_REGEX]);
+declare_lint_pass!(Regex => [INVALID_REGEX, TRIVIAL_REGEX]);
 
 impl<'tcx> LateLintPass<'tcx> for Regex {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
@@ -88,7 +86,7 @@ fn str_span(base: Span, c: regex_syntax::ast::Span, offset: u16) -> Span {
     let end = base.lo() + BytePos(u32::try_from(c.end.offset).expect("offset too large") + offset);
     let start = base.lo() + BytePos(u32::try_from(c.start.offset).expect("offset too large") + offset);
     assert!(start <= end);
-    Span::new(start, end, base.ctxt())
+    Span::new(start, end, base.ctxt(), base.parent())
 }
 
 fn const_str<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) -> Option<String> {

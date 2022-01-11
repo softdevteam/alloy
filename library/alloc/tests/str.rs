@@ -1,3 +1,4 @@
+use std::assert_matches::assert_matches;
 use std::borrow::Cow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::str::{from_utf8, from_utf8_unchecked};
@@ -884,6 +885,33 @@ fn test_is_utf8() {
 }
 
 #[test]
+fn test_const_is_utf8() {
+    const _: () = {
+        // deny overlong encodings
+        assert!(from_utf8(&[0xc0, 0x80]).is_err());
+        assert!(from_utf8(&[0xc0, 0xae]).is_err());
+        assert!(from_utf8(&[0xe0, 0x80, 0x80]).is_err());
+        assert!(from_utf8(&[0xe0, 0x80, 0xaf]).is_err());
+        assert!(from_utf8(&[0xe0, 0x81, 0x81]).is_err());
+        assert!(from_utf8(&[0xf0, 0x82, 0x82, 0xac]).is_err());
+        assert!(from_utf8(&[0xf4, 0x90, 0x80, 0x80]).is_err());
+
+        // deny surrogates
+        assert!(from_utf8(&[0xED, 0xA0, 0x80]).is_err());
+        assert!(from_utf8(&[0xED, 0xBF, 0xBF]).is_err());
+
+        assert!(from_utf8(&[0xC2, 0x80]).is_ok());
+        assert!(from_utf8(&[0xDF, 0xBF]).is_ok());
+        assert!(from_utf8(&[0xE0, 0xA0, 0x80]).is_ok());
+        assert!(from_utf8(&[0xED, 0x9F, 0xBF]).is_ok());
+        assert!(from_utf8(&[0xEE, 0x80, 0x80]).is_ok());
+        assert!(from_utf8(&[0xEF, 0xBF, 0xBF]).is_ok());
+        assert!(from_utf8(&[0xF0, 0x90, 0x80, 0x80]).is_ok());
+        assert!(from_utf8(&[0xF4, 0x8F, 0xBF, 0xBF]).is_ok());
+    };
+}
+
+#[test]
 fn from_utf8_mostly_ascii() {
     // deny invalid bytes embedded in long stretches of ascii
     for i in 32..64 {
@@ -896,12 +924,42 @@ fn from_utf8_mostly_ascii() {
 }
 
 #[test]
+fn const_from_utf8_mostly_ascii() {
+    const _: () = {
+        // deny invalid bytes embedded in long stretches of ascii
+        let mut i = 32;
+        while i < 64 {
+            let mut data = [0; 128];
+            data[i] = 0xC0;
+            assert!(from_utf8(&data).is_err());
+            data[i] = 0xC2;
+            assert!(from_utf8(&data).is_err());
+
+            i = i + 1;
+        }
+    };
+}
+
+#[test]
 fn from_utf8_error() {
     macro_rules! test {
-        ($input: expr, $expected_valid_up_to: expr, $expected_error_len: expr) => {
+        ($input: expr, $expected_valid_up_to:pat, $expected_error_len:pat) => {
             let error = from_utf8($input).unwrap_err();
-            assert_eq!(error.valid_up_to(), $expected_valid_up_to);
-            assert_eq!(error.error_len(), $expected_error_len);
+            assert_matches!(error.valid_up_to(), $expected_valid_up_to);
+            assert_matches!(error.error_len(), $expected_error_len);
+
+            const _: () = {
+                match from_utf8($input) {
+                    Err(error) => {
+                        let valid_up_to = error.valid_up_to();
+                        let error_len = error.error_len();
+
+                        assert!(matches!(valid_up_to, $expected_valid_up_to));
+                        assert!(matches!(error_len, $expected_error_len));
+                    }
+                    Ok(_) => unreachable!(),
+                }
+            };
         };
     }
     test!(b"A\xC3\xA9 \xFF ", 4, Some(1));
@@ -1031,7 +1089,7 @@ fn test_split_at_mut() {
 #[should_panic]
 fn test_split_at_boundscheck() {
     let s = "ศไทย中华Việt Nam";
-    s.split_at(1);
+    let _ = s.split_at(1);
 }
 
 #[test]
@@ -1873,6 +1931,47 @@ mod pattern {
         "* \t",
         [Reject(0, 1), Reject(1, 2), Reject(2, 3),]
     );
+
+    // See #85462
+    #[test]
+    fn str_searcher_empty_needle_after_done() {
+        // Empty needle and haystack
+        {
+            let mut searcher = "".into_searcher("");
+
+            assert_eq!(searcher.next(), SearchStep::Match(0, 0));
+            assert_eq!(searcher.next(), SearchStep::Done);
+            assert_eq!(searcher.next(), SearchStep::Done);
+            assert_eq!(searcher.next(), SearchStep::Done);
+
+            let mut searcher = "".into_searcher("");
+
+            assert_eq!(searcher.next_back(), SearchStep::Match(0, 0));
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+        }
+        // Empty needle and non-empty haystack
+        {
+            let mut searcher = "".into_searcher("a");
+
+            assert_eq!(searcher.next(), SearchStep::Match(0, 0));
+            assert_eq!(searcher.next(), SearchStep::Reject(0, 1));
+            assert_eq!(searcher.next(), SearchStep::Match(1, 1));
+            assert_eq!(searcher.next(), SearchStep::Done);
+            assert_eq!(searcher.next(), SearchStep::Done);
+            assert_eq!(searcher.next(), SearchStep::Done);
+
+            let mut searcher = "".into_searcher("a");
+
+            assert_eq!(searcher.next_back(), SearchStep::Match(1, 1));
+            assert_eq!(searcher.next_back(), SearchStep::Reject(0, 1));
+            assert_eq!(searcher.next_back(), SearchStep::Match(0, 0));
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+            assert_eq!(searcher.next_back(), SearchStep::Done);
+        }
+    }
 }
 
 macro_rules! generate_iterator_test {

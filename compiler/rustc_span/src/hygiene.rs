@@ -264,7 +264,15 @@ impl ExpnId {
         HygieneData::with(|data| data.expn_data(self).clone())
     }
 
+    #[inline]
     pub fn is_descendant_of(self, ancestor: ExpnId) -> bool {
+        // a few "fast path" cases to avoid locking HygieneData
+        if ancestor == ExpnId::root() || ancestor == self {
+            return true;
+        }
+        if ancestor.krate != self.krate {
+            return false;
+        }
         HygieneData::with(|data| data.is_descendant_of(self, ancestor))
     }
 
@@ -376,13 +384,22 @@ impl HygieneData {
     }
 
     fn is_descendant_of(&self, mut expn_id: ExpnId, ancestor: ExpnId) -> bool {
-        while expn_id != ancestor {
+        // a couple "fast path" cases to avoid traversing parents in the loop below
+        if ancestor == ExpnId::root() {
+            return true;
+        }
+        if expn_id.krate != ancestor.krate {
+            return false;
+        }
+        loop {
+            if expn_id == ancestor {
+                return true;
+            }
             if expn_id == ExpnId::root() {
                 return false;
             }
             expn_id = self.expn_data(expn_id).parent;
         }
-        true
     }
 
     fn normalize_to_macros_2_0(&self, ctxt: SyntaxContext) -> SyntaxContext {
@@ -601,7 +618,10 @@ pub fn debug_hygiene_data(verbose: bool) -> String {
                 let expn_data = expn_data.as_ref().expect("no expansion data for an expansion ID");
                 debug_expn_data((&id.to_expn_id(), expn_data))
             });
-            data.foreign_expn_data.iter().for_each(debug_expn_data);
+            // Sort the hash map for more reproducible output.
+            let mut foreign_expn_data: Vec<_> = data.foreign_expn_data.iter().collect();
+            foreign_expn_data.sort_by_key(|(id, _)| (id.krate, id.local_id));
+            foreign_expn_data.into_iter().for_each(debug_expn_data);
             s.push_str("\n\nSyntaxContexts:");
             data.syntax_context_data.iter().enumerate().for_each(|(id, ctxt)| {
                 s.push_str(&format!(
@@ -706,7 +726,7 @@ impl SyntaxContext {
     ///         pub fn f() {} // `f`'s `SyntaxContext` has a single `ExpnId` from `m`.
     ///         pub fn $i() {} // `$i`'s `SyntaxContext` is empty.
     ///     }
-    ///     n(f);
+    ///     n!(f);
     ///     macro n($j:ident) {
     ///         use foo::*;
     ///         f(); // `f`'s `SyntaxContext` has a mark from `m` and a mark from `n`
@@ -1096,14 +1116,9 @@ pub enum DesugaringKind {
     OpaqueTy,
     Async,
     Await,
-    ForLoop(ForLoopLoc),
-}
-
-/// A location in the desugaring of a `for` loop
-#[derive(Clone, Copy, PartialEq, Debug, Encodable, Decodable, HashStable_Generic)]
-pub enum ForLoopLoc {
-    Head,
-    IntoIter,
+    ForLoop,
+    LetElse,
+    WhileLoop,
 }
 
 impl DesugaringKind {
@@ -1116,7 +1131,9 @@ impl DesugaringKind {
             DesugaringKind::QuestionMark => "operator `?`",
             DesugaringKind::TryBlock => "`try` block",
             DesugaringKind::OpaqueTy => "`impl Trait`",
-            DesugaringKind::ForLoop(_) => "`for` loop",
+            DesugaringKind::ForLoop => "`for` loop",
+            DesugaringKind::LetElse => "`let...else`",
+            DesugaringKind::WhileLoop => "`while` loop",
         }
     }
 }
@@ -1223,6 +1240,7 @@ pub fn register_expn_id(
     data: ExpnData,
     hash: ExpnHash,
 ) -> ExpnId {
+    debug_assert!(data.parent == ExpnId::root() || krate == data.parent.krate);
     let expn_id = ExpnId { krate, local_id };
     HygieneData::with(|hygiene_data| {
         let _old_data = hygiene_data.foreign_expn_data.insert(expn_id, data);
@@ -1355,9 +1373,7 @@ fn for_all_expns_in<E>(
     mut f: impl FnMut(ExpnId, &ExpnData, ExpnHash) -> Result<(), E>,
 ) -> Result<(), E> {
     let all_data: Vec<_> = HygieneData::with(|data| {
-        expns
-            .map(|expn| (expn, data.expn_data(expn).clone(), data.expn_hash(expn).clone()))
-            .collect()
+        expns.map(|expn| (expn, data.expn_data(expn).clone(), data.expn_hash(expn))).collect()
     });
     for (expn, data, hash) in all_data.into_iter() {
         f(expn, &data, hash)?;

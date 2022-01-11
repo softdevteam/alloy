@@ -62,6 +62,7 @@ macro_rules! with_api {
                 fn clone($self: &$S::TokenStream) -> $S::TokenStream;
                 fn new() -> $S::TokenStream;
                 fn is_empty($self: &$S::TokenStream) -> bool;
+                fn expand_expr($self: &$S::TokenStream) -> Result<$S::TokenStream, ()>;
                 fn from_str(src: &str) -> $S::TokenStream;
                 fn to_string($self: &$S::TokenStream) -> String;
                 fn from_token_tree(
@@ -109,6 +110,7 @@ macro_rules! with_api {
                 fn drop($self: $S::Literal);
                 fn clone($self: &$S::Literal) -> $S::Literal;
                 fn from_str(s: &str) -> Result<$S::Literal, ()>;
+                fn to_string($self: &$S::Literal) -> String;
                 fn debug_kind($self: &$S::Literal) -> String;
                 fn symbol($self: &$S::Literal) -> String;
                 fn suffix($self: &$S::Literal) -> Option<String>;
@@ -161,6 +163,8 @@ macro_rules! with_api {
                 fn source($self: $S::Span) -> $S::Span;
                 fn start($self: $S::Span) -> LineColumn;
                 fn end($self: $S::Span) -> LineColumn;
+                fn before($self: $S::Span) -> $S::Span;
+                fn after($self: $S::Span) -> $S::Span;
                 fn join($self: $S::Span, other: $S::Span) -> Option<$S::Span>;
                 fn resolved_at($self: $S::Span, at: $S::Span) -> $S::Span;
                 fn source_text($self: $S::Span) -> Option<String>;

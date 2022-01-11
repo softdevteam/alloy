@@ -3,7 +3,7 @@ use crate::deriving::generic::*;
 use crate::deriving::path_std;
 
 use rustc_ast::ptr::P;
-use rustc_ast::{self as ast, Expr, MetaItem};
+use rustc_ast::{self as ast, Expr, LocalKind, MetaItem};
 use rustc_expand::base::{Annotatable, ExtCtxt};
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::{Span, DUMMY_SP};
@@ -65,15 +65,29 @@ fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>
     // We want to make sure we have the ctxt set so that we can use unstable methods
     let span = cx.with_def_site_ctxt(span);
     let name = cx.expr_lit(span, ast::LitKind::Str(ident.name, ast::StrStyle::Cooked));
+    let fmt = substr.nonself_args[0].clone();
+
+    // Special fast path for unit variants. In the common case of an enum that is entirely unit
+    // variants (i.e. a C-like enum), this fast path allows LLVM to eliminate the entire switch in
+    // favor of a lookup table.
+    if let ast::VariantData::Unit(..) = vdata {
+        let fn_path_write_str = cx.std_path(&[sym::fmt, sym::Formatter, sym::write_str]);
+        let expr = cx.expr_call_global(span, fn_path_write_str, vec![fmt, name]);
+        let stmts = vec![cx.stmt_expr(expr)];
+        let block = cx.block(span, stmts);
+        return cx.expr_block(block);
+    }
+
     let builder = Ident::new(sym::debug_trait_builder, span);
     let builder_expr = cx.expr_ident(span, builder);
-
-    let fmt = substr.nonself_args[0].clone();
 
     let mut stmts = Vec::with_capacity(fields.len() + 2);
     let fn_path_finish;
     match vdata {
-        ast::VariantData::Tuple(..) | ast::VariantData::Unit(..) => {
+        ast::VariantData::Unit(..) => {
+            cx.span_bug(span, "unit variants should have been handled above");
+        }
+        ast::VariantData::Tuple(..) => {
             // tuple struct/"normal" variant
             let fn_path_debug_tuple = cx.std_path(&[sym::fmt, sym::Formatter, sym::debug_tuple]);
             let expr = cx.expr_call_global(span, fn_path_debug_tuple, vec![fmt, name]);
@@ -135,8 +149,8 @@ fn stmt_let_underscore(cx: &mut ExtCtxt<'_>, sp: Span, expr: P<ast::Expr>) -> as
     let local = P(ast::Local {
         pat: cx.pat_wild(sp),
         ty: None,
-        init: Some(expr),
         id: ast::DUMMY_NODE_ID,
+        kind: LocalKind::Init(expr),
         span: sp,
         attrs: ast::AttrVec::new(),
         tokens: None,

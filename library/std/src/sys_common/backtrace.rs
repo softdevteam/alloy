@@ -75,7 +75,7 @@ unsafe fn _print_fmt(fmt: &mut fmt::Formatter<'_>, print_fmt: PrintFmt) -> fmt::
             hit = true;
             if print_fmt == PrintFmt::Short {
                 if let Some(sym) = symbol.name().and_then(|s| s.as_str()) {
-                    if sym.contains("__rust_begin_short_backtrace") {
+                    if start && sym.contains("__rust_begin_short_backtrace") {
                         stop = true;
                         return;
                     }
@@ -93,10 +93,8 @@ unsafe fn _print_fmt(fmt: &mut fmt::Formatter<'_>, print_fmt: PrintFmt) -> fmt::
         if stop {
             return false;
         }
-        if !hit {
-            if start {
-                res = bt_fmt.frame().print_raw(frame.ip(), None, None, None);
-            }
+        if !hit && start {
+            res = bt_fmt.frame().print_raw(frame.ip(), None, None, None);
         }
 
         idx += 1;

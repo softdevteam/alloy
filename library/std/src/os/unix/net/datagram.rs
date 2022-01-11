@@ -21,7 +21,7 @@ use super::{sockaddr_un, SocketAddr};
 ))]
 use crate::io::{IoSlice, IoSliceMut};
 use crate::net::Shutdown;
-use crate::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::path::Path;
 use crate::sys::cvt;
 use crate::sys::net::Socket;
@@ -106,8 +106,43 @@ impl UnixDatagram {
             let socket = UnixDatagram::unbound()?;
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::bind(*socket.0.as_inner(), &addr as *const _ as *const _, len as _))?;
+            cvt(libc::bind(socket.as_raw_fd(), &addr as *const _ as *const _, len as _))?;
 
+            Ok(socket)
+        }
+    }
+
+    /// Creates a Unix datagram socket bound to an address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(unix_socket_abstract)]
+    /// use std::os::unix::net::{UnixDatagram};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let sock1 = UnixDatagram::bind("path/to/socket")?;
+    ///     let addr = sock1.local_addr()?;
+    ///
+    ///     let sock2 = match UnixDatagram::bind_addr(&addr) {
+    ///         Ok(sock) => sock,
+    ///         Err(err) => {
+    ///             println!("Couldn't bind: {:?}", err);
+    ///             return Err(err);
+    ///         }
+    ///     };
+    ///     Ok(())
+    /// }
+    /// ```
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
+    pub fn bind_addr(socket_addr: &SocketAddr) -> io::Result<UnixDatagram> {
+        unsafe {
+            let socket = UnixDatagram::unbound()?;
+            cvt(libc::bind(
+                socket.as_raw_fd(),
+                &socket_addr.addr as *const _ as *const _,
+                socket_addr.len as _,
+            ))?;
             Ok(socket)
         }
     }
@@ -156,7 +191,7 @@ impl UnixDatagram {
         Ok((UnixDatagram(i1), UnixDatagram(i2)))
     }
 
-    /// Connects the socket to the specified address.
+    /// Connects the socket to the specified path address.
     ///
     /// The [`send`] method may be used to send data to the specified address.
     /// [`recv`] and [`recv_from`] will only receive data from that address.
@@ -187,7 +222,42 @@ impl UnixDatagram {
         unsafe {
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::connect(*self.0.as_inner(), &addr as *const _ as *const _, len))?;
+            cvt(libc::connect(self.as_raw_fd(), &addr as *const _ as *const _, len))?;
+        }
+        Ok(())
+    }
+
+    /// Connects the socket to an address.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(unix_socket_abstract)]
+    /// use std::os::unix::net::{UnixDatagram};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let bound = UnixDatagram::bind("/path/to/socket")?;
+    ///     let addr = bound.local_addr()?;
+    ///
+    ///     let sock = UnixDatagram::unbound()?;
+    ///     match sock.connect_addr(&addr) {
+    ///         Ok(sock) => sock,
+    ///         Err(e) => {
+    ///             println!("Couldn't connect: {:?}", e);
+    ///             return Err(e)
+    ///         }
+    ///     };
+    ///     Ok(())
+    /// }
+    /// ```
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
+    pub fn connect_addr(&self, socket_addr: &SocketAddr) -> io::Result<()> {
+        unsafe {
+            cvt(libc::connect(
+                self.as_raw_fd(),
+                &socket_addr.addr as *const _ as *const _,
+                socket_addr.len,
+            ))?;
         }
         Ok(())
     }
@@ -229,7 +299,7 @@ impl UnixDatagram {
     /// ```
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        SocketAddr::new(|addr, len| unsafe { libc::getsockname(*self.0.as_inner(), addr, len) })
+        SocketAddr::new(|addr, len| unsafe { libc::getsockname(self.as_raw_fd(), addr, len) })
     }
 
     /// Returns the address of this socket's peer.
@@ -253,7 +323,7 @@ impl UnixDatagram {
     /// ```
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        SocketAddr::new(|addr, len| unsafe { libc::getpeername(*self.0.as_inner(), addr, len) })
+        SocketAddr::new(|addr, len| unsafe { libc::getpeername(self.as_raw_fd(), addr, len) })
     }
 
     fn recv_from_flags(
@@ -264,7 +334,7 @@ impl UnixDatagram {
         let mut count = 0;
         let addr = SocketAddr::new(|addr, len| unsafe {
             count = libc::recvfrom(
-                *self.0.as_inner(),
+                self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut _,
                 buf.len(),
                 flags,
@@ -462,12 +532,48 @@ impl UnixDatagram {
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
             let count = cvt(libc::sendto(
-                *self.0.as_inner(),
+                self.as_raw_fd(),
                 buf.as_ptr() as *const _,
                 buf.len(),
                 MSG_NOSIGNAL,
                 &addr as *const _ as *const _,
                 len,
+            ))?;
+            Ok(count as usize)
+        }
+    }
+
+    /// Sends data on the socket to the specified [SocketAddr].
+    ///
+    /// On success, returns the number of bytes written.
+    ///
+    /// [SocketAddr]: crate::os::unix::net::SocketAddr
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(unix_socket_abstract)]
+    /// use std::os::unix::net::{UnixDatagram};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let bound = UnixDatagram::bind("/path/to/socket")?;
+    ///     let addr = bound.local_addr()?;
+    ///
+    ///     let sock = UnixDatagram::unbound()?;
+    ///     sock.send_to_addr(b"bacon egg and cheese", &addr).expect("send_to_addr function failed");
+    ///     Ok(())
+    /// }
+    /// ```
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
+    pub fn send_to_addr(&self, buf: &[u8], socket_addr: &SocketAddr) -> io::Result<usize> {
+        unsafe {
+            let count = cvt(libc::sendto(
+                self.as_raw_fd(),
+                buf.as_ptr() as *const _,
+                buf.len(),
+                MSG_NOSIGNAL,
+                &socket_addr.addr as *const _ as *const _,
+                socket_addr.len,
             ))?;
             Ok(count as usize)
         }
@@ -881,7 +987,7 @@ impl UnixDatagram {
 impl AsRawFd for UnixDatagram {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        *self.0.as_inner()
+        self.0.as_inner().as_raw_fd()
     }
 }
 
@@ -889,7 +995,7 @@ impl AsRawFd for UnixDatagram {
 impl FromRawFd for UnixDatagram {
     #[inline]
     unsafe fn from_raw_fd(fd: RawFd) -> UnixDatagram {
-        UnixDatagram(Socket::from_inner(fd))
+        UnixDatagram(Socket::from_inner(FromInner::from_inner(OwnedFd::from_raw_fd(fd))))
     }
 }
 
@@ -897,6 +1003,30 @@ impl FromRawFd for UnixDatagram {
 impl IntoRawFd for UnixDatagram {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.0.into_inner()
+        self.0.into_inner().into_inner().into_raw_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for UnixDatagram {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_inner().as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<UnixDatagram> for OwnedFd {
+    #[inline]
+    fn from(unix_datagram: UnixDatagram) -> OwnedFd {
+        unsafe { OwnedFd::from_raw_fd(unix_datagram.into_raw_fd()) }
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<OwnedFd> for UnixDatagram {
+    #[inline]
+    fn from(owned: OwnedFd) -> Self {
+        unsafe { Self::from_raw_fd(owned.into_raw_fd()) }
     }
 }

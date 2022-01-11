@@ -15,16 +15,15 @@ use rustc_span::symbol::Ident;
 use rustc_span::{sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `map(|x| x.clone())` or
+    /// ### What it does
+    /// Checks for usage of `map(|x| x.clone())` or
     /// dereferencing closures for `Copy` types, on `Iterator` or `Option`,
     /// and suggests `cloned()` or `copied()` instead
     ///
-    /// **Why is this bad?** Readability, this can be written more concisely
+    /// ### Why is this bad?
+    /// Readability, this can be written more concisely
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// let x = vec![42, 43];
     /// let y = x.iter();
@@ -38,6 +37,7 @@ declare_clippy_lint! {
     /// let y = x.iter();
     /// let z = y.cloned();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MAP_CLONE,
     style,
     "using `iterator.map(|x| x.clone())`, or dereferencing closures for `Copy` types"
@@ -56,7 +56,7 @@ impl<'tcx> LateLintPass<'tcx> for MapClone {
             if args.len() == 2;
             if method.ident.name == sym::map;
             let ty = cx.typeck_results().expr_ty(&args[0]);
-            if is_type_diagnostic_item(cx, ty, sym::option_type) || is_trait_method(cx, e, sym::Iterator);
+            if is_type_diagnostic_item(cx, ty, sym::Option) || is_trait_method(cx, e, sym::Iterator);
             if let hir::ExprKind::Closure(_, _, body_id, _, _) = args[1].kind;
             then {
                 let closure_body = cx.tcx.hir().body(body_id);

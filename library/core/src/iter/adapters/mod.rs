@@ -45,11 +45,14 @@ pub use self::copied::Copied;
 #[unstable(feature = "iter_intersperse", reason = "recently added", issue = "79524")]
 pub use self::intersperse::{Intersperse, IntersperseWith};
 
-#[unstable(feature = "iter_map_while", reason = "recently added", issue = "68537")]
+#[stable(feature = "iter_map_while", since = "1.57.0")]
 pub use self::map_while::MapWhile;
 
 #[unstable(feature = "trusted_random_access", issue = "none")]
 pub use self::zip::TrustedRandomAccess;
+
+#[unstable(feature = "trusted_random_access", issue = "none")]
+pub use self::zip::TrustedRandomAccessNoCoerce;
 
 #[unstable(feature = "iter_zip", issue = "83574")]
 pub use self::zip::zip;
@@ -89,9 +92,10 @@ pub use self::zip::zip;
 /// [`as_inner`]: SourceIter::as_inner
 #[unstable(issue = "none", feature = "inplace_iteration")]
 #[doc(hidden)]
+#[rustc_specialization_trait]
 pub unsafe trait SourceIter {
     /// A source stage in an iterator pipeline.
-    type Source: Iterator;
+    type Source;
 
     /// Retrieve the source of an iterator pipeline.
     ///
@@ -197,14 +201,14 @@ where
 }
 
 #[unstable(issue = "none", feature = "inplace_iteration")]
-unsafe impl<S: Iterator, I, E> SourceIter for ResultShunt<'_, I, E>
+unsafe impl<I, E> SourceIter for ResultShunt<'_, I, E>
 where
-    I: SourceIter<Source = S>,
+    I: SourceIter,
 {
-    type Source = S;
+    type Source = I::Source;
 
     #[inline]
-    unsafe fn as_inner(&mut self) -> &mut S {
+    unsafe fn as_inner(&mut self) -> &mut Self::Source {
         // SAFETY: unsafe function forwarding to unsafe function with the same requirements
         unsafe { SourceIter::as_inner(&mut self.iter) }
     }

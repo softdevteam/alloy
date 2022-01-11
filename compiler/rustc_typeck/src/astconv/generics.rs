@@ -39,8 +39,13 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         );
 
         if let GenericParamDefKind::Const { .. } = param.kind {
-            if let GenericArg::Type(hir::Ty { kind: hir::TyKind::Infer, .. }) = arg {
+            if matches!(arg, GenericArg::Type(hir::Ty { kind: hir::TyKind::Infer, .. })) {
                 err.help("const arguments cannot yet be inferred with `_`");
+                if sess.is_nightly_build() {
+                    err.help(
+                        "add `#![feature(generic_arg_infer)]` to the crate attributes to enable",
+                    );
+                }
             }
         }
 
@@ -127,7 +132,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         }
 
         let kind_ord = param.kind.to_ord(tcx);
-        let arg_ord = arg.to_ord(&tcx.features());
+        let arg_ord = arg.to_ord(tcx.features());
 
         // This note is only true when generic parameters are strictly ordered by their kind.
         if possible_ordering_error && kind_ord.cmp(&arg_ord) != core::cmp::Ordering::Equal {
@@ -249,14 +254,22 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     (Some(&arg), Some(&param)) => {
                         match (arg, &param.kind, arg_count.explicit_late_bound) {
                             (GenericArg::Lifetime(_), GenericParamDefKind::Lifetime, _)
-                            | (GenericArg::Type(_), GenericParamDefKind::Type { .. }, _)
-                            | (GenericArg::Const(_), GenericParamDefKind::Const { .. }, _) => {
+                            | (
+                                GenericArg::Type(_) | GenericArg::Infer(_),
+                                GenericParamDefKind::Type { .. },
+                                _,
+                            )
+                            | (
+                                GenericArg::Const(_) | GenericArg::Infer(_),
+                                GenericParamDefKind::Const { .. },
+                                _,
+                            ) => {
                                 substs.push(ctx.provided_kind(param, arg));
                                 args.next();
                                 params.next();
                             }
                             (
-                                GenericArg::Type(_) | GenericArg::Const(_),
+                                GenericArg::Infer(_) | GenericArg::Type(_) | GenericArg::Const(_),
                                 GenericParamDefKind::Lifetime,
                                 _,
                             ) => {
@@ -325,12 +338,13 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                                                     .features()
                                                     .unordered_const_ty_params(),
                                             },
+                                            GenericArg::Infer(_) => ParamKindOrd::Infer,
                                         }),
                                         Some(&format!(
                                             "reorder the arguments: {}: `<{}>`",
                                             param_types_present
                                                 .into_iter()
-                                                .map(|ord| format!("{}s", ord.to_string()))
+                                                .map(|ord| format!("{}s", ord))
                                                 .collect::<Vec<String>>()
                                                 .join(", then "),
                                             ordered_params
@@ -409,7 +423,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         is_method_call: IsMethodCall,
     ) -> GenericArgCountResult {
         let empty_args = hir::GenericArgs::none();
-        let suppress_mismatch = Self::check_impl_trait(tcx, seg, &generics);
+        let suppress_mismatch = Self::check_impl_trait(tcx, seg, generics);
 
         let gen_args = seg.args.unwrap_or(&empty_args);
         let gen_pos = if is_method_call == IsMethodCall::Yes {
@@ -427,6 +441,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
     /// Checks that the correct number of generic arguments have been provided.
     /// This is used both for datatypes and function calls.
+    #[instrument(skip(tcx, gen_pos), level = "debug")]
     pub(crate) fn check_generic_arg_count(
         tcx: TyCtxt<'_>,
         span: Span,
@@ -438,16 +453,27 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         has_self: bool,
         infer_args: bool,
     ) -> GenericArgCountResult {
-        debug!(
-            "check_generic_arg_count(span: {:?}, def_id: {:?}, seg: {:?}, gen_params: {:?}, gen_args: {:?})",
-            span, def_id, seg, gen_params, gen_args
-        );
-
         let default_counts = gen_params.own_defaults();
         let param_counts = gen_params.own_counts();
-        let named_type_param_count = param_counts.types - has_self as usize;
-        let arg_counts = gen_args.own_counts();
-        let infer_lifetimes = gen_pos != GenericArgPosition::Type && arg_counts.lifetimes == 0;
+
+        // Subtracting from param count to ensure type params synthesized from `impl Trait`
+        // cannot be explictly specified even with `explicit_generic_args_with_impl_trait`
+        // feature enabled.
+        let synth_type_param_count = if tcx.features().explicit_generic_args_with_impl_trait {
+            gen_params
+                .params
+                .iter()
+                .filter(|param| {
+                    matches!(param.kind, ty::GenericParamDefKind::Type { synthetic: true, .. })
+                })
+                .count()
+        } else {
+            0
+        };
+        let named_type_param_count =
+            param_counts.types - has_self as usize - synth_type_param_count;
+        let infer_lifetimes =
+            gen_pos != GenericArgPosition::Type && !gen_args.has_lifetime_params();
 
         if gen_pos != GenericArgPosition::Type && !gen_args.bindings.is_empty() {
             Self::prohibit_assoc_ty_binding(tcx, gen_args.bindings[0].span);
@@ -505,7 +531,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
         let min_expected_lifetime_args = if infer_lifetimes { 0 } else { param_counts.lifetimes };
         let max_expected_lifetime_args = param_counts.lifetimes;
-        let num_provided_lifetime_args = arg_counts.lifetimes;
+        let num_provided_lifetime_args = gen_args.num_lifetime_params();
 
         let lifetimes_correct = check_lifetime_args(
             min_expected_lifetime_args,
@@ -517,9 +543,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         let mut check_types_and_consts =
             |expected_min, expected_max, provided, params_offset, args_offset| {
                 debug!(
-                    "check_types_and_consts(expected_min: {:?}, expected_max: {:?}, \
-                        provided: {:?}, params_offset: {:?}, args_offset: {:?}",
-                    expected_min, expected_max, provided, params_offset, args_offset
+                    ?expected_min,
+                    ?expected_max,
+                    ?provided,
+                    ?params_offset,
+                    ?args_offset,
+                    "check_types_and_consts"
                 );
                 if (expected_min..=expected_max).contains(&provided) {
                     return true;
@@ -550,7 +579,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     }
                 };
 
-                debug!("gen_args_info: {:?}", gen_args_info);
+                debug!(?gen_args_info);
 
                 WrongNumberOfGenericArgs::new(
                     tcx,
@@ -562,7 +591,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     def_id,
                 )
                 .diagnostic()
-                .emit();
+                .emit_unless(gen_args.has_err());
 
                 false
             };
@@ -575,15 +604,15 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     - default_counts.types
                     - default_counts.consts
             };
-            debug!("expected_min: {:?}", expected_min);
-            debug!("arg_counts.lifetimes: {:?}", arg_counts.lifetimes);
+            debug!(?expected_min);
+            debug!(arg_counts.lifetimes=?gen_args.num_lifetime_params());
 
             check_types_and_consts(
                 expected_min,
                 param_counts.consts + named_type_param_count,
-                arg_counts.consts + arg_counts.types,
+                gen_args.num_generic_params(),
                 param_counts.lifetimes + has_self as usize,
-                arg_counts.lifetimes,
+                gen_args.num_lifetime_params(),
             )
         };
 
@@ -603,26 +632,21 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         seg: &hir::PathSegment<'_>,
         generics: &ty::Generics,
     ) -> bool {
-        let explicit = !seg.infer_args;
-        let impl_trait = generics.params.iter().any(|param| {
-            matches!(
-                param.kind,
-                ty::GenericParamDefKind::Type {
-                    synthetic: Some(
-                        hir::SyntheticTyParamKind::ImplTrait | hir::SyntheticTyParamKind::FromAttr,
-                    ),
-                    ..
-                }
-            )
-        });
+        if seg.infer_args || tcx.features().explicit_generic_args_with_impl_trait {
+            return false;
+        }
 
-        if explicit && impl_trait {
+        let impl_trait = generics.has_impl_trait();
+
+        if impl_trait {
             let spans = seg
                 .args()
                 .args
                 .iter()
                 .filter_map(|arg| match arg {
-                    GenericArg::Type(_) | GenericArg::Const(_) => Some(arg.span()),
+                    GenericArg::Infer(_) | GenericArg::Type(_) | GenericArg::Const(_) => {
+                        Some(arg.span())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -637,6 +661,17 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
             for span in spans {
                 err.span_label(span, "explicit generic argument not allowed");
+            }
+
+            err.note(
+                "see issue #83701 <https://github.com/rust-lang/rust/issues/83701> \
+                 for more information",
+            );
+            if tcx.sess.is_nightly_build() {
+                err.help(
+                    "add `#![feature(explicit_generic_args_with_impl_trait)]` \
+                     to the crate attributes to enable",
+                );
             }
 
             err.emit();
@@ -659,8 +694,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         position: GenericArgPosition,
     ) -> ExplicitLateBound {
         let param_counts = def.own_counts();
-        let arg_counts = args.own_counts();
-        let infer_lifetimes = position != GenericArgPosition::Type && arg_counts.lifetimes == 0;
+        let infer_lifetimes = position != GenericArgPosition::Type && !args.has_lifetime_params();
 
         if infer_lifetimes {
             return ExplicitLateBound::No;
@@ -673,7 +707,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             let span = args.args[0].span();
 
             if position == GenericArgPosition::Value
-                && arg_counts.lifetimes != param_counts.lifetimes
+                && args.num_lifetime_params() != param_counts.lifetimes
             {
                 let mut err = tcx.sess.struct_span_err(span, msg);
                 err.span_note(span_late, note);

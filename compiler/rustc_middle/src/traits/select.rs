@@ -12,12 +12,14 @@ use rustc_hir::def_id::DefId;
 use rustc_query_system::cache::Cache;
 
 pub type SelectionCache<'tcx> = Cache<
-    ty::ParamEnvAnd<'tcx, ty::TraitRef<'tcx>>,
+    (ty::ConstnessAnd<ty::ParamEnvAnd<'tcx, ty::TraitRef<'tcx>>>, ty::ImplPolarity),
     SelectionResult<'tcx, SelectionCandidate<'tcx>>,
 >;
 
-pub type EvaluationCache<'tcx> =
-    Cache<ty::ParamEnvAnd<'tcx, ty::PolyTraitRef<'tcx>>, EvaluationResult>;
+pub type EvaluationCache<'tcx> = Cache<
+    (ty::ParamEnvAnd<'tcx, ty::ConstnessAnd<ty::PolyTraitRef<'tcx>>>, ty::ImplPolarity),
+    EvaluationResult,
+>;
 
 /// The selection process begins by considering all impls, where
 /// clauses, and so forth that might resolve an obligation. Sometimes
@@ -101,7 +103,7 @@ pub enum SelectionCandidate<'tcx> {
         /// `false` if there are no *further* obligations.
         has_nested: bool,
     },
-    ParamCandidate(ty::ConstnessAnd<ty::PolyTraitRef<'tcx>>),
+    ParamCandidate((ty::ConstnessAnd<ty::PolyTraitRef<'tcx>>, ty::ImplPolarity)),
     ImplCandidate(DefId),
     AutoImplCandidate(DefId),
 
@@ -111,7 +113,7 @@ pub enum SelectionCandidate<'tcx> {
     ProjectionCandidate(usize),
 
     /// Implementation of a `Fn`-family trait by one of the anonymous types
-    /// generated for a `||` expression.
+    /// generated for an `||` expression.
     ClosureCandidate,
 
     /// Implementation of a `Generator` trait by one of the anonymous types
@@ -120,7 +122,9 @@ pub enum SelectionCandidate<'tcx> {
 
     /// Implementation of a `Fn`-family trait by one of the anonymous
     /// types generated for a fn pointer type (e.g., `fn(int) -> int`)
-    FnPointerCandidate,
+    FnPointerCandidate {
+        is_const: bool,
+    },
 
     /// Builtin implementation of `DiscriminantKind`.
     DiscriminantKindCandidate,
@@ -135,9 +139,17 @@ pub enum SelectionCandidate<'tcx> {
     /// `rustc_infer::traits::util::supertraits`.
     ObjectCandidate(usize),
 
+    /// Perform trait upcasting coercion of `dyn Trait` to a supertrait of `Trait`.
+    /// The index is the position in the iterator returned by
+    /// `rustc_infer::traits::util::supertraits`.
+    TraitUpcastingUnsizeCandidate(usize),
+
     BuiltinObjectCandidate,
 
     BuiltinUnsizeCandidate,
+
+    /// Implementation of `const Drop`.
+    ConstDropCandidate,
 }
 
 /// The result of trait evaluation. The order is important
@@ -251,12 +263,18 @@ impl EvaluationResult {
     }
 }
 
-/// Indicates that trait evaluation caused overflow.
+/// Indicates that trait evaluation caused overflow and in which pass.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, HashStable)]
-pub struct OverflowError;
+pub enum OverflowError {
+    Canonical,
+    ErrorReporting,
+}
 
 impl<'tcx> From<OverflowError> for SelectionError<'tcx> {
-    fn from(OverflowError: OverflowError) -> SelectionError<'tcx> {
-        SelectionError::Overflow
+    fn from(overflow_error: OverflowError) -> SelectionError<'tcx> {
+        match overflow_error {
+            OverflowError::Canonical => SelectionError::Overflow,
+            OverflowError::ErrorReporting => SelectionError::ErrorReporting,
+        }
     }
 }

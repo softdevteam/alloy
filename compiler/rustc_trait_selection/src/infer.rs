@@ -1,11 +1,8 @@
 use crate::traits::query::evaluate_obligation::InferCtxtExt as _;
-use crate::traits::query::outlives_bounds::InferCtxtExt as _;
 use crate::traits::{self, TraitEngine, TraitEngineExt};
 
-use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
-use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::traits::ObligationCause;
 use rustc_middle::arena::ArenaAllocatable;
 use rustc_middle::infer::canonical::{Canonical, CanonicalizedQueryResponse, QueryResponse};
@@ -44,6 +41,10 @@ pub trait InferCtxtExt<'tcx> {
     /// - the self type
     /// - the *other* type parameters of the trait, excluding the self-type
     /// - the parameter environment
+    ///
+    /// Invokes `evaluate_obligation`, so in the event that evaluating
+    /// `Ty: Trait` causes overflow, EvaluatedToRecur (or EvaluatedToUnknown)
+    /// will be returned.
     fn type_implements_trait(
         &self,
         trait_def_id: DefId,
@@ -115,9 +116,9 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
             cause: traits::ObligationCause::dummy(),
             param_env,
             recursion_depth: 0,
-            predicate: trait_ref.without_const().to_predicate(self.tcx),
+            predicate: ty::Binder::dummy(trait_ref).without_const().to_predicate(self.tcx),
         };
-        self.evaluate_obligation_no_overflow(&obligation)
+        self.evaluate_obligation(&obligation).unwrap_or(traits::EvaluationResult::EvaluatedToErr)
     }
 }
 
@@ -173,50 +174,5 @@ impl<'tcx> InferCtxtBuilderExt<'tcx> for InferCtxtBuilder<'tcx> {
                 )
             },
         )
-    }
-}
-
-pub trait OutlivesEnvironmentExt<'tcx> {
-    fn add_implied_bounds(
-        &mut self,
-        infcx: &InferCtxt<'a, 'tcx>,
-        fn_sig_tys: &[Ty<'tcx>],
-        body_id: hir::HirId,
-        span: Span,
-    );
-}
-
-impl<'tcx> OutlivesEnvironmentExt<'tcx> for OutlivesEnvironment<'tcx> {
-    /// This method adds "implied bounds" into the outlives environment.
-    /// Implied bounds are outlives relationships that we can deduce
-    /// on the basis that certain types must be well-formed -- these are
-    /// either the types that appear in the function signature or else
-    /// the input types to an impl. For example, if you have a function
-    /// like
-    ///
-    /// ```
-    /// fn foo<'a, 'b, T>(x: &'a &'b [T]) { }
-    /// ```
-    ///
-    /// we can assume in the caller's body that `'b: 'a` and that `T:
-    /// 'b` (and hence, transitively, that `T: 'a`). This method would
-    /// add those assumptions into the outlives-environment.
-    ///
-    /// Tests: `src/test/ui/regions/regions-free-region-ordering-*.rs`
-    fn add_implied_bounds(
-        &mut self,
-        infcx: &InferCtxt<'a, 'tcx>,
-        fn_sig_tys: &[Ty<'tcx>],
-        body_id: hir::HirId,
-        span: Span,
-    ) {
-        debug!("add_implied_bounds()");
-
-        for &ty in fn_sig_tys {
-            let ty = infcx.resolve_vars_if_possible(ty);
-            debug!("add_implied_bounds: ty = {}", ty);
-            let implied_bounds = infcx.implied_outlives_bounds(self.param_env, body_id, ty, span);
-            self.add_outlives_bounds(Some(infcx), implied_bounds)
-        }
     }
 }

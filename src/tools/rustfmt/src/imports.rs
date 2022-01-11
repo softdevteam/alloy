@@ -138,6 +138,29 @@ impl UseSegment {
         }
     }
 
+    // Check if self == other with their aliases removed.
+    fn equal_except_alias(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UseSegment::Ident(ref s1, _), UseSegment::Ident(ref s2, _)) => s1 == s2,
+            (UseSegment::Slf(_), UseSegment::Slf(_))
+            | (UseSegment::Super(_), UseSegment::Super(_))
+            | (UseSegment::Crate(_), UseSegment::Crate(_))
+            | (UseSegment::Glob, UseSegment::Glob) => true,
+            (UseSegment::List(ref list1), UseSegment::List(ref list2)) => list1 == list2,
+            _ => false,
+        }
+    }
+
+    fn get_alias(&self) -> Option<&str> {
+        match self {
+            UseSegment::Ident(_, a)
+            | UseSegment::Slf(a)
+            | UseSegment::Super(a)
+            | UseSegment::Crate(a) => a.as_deref(),
+            _ => None,
+        }
+    }
+
     fn from_path_segment(
         context: &RewriteContext<'_>,
         path_seg: &ast::PathSegment,
@@ -252,7 +275,7 @@ impl UseTree {
         shape: Shape,
     ) -> Option<String> {
         let vis = self.visibility.as_ref().map_or(Cow::from(""), |vis| {
-            crate::utils::format_visibility(context, &vis)
+            crate::utils::format_visibility(context, vis)
         });
         let use_str = self
             .rewrite(context, shape.offset_left(vis.len())?)
@@ -374,7 +397,7 @@ impl UseTree {
             UseTreeKind::Nested(ref list) => {
                 // Extract comments between nested use items.
                 // This needs to be done before sorting use items.
-                let items: Vec<_> = itemize_list(
+                let items = itemize_list(
                     context.snippet_provider,
                     list.iter().map(|(tree, _)| tree),
                     "}",
@@ -385,8 +408,8 @@ impl UseTree {
                     context.snippet_provider.span_after(a.span, "{"),
                     a.span.hi(),
                     false,
-                )
-                .collect();
+                );
+
                 // in case of a global path and the nested list starts at the root,
                 // e.g., "::{foo, bar}"
                 if a.prefix.segments.len() == 1 && leading_modsep {
@@ -394,7 +417,7 @@ impl UseTree {
                 }
                 result.path.push(UseSegment::List(
                     list.iter()
-                        .zip(items.into_iter())
+                        .zip(items)
                         .map(|(t, list_item)| {
                             Self::from_ast(context, &t.0, Some(list_item), None, None, None)
                         })
@@ -466,11 +489,8 @@ impl UseTree {
 
         // Normalise foo::self as bar -> foo as bar.
         if let UseSegment::Slf(_) = last {
-            match self.path.last() {
-                Some(UseSegment::Ident(_, None)) => {
-                    aliased_self = true;
-                }
-                _ => {}
+            if let Some(UseSegment::Ident(_, None)) = self.path.last() {
+                aliased_self = true;
             }
         }
 
@@ -561,6 +581,7 @@ impl UseTree {
                 SharedPrefix::Module => {
                     self.path[..self.path.len() - 1] == other.path[..other.path.len() - 1]
                 }
+                SharedPrefix::One => true,
             }
         }
     }
@@ -572,9 +593,8 @@ impl UseTree {
         match self.path.clone().last().unwrap() {
             UseSegment::List(list) => {
                 if list.len() == 1 && list[0].path.len() == 1 {
-                    match list[0].path[0] {
-                        UseSegment::Slf(..) => return vec![self],
-                        _ => (),
+                    if let UseSegment::Slf(..) = list[0].path[0] {
+                        return vec![self];
                     };
                 }
                 let prefix = &self.path[..self.path.len() - 1];
@@ -602,7 +622,7 @@ impl UseTree {
     fn merge(&mut self, other: &UseTree, merge_by: SharedPrefix) {
         let mut prefix = 0;
         for (a, b) in self.path.iter().zip(other.path.iter()) {
-            if *a == *b {
+            if a.equal_except_alias(b) {
                 prefix += 1;
             } else {
                 break;
@@ -637,14 +657,20 @@ fn merge_rest(
             return Some(new_path);
         }
     } else if len == 1 {
-        let rest = if a.len() == len { &b[1..] } else { &a[1..] };
-        return Some(vec![
-            b[0].clone(),
-            UseSegment::List(vec![
-                UseTree::from_path(vec![UseSegment::Slf(None)], DUMMY_SP),
-                UseTree::from_path(rest.to_vec(), DUMMY_SP),
-            ]),
-        ]);
+        let (common, rest) = if a.len() == len {
+            (&a[0], &b[1..])
+        } else {
+            (&b[0], &a[1..])
+        };
+        let mut list = vec![UseTree::from_path(
+            vec![UseSegment::Slf(common.get_alias().map(ToString::to_string))],
+            DUMMY_SP,
+        )];
+        match rest {
+            [UseSegment::List(rest_list)] => list.extend(rest_list.clone()),
+            _ => list.push(UseTree::from_path(rest.to_vec(), DUMMY_SP)),
+        }
+        return Some(vec![b[0].clone(), UseSegment::List(list)]);
     } else {
         len -= 1;
     }
@@ -659,18 +685,54 @@ fn merge_rest(
 }
 
 fn merge_use_trees_inner(trees: &mut Vec<UseTree>, use_tree: UseTree, merge_by: SharedPrefix) {
-    let similar_trees = trees
-        .iter_mut()
-        .filter(|tree| tree.share_prefix(&use_tree, merge_by));
+    struct SimilarTree<'a> {
+        similarity: usize,
+        path_len: usize,
+        tree: &'a mut UseTree,
+    }
+
+    let similar_trees = trees.iter_mut().filter_map(|tree| {
+        if tree.share_prefix(&use_tree, merge_by) {
+            // In the case of `SharedPrefix::One`, `similarity` is used for deciding with which
+            // tree `use_tree` should be merge.
+            // In other cases `similarity` won't be used, so set it to `0` as a dummy value.
+            let similarity = if merge_by == SharedPrefix::One {
+                tree.path
+                    .iter()
+                    .zip(&use_tree.path)
+                    .take_while(|(a, b)| a.equal_except_alias(b))
+                    .count()
+            } else {
+                0
+            };
+
+            let path_len = tree.path.len();
+            Some(SimilarTree {
+                similarity,
+                tree,
+                path_len,
+            })
+        } else {
+            None
+        }
+    });
+
     if use_tree.path.len() == 1 && merge_by == SharedPrefix::Crate {
-        if let Some(tree) = similar_trees.min_by_key(|tree| tree.path.len()) {
-            if tree.path.len() == 1 {
+        if let Some(tree) = similar_trees.min_by_key(|tree| tree.path_len) {
+            if tree.path_len == 1 {
                 return;
             }
         }
-    } else if let Some(tree) = similar_trees.max_by_key(|tree| tree.path.len()) {
-        if tree.path.len() > 1 {
-            tree.merge(&use_tree, merge_by);
+    } else if merge_by == SharedPrefix::One {
+        if let Some(sim_tree) = similar_trees.max_by_key(|tree| tree.similarity) {
+            if sim_tree.similarity > 0 {
+                sim_tree.tree.merge(&use_tree, merge_by);
+                return;
+            }
+        }
+    } else if let Some(sim_tree) = similar_trees.max_by_key(|tree| tree.path_len) {
+        if sim_tree.path_len > 1 {
+            sim_tree.tree.merge(&use_tree, merge_by);
             return;
         }
     }
@@ -790,13 +852,9 @@ fn rewrite_nested_use_tree(
         }
     }
     let has_nested_list = use_tree_list.iter().any(|use_segment| {
-        use_segment
-            .path
-            .last()
-            .map_or(false, |last_segment| match last_segment {
-                UseSegment::List(..) => true,
-                _ => false,
-            })
+        use_segment.path.last().map_or(false, |last_segment| {
+            matches!(last_segment, UseSegment::List(..))
+        })
     });
 
     let remaining_width = if has_nested_list {
@@ -871,7 +929,7 @@ impl Rewrite for UseTree {
     fn rewrite(&self, context: &RewriteContext<'_>, mut shape: Shape) -> Option<String> {
         let mut result = String::with_capacity(256);
         let mut iter = self.path.iter().peekable();
-        while let Some(ref segment) = iter.next() {
+        while let Some(segment) = iter.next() {
             let segment_str = segment.rewrite(context, shape)?;
             result.push_str(&segment_str);
             if iter.peek().is_some() {
@@ -888,6 +946,7 @@ impl Rewrite for UseTree {
 pub(crate) enum SharedPrefix {
     Crate,
     Module,
+    One,
 }
 
 #[cfg(test)]
@@ -912,7 +971,7 @@ mod test {
             }
 
             fn eat(&mut self, c: char) {
-                assert!(self.input.next().unwrap() == c);
+                assert_eq!(self.input.next().unwrap(), c);
             }
 
             fn push_segment(
@@ -1099,6 +1158,49 @@ mod test {
             Module,
             ["foo::{a::b, a::c, d::e, d::f}"],
             ["foo::a::{b, c}", "foo::d::{e, f}"]
+        );
+    }
+
+    #[test]
+    fn test_use_tree_merge_one() {
+        test_merge!(One, ["a", "b"], ["{a, b}"]);
+
+        test_merge!(One, ["a::{aa, ab}", "b", "a"], ["{a::{self, aa, ab}, b}"]);
+
+        test_merge!(One, ["a as x", "b as y"], ["{a as x, b as y}"]);
+
+        test_merge!(
+            One,
+            ["a::{aa as xa, ab}", "b", "a"],
+            ["{a::{self, aa as xa, ab}, b}"]
+        );
+
+        test_merge!(
+            One,
+            ["a", "a::{aa, ab::{aba, abb}}"],
+            ["a::{self, aa, ab::{aba, abb}}"]
+        );
+
+        test_merge!(One, ["a", "b::{ba, *}"], ["{a, b::{ba, *}}"]);
+
+        test_merge!(One, ["a", "b", "a::aa"], ["{a::{self, aa}, b}"]);
+
+        test_merge!(
+            One,
+            ["a::aa::aaa", "a::ac::aca", "a::aa::*"],
+            ["a::{aa::{aaa, *}, ac::aca}"]
+        );
+
+        test_merge!(
+            One,
+            ["a", "b::{ba, bb}", "a::{aa::*, ab::aba}"],
+            ["{a::{self, aa::*, ab::aba}, b::{ba, bb}}"]
+        );
+
+        test_merge!(
+            One,
+            ["b", "a::ac::{aca, acb}", "a::{aa::*, ab}"],
+            ["{a::{aa::*, ab, ac::{aca, acb}}, b}"]
         );
     }
 

@@ -42,9 +42,13 @@ fn main() {
                 "RUSTFLAGS",
                 env::var("RUSTFLAGS").unwrap_or(String::new()) + " -Cprefer-dynamic",
             );
-            std::array::IntoIter::new(["rustc".to_string()])
+            IntoIterator::into_iter(["rustc".to_string()])
                 .chain(env::args().skip(2))
-                .chain(["--".to_string(), "-Cllvm-args=mode=jit".to_string()])
+                .chain([
+                    "--".to_string(),
+                    "-Zunstable-features".to_string(),
+                    "-Cllvm-args=mode=jit".to_string(),
+                ])
                 .collect()
         }
         Some("lazy-jit") => {
@@ -52,9 +56,13 @@ fn main() {
                 "RUSTFLAGS",
                 env::var("RUSTFLAGS").unwrap_or(String::new()) + " -Cprefer-dynamic",
             );
-            std::array::IntoIter::new(["rustc".to_string()])
+            IntoIterator::into_iter(["rustc".to_string()])
                 .chain(env::args().skip(2))
-                .chain(["--".to_string(), "-Cllvm-args=mode=jit-lazy".to_string()])
+                .chain([
+                    "--".to_string(),
+                    "-Zunstable-features".to_string(),
+                    "-Cllvm-args=mode=jit-lazy".to_string(),
+                ])
                 .collect()
         }
         _ => env::args().skip(1).collect(),

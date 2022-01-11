@@ -111,17 +111,33 @@ where
 
         self.try_fold(init, ok(fold)).unwrap()
     }
+
+    #[inline]
+    #[rustc_inherit_overflow_checks]
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
+        let min = self.n.min(n);
+        match self.iter.advance_by(min) {
+            Ok(_) => {
+                self.n -= min;
+                if min < n { Err(min) } else { Ok(()) }
+            }
+            ret @ Err(advanced) => {
+                self.n -= advanced;
+                ret
+            }
+        }
+    }
 }
 
 #[unstable(issue = "none", feature = "inplace_iteration")]
-unsafe impl<S: Iterator, I: Iterator> SourceIter for Take<I>
+unsafe impl<I> SourceIter for Take<I>
 where
-    I: SourceIter<Source = S>,
+    I: SourceIter,
 {
-    type Source = S;
+    type Source = I::Source;
 
     #[inline]
-    unsafe fn as_inner(&mut self) -> &mut S {
+    unsafe fn as_inner(&mut self) -> &mut I::Source {
         // SAFETY: unsafe function forwarding to unsafe function with the same requirements
         unsafe { SourceIter::as_inner(&mut self.iter) }
     }
@@ -196,6 +212,25 @@ where
                 self.iter.rfold(init, fold)
             }
         }
+    }
+
+    #[inline]
+    #[rustc_inherit_overflow_checks]
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
+        // The amount by which the inner iterator needs to be shortened for it to be
+        // at most as long as the take() amount.
+        let trim_inner = self.iter.len().saturating_sub(self.n);
+        // The amount we need to advance inner to fulfill the caller's request.
+        // take(), advance_by() and len() all can be at most usize, so we don't have to worry
+        // about having to advance more than usize::MAX here.
+        let advance_by = trim_inner.saturating_add(n);
+
+        let advanced = match self.iter.advance_back_by(advance_by) {
+            Ok(_) => advance_by - trim_inner,
+            Err(advanced) => advanced - trim_inner,
+        };
+        self.n -= advanced;
+        return if advanced < n { Err(advanced) } else { Ok(()) };
     }
 }
 

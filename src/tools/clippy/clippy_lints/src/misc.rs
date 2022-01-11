@@ -20,15 +20,17 @@ use rustc_span::symbol::sym;
 use clippy_utils::consts::{constant, Constant};
 use clippy_utils::sugg::Sugg;
 use clippy_utils::{
-    expr_path_res, get_item_name, get_parent_expr, higher, in_constant, is_diag_trait_item, is_integer_const,
-    iter_input_pats, last_path_segment, match_any_def_paths, paths, unsext, SpanlessEq,
+    expr_path_res, get_item_name, get_parent_expr, in_constant, is_diag_trait_item, is_integer_const, iter_input_pats,
+    last_path_segment, match_any_def_paths, paths, unsext, SpanlessEq,
 };
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for function arguments and let bindings denoted as
+    /// ### What it does
+    /// Checks for function arguments and let bindings denoted as
     /// `ref`.
     ///
-    /// **Why is this bad?** The `ref` declaration makes the function take an owned
+    /// ### Why is this bad?
+    /// The `ref` declaration makes the function take an owned
     /// value, but turns the argument into a reference (which means that the value
     /// is destroyed when exiting the function). This adds not much value: either
     /// take a reference type, or take an owned value and create references in the
@@ -37,11 +39,12 @@ declare_clippy_lint! {
     /// For let bindings, `let x = &foo;` is preferred over `let ref x = foo`. The
     /// type of `x` is more obvious with the former.
     ///
-    /// **Known problems:** If the argument is dereferenced within the function,
+    /// ### Known problems
+    /// If the argument is dereferenced within the function,
     /// removing the `ref` will lead to errors. This can be fixed by removing the
     /// dereferences, e.g., changing `*x` to `x` within the function.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// // Bad
     /// fn foo(ref x: u8) -> bool {
@@ -53,20 +56,21 @@ declare_clippy_lint! {
     ///     true
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub TOPLEVEL_REF_ARG,
     style,
     "an entire binding declared as `ref`, in a function argument or a `let` statement"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for comparisons to NaN.
+    /// ### What it does
+    /// Checks for comparisons to NaN.
     ///
-    /// **Why is this bad?** NaN does not compare meaningfully to anything – not
+    /// ### Why is this bad?
+    /// NaN does not compare meaningfully to anything – not
     /// even itself – so those comparisons are simply wrong.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let x = 1.0;
     ///
@@ -76,24 +80,25 @@ declare_clippy_lint! {
     /// // Good
     /// if x.is_nan() { }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub CMP_NAN,
     correctness,
     "comparisons to `NAN`, which will always return false, probably not intended"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for (in-)equality comparisons on floating-point
+    /// ### What it does
+    /// Checks for (in-)equality comparisons on floating-point
     /// values (apart from zero), except in functions called `*eq*` (which probably
     /// implement equality for a type involving floats).
     ///
-    /// **Why is this bad?** Floating point calculations are usually imprecise, so
+    /// ### Why is this bad?
+    /// Floating point calculations are usually imprecise, so
     /// asking if two values are *exactly* equal is asking for trouble. For a good
     /// guide on what to do, see [the floating point
     /// guide](http://www.floating-point-gui.de/errors/comparison).
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x = 1.2331f64;
     /// let y = 1.2332f64;
@@ -109,22 +114,23 @@ declare_clippy_lint! {
     /// if (y - 1.23f64).abs() < error_margin { }
     /// if (y - x).abs() > error_margin { }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub FLOAT_CMP,
-    correctness,
+    pedantic,
     "using `==` or `!=` on float values instead of comparing difference with an epsilon"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for conversions to owned values just for the sake
+    /// ### What it does
+    /// Checks for conversions to owned values just for the sake
     /// of a comparison.
     ///
-    /// **Why is this bad?** The comparison can operate on a reference, so creating
+    /// ### Why is this bad?
+    /// The comparison can operate on a reference, so creating
     /// an owned value effectively throws it away directly afterwards, which is
     /// needlessly consuming code and heap space.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let x = "foo";
     /// # let y = String::from("foo");
@@ -136,86 +142,92 @@ declare_clippy_lint! {
     /// # let y = String::from("foo");
     /// if x == y {}
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub CMP_OWNED,
     perf,
     "creating owned instances for comparing with others, e.g., `x == \"foo\".to_string()`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for getting the remainder of a division by one or minus
+    /// ### What it does
+    /// Checks for getting the remainder of a division by one or minus
     /// one.
     ///
-    /// **Why is this bad?** The result for a divisor of one can only ever be zero; for
+    /// ### Why is this bad?
+    /// The result for a divisor of one can only ever be zero; for
     /// minus one it can cause panic/overflow (if the left operand is the minimal value of
     /// the respective integer type) or results in zero. No one will write such code
     /// deliberately, unless trying to win an Underhanded Rust Contest. Even for that
     /// contest, it's probably a bad idea. Use something more underhanded.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// # let x = 1;
     /// let a = x % 1;
     /// let a = x % -1;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub MODULO_ONE,
     correctness,
     "taking a number modulo +/-1, which can either panic/overflow or always returns 0"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for the use of bindings with a single leading
+    /// ### What it does
+    /// Checks for the use of bindings with a single leading
     /// underscore.
     ///
-    /// **Why is this bad?** A single leading underscore is usually used to indicate
+    /// ### Why is this bad?
+    /// A single leading underscore is usually used to indicate
     /// that a binding will not be used. Using such a binding breaks this
     /// expectation.
     ///
-    /// **Known problems:** The lint does not work properly with desugaring and
+    /// ### Known problems
+    /// The lint does not work properly with desugaring and
     /// macro, it has been allowed in the mean time.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let _x = 0;
     /// let y = _x + 1; // Here we are using `_x`, even though it has a leading
     ///                 // underscore. We should rename `_x` to `x`
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub USED_UNDERSCORE_BINDING,
     pedantic,
     "using a binding which is prefixed with an underscore"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for the use of short circuit boolean conditions as
+    /// ### What it does
+    /// Checks for the use of short circuit boolean conditions as
     /// a
     /// statement.
     ///
-    /// **Why is this bad?** Using a short circuit boolean condition as a statement
+    /// ### Why is this bad?
+    /// Using a short circuit boolean condition as a statement
     /// may hide the fact that the second part is executed or not depending on the
     /// outcome of the first part.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// f() && g(); // We should write `if f() { g(); }`.
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub SHORT_CIRCUIT_STATEMENT,
     complexity,
     "using a short circuit boolean condition as a statement"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Catch casts from `0` to some pointer type
+    /// ### What it does
+    /// Catch casts from `0` to some pointer type
     ///
-    /// **Why is this bad?** This generally means `null` and is better expressed as
+    /// ### Why is this bad?
+    /// This generally means `null` and is better expressed as
     /// {`std`, `core`}`::ptr::`{`null`, `null_mut`}.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// // Bad
     /// let a = 0 as *const u32;
@@ -223,24 +235,25 @@ declare_clippy_lint! {
     /// // Good
     /// let a = std::ptr::null::<u32>();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub ZERO_PTR,
     style,
     "using `0 as *{const, mut} T`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for (in-)equality comparisons on floating-point
+    /// ### What it does
+    /// Checks for (in-)equality comparisons on floating-point
     /// value and constant, except in functions called `*eq*` (which probably
     /// implement equality for a type involving floats).
     ///
-    /// **Why is this bad?** Floating point calculations are usually imprecise, so
+    /// ### Why is this bad?
+    /// Floating point calculations are usually imprecise, so
     /// asking if two values are *exactly* equal is asking for trouble. For a good
     /// guide on what to do, see [the floating point
     /// guide](http://www.floating-point-gui.de/errors/comparison).
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let x: f64 = 1.0;
     /// const ONE: f64 = 1.00;
@@ -254,6 +267,7 @@ declare_clippy_lint! {
     /// // let error_margin = std::f64::EPSILON;
     /// if (x - ONE).abs() < error_margin { }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub FLOAT_CMP_CONST,
     restriction,
     "using `==` or `!=` on float constants instead of comparing difference with an epsilon"
@@ -307,7 +321,6 @@ impl<'tcx> LateLintPass<'tcx> for MiscLints {
             if let StmtKind::Local(local) = stmt.kind;
             if let PatKind::Binding(an, .., name, None) = local.pat.kind;
             if let Some(init) = local.init;
-            if !higher::is_from_for_desugar(local);
             if an == BindingAnnotation::Ref || an == BindingAnnotation::RefMut;
             then {
                 // use the macro callsite when the init span (but not the whole local span)
@@ -508,12 +521,12 @@ fn is_signum(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     }
 
     if_chain! {
-        if let ExprKind::MethodCall(method_name, _, expressions, _) = expr.kind;
+        if let ExprKind::MethodCall(method_name, _, [ref self_arg, ..], _) = expr.kind;
         if sym!(signum) == method_name.ident.name;
         // Check that the receiver of the signum() is a float (expressions[0] is the receiver of
         // the method call)
         then {
-            return is_float(cx, &expressions[0]);
+            return is_float(cx, self_arg);
         }
     }
     false

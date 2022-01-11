@@ -686,7 +686,7 @@ impl Wtf8 {
     }
 }
 
-/// Returns a slice of the given string for the byte range [`begin`..`end`).
+/// Returns a slice of the given string for the byte range \[`begin`..`end`).
 ///
 /// # Panics
 ///
@@ -785,7 +785,7 @@ pub fn is_code_point_boundary(slice: &Wtf8, index: usize) -> bool {
 /// Copied from core::str::raw::slice_unchecked
 #[inline]
 pub unsafe fn slice_unchecked(s: &Wtf8, begin: usize, end: usize) -> &Wtf8 {
-    // memory layout of an &[u8] and &Wtf8 are the same
+    // memory layout of a &[u8] and &Wtf8 are the same
     Wtf8::from_bytes_unchecked(slice::from_raw_parts(s.bytes.as_ptr().add(begin), end - begin))
 }
 
@@ -809,7 +809,8 @@ impl<'a> Iterator for Wtf8CodePoints<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<CodePoint> {
-        next_code_point(&mut self.bytes).map(|c| CodePoint { value: c })
+        // SAFETY: `self.bytes` has been created from a WTF-8 string
+        unsafe { next_code_point(&mut self.bytes).map(|c| CodePoint { value: c }) }
     }
 
     #[inline]

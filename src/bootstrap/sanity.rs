@@ -15,7 +15,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use build_helper::{output, t};
+use build_helper::output;
 
 use crate::cache::INTERNER;
 use crate::config::Target;
@@ -166,11 +166,6 @@ pub fn check(build: &mut Build) {
     }
 
     for target in &build.targets {
-        // Can't compile for iOS unless we're on macOS
-        if target.contains("apple-ios") && !build.build.contains("apple-darwin") {
-            panic!("the iOS target is only supported on macOS");
-        }
-
         build
             .config
             .target_config
@@ -231,15 +226,5 @@ $ pacman -R cmake && pacman -S mingw-w64-x86_64-cmake
 
     if let Some(ref s) = build.config.ccache {
         cmd_finder.must_have(s);
-    }
-
-    if build.config.channel == "stable" {
-        let stage0 = t!(fs::read_to_string(build.src.join("src/stage0.txt")));
-        if stage0.contains("\ndev:") {
-            panic!(
-                "bootstrapping from a dev compiler in a stable release, but \
-                    should only be bootstrapping from a released compiler!"
-            );
-        }
     }
 }

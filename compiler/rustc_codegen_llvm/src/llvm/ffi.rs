@@ -34,11 +34,18 @@ pub enum LLVMRustResult {
 #[repr(C)]
 pub struct LLVMRustCOFFShortExport {
     pub name: *const c_char,
+    pub ordinal_present: bool,
+    // value of `ordinal` only important when `ordinal_present` is true
+    pub ordinal: u16,
 }
 
 impl LLVMRustCOFFShortExport {
-    pub fn from_name(name: *const c_char) -> LLVMRustCOFFShortExport {
-        LLVMRustCOFFShortExport { name }
+    pub fn new(name: *const c_char, ordinal: Option<u16>) -> LLVMRustCOFFShortExport {
+        LLVMRustCOFFShortExport {
+            name,
+            ordinal_present: ordinal.is_some(),
+            ordinal: ordinal.unwrap_or(0),
+        }
     }
 }
 
@@ -159,6 +166,9 @@ pub enum Attribute {
     InaccessibleMemOnly = 27,
     SanitizeHWAddress = 28,
     WillReturn = 29,
+    StackProtectReq = 30,
+    StackProtectStrong = 31,
+    StackProtect = 32,
 }
 
 /// LLVMIntPredicate
@@ -214,6 +224,33 @@ pub enum RealPredicate {
     RealULE = 13,
     RealUNE = 14,
     RealPredicateTrue = 15,
+}
+
+impl RealPredicate {
+    pub fn from_generic(realp: rustc_codegen_ssa::common::RealPredicate) -> Self {
+        match realp {
+            rustc_codegen_ssa::common::RealPredicate::RealPredicateFalse => {
+                RealPredicate::RealPredicateFalse
+            }
+            rustc_codegen_ssa::common::RealPredicate::RealOEQ => RealPredicate::RealOEQ,
+            rustc_codegen_ssa::common::RealPredicate::RealOGT => RealPredicate::RealOGT,
+            rustc_codegen_ssa::common::RealPredicate::RealOGE => RealPredicate::RealOGE,
+            rustc_codegen_ssa::common::RealPredicate::RealOLT => RealPredicate::RealOLT,
+            rustc_codegen_ssa::common::RealPredicate::RealOLE => RealPredicate::RealOLE,
+            rustc_codegen_ssa::common::RealPredicate::RealONE => RealPredicate::RealONE,
+            rustc_codegen_ssa::common::RealPredicate::RealORD => RealPredicate::RealORD,
+            rustc_codegen_ssa::common::RealPredicate::RealUNO => RealPredicate::RealUNO,
+            rustc_codegen_ssa::common::RealPredicate::RealUEQ => RealPredicate::RealUEQ,
+            rustc_codegen_ssa::common::RealPredicate::RealUGT => RealPredicate::RealUGT,
+            rustc_codegen_ssa::common::RealPredicate::RealUGE => RealPredicate::RealUGE,
+            rustc_codegen_ssa::common::RealPredicate::RealULT => RealPredicate::RealULT,
+            rustc_codegen_ssa::common::RealPredicate::RealULE => RealPredicate::RealULE,
+            rustc_codegen_ssa::common::RealPredicate::RealUNE => RealPredicate::RealUNE,
+            rustc_codegen_ssa::common::RealPredicate::RealPredicateTrue => {
+                RealPredicate::RealPredicateTrue
+            }
+        }
+    }
 }
 
 /// LLVMTypeKind
@@ -382,6 +419,7 @@ pub enum MetadataType {
     MD_nontemporal = 9,
     MD_mem_parallel_loop_access = 10,
     MD_nonnull = 11,
+    MD_type = 19,
 }
 
 /// LLVMRustAsmDialect
@@ -490,6 +528,7 @@ pub enum DiagnosticKind {
     PGOProfile,
     Linker,
     Unsupported,
+    SrcMgr,
 }
 
 /// LLVMRustDiagnosticLevel
@@ -636,13 +675,17 @@ pub struct OperandBundleDef<'a>(InvariantOpaque<'a>);
 #[repr(C)]
 pub struct Linker<'a>(InvariantOpaque<'a>);
 
-pub type DiagnosticHandler = unsafe extern "C" fn(&DiagnosticInfo, *mut c_void);
-pub type InlineAsmDiagHandler = unsafe extern "C" fn(&SMDiagnostic, *const c_void, c_uint);
+extern "C" {
+    pub type DiagnosticHandler;
+}
+
+pub type DiagnosticHandlerTy = unsafe extern "C" fn(&DiagnosticInfo, *mut c_void);
+pub type InlineAsmDiagHandlerTy = unsafe extern "C" fn(&SMDiagnostic, *const c_void, c_uint);
 
 pub mod coverageinfo {
     use super::coverage_map;
 
-    /// Aligns with [llvm::coverage::CounterMappingRegion::RegionKind](https://github.com/rust-lang/llvm-project/blob/rustc/11.0-2020-10-12/llvm/include/llvm/ProfileData/Coverage/CoverageMapping.h#L206-L222)
+    /// Aligns with [llvm::coverage::CounterMappingRegion::RegionKind](https://github.com/rust-lang/llvm-project/blob/rustc/13.0-2021-09-30/llvm/include/llvm/ProfileData/Coverage/CoverageMapping.h#L209-L230)
     #[derive(Copy, Clone, Debug)]
     #[repr(C)]
     pub enum RegionKind {
@@ -661,11 +704,16 @@ pub mod coverageinfo {
         /// A GapRegion is like a CodeRegion, but its count is only set as the
         /// line execution count when its the only region in the line.
         GapRegion = 3,
+
+        /// A BranchRegion represents leaf-level boolean expressions and is
+        /// associated with two counters, each representing the number of times the
+        /// expression evaluates to true or false.
+        BranchRegion = 4,
     }
 
     /// This struct provides LLVM's representation of a "CoverageMappingRegion", encoded into the
     /// coverage map, in accordance with the
-    /// [LLVM Code Coverage Mapping Format](https://github.com/rust-lang/llvm-project/blob/rustc/11.0-2020-10-12/llvm/docs/CoverageMappingFormat.rst#llvm-code-coverage-mapping-format).
+    /// [LLVM Code Coverage Mapping Format](https://github.com/rust-lang/llvm-project/blob/rustc/13.0-2021-09-30/llvm/docs/CoverageMappingFormat.rst#llvm-code-coverage-mapping-format).
     /// The struct composes fields representing the `Counter` type and value(s) (injected counter
     /// ID, or expression type and operands), the source file (an indirect index into a "filenames
     /// array", encoded separately), and source location (start and end positions of the represented
@@ -677,6 +725,10 @@ pub mod coverageinfo {
     pub struct CounterMappingRegion {
         /// The counter type and type-dependent counter data, if any.
         counter: coverage_map::Counter,
+
+        /// If the `RegionKind` is a `BranchRegion`, this represents the counter
+        /// for the false branch of the region.
+        false_counter: coverage_map::Counter,
 
         /// An indirect reference to the source filename. In the LLVM Coverage Mapping Format, the
         /// file_id is an index into a function-specific `virtual_file_mapping` array of indexes
@@ -715,6 +767,7 @@ pub mod coverageinfo {
         ) -> Self {
             Self {
                 counter,
+                false_counter: coverage_map::Counter::zero(),
                 file_id,
                 expanded_file_id: 0,
                 start_line,
@@ -722,6 +775,31 @@ pub mod coverageinfo {
                 end_line,
                 end_col,
                 kind: RegionKind::CodeRegion,
+            }
+        }
+
+        // This function might be used in the future; the LLVM API is still evolving, as is coverage
+        // support.
+        #[allow(dead_code)]
+        crate fn branch_region(
+            counter: coverage_map::Counter,
+            false_counter: coverage_map::Counter,
+            file_id: u32,
+            start_line: u32,
+            start_col: u32,
+            end_line: u32,
+            end_col: u32,
+        ) -> Self {
+            Self {
+                counter,
+                false_counter,
+                file_id,
+                expanded_file_id: 0,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                kind: RegionKind::BranchRegion,
             }
         }
 
@@ -738,6 +816,7 @@ pub mod coverageinfo {
         ) -> Self {
             Self {
                 counter: coverage_map::Counter::zero(),
+                false_counter: coverage_map::Counter::zero(),
                 file_id,
                 expanded_file_id,
                 start_line,
@@ -760,6 +839,7 @@ pub mod coverageinfo {
         ) -> Self {
             Self {
                 counter: coverage_map::Counter::zero(),
+                false_counter: coverage_map::Counter::zero(),
                 file_id,
                 expanded_file_id: 0,
                 start_line,
@@ -783,12 +863,13 @@ pub mod coverageinfo {
         ) -> Self {
             Self {
                 counter,
+                false_counter: coverage_map::Counter::zero(),
                 file_id,
                 expanded_file_id: 0,
                 start_line,
                 start_col,
                 end_line,
-                end_col: ((1 as u32) << 31) | end_col,
+                end_col: (1_u32 << 31) | end_col,
                 kind: RegionKind::GapRegion,
             }
         }
@@ -967,6 +1048,8 @@ extern "C" {
     pub fn LLVMSetValueName2(Val: &Value, Name: *const c_char, NameLen: size_t);
     pub fn LLVMReplaceAllUsesWith(OldVal: &'a Value, NewVal: &'a Value);
     pub fn LLVMSetMetadata(Val: &'a Value, KindID: c_uint, Node: &'a Value);
+    pub fn LLVMGlobalSetMetadata(Val: &'a Value, KindID: c_uint, Metadata: &'a Metadata);
+    pub fn LLVMValueAsMetadata(Node: &'a Value) -> &Metadata;
 
     // Operations on constants of any type
     pub fn LLVMConstNull(Ty: &Type) -> &Value;
@@ -1011,7 +1094,8 @@ extern "C" {
     pub fn LLVMConstVector(ScalarConstantVals: *const &Value, Size: c_uint) -> &Value;
 
     // Constant expressions
-    pub fn LLVMConstInBoundsGEP(
+    pub fn LLVMRustConstInBoundsGEP2(
+        ty: &'a Type,
         ConstantVal: &'a Value,
         ConstantIndices: *const &'a Value,
         NumIndices: c_uint,
@@ -1154,6 +1238,7 @@ extern "C" {
     ) -> &'a Value;
     pub fn LLVMRustBuildInvoke(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Fn: &'a Value,
         Args: *const &'a Value,
         NumArgs: c_uint,
@@ -1394,22 +1479,25 @@ extern "C" {
 
     pub fn LLVMBuildStore(B: &Builder<'a>, Val: &'a Value, Ptr: &'a Value) -> &'a Value;
 
-    pub fn LLVMBuildGEP(
+    pub fn LLVMBuildGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Indices: *const &'a Value,
         NumIndices: c_uint,
         Name: *const c_char,
     ) -> &'a Value;
-    pub fn LLVMBuildInBoundsGEP(
+    pub fn LLVMBuildInBoundsGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Indices: *const &'a Value,
         NumIndices: c_uint,
         Name: *const c_char,
     ) -> &'a Value;
-    pub fn LLVMBuildStructGEP(
+    pub fn LLVMBuildStructGEP2(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Pointer: &'a Value,
         Idx: c_uint,
         Name: *const c_char,
@@ -1522,6 +1610,7 @@ extern "C" {
     pub fn LLVMRustGetInstrProfIncrementIntrinsic(M: &Module) -> &'a Value;
     pub fn LLVMRustBuildCall(
         B: &Builder<'a>,
+        Ty: &'a Type,
         Fn: &'a Value,
         Args: *const &'a Value,
         NumArgs: c_uint,
@@ -1693,6 +1782,8 @@ extern "C" {
 
     pub fn LLVMTimeTraceProfilerInitialize();
 
+    pub fn LLVMTimeTraceProfilerFinishThread();
+
     pub fn LLVMTimeTraceProfilerFinish(FileName: *const c_char);
 
     pub fn LLVMAddAnalysisPasses(T: &'a TargetMachine, PM: &PassManager<'a>);
@@ -1729,7 +1820,7 @@ extern "C" {
 
     pub fn LLVMDisposeMessage(message: *mut c_char);
 
-    pub fn LLVMStartMultithreaded() -> Bool;
+    pub fn LLVMIsMultithreaded() -> Bool;
 
     /// Returns a string describing the last error caused by an LLVMRust* call.
     pub fn LLVMRustGetLastError() -> *const c_char;
@@ -1756,6 +1847,7 @@ extern "C" {
         SideEffects: Bool,
         AlignStack: Bool,
         Dialect: AsmDialect,
+        CanThrow: Bool,
     ) -> &Value;
     pub fn LLVMRustInlineAsmVerify(
         Ty: &Type,
@@ -2146,6 +2238,7 @@ extern "C" {
         UseSoftFP: bool,
         FunctionSections: bool,
         DataSections: bool,
+        UniqueSectionNames: bool,
         TrapUnreachable: bool,
         Singlethread: bool,
         AsmComments: bool,
@@ -2169,6 +2262,7 @@ extern "C" {
         PrepareForThinLTO: bool,
         PGOGenPath: *const c_char,
         PGOUsePath: *const c_char,
+        PGOSampleUsePath: *const c_char,
     );
     pub fn LLVMRustAddLibraryInfo(
         PM: &PassManager<'a>,
@@ -2203,6 +2297,8 @@ extern "C" {
         PGOUsePath: *const c_char,
         InstrumentCoverage: bool,
         InstrumentGCOV: bool,
+        PGOSampleUsePath: *const c_char,
+        DebugInfoForProfiling: bool,
         llvm_selfprofiler: *mut c_void,
         begin_callback: SelfProfileBeforePassCallback,
         end_callback: SelfProfileAfterPassCallback,
@@ -2236,12 +2332,6 @@ extern "C" {
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTwineToString(T: &Twine, s: &RustString);
 
-    pub fn LLVMContextSetDiagnosticHandler(
-        C: &Context,
-        Handler: DiagnosticHandler,
-        DiagnosticContext: *mut c_void,
-    );
-
     #[allow(improper_ctypes)]
     pub fn LLVMRustUnpackOptimizationDiagnostic(
         DI: &'a DiagnosticInfo,
@@ -2258,16 +2348,20 @@ extern "C" {
         level_out: &mut DiagnosticLevel,
         cookie_out: &mut c_uint,
         message_out: &mut Option<&'a Twine>,
-        instruction_out: &mut Option<&'a Value>,
     );
 
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteDiagnosticInfoToString(DI: &DiagnosticInfo, s: &RustString);
     pub fn LLVMRustGetDiagInfoKind(DI: &DiagnosticInfo) -> DiagnosticKind;
 
+    pub fn LLVMRustGetSMDiagnostic(
+        DI: &'a DiagnosticInfo,
+        cookie_out: &mut c_uint,
+    ) -> &'a SMDiagnostic;
+
     pub fn LLVMRustSetInlineAsmDiagnosticHandler(
         C: &Context,
-        H: InlineAsmDiagHandler,
+        H: InlineAsmDiagHandlerTy,
         CX: *mut c_void,
     );
 
@@ -2366,12 +2460,8 @@ extern "C" {
         len: usize,
         out_len: &mut usize,
     ) -> *const u8;
-    pub fn LLVMRustThinLTOGetDICompileUnit(
-        M: &Module,
-        CU1: &mut *mut c_void,
-        CU2: &mut *mut c_void,
-    );
-    pub fn LLVMRustThinLTOPatchDICompileUnit(M: &Module, CU: *mut c_void);
+    pub fn LLVMRustLTOGetDICompileUnit(M: &Module, CU1: &mut *mut c_void, CU2: &mut *mut c_void);
+    pub fn LLVMRustLTOPatchDICompileUnit(M: &Module, CU: *mut c_void);
 
     pub fn LLVMRustLinkerNew(M: &'a Module) -> &'a mut Linker<'a>;
     pub fn LLVMRustLinkerAdd(
@@ -2386,4 +2476,19 @@ extern "C" {
         mod_id: *const c_char,
         data: &ThinLTOData,
     );
+
+    pub fn LLVMRustContextGetDiagnosticHandler(Context: &Context) -> Option<&DiagnosticHandler>;
+    pub fn LLVMRustContextSetDiagnosticHandler(
+        context: &Context,
+        diagnostic_handler: Option<&DiagnosticHandler>,
+    );
+    pub fn LLVMRustContextConfigureDiagnosticHandler(
+        context: &Context,
+        diagnostic_handler_callback: DiagnosticHandlerTy,
+        diagnostic_handler_context: *mut c_void,
+        remark_all_passes: bool,
+        remark_passes: *const *const c_char,
+        remark_passes_len: usize,
+    );
+
 }

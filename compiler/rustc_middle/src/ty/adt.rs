@@ -1,4 +1,3 @@
-use crate::ich::StableHashingContext;
 use crate::mir::interpret::ErrorHandled;
 use crate::ty;
 use crate::ty::util::{Discr, IntTypeExt};
@@ -7,9 +6,11 @@ use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_errors::ErrorReported;
-use rustc_hir::def::{DefKind, Res};
+use rustc_hir as hir;
+use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_query_system::ich::StableHashingContext;
 use rustc_serialize::{self, Encodable, Encoder};
 use rustc_session::DataTypeKind;
 use rustc_span::symbol::sym;
@@ -63,6 +64,30 @@ bitflags! {
 /// Moreover, Rust only allows recursive data types through indirection.
 ///
 /// [adt]: https://en.wikipedia.org/wiki/Algebraic_data_type
+///
+/// # Recursive types
+///
+/// It may seem impossible to represent recursive types using [`Ty`],
+/// since [`TyKind::Adt`] includes [`AdtDef`], which includes its fields,
+/// creating a cycle. However, `AdtDef` does not actually include the *types*
+/// of its fields; it includes just their [`DefId`]s.
+///
+/// [`TyKind::Adt`]: ty::TyKind::Adt
+///
+/// For example, the following type:
+///
+/// ```
+/// struct S { x: Box<S> }
+/// ```
+///
+/// is essentially represented with [`Ty`] as the following pseudocode:
+///
+/// ```
+/// struct S { x }
+/// ```
+///
+/// where `x` here represents the `DefId` of `S.x`. Then, the `DefId`
+/// can be used with [`TyCtxt::type_of()`] to get the type of the field.
 pub struct AdtDef {
     /// The `DefId` of the struct, enum or union item.
     pub did: DefId,
@@ -209,7 +234,7 @@ impl<'tcx> AdtDef {
         self.flags.contains(AdtFlags::IS_UNION)
     }
 
-    /// Returns `true` if this is a enum.
+    /// Returns `true` if this is an enum.
     #[inline]
     pub fn is_enum(&self) -> bool {
         self.flags.contains(AdtFlags::IS_ENUM)
@@ -288,6 +313,10 @@ impl<'tcx> AdtDef {
         self.destructor(tcx).is_some()
     }
 
+    pub fn has_non_const_dtor(&self, tcx: TyCtxt<'tcx>) -> bool {
+        matches!(self.destructor(tcx), Some(Destructor { constness: hir::Constness::NotConst, .. }))
+    }
+
     /// Asserts this is a struct or union and returns its unique variant.
     pub fn non_enum_variant(&self) -> &VariantDef {
         assert!(self.is_struct() || self.is_union());
@@ -309,6 +338,22 @@ impl<'tcx> AdtDef {
     /// Whether the ADT lacks fields. Note that this includes uninhabited enums,
     /// e.g., `enum Void {}` is considered payload free as well.
     pub fn is_payloadfree(&self) -> bool {
+        // Treat the ADT as not payload-free if arbitrary_enum_discriminant is used (#88621).
+        // This would disallow the following kind of enum from being casted into integer.
+        // ```
+        // enum Enum {
+        //    Foo() = 1,
+        //    Bar{} = 2,
+        //    Baz = 3,
+        // }
+        // ```
+        if self
+            .variants
+            .iter()
+            .any(|v| matches!(v.discr, VariantDiscr::Explicit(_)) && v.ctor_kind != CtorKind::Const)
+        {
+            return false;
+        }
         self.variants.iter().all(|v| v.fields.is_empty())
     }
 

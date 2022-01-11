@@ -209,6 +209,12 @@ impl_stable_hash_via_hash!(i128);
 impl_stable_hash_via_hash!(char);
 impl_stable_hash_via_hash!(());
 
+impl<CTX> HashStable<CTX> for ! {
+    fn hash_stable(&self, _ctx: &mut CTX, _hasher: &mut StableHasher) {
+        unreachable!()
+    }
+}
+
 impl<CTX> HashStable<CTX> for ::std::num::NonZeroU32 {
     fn hash_stable(&self, ctx: &mut CTX, hasher: &mut StableHasher) {
         self.get().hash_stable(ctx, hasher)
@@ -292,6 +298,13 @@ impl<T: HashStable<CTX>, CTX> HashStable<CTX> for [T] {
         for item in self {
             item.hash_stable(ctx, hasher);
         }
+    }
+}
+
+impl<CTX> HashStable<CTX> for [u8] {
+    fn hash_stable(&self, ctx: &mut CTX, hasher: &mut StableHasher) {
+        self.len().hash_stable(ctx, hasher);
+        hasher.write(self);
     }
 }
 

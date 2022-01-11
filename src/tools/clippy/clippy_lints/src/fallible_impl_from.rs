@@ -10,13 +10,13 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for impls of `From<..>` that contain `panic!()` or `unwrap()`
+    /// ### What it does
+    /// Checks for impls of `From<..>` that contain `panic!()` or `unwrap()`
     ///
-    /// **Why is this bad?** `TryFrom` should be used if there's a possibility of failure.
+    /// ### Why is this bad?
+    /// `TryFrom` should be used if there's a possibility of failure.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// struct Foo(i32);
     ///
@@ -44,6 +44,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub FALLIBLE_IMPL_FROM,
     nursery,
     "Warn on impls of `From<..>` that contain `panic!()` or `unwrap()`"
@@ -57,7 +58,7 @@ impl<'tcx> LateLintPass<'tcx> for FallibleImplFrom {
         if_chain! {
             if let hir::ItemKind::Impl(impl_) = &item.kind;
             if let Some(impl_trait_ref) = cx.tcx.impl_trait_ref(item.def_id);
-            if cx.tcx.is_diagnostic_item(sym::from_trait, impl_trait_ref.def_id);
+            if cx.tcx.is_diagnostic_item(sym::From, impl_trait_ref.def_id);
             then {
                 lint_impl_body(cx, item.span, impl_.items);
             }
@@ -65,7 +66,7 @@ impl<'tcx> LateLintPass<'tcx> for FallibleImplFrom {
     }
 }
 
-fn lint_impl_body<'tcx>(cx: &LateContext<'tcx>, impl_span: Span, impl_items: &[hir::ImplItemRef<'_>]) {
+fn lint_impl_body<'tcx>(cx: &LateContext<'tcx>, impl_span: Span, impl_items: &[hir::ImplItemRef]) {
     use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
     use rustc_hir::{Expr, ExprKind, ImplItemKind, QPath};
 
@@ -94,8 +95,8 @@ fn lint_impl_body<'tcx>(cx: &LateContext<'tcx>, impl_span: Span, impl_items: &[h
             // check for `unwrap`
             if let Some(arglists) = method_chain_args(expr, &["unwrap"]) {
                 let reciever_ty = self.typeck_results.expr_ty(&arglists[0][0]).peel_refs();
-                if is_type_diagnostic_item(self.lcx, reciever_ty, sym::option_type)
-                    || is_type_diagnostic_item(self.lcx, reciever_ty, sym::result_type)
+                if is_type_diagnostic_item(self.lcx, reciever_ty, sym::Option)
+                    || is_type_diagnostic_item(self.lcx, reciever_ty, sym::Result)
                 {
                     self.result.push(expr.span);
                 }

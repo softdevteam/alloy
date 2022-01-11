@@ -5,9 +5,9 @@ use rustc_ast::Mutability;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_middle::ty::subst::InternalSubsts;
-use rustc_middle::ty::{Ref, Ty};
+use rustc_middle::ty::{Adt, Array, Ref, Ty};
 use rustc_session::lint::builtin::RUST_2021_PRELUDE_COLLISIONS;
-use rustc_span::symbol::kw::Underscore;
+use rustc_span::symbol::kw::{Empty, Underscore};
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::Span;
 use rustc_trait_selection::infer::InferCtxtExt;
@@ -38,10 +38,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return;
         }
 
-        // These are the method names that were added to prelude in Rust 2021
-        if !matches!(segment.ident.name, sym::try_into) {
-            return;
-        }
+        let prelude_or_array_lint = match segment.ident.name {
+            // `try_into` was added to the prelude in Rust 2021.
+            sym::try_into => RUST_2021_PRELUDE_COLLISIONS,
+            // `into_iter` wasn't added to the prelude,
+            // but `[T; N].into_iter()` doesn't resolve to IntoIterator::into_iter
+            // before Rust 2021, which results in the same problem.
+            // It is only a problem for arrays.
+            sym::into_iter if let Array(..) = self_ty.kind() => {
+                // In this case, it wasn't really a prelude addition that was the problem.
+                // Instead, the problem is that the array-into_iter hack will no longer apply in Rust 2021.
+                rustc_lint::ARRAY_INTO_ITER
+            }
+            _ => return,
+        };
 
         // No need to lint if method came from std/core, as that will now be in the prelude
         if matches!(self.tcx.crate_name(pick.item.def_id.krate), sym::std | sym::core) {
@@ -69,7 +79,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Inherent impls only require not relying on autoref and autoderef in order to
             // ensure that the trait implementation won't be used
             self.tcx.struct_span_lint_hir(
-                RUST_2021_PRELUDE_COLLISIONS,
+                prelude_or_array_lint,
                 self_expr.hir_id,
                 self_expr.span,
                 |lint| {
@@ -130,7 +140,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // trait implementations require full disambiguation to not clash with the new prelude
             // additions (i.e. convert from dot-call to fully-qualified call)
             self.tcx.struct_span_lint_hir(
-                RUST_2021_PRELUDE_COLLISIONS,
+                prelude_or_array_lint,
                 call_expr.hir_id,
                 call_expr.span,
                 |lint| {
@@ -146,15 +156,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         segment.ident.name
                     ));
 
-                    let (self_adjusted, precise) = self.adjust_expr(pick, self_expr);
+                    let (self_adjusted, precise) = self.adjust_expr(pick, self_expr, sp);
                     if precise {
                         let args = args
                             .iter()
                             .skip(1)
                             .map(|arg| {
+                                let span = arg.span.find_ancestor_inside(sp).unwrap_or_default();
                                 format!(
                                     ", {}",
-                                    self.sess().source_map().span_to_snippet(arg.span).unwrap()
+                                    self.sess().source_map().span_to_snippet(span).unwrap()
                                 )
                             })
                             .collect::<String>();
@@ -163,8 +174,22 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             sp,
                             "disambiguate the associated function",
                             format!(
-                                "{}::{}({}{})",
-                                trait_name, segment.ident.name, self_adjusted, args
+                                "{}::{}{}({}{})",
+                                trait_name,
+                                segment.ident.name,
+                                if let Some(args) = segment.args.as_ref().and_then(|args| self
+                                    .sess()
+                                    .source_map()
+                                    .span_to_snippet(args.span_ext)
+                                    .ok())
+                                {
+                                    // Keep turbofish.
+                                    format!("::{}", args)
+                                } else {
+                                    String::new()
+                                },
+                                self_adjusted,
+                                args,
                             ),
                             Applicability::MachineApplicable,
                         );
@@ -239,32 +264,57 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let trait_path = self.trait_path_or_bare_name(span, expr_id, pick.item.container.id());
             let trait_generics = self.tcx.generics_of(pick.item.container.id());
 
-            let parameter_count = trait_generics.count() - (trait_generics.has_self as usize);
-            let trait_name = if parameter_count == 0 {
-                trait_path
-            } else {
-                format!(
-                    "{}<{}>",
-                    trait_path,
-                    std::iter::repeat("_").take(parameter_count).collect::<Vec<_>>().join(", ")
-                )
-            };
+            let trait_name =
+                if trait_generics.params.len() <= trait_generics.has_self as usize {
+                    trait_path
+                } else {
+                    let counts = trait_generics.own_counts();
+                    format!(
+                        "{}<{}>",
+                        trait_path,
+                        std::iter::repeat("'_")
+                            .take(counts.lifetimes)
+                            .chain(std::iter::repeat("_").take(
+                                counts.types + counts.consts - trait_generics.has_self as usize
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
 
             let mut lint = lint.build(&format!(
                 "trait-associated function `{}` will become ambiguous in Rust 2021",
                 method_name.name
             ));
 
-            let self_ty = self
-                .sess()
-                .source_map()
-                .span_to_snippet(self_ty_span)
-                .unwrap_or_else(|_| self_ty.to_string());
+            let mut self_ty_name = self_ty_span
+                .find_ancestor_inside(span)
+                .and_then(|span| self.sess().source_map().span_to_snippet(span).ok())
+                .unwrap_or_else(|| self_ty.to_string());
 
+            // Get the number of generics the self type has (if an Adt) unless we can determine that
+            // the user has written the self type with generics already which we (naively) do by looking
+            // for a "<" in `self_ty_name`.
+            if !self_ty_name.contains('<') {
+                if let Adt(def, _) = self_ty.kind() {
+                    let generics = self.tcx.generics_of(def.did);
+                    if !generics.params.is_empty() {
+                        let counts = generics.own_counts();
+                        self_ty_name += &format!(
+                            "<{}>",
+                            std::iter::repeat("'_")
+                                .take(counts.lifetimes)
+                                .chain(std::iter::repeat("_").take(counts.types + counts.consts))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                }
+            }
             lint.span_suggestion(
                 span,
                 "disambiguate the associated function",
-                format!("<{} as {}>::{}", self_ty, trait_name, method_name.name,),
+                format!("<{} as {}>::{}", self_ty_name, trait_name, method_name.name,),
                 Applicability::MachineApplicable,
             );
 
@@ -295,10 +345,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let import_items: Vec<_> = applicable_trait
             .import_ids
             .iter()
-            .map(|&import_id| {
-                let hir_id = self.tcx.hir().local_def_id_to_hir_id(import_id);
-                self.tcx.hir().expect_item(hir_id)
-            })
+            .map(|&import_id| self.tcx.hir().expect_item(import_id))
             .collect();
 
         // Find an identifier with which this trait was imported (note that `_` doesn't count).
@@ -307,7 +354,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             .filter_map(|item| if item.ident.name != Underscore { Some(item.ident) } else { None })
             .next();
         if let Some(any_id) = any_id {
-            return Some(format!("{}", any_id));
+            if any_id.name == Empty {
+                // Glob import, so just use its name.
+                return None;
+            } else {
+                return Some(format!("{}", any_id));
+            }
         }
 
         // All that is left is `_`! We need to use the full path. It doesn't matter which one we pick,
@@ -329,7 +381,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Creates a string version of the `expr` that includes explicit adjustments.
     /// Returns the string and also a bool indicating whther this is a *precise*
     /// suggestion.
-    fn adjust_expr(&self, pick: &Pick<'tcx>, expr: &hir::Expr<'tcx>) -> (String, bool) {
+    fn adjust_expr(
+        &self,
+        pick: &Pick<'tcx>,
+        expr: &hir::Expr<'tcx>,
+        outer: Span,
+    ) -> (String, bool) {
         let derefs = "*".repeat(pick.autoderefs);
 
         let autoref = match pick.autoref_or_ptr_adjustment {
@@ -338,12 +395,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             Some(probe::AutorefOrPtrAdjustment::ToConstPtr) | None => "",
         };
 
-        let (expr_text, precise) =
-            if let Ok(expr_text) = self.sess().source_map().span_to_snippet(expr.span) {
-                (expr_text, true)
-            } else {
-                (format!("(..)"), false)
-            };
+        let (expr_text, precise) = if let Some(expr_text) = expr
+            .span
+            .find_ancestor_inside(outer)
+            .and_then(|span| self.sess().source_map().span_to_snippet(span).ok())
+        {
+            (expr_text, true)
+        } else {
+            ("(..)".to_string(), false)
+        };
 
         let adjusted_text = if let Some(probe::AutorefOrPtrAdjustment::ToConstPtr) =
             pick.autoref_or_ptr_adjustment

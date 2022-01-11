@@ -8,15 +8,15 @@ use rustc_span::sym;
 use if_chain::if_chain;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for types that implement `Copy` as well as
+    /// ### What it does
+    /// Checks for types that implement `Copy` as well as
     /// `Iterator`.
     ///
-    /// **Why is this bad?** Implicit copies can be confusing when working with
+    /// ### Why is this bad?
+    /// Implicit copies can be confusing when working with
     /// iterator combinators.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// #[derive(Copy, Clone)]
     /// struct Countdown(u8);
@@ -28,6 +28,7 @@ declare_clippy_lint! {
     /// let a: Vec<_> = my_iterator.take(1).collect();
     /// let b: Vec<_> = my_iterator.collect();
     /// ```
+    #[clippy::version = "1.30.0"]
     pub COPY_ITERATOR,
     pedantic,
     "implementing `Iterator` on a `Copy` type"

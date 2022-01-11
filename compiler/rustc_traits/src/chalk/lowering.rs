@@ -87,7 +87,7 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::InEnvironment<chalk_ir::Goal<RustInterner<'
                 ty::PredicateKind::TypeWellFormedFromEnv(ty) => {
                     chalk_ir::DomainGoal::FromEnv(chalk_ir::FromEnv::Ty(ty.lower_into(interner)))
                 }
-                ty::PredicateKind::Trait(predicate, _) => chalk_ir::DomainGoal::FromEnv(
+                ty::PredicateKind::Trait(predicate) => chalk_ir::DomainGoal::FromEnv(
                     chalk_ir::FromEnv::Trait(predicate.trait_ref.lower_into(interner)),
                 ),
                 ty::PredicateKind::RegionOutlives(predicate) => chalk_ir::DomainGoal::Holds(
@@ -109,6 +109,7 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::InEnvironment<chalk_ir::Goal<RustInterner<'
                 | ty::PredicateKind::ObjectSafe(..)
                 | ty::PredicateKind::ClosureKind(..)
                 | ty::PredicateKind::Subtype(..)
+                | ty::PredicateKind::Coerce(..)
                 | ty::PredicateKind::ConstEvaluatable(..)
                 | ty::PredicateKind::ConstEquate(..) => bug!("unexpected predicate {}", predicate),
             };
@@ -137,7 +138,7 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::GoalData<RustInterner<'tcx>>> for ty::Predi
             collect_bound_vars(interner, interner.tcx, self.kind());
 
         let value = match predicate {
-            ty::PredicateKind::Trait(predicate, _) => {
+            ty::PredicateKind::Trait(predicate) => {
                 chalk_ir::GoalData::DomainGoal(chalk_ir::DomainGoal::Holds(
                     chalk_ir::WhereClause::Implemented(predicate.trait_ref.lower_into(interner)),
                 ))
@@ -193,6 +194,7 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::GoalData<RustInterner<'tcx>>> for ty::Predi
             // some of these in terms of chalk operations.
             ty::PredicateKind::ClosureKind(..)
             | ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::ConstEvaluatable(..)
             | ty::PredicateKind::ConstEquate(..) => {
                 chalk_ir::GoalData::All(chalk_ir::Goals::empty(interner))
@@ -569,7 +571,7 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_ir::QuantifiedWhereClause<RustInterner<'
         let (predicate, binders, _named_regions) =
             collect_bound_vars(interner, interner.tcx, self.kind());
         let value = match predicate {
-            ty::PredicateKind::Trait(predicate, _) => {
+            ty::PredicateKind::Trait(predicate) => {
                 Some(chalk_ir::WhereClause::Implemented(predicate.trait_ref.lower_into(interner)))
             }
             ty::PredicateKind::RegionOutlives(predicate) => {
@@ -592,6 +594,7 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_ir::QuantifiedWhereClause<RustInterner<'
             ty::PredicateKind::ObjectSafe(..)
             | ty::PredicateKind::ClosureKind(..)
             | ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::ConstEvaluatable(..)
             | ty::PredicateKind::ConstEquate(..)
             | ty::PredicateKind::TypeWellFormedFromEnv(..) => {
@@ -702,7 +705,7 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_solve::rust_ir::QuantifiedInlineBound<Ru
         let (predicate, binders, _named_regions) =
             collect_bound_vars(interner, interner.tcx, self.kind());
         match predicate {
-            ty::PredicateKind::Trait(predicate, _) => Some(chalk_ir::Binders::new(
+            ty::PredicateKind::Trait(predicate) => Some(chalk_ir::Binders::new(
                 binders,
                 chalk_solve::rust_ir::InlineBound::TraitBound(
                     predicate.trait_ref.lower_into(interner),
@@ -719,6 +722,7 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_solve::rust_ir::QuantifiedInlineBound<Ru
             | ty::PredicateKind::ObjectSafe(..)
             | ty::PredicateKind::ClosureKind(..)
             | ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::ConstEvaluatable(..)
             | ty::PredicateKind::ConstEquate(..)
             | ty::PredicateKind::TypeWellFormedFromEnv(..) => {
@@ -802,7 +806,7 @@ crate fn collect_bound_vars<'tcx, T: TypeFoldable<'tcx>>(
     tcx: TyCtxt<'tcx>,
     ty: Binder<'tcx, T>,
 ) -> (T, chalk_ir::VariableKinds<RustInterner<'tcx>>, BTreeMap<DefId, u32>) {
-    let mut bound_vars_collector = BoundVarsCollector::new();
+    let mut bound_vars_collector = BoundVarsCollector::new(tcx);
     ty.as_ref().skip_binder().visit_with(&mut bound_vars_collector);
     let mut parameters = bound_vars_collector.parameters;
     let named_parameters: BTreeMap<DefId, u32> = bound_vars_collector
@@ -832,14 +836,16 @@ crate fn collect_bound_vars<'tcx, T: TypeFoldable<'tcx>>(
 }
 
 crate struct BoundVarsCollector<'tcx> {
+    tcx: TyCtxt<'tcx>,
     binder_index: ty::DebruijnIndex,
     crate parameters: BTreeMap<u32, chalk_ir::VariableKind<RustInterner<'tcx>>>,
     crate named_parameters: Vec<DefId>,
 }
 
 impl<'tcx> BoundVarsCollector<'tcx> {
-    crate fn new() -> Self {
+    crate fn new(tcx: TyCtxt<'tcx>) -> Self {
         BoundVarsCollector {
+            tcx,
             binder_index: ty::INNERMOST,
             parameters: BTreeMap::new(),
             named_parameters: vec![],
@@ -848,6 +854,10 @@ impl<'tcx> BoundVarsCollector<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<'tcx> for BoundVarsCollector<'tcx> {
+    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+        Some(self.tcx)
+    }
+
     fn visit_binder<T: TypeFoldable<'tcx>>(
         &mut self,
         t: &Binder<'tcx, T>,
@@ -882,7 +892,7 @@ impl<'tcx> TypeVisitor<'tcx> for BoundVarsCollector<'tcx> {
         match r {
             ty::ReLateBound(index, br) if *index == self.binder_index => match br.kind {
                 ty::BoundRegionKind::BrNamed(def_id, _name) => {
-                    if self.named_parameters.iter().find(|d| **d == def_id).is_none() {
+                    if !self.named_parameters.iter().any(|d| *d == def_id) {
                         self.named_parameters.push(def_id);
                     }
                 }
@@ -1066,6 +1076,11 @@ impl PlaceholdersCollector {
 }
 
 impl<'tcx> TypeVisitor<'tcx> for PlaceholdersCollector {
+    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+        // Anon const substs do not contain placeholders by default.
+        None
+    }
+
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         match t.kind() {
             ty::Placeholder(p) if p.universe == self.universe_index => {

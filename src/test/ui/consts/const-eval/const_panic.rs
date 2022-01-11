@@ -1,4 +1,3 @@
-#![feature(const_panic)]
 #![allow(non_fmt_panics)]
 #![crate_type = "lib"]
 
@@ -15,8 +14,11 @@ const Y: () = std::unreachable!();
 
 const X: () = std::unimplemented!();
 //~^ ERROR evaluation of constant value failed
-//
+
 const W: () = std::panic!(MSG);
+//~^ ERROR evaluation of constant value failed
+
+const W2: () = std::panic!("{}", MSG);
 //~^ ERROR evaluation of constant value failed
 
 const Z_CORE: () = core::panic!("cheese");
@@ -32,4 +34,7 @@ const X_CORE: () = core::unimplemented!();
 //~^ ERROR evaluation of constant value failed
 
 const W_CORE: () = core::panic!(MSG);
+//~^ ERROR evaluation of constant value failed
+
+const W2_CORE: () = core::panic!("{}", MSG);
 //~^ ERROR evaluation of constant value failed

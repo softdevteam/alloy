@@ -153,10 +153,36 @@ mod sip;
 /// Thankfully, you won't need to worry about upholding this property when
 /// deriving both [`Eq`] and `Hash` with `#[derive(PartialEq, Eq, Hash)]`.
 ///
+/// ## Prefix collisions
+///
+/// Implementations of `hash` should ensure that the data they
+/// pass to the `Hasher` are prefix-free. That is,
+/// unequal values should cause two different sequences of values to be written,
+/// and neither of the two sequences should be a prefix of the other.
+///
+/// For example, the standard implementation of [`Hash` for `&str`][impl] passes an extra
+/// `0xFF` byte to the `Hasher` so that the values `("ab", "c")` and `("a",
+/// "bc")` hash differently.
+///
+/// ## Portability
+///
+/// Due to differences in endianness and type sizes, data fed by `Hash` to a `Hasher`
+/// should not be considered portable across platforms. Additionally the data passed by most
+/// standard library types should not be considered stable between compiler versions.
+///
+/// This means tests shouldn't probe hard-coded hash values or data fed to a `Hasher` and
+/// instead should check consistency with `Eq`.
+///
+/// Serialization formats intended to be portable between platforms or compiler versions should
+/// either avoid encoding hashes or only rely on `Hash` and `Hasher` implementations that
+/// provide additional guarantees.
+///
 /// [`HashMap`]: ../../std/collections/struct.HashMap.html
 /// [`HashSet`]: ../../std/collections/struct.HashSet.html
 /// [`hash`]: Hash::hash
+/// [impl]: ../../std/primitive.str.html#impl-Hash
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "Hash"]
 pub trait Hash {
     /// Feeds this value into the given [`Hasher`].
     ///
@@ -520,7 +546,10 @@ pub trait BuildHasher {
     /// );
     /// ```
     #[unstable(feature = "build_hasher_simple_hash_one", issue = "86161")]
-    fn hash_one<T: Hash>(&self, x: T) -> u64 {
+    fn hash_one<T: Hash>(&self, x: T) -> u64
+    where
+        Self: Sized,
+    {
         let mut hasher = self.build_hasher();
         x.hash(&mut hasher);
         hasher.finish()
@@ -599,7 +628,8 @@ impl<H> Clone for BuildHasherDefault<H> {
 }
 
 #[stable(since = "1.7.0", feature = "build_hasher")]
-impl<H> Default for BuildHasherDefault<H> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<H> const Default for BuildHasherDefault<H> {
     fn default() -> BuildHasherDefault<H> {
         BuildHasherDefault(marker::PhantomData)
     }

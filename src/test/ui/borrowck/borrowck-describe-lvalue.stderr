@@ -41,7 +41,7 @@ error[E0503]: cannot use `f.x` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:37:9
    |
 LL |         let x = f.x();
-   |                 - borrow of `f` occurs here
+   |                 ----- borrow of `f` occurs here
 LL |         f.x;
    |         ^^^ use of borrowed `f`
 LL |         drop(x);
@@ -51,7 +51,7 @@ error[E0503]: cannot use `g.0` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:44:9
    |
 LL |         let x = g.x();
-   |                 - borrow of `g` occurs here
+   |                 ----- borrow of `g` occurs here
 LL |         g.0;
    |         ^^^ use of borrowed `g`
 LL |         drop(x);
@@ -71,7 +71,7 @@ error[E0503]: cannot use `e.0` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:59:20
    |
 LL |         let x = e.x();
-   |                 - borrow of `e` occurs here
+   |                 ----- borrow of `e` occurs here
 LL |         match e {
 LL |             Baz::X(value) => value
    |                    ^^^^^ use of borrowed `e`
@@ -93,7 +93,7 @@ error[E0503]: cannot use `f.x` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:74:9
    |
 LL |         let x = f.x();
-   |                 - borrow of `*f` occurs here
+   |                 ----- borrow of `*f` occurs here
 LL |         f.x;
    |         ^^^ use of borrowed `*f`
 LL |         drop(x);
@@ -103,7 +103,7 @@ error[E0503]: cannot use `g.0` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:81:9
    |
 LL |         let x = g.x();
-   |                 - borrow of `*g` occurs here
+   |                 ----- borrow of `*g` occurs here
 LL |         g.0;
    |         ^^^ use of borrowed `*g`
 LL |         drop(x);
@@ -123,7 +123,7 @@ error[E0503]: cannot use `e.0` because it was mutably borrowed
   --> $DIR/borrowck-describe-lvalue.rs:96:20
    |
 LL |         let x = e.x();
-   |                 - borrow of `*e` occurs here
+   |                 ----- borrow of `*e` occurs here
 LL |         match *e {
 LL |             Baz::X(value) => value
    |                    ^^^^^ use of borrowed `*e`
@@ -238,23 +238,22 @@ LL |         drop(x);
    |              - borrow later used here
 
 error[E0503]: cannot use `e` because it was mutably borrowed
-  --> $DIR/borrowck-describe-lvalue.rs:167:13
+  --> $DIR/borrowck-describe-lvalue.rs:166:15
    |
 LL |         let x = &mut e;
    |                 ------ borrow of `e` occurs here
 LL |         match e {
-LL |             E::A(ref ax) =>
-   |             ^^^^^^^^^^^^ use of borrowed `e`
+   |               ^ use of borrowed `e`
 ...
 LL |         drop(x);
    |              - borrow later used here
 
 error[E0502]: cannot borrow `e.0` as immutable because it is also borrowed as mutable
-  --> $DIR/borrowck-describe-lvalue.rs:167:18
+  --> $DIR/borrowck-describe-lvalue.rs:168:18
    |
 LL |         let x = &mut e;
    |                 ------ mutable borrow occurs here
-LL |         match e {
+...
 LL |             E::A(ref ax) =>
    |                  ^^^^^^ immutable borrow occurs here
 ...

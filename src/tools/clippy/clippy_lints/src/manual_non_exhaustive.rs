@@ -11,15 +11,14 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::{sym, Span};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for manual implementations of the non-exhaustive pattern.
+    /// ### What it does
+    /// Checks for manual implementations of the non-exhaustive pattern.
     ///
-    /// **Why is this bad?** Using the #[non_exhaustive] attribute expresses better the intent
+    /// ### Why is this bad?
+    /// Using the #[non_exhaustive] attribute expresses better the intent
     /// and allows possible optimizations when applied to enums.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// struct S {
     ///     pub a: i32,
@@ -53,6 +52,7 @@ declare_clippy_lint! {
     /// #[non_exhaustive]
     /// struct T(pub i32, pub i32);
     /// ```
+    #[clippy::version = "1.45.0"]
     pub MANUAL_NON_EXHAUSTIVE,
     style,
     "manual implementations of the non-exhaustive pattern can be simplified using #[non_exhaustive]"

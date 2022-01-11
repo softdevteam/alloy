@@ -52,47 +52,89 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ExprKind::Match { scrutinee, ref arms } => {
                 this.match_expr(destination, expr_span, block, &this.thir[scrutinee], arms)
             }
-            ExprKind::If { cond, then, else_opt } => {
-                let place = unpack!(
-                    block = this.as_temp(
-                        block,
-                        Some(this.local_scope()),
-                        &this.thir[cond],
-                        Mutability::Mut
+            ExprKind::If { cond, then, else_opt, if_then_scope } => {
+                let then_blk;
+                let then_expr = &this.thir[then];
+                let then_source_info = this.source_info(then_expr.span);
+                let condition_scope = this.local_scope();
+
+                let mut else_blk = unpack!(
+                    then_blk = this.in_scope(
+                        (if_then_scope, then_source_info),
+                        LintLevel::Inherited,
+                        |this| {
+                            let (then_block, else_block) =
+                                this.in_if_then_scope(condition_scope, |this| {
+                                    let then_blk = unpack!(this.then_else_break(
+                                        block,
+                                        &this.thir[cond],
+                                        Some(condition_scope),
+                                        condition_scope,
+                                        then_expr.span,
+                                    ));
+                                    this.expr_into_dest(destination, then_blk, then_expr)
+                                });
+                            then_block.and(else_block)
+                        },
                     )
                 );
-                let operand = Operand::Move(Place::from(place));
 
-                let mut then_block = this.cfg.start_new_block();
-                let mut else_block = this.cfg.start_new_block();
-                let term = TerminatorKind::if_(this.tcx, operand, then_block, else_block);
-                this.cfg.terminate(block, source_info, term);
-
-                unpack!(
-                    then_block = this.expr_into_dest(destination, then_block, &this.thir[then])
-                );
-                else_block = if let Some(else_opt) = else_opt {
-                    unpack!(this.expr_into_dest(destination, else_block, &this.thir[else_opt]))
+                else_blk = if let Some(else_opt) = else_opt {
+                    unpack!(this.expr_into_dest(destination, else_blk, &this.thir[else_opt]))
                 } else {
                     // Body of the `if` expression without an `else` clause must return `()`, thus
-                    // we implicitly generate a `else {}` if it is not specified.
+                    // we implicitly generate an `else {}` if it is not specified.
                     let correct_si = this.source_info(expr_span.shrink_to_hi());
-                    this.cfg.push_assign_unit(else_block, correct_si, destination, this.tcx);
-                    else_block
+                    this.cfg.push_assign_unit(else_blk, correct_si, destination, this.tcx);
+                    else_blk
                 };
 
                 let join_block = this.cfg.start_new_block();
                 this.cfg.terminate(
-                    then_block,
+                    then_blk,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
                 this.cfg.terminate(
-                    else_block,
+                    else_blk,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
 
+                join_block.unit()
+            }
+            ExprKind::Let { expr, ref pat } => {
+                let scope = this.local_scope();
+                let (true_block, false_block) = this.in_if_then_scope(scope, |this| {
+                    this.lower_let_expr(block, &this.thir[expr], pat, scope, expr_span)
+                });
+
+                let join_block = this.cfg.start_new_block();
+
+                this.cfg.push_assign_constant(
+                    true_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        user_ty: None,
+                        literal: ty::Const::from_bool(this.tcx, true).into(),
+                    },
+                );
+
+                this.cfg.push_assign_constant(
+                    false_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        user_ty: None,
+                        literal: ty::Const::from_bool(this.tcx, false).into(),
+                    },
+                );
+
+                this.cfg.goto(true_block, source_info, join_block);
+                this.cfg.goto(false_block, source_info, join_block);
                 join_block.unit()
             }
             ExprKind::NeverToAny { source } => {
@@ -190,7 +232,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     );
                     this.diverge_from(loop_block);
 
-                    // The “return” value of the loop body must always be an unit. We therefore
+                    // The “return” value of the loop body must always be a unit. We therefore
                     // introduce a unit temporary as the destination for the loop body.
                     let tmp = this.get_unit_temp();
                     // Execute the body, branching back to the test.
@@ -284,10 +326,16 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let fields_map: FxHashMap<_, _> = fields
                     .into_iter()
                     .map(|f| {
+                        let local_info = Box::new(LocalInfo::AggregateTemp);
                         (
                             f.name,
                             unpack!(
-                                block = this.as_operand(block, Some(scope), &this.thir[f.expr])
+                                block = this.as_operand(
+                                    block,
+                                    Some(scope),
+                                    &this.thir[f.expr],
+                                    Some(local_info)
+                                )
                             ),
                         )
                     })
@@ -328,13 +376,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         inferred_ty,
                     })
                 });
-                let adt = box AggregateKind::Adt(
+                let adt = Box::new(AggregateKind::Adt(
                     adt_def,
                     variant_index,
                     substs,
                     user_ty,
                     active_field_index,
-                );
+                ));
                 this.cfg.push_assign(
                     block,
                     source_info,
@@ -385,11 +433,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         }
                         thir::InlineAsmOperand::Const { value, span } => {
                             mir::InlineAsmOperand::Const {
-                                value: box Constant { span, user_ty: None, literal: value.into() },
+                                value: Box::new(Constant {
+                                    span,
+                                    user_ty: None,
+                                    literal: value.into(),
+                                }),
                             }
                         }
                         thir::InlineAsmOperand::SymFn { expr } => mir::InlineAsmOperand::SymFn {
-                            value: box this.as_constant(&this.thir[expr]),
+                            value: Box::new(this.as_constant(&this.thir[expr])),
                         },
                         thir::InlineAsmOperand::SymStatic { def_id } => {
                             mir::InlineAsmOperand::SymStatic { def_id }
@@ -397,8 +449,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     })
                     .collect();
 
-                let destination = this.cfg.start_new_block();
+                if !options.contains(InlineAsmOptions::NORETURN) {
+                    this.cfg.push_assign_unit(block, source_info, destination, this.tcx);
+                }
 
+                let destination_block = this.cfg.start_new_block();
                 this.cfg.terminate(
                     block,
                     source_info,
@@ -410,11 +465,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         destination: if options.contains(InlineAsmOptions::NORETURN) {
                             None
                         } else {
-                            Some(destination)
+                            Some(destination_block)
                         },
+                        cleanup: None,
                     },
                 );
-                destination.unit()
+                if options.contains(InlineAsmOptions::MAY_UNWIND) {
+                    this.diverge_from(block);
+                }
+                destination_block.unit()
             }
 
             // These cases don't actually need a destination
@@ -462,7 +521,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
             ExprKind::Yield { value } => {
                 let scope = this.local_scope();
-                let value = unpack!(block = this.as_operand(block, Some(scope), &this.thir[value]));
+                let value =
+                    unpack!(block = this.as_operand(block, Some(scope), &this.thir[value], None));
                 let resume = this.cfg.start_new_block();
                 this.cfg.terminate(
                     block,

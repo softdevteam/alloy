@@ -128,24 +128,6 @@ impl GcAllocator {
         }
     }
 
-    pub fn get_stats() -> GcStats {
-        let mut ps = boehm::ProfileStats::default();
-        unsafe {
-            boehm::GC_get_prof_stats(
-                &mut ps as *mut boehm::ProfileStats,
-                core::mem::size_of::<boehm::ProfileStats>(),
-            );
-        }
-        let total_gc_time = unsafe { boehm::GC_get_full_gc_total_time() };
-
-        GcStats {
-            total_gc_time,
-            num_collections: ps.gc_no,
-            total_freed: ps.bytes_reclaimed_since_gc,
-            total_alloced: ps.bytes_allocd_since_gc,
-        }
-    }
-
     pub fn init() {
         unsafe { boehm::GC_init() }
     }
@@ -167,12 +149,4 @@ impl GcAllocator {
     pub fn allow_register_threads() {
         unsafe { boehm::GC_allow_register_threads() }
     }
-}
-
-#[derive(Debug)]
-pub struct GcStats {
-    total_gc_time: usize, // In milliseconds.
-    num_collections: usize,
-    total_freed: usize,   // In bytes
-    total_alloced: usize, // In bytes
 }

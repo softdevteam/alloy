@@ -3,9 +3,6 @@ error[E0277]: the trait bound `isize: HasState` is not satisfied
    |
 LL | fn add_state(op: <isize as HasState>::State) {
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `HasState` is not implemented for `isize`
-...
-LL | trait HasState {
-   | -------------- required by this bound in `HasState`
 
 error: aborting due to previous error
 

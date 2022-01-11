@@ -80,7 +80,7 @@ use crate::vec::Vec;
 ///
 /// # Examples
 ///
-/// You can create a `String` from [a literal string][`str`] with [`String::from`]:
+/// You can create a `String` from [a literal string][`&str`] with [`String::from`]:
 ///
 /// [`String::from`]: From::from
 ///
@@ -129,7 +129,7 @@ use crate::vec::Vec;
 /// println!("The first letter of s is {}", s[0]); // ERROR!!!
 /// ```
 ///
-/// [`OsString`]: ../../std/ffi/struct.OsString.html
+/// [`OsString`]: ../../std/ffi/struct.OsString.html "ffi::OsString"
 ///
 /// Indexing is intended to be a constant-time operation, but UTF-8 encoding
 /// does not allow us to do this. Furthermore, it's not clear what sort of
@@ -142,7 +142,7 @@ use crate::vec::Vec;
 ///
 /// # Deref
 ///
-/// `String`s implement [`Deref`]`<Target=str>`, and so inherit all of [`str`]'s
+/// `String` implements <code>[Deref]<Target = [str]></code>, and so inherits all of [`str`]'s
 /// methods. In addition, this means that you can pass a `String` to a
 /// function which takes a [`&str`] by using an ampersand (`&`):
 ///
@@ -183,7 +183,7 @@ use crate::vec::Vec;
 /// to explicitly extract the string slice containing the string. The second
 /// way changes `example_func(&example_string);` to
 /// `example_func(&*example_string);`. In this case we are dereferencing a
-/// `String` to a [`str`][`&str`], then referencing the [`str`][`&str`] back to
+/// `String` to a [`str`], then referencing the [`str`] back to
 /// [`&str`]. The second way is more idiomatic, however both work to do the
 /// conversion explicitly rather than relying on the implicit conversion.
 ///
@@ -283,12 +283,14 @@ use crate::vec::Vec;
 ///
 /// Here, there's no need to allocate more memory inside the loop.
 ///
-/// [`str`]: prim@str
-/// [`&str`]: prim@str
-/// [`Deref`]: core::ops::Deref
+/// [str]: prim@str "str"
+/// [`str`]: prim@str "str"
+/// [`&str`]: prim@str "&str"
+/// [Deref]: core::ops::Deref "ops::Deref"
+/// [`Deref`]: core::ops::Deref "ops::Deref"
 /// [`as_str()`]: String::as_str
 #[derive(PartialOrd, Eq, Ord)]
-#[cfg_attr(not(test), rustc_diagnostic_item = "string_type")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "String")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct String {
     vec: Vec<u8>,
@@ -309,10 +311,10 @@ pub struct String {
 /// an analogue to `FromUtf8Error`, and you can get one from a `FromUtf8Error`
 /// through the [`utf8_error`] method.
 ///
-/// [`Utf8Error`]: core::str::Utf8Error
-/// [`std::str`]: core::str
-/// [`&str`]: prim@str
-/// [`utf8_error`]: Self::utf8_error
+/// [`Utf8Error`]: str::Utf8Error "std::str::Utf8Error"
+/// [`std::str`]: core::str "std::str"
+/// [`&str`]: prim@str "&str"
+/// [`utf8_error`]: FromUtf8Error::utf8_error
 ///
 /// # Examples
 ///
@@ -377,6 +379,7 @@ impl String {
     #[inline]
     #[rustc_const_stable(feature = "const_string_new", since = "1.39.0")]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub const fn new() -> String {
         String { vec: Vec::new() }
     }
@@ -421,6 +424,7 @@ impl String {
     #[cfg(not(no_global_oom_handling))]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> String {
         String { vec: Vec::with_capacity(capacity) }
     }
@@ -488,8 +492,8 @@ impl String {
     /// with this error.
     ///
     /// [`from_utf8_unchecked`]: String::from_utf8_unchecked
-    /// [`Vec<u8>`]: crate::vec::Vec
-    /// [`&str`]: prim@str
+    /// [`Vec<u8>`]: crate::vec::Vec "Vec"
+    /// [`&str`]: prim@str "&str"
     /// [`into_bytes`]: String::into_bytes
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -525,7 +529,7 @@ impl String {
     /// it's already valid UTF-8, we don't need a new allocation. This return
     /// type allows us to handle both cases.
     ///
-    /// [`Cow<'a, str>`]: crate::borrow::Cow
+    /// [`Cow<'a, str>`]: crate::borrow::Cow "borrow::Cow"
     ///
     /// # Examples
     ///
@@ -549,18 +553,19 @@ impl String {
     ///
     /// assert_eq!("Hello �World", output);
     /// ```
+    #[must_use]
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn from_utf8_lossy(v: &[u8]) -> Cow<'_, str> {
         let mut iter = lossy::Utf8Lossy::from_bytes(v).chunks();
 
-        let (first_valid, first_broken) = if let Some(chunk) = iter.next() {
+        let first_valid = if let Some(chunk) = iter.next() {
             let lossy::Utf8LossyChunk { valid, broken } = chunk;
-            if valid.len() == v.len() {
-                debug_assert!(broken.is_empty());
+            if broken.is_empty() {
+                debug_assert_eq!(valid.len(), v.len());
                 return Cow::Borrowed(valid);
             }
-            (valid, broken)
+            valid
         } else {
             return Cow::Borrowed("");
         };
@@ -569,9 +574,7 @@ impl String {
 
         let mut res = String::with_capacity(v.len());
         res.push_str(first_valid);
-        if !first_broken.is_empty() {
-            res.push_str(REPLACEMENT);
-        }
+        res.push_str(REPLACEMENT);
 
         for lossy::Utf8LossyChunk { valid, broken } in iter {
             res.push_str(valid);
@@ -626,7 +629,7 @@ impl String {
     /// conversion requires a memory allocation.
     ///
     /// [`from_utf8_lossy`]: String::from_utf8_lossy
-    /// [`Cow<'a, str>`]: crate::borrow::Cow
+    /// [`Cow<'a, str>`]: crate::borrow::Cow "borrow::Cow"
     /// [U+FFFD]: core::char::REPLACEMENT_CHARACTER
     ///
     /// # Examples
@@ -643,6 +646,7 @@ impl String {
     ///            String::from_utf16_lossy(v));
     /// ```
     #[cfg(not(no_global_oom_handling))]
+    #[must_use]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn from_utf16_lossy(v: &[u16]) -> String {
@@ -675,6 +679,7 @@ impl String {
     /// let rebuilt = unsafe { String::from_raw_parts(ptr, len, cap) };
     /// assert_eq!(rebuilt, "hello");
     /// ```
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[unstable(feature = "vec_into_raw_parts", reason = "new API", issue = "65816")]
     pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
         self.vec.into_raw_parts()
@@ -760,6 +765,7 @@ impl String {
     /// assert_eq!("💖", sparkle_heart);
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> String {
         String { vec: bytes }
@@ -780,6 +786,7 @@ impl String {
     /// assert_eq!(&[104, 101, 108, 108, 111][..], &bytes[..]);
     /// ```
     #[inline]
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn into_bytes(self) -> Vec<u8> {
         self.vec
@@ -797,6 +804,7 @@ impl String {
     /// assert_eq!("foo", s.as_str());
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "string_as_str", since = "1.7.0")]
     pub fn as_str(&self) -> &str {
         self
@@ -817,6 +825,7 @@ impl String {
     /// assert_eq!("FOOBAR", s_mut_str);
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "string_as_str", since = "1.7.0")]
     pub fn as_mut_str(&mut self) -> &mut str {
         self
@@ -890,6 +899,7 @@ impl String {
     /// assert!(s.capacity() >= 10);
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn capacity(&self) -> usize {
         self.vec.capacity()
@@ -922,7 +932,7 @@ impl String {
     /// assert!(s.capacity() >= 10);
     /// ```
     ///
-    /// This may not actually increase the capacity:
+    /// This might not actually increase the capacity:
     ///
     /// ```
     /// let mut s = String::with_capacity(10);
@@ -970,7 +980,7 @@ impl String {
     /// assert!(s.capacity() >= 10);
     /// ```
     ///
-    /// This may not actually increase the capacity:
+    /// This might not actually increase the capacity:
     ///
     /// ```
     /// let mut s = String::with_capacity(10);
@@ -1008,7 +1018,6 @@ impl String {
     /// # Examples
     ///
     /// ```
-    /// #![feature(try_reserve)]
     /// use std::collections::TryReserveError;
     ///
     /// fn process_data(data: &str) -> Result<String, TryReserveError> {
@@ -1024,7 +1033,7 @@ impl String {
     /// }
     /// # process_data("rust").expect("why is the test harness OOMing on 4 bytes?");
     /// ```
-    #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
+    #[stable(feature = "try_reserve", since = "1.57.0")]
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.vec.try_reserve(additional)
     }
@@ -1036,7 +1045,9 @@ impl String {
     ///
     /// Note that the allocator may give the collection more space than it
     /// requests. Therefore, capacity can not be relied upon to be precisely
-    /// minimal. Prefer `reserve` if future insertions are expected.
+    /// minimal. Prefer [`try_reserve`] if future insertions are expected.
+    ///
+    /// [`try_reserve`]: String::try_reserve
     ///
     /// # Errors
     ///
@@ -1046,7 +1057,6 @@ impl String {
     /// # Examples
     ///
     /// ```
-    /// #![feature(try_reserve)]
     /// use std::collections::TryReserveError;
     ///
     /// fn process_data(data: &str) -> Result<String, TryReserveError> {
@@ -1062,7 +1072,7 @@ impl String {
     /// }
     /// # process_data("rust").expect("why is the test harness OOMing on 4 bytes?");
     /// ```
-    #[unstable(feature = "try_reserve", reason = "new API", issue = "48043")]
+    #[stable(feature = "try_reserve", since = "1.57.0")]
     pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.vec.try_reserve_exact(additional)
     }
@@ -1099,7 +1109,6 @@ impl String {
     /// # Examples
     ///
     /// ```
-    /// #![feature(shrink_to)]
     /// let mut s = String::from("foo");
     ///
     /// s.reserve(100);
@@ -1112,7 +1121,7 @@ impl String {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline]
-    #[unstable(feature = "shrink_to", reason = "new API", issue = "56431")]
+    #[stable(feature = "shrink_to", since = "1.56.0")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         self.vec.shrink_to(min_capacity)
     }
@@ -1158,6 +1167,7 @@ impl String {
     /// assert_eq!(&[104, 101, 108, 108, 111], s.as_bytes());
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn as_bytes(&self) -> &[u8] {
         &self.vec
@@ -1351,13 +1361,14 @@ impl String {
     /// assert_eq!(s, "foobar");
     /// ```
     ///
-    /// The exact order may be useful for tracking external state, like an index.
+    /// Because the elements are visited exactly once in the original order,
+    /// external state may be used to decide which elements to keep.
     ///
     /// ```
     /// let mut s = String::from("abcde");
     /// let keep = [false, true, true, false, true];
-    /// let mut i = 0;
-    /// s.retain(|_| (keep[i], i += 1).0);
+    /// let mut iter = keep.iter();
+    /// s.retain(|_| *iter.next().unwrap());
     /// assert_eq!(s, "bce");
     /// ```
     #[inline]
@@ -1491,10 +1502,11 @@ impl String {
     ///
     /// # Safety
     ///
-    /// This function is unsafe because it does not check that the bytes passed
-    /// to it are valid UTF-8. If this constraint is violated, it may cause
-    /// memory unsafety issues with future users of the `String`, as the rest of
-    /// the standard library assumes that `String`s are valid UTF-8.
+    /// This function is unsafe because the returned `&mut Vec` allows writing
+    /// bytes which are not valid UTF-8. If this constraint is violated, using
+    /// the original `String` after dropping the `&mut Vec` may violate memory
+    /// safety, as the rest of the standard library assumes that `String`s are
+    /// valid UTF-8.
     ///
     /// # Examples
     ///
@@ -1518,7 +1530,7 @@ impl String {
     }
 
     /// Returns the length of this `String`, in bytes, not [`char`]s or
-    /// graphemes. In other words, it may not be what a human considers the
+    /// graphemes. In other words, it might not be what a human considers the
     /// length of the string.
     ///
     /// # Examples
@@ -1534,6 +1546,7 @@ impl String {
     /// assert_eq!(fancy_f.chars().count(), 3);
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
         self.vec.len()
@@ -1553,6 +1566,7 @@ impl String {
     /// assert!(!v.is_empty());
     /// ```
     #[inline]
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -1720,11 +1734,11 @@ impl String {
         unsafe { self.as_mut_vec() }.splice((start, end), replace_with.bytes());
     }
 
-    /// Converts this `String` into a [`Box`]`<`[`str`]`>`.
+    /// Converts this `String` into a <code>[Box]<[str]></code>.
     ///
     /// This will drop any excess capacity.
     ///
-    /// [`str`]: prim@str
+    /// [str]: prim@str "str"
     ///
     /// # Examples
     ///
@@ -1737,6 +1751,7 @@ impl String {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "box_str", since = "1.4.0")]
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
     pub fn into_boxed_str(self) -> Box<str> {
         let slice = self.vec.into_boxed_slice();
@@ -1759,6 +1774,7 @@ impl FromUtf8Error {
     ///
     /// assert_eq!(&[0, 159], value.unwrap_err().as_bytes());
     /// ```
+    #[must_use]
     #[stable(feature = "from_utf8_error_as_bytes", since = "1.26.0")]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..]
@@ -1782,6 +1798,7 @@ impl FromUtf8Error {
     ///
     /// assert_eq!(vec![0, 159], value.unwrap_err().into_bytes());
     /// ```
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
@@ -1794,8 +1811,8 @@ impl FromUtf8Error {
     /// an analogue to `FromUtf8Error`. See its documentation for more details
     /// on using it.
     ///
-    /// [`std::str`]: core::str
-    /// [`&str`]: prim@str
+    /// [`std::str`]: core::str "std::str"
+    /// [`&str`]: prim@str "&str"
     ///
     /// # Examples
     ///
@@ -1810,6 +1827,7 @@ impl FromUtf8Error {
     /// // the first byte is invalid here
     /// assert_eq!(1, error.valid_up_to());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn utf8_error(&self) -> Utf8Error {
         self.error
@@ -2104,7 +2122,8 @@ impl_eq! { Cow<'a, str>, &'b str }
 impl_eq! { Cow<'a, str>, String }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Default for String {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl const Default for String {
     /// Creates an empty `String`.
     #[inline]
     fn default() -> String {
@@ -2317,7 +2336,7 @@ impl ops::DerefMut for String {
 ///
 /// This alias exists for backwards compatibility, and may be eventually deprecated.
 ///
-/// [`Infallible`]: core::convert::Infallible
+/// [`Infallible`]: core::convert::Infallible "convert::Infallible"
 #[stable(feature = "str_parse_error", since = "1.5.0")]
 pub type ParseError = core::convert::Infallible;
 
@@ -2604,7 +2623,7 @@ impl<'a> From<&'a str> for Cow<'a, str> {
     /// assert_eq!(Cow::from("eggplant"), Cow::Borrowed("eggplant"));
     /// ```
     ///
-    /// [`Borrowed`]: crate::borrow::Cow::Borrowed
+    /// [`Borrowed`]: crate::borrow::Cow::Borrowed "borrow::Cow::Borrowed"
     #[inline]
     fn from(s: &'a str) -> Cow<'a, str> {
         Cow::Borrowed(s)
@@ -2627,7 +2646,7 @@ impl<'a> From<String> for Cow<'a, str> {
     /// assert_eq!(Cow::from(s), Cow::<'static, str>::Owned(s2));
     /// ```
     ///
-    /// [`Owned`]: crate::borrow::Cow::Owned
+    /// [`Owned`]: crate::borrow::Cow::Owned "borrow::Cow::Owned"
     #[inline]
     fn from(s: String) -> Cow<'a, str> {
         Cow::Owned(s)
@@ -2649,7 +2668,7 @@ impl<'a> From<&'a String> for Cow<'a, str> {
     /// assert_eq!(Cow::from(&s), Cow::Borrowed("eggplant"));
     /// ```
     ///
-    /// [`Borrowed`]: crate::borrow::Cow::Borrowed
+    /// [`Borrowed`]: crate::borrow::Cow::Borrowed "borrow::Cow::Borrowed"
     #[inline]
     fn from(s: &'a String) -> Cow<'a, str> {
         Cow::Borrowed(s.as_str())
@@ -2773,6 +2792,7 @@ impl<'a> Drain<'a> {
     /// let _ = drain.next().unwrap();
     /// assert_eq!(drain.as_str(), "bc");
     /// ```
+    #[must_use]
     #[stable(feature = "string_drain_as_str", since = "1.55.0")]
     pub fn as_str(&self) -> &str {
         self.iter.as_str()

@@ -61,6 +61,7 @@ impl WaitTimeoutResult {
     ///     }
     /// }
     /// ```
+    #[must_use]
     #[stable(feature = "wait_timeout", since = "1.5.0")]
     pub fn timed_out(&self) -> bool {
         self.0
@@ -121,6 +122,7 @@ impl Condvar {
     /// let condvar = Condvar::new();
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub fn new() -> Condvar {
         Condvar { inner: sys::Condvar::new() }
     }
@@ -254,7 +256,7 @@ impl Condvar {
     /// except that the thread will be blocked for roughly no longer
     /// than `ms` milliseconds. This method should not be used for
     /// precise timing due to anomalies such as preemption or platform
-    /// differences that may not cause the maximum amount of time
+    /// differences that might not cause the maximum amount of time
     /// waited to be precisely `ms`.
     ///
     /// Note that the best effort is made to ensure that the time waited is
@@ -317,7 +319,7 @@ impl Condvar {
     /// The semantics of this function are equivalent to [`wait`] except that
     /// the thread will be blocked for roughly no longer than `dur`. This
     /// method should not be used for precise timing due to anomalies such as
-    /// preemption or platform differences that may not cause the maximum
+    /// preemption or platform differences that might not cause the maximum
     /// amount of time waited to be precisely `dur`.
     ///
     /// Note that the best effort is made to ensure that the time waited is
@@ -392,7 +394,7 @@ impl Condvar {
     /// The semantics of this function are equivalent to [`wait_while`] except
     /// that the thread will be blocked for roughly no longer than `dur`. This
     /// method should not be used for precise timing due to anomalies such as
-    /// preemption or platform differences that may not cause the maximum
+    /// preemption or platform differences that might not cause the maximum
     /// amount of time waited to be precisely `dur`.
     ///
     /// Note that the best effort is made to ensure that the time waited is

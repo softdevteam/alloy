@@ -1,15 +1,16 @@
-use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_note};
-use clippy_utils::source::first_line_of_span;
+use clippy_utils::attrs::is_doc_hidden;
+use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_note, span_lint_and_then};
+use clippy_utils::source::{first_line_of_span, snippet_with_applicability};
 use clippy_utils::ty::{implements_trait, is_type_diagnostic_item};
 use clippy_utils::{is_entrypoint_fn, is_expn_of, match_panic_def_id, method_chain_args, return_ty};
 use if_chain::if_chain;
 use itertools::Itertools;
-use rustc_ast::ast::{Async, AttrKind, Attribute, FnKind, FnRetTy, ItemKind};
+use rustc_ast::ast::{Async, AttrKind, Attribute, Fn, FnRetTy, ItemKind};
 use rustc_ast::token::CommentKind;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::emitter::EmitterWriter;
-use rustc_errors::Handler;
+use rustc_errors::{Applicability, Handler, SuggestionStyle};
 use rustc_hir as hir;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{AnonConst, Expr, ExprKind, QPath};
@@ -21,6 +22,7 @@ use rustc_parse::maybe_new_parser_from_source_str;
 use rustc_parse::parser::ForceCollect;
 use rustc_session::parse::ParseSess;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::def_id::LocalDefId;
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{BytePos, FilePathMapping, MultiSpan, SourceMap, Span};
 use rustc_span::{sym, FileName, Pos};
@@ -30,24 +32,27 @@ use std::thread;
 use url::Url;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for the presence of `_`, `::` or camel-case words
+    /// ### What it does
+    /// Checks for the presence of `_`, `::` or camel-case words
     /// outside ticks in documentation.
     ///
-    /// **Why is this bad?** *Rustdoc* supports markdown formatting, `_`, `::` and
+    /// ### Why is this bad?
+    /// *Rustdoc* supports markdown formatting, `_`, `::` and
     /// camel-case probably indicates some code which should be included between
     /// ticks. `_` can also be used for emphasis in markdown, this lint tries to
     /// consider that.
     ///
-    /// **Known problems:** Lots of bad docs won’t be fixed, what the lint checks
+    /// ### Known problems
+    /// Lots of bad docs won’t be fixed, what the lint checks
     /// for is limited, and there are still false positives. HTML elements and their
     /// content are not linted.
     ///
     /// In addition, when writing documentation comments, including `[]` brackets
-    /// inside a link text would trip the parser. Therfore, documenting link with
+    /// inside a link text would trip the parser. Therefore, documenting link with
     /// `[`SmallVec<[T; INLINE_CAPACITY]>`]` and then [`SmallVec<[T; INLINE_CAPACITY]>`]: SmallVec
     /// would fail.
     ///
-    /// **Examples:**
+    /// ### Examples
     /// ```rust
     /// /// Do something with the foo_bar parameter. See also
     /// /// that::other::module::foo.
@@ -62,21 +67,22 @@ declare_clippy_lint! {
     /// /// [SmallVec]: SmallVec
     /// fn main() {}
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub DOC_MARKDOWN,
     pedantic,
     "presence of `_`, `::` or camel-case outside backticks in documentation"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for the doc comments of publicly visible
+    /// ### What it does
+    /// Checks for the doc comments of publicly visible
     /// unsafe functions and warns if there is no `# Safety` section.
     ///
-    /// **Why is this bad?** Unsafe functions should document their safety
+    /// ### Why is this bad?
+    /// Unsafe functions should document their safety
     /// preconditions, so that users can be sure they are using them safely.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Examples:**
+    /// ### Examples
     /// ```rust
     ///# type Universe = ();
     /// /// This function should really be documented
@@ -96,22 +102,22 @@ declare_clippy_lint! {
     ///     unimplemented!();
     /// }
     /// ```
+    #[clippy::version = "1.39.0"]
     pub MISSING_SAFETY_DOC,
     style,
     "`pub unsafe fn` without `# Safety` docs"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks the doc comments of publicly visible functions that
+    /// ### What it does
+    /// Checks the doc comments of publicly visible functions that
     /// return a `Result` type and warns if there is no `# Errors` section.
     ///
-    /// **Why is this bad?** Documenting the type of errors that can be returned from a
+    /// ### Why is this bad?
+    /// Documenting the type of errors that can be returned from a
     /// function can help callers write code to handle the errors appropriately.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Examples:**
-    ///
+    /// ### Examples
     /// Since the following function returns a `Result` it has an `# Errors` section in
     /// its doc comment:
     ///
@@ -125,22 +131,22 @@ declare_clippy_lint! {
     ///     unimplemented!();
     /// }
     /// ```
+    #[clippy::version = "1.41.0"]
     pub MISSING_ERRORS_DOC,
     pedantic,
     "`pub fn` returns `Result` without `# Errors` in doc comment"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks the doc comments of publicly visible functions that
+    /// ### What it does
+    /// Checks the doc comments of publicly visible functions that
     /// may panic and warns if there is no `# Panics` section.
     ///
-    /// **Why is this bad?** Documenting the scenarios in which panicking occurs
+    /// ### Why is this bad?
+    /// Documenting the scenarios in which panicking occurs
     /// can help callers who do not want to panic to avoid those situations.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Examples:**
-    ///
+    /// ### Examples
     /// Since the following function may panic it has a `# Panics` section in
     /// its doc comment:
     ///
@@ -156,20 +162,21 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "1.52.0"]
     pub MISSING_PANICS_DOC,
     pedantic,
     "`pub fn` may panic without `# Panics` in doc comment"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `fn main() { .. }` in doctests
+    /// ### What it does
+    /// Checks for `fn main() { .. }` in doctests
     ///
-    /// **Why is this bad?** The test can be shorter (and likely more readable)
+    /// ### Why is this bad?
+    /// The test can be shorter (and likely more readable)
     /// if the `fn main()` is left implicit.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Examples:**
+    /// ### Examples
     /// ``````rust
     /// /// An example of a doctest with a `main()` function
     /// ///
@@ -184,6 +191,7 @@ declare_clippy_lint! {
     ///     unimplemented!();
     /// }
     /// ``````
+    #[clippy::version = "1.40.0"]
     pub NEEDLESS_DOCTEST_MAIN,
     style,
     "presence of `fn main() {` in code examples"
@@ -210,7 +218,7 @@ impl_lint_pass!(DocMarkdown =>
 );
 
 impl<'tcx> LateLintPass<'tcx> for DocMarkdown {
-    fn check_crate(&mut self, cx: &LateContext<'tcx>, _: &'tcx hir::Crate<'_>) {
+    fn check_crate(&mut self, cx: &LateContext<'tcx>) {
         let attrs = cx.tcx.hir().attrs(hir::CRATE_HIR_ID);
         check_attrs(cx, &self.valid_idents, attrs);
     }
@@ -228,21 +236,23 @@ impl<'tcx> LateLintPass<'tcx> for DocMarkdown {
                         panic_span: None,
                     };
                     fpu.visit_expr(&body.value);
-                    lint_for_missing_headers(
-                        cx,
-                        item.hir_id(),
-                        item.span,
-                        sig,
-                        headers,
-                        Some(body_id),
-                        fpu.panic_span,
-                    );
+                    lint_for_missing_headers(cx, item.def_id, item.span, sig, headers, Some(body_id), fpu.panic_span);
                 }
             },
             hir::ItemKind::Impl(ref impl_) => {
                 self.in_trait_impl = impl_.of_trait.is_some();
             },
-            _ => {},
+            hir::ItemKind::Trait(_, unsafety, ..) => {
+                if !headers.safety && unsafety == hir::Unsafety::Unsafe {
+                    span_lint(
+                        cx,
+                        MISSING_SAFETY_DOC,
+                        item.span,
+                        "docs for unsafe trait missing `# Safety` section",
+                    );
+                }
+            },
+            _ => (),
         }
     }
 
@@ -257,7 +267,7 @@ impl<'tcx> LateLintPass<'tcx> for DocMarkdown {
         let headers = check_attrs(cx, &self.valid_idents, attrs);
         if let hir::TraitItemKind::Fn(ref sig, ..) = item.kind {
             if !in_external_macro(cx.tcx.sess, item.span) {
-                lint_for_missing_headers(cx, item.hir_id(), item.span, sig, headers, None, None);
+                lint_for_missing_headers(cx, item.def_id, item.span, sig, headers, None, None);
             }
         }
     }
@@ -276,31 +286,34 @@ impl<'tcx> LateLintPass<'tcx> for DocMarkdown {
                 panic_span: None,
             };
             fpu.visit_expr(&body.value);
-            lint_for_missing_headers(
-                cx,
-                item.hir_id(),
-                item.span,
-                sig,
-                headers,
-                Some(body_id),
-                fpu.panic_span,
-            );
+            lint_for_missing_headers(cx, item.def_id, item.span, sig, headers, Some(body_id), fpu.panic_span);
         }
     }
 }
 
 fn lint_for_missing_headers<'tcx>(
     cx: &LateContext<'tcx>,
-    hir_id: hir::HirId,
+    def_id: LocalDefId,
     span: impl Into<MultiSpan> + Copy,
     sig: &hir::FnSig<'_>,
     headers: DocHeaders,
     body_id: Option<hir::BodyId>,
     panic_span: Option<Span>,
 ) {
-    if !cx.access_levels.is_exported(hir_id) {
+    if !cx.access_levels.is_exported(def_id) {
         return; // Private functions do not require doc comments
     }
+
+    // do not lint if any parent has `#[doc(hidden)]` attribute (#7347)
+    if cx
+        .tcx
+        .hir()
+        .parent_iter(cx.tcx.hir().local_def_id_to_hir_id(def_id))
+        .any(|(id, _node)| is_doc_hidden(cx.tcx.hir().attrs(id)))
+    {
+        return;
+    }
+
     if !headers.safety && sig.header.unsafety == hir::Unsafety::Unsafe {
         span_lint(
             cx,
@@ -320,7 +333,8 @@ fn lint_for_missing_headers<'tcx>(
         );
     }
     if !headers.errors {
-        if is_type_diagnostic_item(cx, return_ty(cx, hir_id), sym::result_type) {
+        let hir_id = cx.tcx.hir().local_def_id_to_hir_id(def_id);
+        if is_type_diagnostic_item(cx, return_ty(cx, hir_id), sym::Result) {
             span_lint(
                 cx,
                 MISSING_ERRORS_DOC,
@@ -338,7 +352,7 @@ fn lint_for_missing_headers<'tcx>(
                 if let ty::Opaque(_, subs) = ret_ty.kind();
                 if let Some(gen) = subs.types().next();
                 if let ty::Generator(_, subs, _) = gen.kind();
-                if is_type_diagnostic_item(cx, subs.as_generator().return_ty(), sym::result_type);
+                if is_type_diagnostic_item(cx, subs.as_generator().return_ty(), sym::Result);
                 then {
                     span_lint(
                         cx,
@@ -409,6 +423,15 @@ struct DocHeaders {
 }
 
 fn check_attrs<'a>(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, attrs: &'a [Attribute]) -> DocHeaders {
+    use pulldown_cmark::{BrokenLink, CowStr, Options};
+    /// We don't want the parser to choke on intra doc links. Since we don't
+    /// actually care about rendering them, just pretend that all broken links are
+    /// point to a fake address.
+    #[allow(clippy::unnecessary_wraps)] // we're following a type signature
+    fn fake_broken_link_callback<'a>(_: BrokenLink<'_>) -> Option<(CowStr<'a>, CowStr<'a>)> {
+        Some(("fake".into(), "fake".into()))
+    }
+
     let mut doc = String::new();
     let mut spans = vec![];
 
@@ -443,7 +466,10 @@ fn check_attrs<'a>(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, attrs
         };
     }
 
-    let parser = pulldown_cmark::Parser::new(&doc).into_offset_iter();
+    let mut cb = fake_broken_link_callback;
+
+    let parser =
+        pulldown_cmark::Parser::new_with_broken_link_callback(&doc, Options::empty(), Some(&mut cb)).into_offset_iter();
     // Iterate over all `Events` and combine consecutive events into one
     let events = parser.coalesce(|previous, current| {
         use pulldown_cmark::Event::Text;
@@ -557,9 +583,12 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
                     // text "http://example.com" by pulldown-cmark
                     continue;
                 }
-                headers.safety |= in_heading && text.trim() == "Safety";
-                headers.errors |= in_heading && text.trim() == "Errors";
-                headers.panics |= in_heading && text.trim() == "Panics";
+                let trimmed_text = text.trim();
+                headers.safety |= in_heading && trimmed_text == "Safety";
+                headers.safety |= in_heading && trimmed_text == "Implementation safety";
+                headers.safety |= in_heading && trimmed_text == "Implementation Safety";
+                headers.errors |= in_heading && trimmed_text == "Errors";
+                headers.panics |= in_heading && trimmed_text == "Panics";
                 if in_code {
                     if is_rust {
                         let edition = edition.unwrap_or_else(|| cx.tcx.sess.edition());
@@ -591,8 +620,8 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
                 let filename = FileName::anon_source_code(&code);
 
                 let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-                let emitter = EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
-                let handler = Handler::with_emitter(false, None, box emitter);
+                let emitter = EmitterWriter::new(Box::new(io::sink()), None, false, false, false, None, false);
+                let handler = Handler::with_emitter(false, None, Box::new(emitter));
                 let sess = ParseSess::with_span_handler(handler, sm);
 
                 let mut parser = match maybe_new_parser_from_source_str(&sess, filename, code) {
@@ -615,7 +644,9 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
                             | ItemKind::ExternCrate(..)
                             | ItemKind::ForeignMod(..) => return false,
                             // We found a main function ...
-                            ItemKind::Fn(box FnKind(_, sig, _, Some(block))) if item.ident.name == sym::main => {
+                            ItemKind::Fn(box Fn {
+                                sig, body: Some(block), ..
+                            }) if item.ident.name == sym::main => {
                                 let is_async = matches!(sig.header.asyncness, Async::Yes { .. });
                                 let returns_nothing = match &sig.decl.output {
                                     FnRetTy::Default(..) => true,
@@ -665,10 +696,18 @@ fn check_text(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, text: &str
     for word in text.split(|c: char| c.is_whitespace() || c == '\'') {
         // Trim punctuation as in `some comment (see foo::bar).`
         //                                                   ^^
-        // Or even as in `_foo bar_` which is emphasized.
-        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+        // Or even as in `_foo bar_` which is emphasized. Also preserve `::` as a prefix/suffix.
+        let mut word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != ':');
 
-        if valid_idents.contains(word) {
+        // Remove leading or trailing single `:` which may be part of a sentence.
+        if word.starts_with(':') && !word.starts_with("::") {
+            word = word.trim_start_matches(':');
+        }
+        if word.ends_with(':') && !word.ends_with("::") {
+            word = word.trim_end_matches(':');
+        }
+
+        if valid_idents.contains(word) || word.chars().all(|c| c == ':') {
             continue;
         }
 
@@ -678,6 +717,7 @@ fn check_text(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, text: &str
             span.lo() + BytePos::from_usize(offset),
             span.lo() + BytePos::from_usize(offset + word.len()),
             span.ctxt(),
+            span.parent(),
         );
 
         check_word(cx, word, span);
@@ -722,17 +762,31 @@ fn check_word(cx: &LateContext<'_>, word: &str, span: Span) {
         }
     }
 
-    // We assume that mixed-case words are not meant to be put inside bacticks. (Issue #2343)
+    // We assume that mixed-case words are not meant to be put inside backticks. (Issue #2343)
     if has_underscore(word) && has_hyphen(word) {
         return;
     }
 
     if has_underscore(word) || word.contains("::") || is_camel_case(word) {
-        span_lint(
+        let mut applicability = Applicability::MachineApplicable;
+
+        span_lint_and_then(
             cx,
             DOC_MARKDOWN,
             span,
-            &format!("you should put `{}` between ticks in the documentation", word),
+            "item in documentation is missing backticks",
+            |diag| {
+                let snippet = snippet_with_applicability(cx, span, "..", &mut applicability);
+                diag.span_suggestion_with_style(
+                    span,
+                    "try",
+                    format!("`{}`", snippet),
+                    applicability,
+                    // always show the suggestion in a separate line, since the
+                    // inline presentation adds another pair of backticks
+                    SuggestionStyle::ShowAlways,
+                );
+            },
         );
     }
 }
@@ -771,9 +825,9 @@ impl<'a, 'tcx> Visitor<'tcx> for FindPanicUnwrap<'a, 'tcx> {
 
         // check for `unwrap`
         if let Some(arglists) = method_chain_args(expr, &["unwrap"]) {
-            let reciever_ty = self.typeck_results.expr_ty(&arglists[0][0]).peel_refs();
-            if is_type_diagnostic_item(self.cx, reciever_ty, sym::option_type)
-                || is_type_diagnostic_item(self.cx, reciever_ty, sym::result_type)
+            let receiver_ty = self.typeck_results.expr_ty(&arglists[0][0]).peel_refs();
+            if is_type_diagnostic_item(self.cx, receiver_ty, sym::Option)
+                || is_type_diagnostic_item(self.cx, receiver_ty, sym::Result)
             {
                 self.panic_span = Some(expr.span);
             }

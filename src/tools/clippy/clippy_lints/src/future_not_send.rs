@@ -12,12 +12,14 @@ use rustc_trait_selection::traits::error_reporting::suggestions::InferCtxtExt;
 use rustc_trait_selection::traits::{self, FulfillmentError, TraitEngine};
 
 declare_clippy_lint! {
-    /// **What it does:** This lint requires Future implementations returned from
+    /// ### What it does
+    /// This lint requires Future implementations returned from
     /// functions and methods to implement the `Send` marker trait. It is mostly
     /// used by library authors (public and internal) that target an audience where
     /// multithreaded executors are likely to be used for running these Futures.
     ///
-    /// **Why is this bad?** A Future implementation captures some state that it
+    /// ### Why is this bad?
+    /// A Future implementation captures some state that it
     /// needs to eventually produce its final value. When targeting a multithreaded
     /// executor (which is the norm on non-embedded devices) this means that this
     /// state may need to be transported to other threads, in other words the
@@ -31,10 +33,7 @@ declare_clippy_lint! {
     /// modifying the library where the offending Future implementation is
     /// produced.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// async fn not_send(bytes: std::rc::Rc<[u8]>) {}
     /// ```
@@ -42,6 +41,7 @@ declare_clippy_lint! {
     /// ```rust
     /// async fn is_send(bytes: std::sync::Arc<[u8]>) {}
     /// ```
+    #[clippy::version = "1.44.0"]
     pub FUTURE_NOT_SEND,
     nursery,
     "public Futures must be Send"
@@ -76,15 +76,15 @@ impl<'tcx> LateLintPass<'tcx> for FutureNotSend {
                 }
             }
             if is_future {
-                let send_trait = cx.tcx.get_diagnostic_item(sym::send_trait).unwrap();
+                let send_trait = cx.tcx.get_diagnostic_item(sym::Send).unwrap();
                 let span = decl.output.span();
-                let send_result = cx.tcx.infer_ctxt().enter(|infcx| {
+                let send_errors = cx.tcx.infer_ctxt().enter(|infcx| {
                     let cause = traits::ObligationCause::misc(span, hir_id);
                     let mut fulfillment_cx = traits::FulfillmentContext::new();
                     fulfillment_cx.register_bound(&infcx, cx.param_env, ret_ty, send_trait, cause);
                     fulfillment_cx.select_all_or_error(&infcx)
                 });
-                if let Err(send_errors) = send_result {
+                if !send_errors.is_empty() {
                     span_lint_and_then(
                         cx,
                         FUTURE_NOT_SEND,
@@ -94,7 +94,7 @@ impl<'tcx> LateLintPass<'tcx> for FutureNotSend {
                             cx.tcx.infer_ctxt().enter(|infcx| {
                                 for FulfillmentError { obligation, .. } in send_errors {
                                     infcx.maybe_note_obligation_cause_for_async_await(db, &obligation);
-                                    if let Trait(trait_pred, _) = obligation.predicate.kind().skip_binder() {
+                                    if let Trait(trait_pred) = obligation.predicate.kind().skip_binder() {
                                         db.note(&format!(
                                             "`{}` doesn't implement `{}`",
                                             trait_pred.self_ty(),

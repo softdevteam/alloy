@@ -1,3 +1,4 @@
+use crate::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug};
@@ -9,7 +10,8 @@ use core::ops::{Index, RangeBounds};
 use core::ptr;
 
 use super::borrow::DormantMutRef;
-use super::navigate::LeafRange;
+use super::dedup_sorted_iter::DedupSortedIter;
+use super::navigate::{LazyLeafRange, LeafRange};
 use super::node::{self, marker, ForceResult::*, Handle, NodeRef, Root};
 use super::search::SearchResult::*;
 
@@ -17,16 +19,16 @@ mod entry;
 pub use entry::{Entry, OccupiedEntry, OccupiedError, VacantEntry};
 use Entry::*;
 
-/// Minimum number of elements in nodes that are not a root.
+/// Minimum number of elements in a node that is not a root.
 /// We might temporarily have fewer elements during methods.
 pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 
 // A tree in a `BTreeMap` is a tree in the `node` module with additional invariants:
 // - Keys must appear in ascending order (according to the key's type).
-// - If the root node is internal, it must contain at least 1 element.
+// - Every non-leaf node contains at least 1 element (has at least 2 children).
 // - Every non-root node contains at least MIN_LEN elements.
 //
-// An empty map may be represented both by the absence of a root node or by a
+// An empty map is represented either by the absence of a root node or by a
 // root node that is an empty leaf.
 
 /// A map based on a [B-Tree].
@@ -53,15 +55,15 @@ pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 /// performance on *small* nodes of elements which are cheap to compare. However in the future we
 /// would like to further explore choosing the optimal search strategy based on the choice of B,
 /// and possibly other factors. Using linear search, searching for a random element is expected
-/// to take O(B * log(n)) comparisons, which is generally worse than a BST. In practice,
+/// to take B * log(n) comparisons, which is generally worse than a BST. In practice,
 /// however, performance is excellent.
 ///
 /// It is a logic error for a key to be modified in such a way that the key's ordering relative to
 /// any other key, as determined by the [`Ord`] trait, changes while it is in the map. This is
 /// normally only possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
-/// The behavior resulting from such a logic error is not specified, but will not result in
-/// undefined behavior. This could include panics, incorrect results, aborts, memory leaks, and
-/// non-termination.
+/// The behavior resulting from such a logic error is not specified (it could include panics,
+/// incorrect results, aborts, memory leaks, or non-termination) but will not be undefined
+/// behavior.
 ///
 /// [B-Tree]: https://en.wikipedia.org/wiki/B-tree
 /// [`Cell`]: core::cell::Cell
@@ -109,7 +111,20 @@ pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 /// }
 /// ```
 ///
-/// `BTreeMap` also implements an [`Entry API`], which allows for more complex
+/// A `BTreeMap` with a known list of items can be initialized from an array:
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let solar_distance = BTreeMap::from([
+///     ("Mercury", 0.4),
+///     ("Venus", 0.7),
+///     ("Earth", 1.0),
+///     ("Mars", 1.5),
+/// ]);
+/// ```
+///
+/// `BTreeMap` implements an [`Entry API`], which allows for complex
 /// methods of getting, setting, updating and removing keys and their values:
 ///
 /// [`Entry API`]: BTreeMap::entry
@@ -140,6 +155,7 @@ pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(not(test), rustc_diagnostic_item = "BTreeMap")]
+#[rustc_insignificant_dtor]
 pub struct BTreeMap<K, V> {
     root: Option<Root<K, V>>,
     length: usize,
@@ -148,9 +164,7 @@ pub struct BTreeMap<K, V> {
 #[stable(feature = "btree_drop", since = "1.7.0")]
 unsafe impl<#[may_dangle] K, #[may_dangle] V> Drop for BTreeMap<K, V> {
     fn drop(&mut self) {
-        if let Some(root) = self.root.take() {
-            Dropper { front: root.into_dying().first_leaf_edge(), remaining_length: self.length };
-        }
+        drop(unsafe { ptr::read(self) }.into_iter())
     }
 }
 
@@ -222,9 +236,7 @@ impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
         }
 
         if self.is_empty() {
-            // Ideally we'd call `BTreeMap::new` here, but that has the `K:
-            // Ord` constraint, which this method lacks.
-            BTreeMap { root: None, length: 0 }
+            BTreeMap::new()
         } else {
             clone_subtree(self.root.as_ref().unwrap().reborrow()) // unwrap succeeds because not empty
         }
@@ -276,9 +288,10 @@ where
 /// documentation for more.
 ///
 /// [`iter`]: BTreeMap::iter
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, K: 'a, V: 'a> {
-    range: Range<'a, K, V>,
+    range: LazyLeafRange<marker::Immut<'a>, K, V>,
     length: usize,
 }
 
@@ -296,21 +309,34 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Iter<'_, K, V> {
 ///
 /// [`iter_mut`]: BTreeMap::iter_mut
 #[stable(feature = "rust1", since = "1.0.0")]
-#[derive(Debug)]
 pub struct IterMut<'a, K: 'a, V: 'a> {
-    range: RangeMut<'a, K, V>,
+    range: LazyLeafRange<marker::ValMut<'a>, K, V>,
     length: usize,
+
+    // Be invariant in `K` and `V`
+    _marker: PhantomData<&'a mut (K, V)>,
+}
+
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+#[stable(feature = "collection_debug", since = "1.17.0")]
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IterMut<'_, K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let range = Iter { range: self.range.reborrow(), length: self.length };
+        f.debug_list().entries(range).finish()
+    }
 }
 
 /// An owning iterator over the entries of a `BTreeMap`.
 ///
 /// This `struct` is created by the [`into_iter`] method on [`BTreeMap`]
-/// (provided by the `IntoIterator` trait). See its documentation for more.
+/// (provided by the [`IntoIterator`] trait). See its documentation for more.
 ///
 /// [`into_iter`]: IntoIterator::into_iter
+/// [`IntoIterator`]: core::iter::IntoIterator
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_insignificant_dtor]
 pub struct IntoIter<K, V> {
-    range: LeafRange<marker::Dying, K, V>,
+    range: LazyLeafRange<marker::Dying, K, V>,
     length: usize,
 }
 
@@ -318,8 +344,7 @@ impl<K, V> IntoIter<K, V> {
     /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
-        let range = Range { inner: self.range.reborrow() };
-        Iter { range: range, length: self.length }
+        Iter { range: self.range.reborrow(), length: self.length }
     }
 }
 
@@ -330,20 +355,13 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IntoIter<K, V> {
     }
 }
 
-/// A simplified version of `IntoIter` that is not double-ended and has only one
-/// purpose: to drop the remainder of an `IntoIter`. Therefore it also serves to
-/// drop an entire tree without the need to first look up a `back` leaf edge.
-struct Dropper<K, V> {
-    front: Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>,
-    remaining_length: usize,
-}
-
 /// An iterator over the keys of a `BTreeMap`.
 ///
 /// This `struct` is created by the [`keys`] method on [`BTreeMap`]. See its
 /// documentation for more.
 ///
 /// [`keys`]: BTreeMap::keys
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Keys<'a, K: 'a, V: 'a> {
     inner: Iter<'a, K, V>,
@@ -362,6 +380,7 @@ impl<K: fmt::Debug, V> fmt::Debug for Keys<'_, K, V> {
 /// documentation for more.
 ///
 /// [`values`]: BTreeMap::values
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Values<'a, K: 'a, V: 'a> {
     inner: Iter<'a, K, V>,
@@ -380,6 +399,7 @@ impl<K, V: fmt::Debug> fmt::Debug for Values<'_, K, V> {
 /// documentation for more.
 ///
 /// [`values_mut`]: BTreeMap::values_mut
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "map_values_mut", since = "1.10.0")]
 pub struct ValuesMut<'a, K: 'a, V: 'a> {
     inner: IterMut<'a, K, V>,
@@ -398,6 +418,7 @@ impl<K, V: fmt::Debug> fmt::Debug for ValuesMut<'_, K, V> {
 /// See its documentation for more.
 ///
 /// [`into_keys`]: BTreeMap::into_keys
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "map_into_keys_values", since = "1.54.0")]
 pub struct IntoKeys<K, V> {
     inner: IntoIter<K, V>,
@@ -416,6 +437,7 @@ impl<K: fmt::Debug, V> fmt::Debug for IntoKeys<K, V> {
 /// See its documentation for more.
 ///
 /// [`into_values`]: BTreeMap::into_values
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "map_into_keys_values", since = "1.54.0")]
 pub struct IntoValues<K, V> {
     inner: IntoIter<K, V>,
@@ -434,6 +456,7 @@ impl<K, V: fmt::Debug> fmt::Debug for IntoValues<K, V> {
 /// documentation for more.
 ///
 /// [`range`]: BTreeMap::range
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "btree_range", since = "1.17.0")]
 pub struct Range<'a, K: 'a, V: 'a> {
     inner: LeafRange<marker::Immut<'a>, K, V>,
@@ -452,6 +475,7 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Range<'_, K, V> {
 /// documentation for more.
 ///
 /// [`range_mut`]: BTreeMap::range_mut
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "btree_range", since = "1.17.0")]
 pub struct RangeMut<'a, K: 'a, V: 'a> {
     inner: LeafRange<marker::ValMut<'a>, K, V>,
@@ -487,10 +511,8 @@ impl<K, V> BTreeMap<K, V> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
-    pub const fn new() -> BTreeMap<K, V>
-    where
-        K: Ord,
-    {
+    #[must_use]
+    pub const fn new() -> BTreeMap<K, V> {
         BTreeMap { root: None, length: 0 }
     }
 
@@ -510,7 +532,7 @@ impl<K, V> BTreeMap<K, V> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn clear(&mut self) {
-        *self = BTreeMap { root: None, length: 0 };
+        *self = BTreeMap::new();
     }
 
     /// Returns a reference to the value corresponding to the key.
@@ -935,6 +957,7 @@ impl<K, V> BTreeMap<K, V> {
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all pairs `(k, v)` such that `f(&k, &mut v)` returns `false`.
+    /// The elements are visited in ascending key order.
     ///
     /// # Examples
     ///
@@ -1277,6 +1300,18 @@ impl<K, V> BTreeMap<K, V> {
     pub fn into_values(self) -> IntoValues<K, V> {
         IntoValues { inner: self.into_iter() }
     }
+
+    /// Makes a `BTreeMap` from a sorted iterator.
+    pub(crate) fn bulk_build_from_sorted_iter<I>(iter: I) -> Self
+    where
+        K: Ord,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        let mut root = Root::new();
+        let mut length = 0;
+        root.bulk_push(DedupSortedIter::new(iter.into_iter()), &mut length);
+        BTreeMap { root: Some(root), length }
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1298,7 +1333,7 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.range.inner.next_unchecked() })
+            Some(unsafe { self.range.next_unchecked() })
         }
     }
 
@@ -1329,7 +1364,7 @@ impl<'a, K: 'a, V: 'a> DoubleEndedIterator for Iter<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.range.inner.next_back_unchecked() })
+            Some(unsafe { self.range.next_back_unchecked() })
         }
     }
 }
@@ -1367,7 +1402,7 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.range.inner.next_unchecked() })
+            Some(unsafe { self.range.next_unchecked() })
         }
     }
 
@@ -1395,7 +1430,7 @@ impl<'a, K: 'a, V: 'a> DoubleEndedIterator for IterMut<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.range.inner.next_back_unchecked() })
+            Some(unsafe { self.range.next_back_unchecked() })
         }
     }
 }
@@ -1414,7 +1449,7 @@ impl<'a, K, V> IterMut<'a, K, V> {
     /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
-        Iter { range: self.range.iter(), length: self.length }
+        Iter { range: self.range.reborrow(), length: self.length }
     }
 }
 
@@ -1430,43 +1465,7 @@ impl<K, V> IntoIterator for BTreeMap<K, V> {
 
             IntoIter { range: full_range, length: me.length }
         } else {
-            IntoIter { range: LeafRange::none(), length: 0 }
-        }
-    }
-}
-
-impl<K, V> Drop for Dropper<K, V> {
-    fn drop(&mut self) {
-        // Similar to advancing a non-fusing iterator.
-        fn next_or_end<K, V>(
-            this: &mut Dropper<K, V>,
-        ) -> Option<Handle<NodeRef<marker::Dying, K, V, marker::LeafOrInternal>, marker::KV>>
-        {
-            if this.remaining_length == 0 {
-                unsafe { ptr::read(&this.front).deallocating_end() }
-                None
-            } else {
-                this.remaining_length -= 1;
-                Some(unsafe { this.front.deallocating_next_unchecked() })
-            }
-        }
-
-        struct DropGuard<'a, K, V>(&'a mut Dropper<K, V>);
-
-        impl<'a, K, V> Drop for DropGuard<'a, K, V> {
-            fn drop(&mut self) {
-                // Continue the same loop we perform below. This only runs when unwinding, so we
-                // don't have to care about panics this time (they'll abort).
-                while let Some(kv) = next_or_end(&mut self.0) {
-                    kv.drop_key_val();
-                }
-            }
-        }
-
-        while let Some(kv) = next_or_end(self) {
-            let guard = DropGuard(self);
-            kv.drop_key_val();
-            mem::forget(guard);
+            IntoIter { range: LazyLeafRange::none(), length: 0 }
         }
     }
 }
@@ -1474,8 +1473,54 @@ impl<K, V> Drop for Dropper<K, V> {
 #[stable(feature = "btree_drop", since = "1.7.0")]
 impl<K, V> Drop for IntoIter<K, V> {
     fn drop(&mut self) {
-        if let Some(front) = self.range.take_front() {
-            Dropper { front, remaining_length: self.length };
+        struct DropGuard<'a, K, V>(&'a mut IntoIter<K, V>);
+
+        impl<'a, K, V> Drop for DropGuard<'a, K, V> {
+            fn drop(&mut self) {
+                // Continue the same loop we perform below. This only runs when unwinding, so we
+                // don't have to care about panics this time (they'll abort).
+                while let Some(kv) = self.0.dying_next() {
+                    // SAFETY: we consume the dying handle immediately.
+                    unsafe { kv.drop_key_val() };
+                }
+            }
+        }
+
+        while let Some(kv) = self.dying_next() {
+            let guard = DropGuard(self);
+            // SAFETY: we don't touch the tree before consuming the dying handle.
+            unsafe { kv.drop_key_val() };
+            mem::forget(guard);
+        }
+    }
+}
+
+impl<K, V> IntoIter<K, V> {
+    /// Core of a `next` method returning a dying KV handle,
+    /// invalidated by further calls to this function and some others.
+    fn dying_next(
+        &mut self,
+    ) -> Option<Handle<NodeRef<marker::Dying, K, V, marker::LeafOrInternal>, marker::KV>> {
+        if self.length == 0 {
+            self.range.deallocating_end();
+            None
+        } else {
+            self.length -= 1;
+            Some(unsafe { self.range.deallocating_next_unchecked() })
+        }
+    }
+
+    /// Core of a `next_back` method returning a dying KV handle,
+    /// invalidated by further calls to this function and some others.
+    fn dying_next_back(
+        &mut self,
+    ) -> Option<Handle<NodeRef<marker::Dying, K, V, marker::LeafOrInternal>, marker::KV>> {
+        if self.length == 0 {
+            self.range.deallocating_end();
+            None
+        } else {
+            self.length -= 1;
+            Some(unsafe { self.range.deallocating_next_back_unchecked() })
         }
     }
 }
@@ -1485,13 +1530,8 @@ impl<K, V> Iterator for IntoIter<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<(K, V)> {
-        if self.length == 0 {
-            None
-        } else {
-            self.length -= 1;
-            let kv = unsafe { self.range.deallocating_next_unchecked() };
-            Some(kv.into_key_val())
-        }
+        // SAFETY: we consume the dying handle immediately.
+        self.dying_next().map(unsafe { |kv| kv.into_key_val() })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1502,13 +1542,8 @@ impl<K, V> Iterator for IntoIter<K, V> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K, V> DoubleEndedIterator for IntoIter<K, V> {
     fn next_back(&mut self) -> Option<(K, V)> {
-        if self.length == 0 {
-            None
-        } else {
-            self.length -= 1;
-            let kv = unsafe { self.range.deallocating_next_back_unchecked() };
-            Some(kv.into_key_val())
-        }
+        // SAFETY: we consume the dying handle immediately.
+        self.dying_next_back().map(unsafe { |kv| kv.into_key_val() })
     }
 }
 
@@ -1710,8 +1745,8 @@ impl<'a, K: 'a, V: 'a> DrainFilterInner<'a, K, V> {
     pub(super) fn size_hint(&self) -> (usize, Option<usize>) {
         // In most of the btree iterators, `self.length` is the number of elements
         // yet to be visited. Here, it includes elements that were visited and that
-        // the predicate decided not to drain. Making this upper bound more accurate
-        // requires maintaining an extra field and is not worth while.
+        // the predicate decided not to drain. Making this upper bound more tight
+        // during iteration would require an extra field.
         (0, Some(*self.length))
     }
 }
@@ -1888,14 +1923,6 @@ impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
     }
 }
 
-impl<'a, K, V> RangeMut<'a, K, V> {
-    /// Returns an iterator of references over the remaining items.
-    #[inline]
-    pub(super) fn iter(&self) -> Range<'_, K, V> {
-        Range { inner: self.inner.reborrow() }
-    }
-}
-
 #[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> DoubleEndedIterator for RangeMut<'a, K, V> {
     fn next_back(&mut self) -> Option<(&'a K, &'a mut V)> {
@@ -1909,9 +1936,15 @@ impl<K, V> FusedIterator for RangeMut<'_, K, V> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K: Ord, V> FromIterator<(K, V)> for BTreeMap<K, V> {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> BTreeMap<K, V> {
-        let mut map = BTreeMap::new();
-        map.extend(iter);
-        map
+        let mut inputs: Vec<_> = iter.into_iter().collect();
+
+        if inputs.is_empty() {
+            return BTreeMap::new();
+        }
+
+        // use stable sort to preserve the insertion order.
+        inputs.sort_by(|a, b| a.0.cmp(&b.0));
+        BTreeMap::bulk_build_from_sorted_iter(inputs)
     }
 }
 
@@ -1945,6 +1978,7 @@ impl<'a, K: Ord + Copy, V: Copy> Extend<(&'a K, &'a V)> for BTreeMap<K, V> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K: Hash, V: Hash> Hash for BTreeMap<K, V> {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len().hash(state);
         for elt in self {
             elt.hash(state);
         }
@@ -1952,7 +1986,7 @@ impl<K: Hash, V: Hash> Hash for BTreeMap<K, V> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<K: Ord, V> Default for BTreeMap<K, V> {
+impl<K, V> Default for BTreeMap<K, V> {
     /// Creates an empty `BTreeMap`.
     fn default() -> BTreeMap<K, V> {
         BTreeMap::new()
@@ -2011,6 +2045,26 @@ where
     }
 }
 
+#[stable(feature = "std_collections_from_array", since = "1.56.0")]
+impl<K: Ord, V, const N: usize> From<[(K, V); N]> for BTreeMap<K, V> {
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let map1 = BTreeMap::from([(1, 2), (3, 4)]);
+    /// let map2: BTreeMap<_, _> = [(1, 2), (3, 4)].into();
+    /// assert_eq!(map1, map2);
+    /// ```
+    fn from(mut arr: [(K, V); N]) -> Self {
+        if N == 0 {
+            return BTreeMap::new();
+        }
+
+        // use stable sort to preserve the insertion order.
+        arr.sort_by(|a, b| a.0.cmp(&b.0));
+        BTreeMap::bulk_build_from_sorted_iter(arr)
+    }
+}
+
 impl<K, V> BTreeMap<K, V> {
     /// Gets an iterator over the entries of the map, sorted by key.
     ///
@@ -2038,9 +2092,9 @@ impl<K, V> BTreeMap<K, V> {
         if let Some(root) = &self.root {
             let full_range = root.reborrow().full_range();
 
-            Iter { range: Range { inner: full_range }, length: self.length }
+            Iter { range: full_range, length: self.length }
         } else {
-            Iter { range: Range { inner: LeafRange::none() }, length: 0 }
+            Iter { range: LazyLeafRange::none(), length: 0 }
         }
     }
 
@@ -2070,15 +2124,9 @@ impl<K, V> BTreeMap<K, V> {
         if let Some(root) = &mut self.root {
             let full_range = root.borrow_valmut().full_range();
 
-            IterMut {
-                range: RangeMut { inner: full_range, _marker: PhantomData },
-                length: self.length,
-            }
+            IterMut { range: full_range, length: self.length, _marker: PhantomData }
         } else {
-            IterMut {
-                range: RangeMut { inner: LeafRange::none(), _marker: PhantomData },
-                length: 0,
-            }
+            IterMut { range: LazyLeafRange::none(), length: 0, _marker: PhantomData }
         }
     }
 
@@ -2164,6 +2212,7 @@ impl<K, V> BTreeMap<K, V> {
     /// a.insert(1, "a");
     /// assert_eq!(a.len(), 1);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
     pub const fn len(&self) -> usize {
@@ -2184,6 +2233,7 @@ impl<K, V> BTreeMap<K, V> {
     /// a.insert(1, "a");
     /// assert!(!a.is_empty());
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
     pub const fn is_empty(&self) -> bool {

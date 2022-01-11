@@ -69,6 +69,8 @@ create_config! {
     format_macro_matchers: bool, false, false,
         "Format the metavariable matching patterns in macros";
     format_macro_bodies: bool, true, false, "Format the bodies of macros";
+    hex_literal_case: HexLiteralCase, HexLiteralCase::Preserve, false,
+        "Format hexadecimal integer literals";
 
     // Single line expressions and items
     empty_item_single_line: bool, true, false,
@@ -125,7 +127,7 @@ create_config! {
         "Add trailing semicolon after break, continue and return";
     trailing_comma: SeparatorTactic, SeparatorTactic::Vertical, false,
         "How to handle trailing commas for lists";
-    match_block_trailing_comma: bool, false, false,
+    match_block_trailing_comma: bool, false, true,
         "Put a trailing comma after a block based match arm (non-block arms are not affected)";
     blank_lines_upper_bound: usize, 1, false,
         "Maximum number of blank lines which can be put between items";
@@ -136,6 +138,7 @@ create_config! {
     inline_attribute_width: usize, 0, false,
         "Write an item and its attribute on the same line \
         if their combined width is below a threshold";
+    format_generated_files: bool, false, false, "Format generated files";
 
     // Options that can change the source code beyond whitespace/blocks (somewhat linty things)
     merge_derives: bool, true, true, "Merge multiple `#[derive(...)]` into a single one";
@@ -152,7 +155,7 @@ create_config! {
         "Require a specific version of rustfmt";
     unstable_features: bool, false, false,
             "Enables unstable features. Only available on nightly channel";
-    disable_all_formatting: bool, false, false, "Don't reformat anything";
+    disable_all_formatting: bool, false, true, "Don't reformat anything";
     skip_children: bool, false, false, "Don't reformat out of line modules";
     hide_parse_errors: bool, false, false, "Hide errors from the parser";
     error_on_line_overflow: bool, false, false, "Error if unable to get all lines within max_width";
@@ -402,6 +405,8 @@ mod test {
     use super::*;
     use std::str;
 
+    use rustfmt_config_proc_macro::{nightly_only_test, stable_only_test};
+
     #[allow(dead_code)]
     mod mock {
         use super::super::*;
@@ -522,21 +527,17 @@ mod test {
         assert!(config.license_template.is_none());
     }
 
+    #[nightly_only_test]
     #[test]
     fn test_valid_license_template_path() {
-        if !crate::is_nightly_channel!() {
-            return;
-        }
         let toml = r#"license_template_path = "tests/license-template/lt.txt""#;
         let config = Config::from_toml(toml, Path::new("")).unwrap();
         assert!(config.license_template.is_some());
     }
 
+    #[nightly_only_test]
     #[test]
     fn test_override_existing_license_with_no_license() {
-        if !crate::is_nightly_channel!() {
-            return;
-        }
         let toml = r#"license_template_path = "tests/license-template/lt.txt""#;
         let mut config = Config::from_toml(toml, Path::new("")).unwrap();
         assert!(config.license_template.is_some());
@@ -569,6 +570,7 @@ license_template_path = ""
 format_strings = false
 format_macro_matchers = false
 format_macro_bodies = true
+hex_literal_case = "Preserve"
 empty_item_single_line = true
 struct_lit_single_line = true
 fn_single_line = false
@@ -604,6 +606,7 @@ blank_lines_lower_bound = 0
 edition = "2015"
 version = "One"
 inline_attribute_width = 0
+format_generated_files = false
 merge_derives = true
 use_try_shorthand = false
 use_field_init_shorthand = false
@@ -629,48 +632,42 @@ make_backup = false
         assert_eq!(&toml, &default_config);
     }
 
-    // FIXME(#2183): these tests cannot be run in parallel because they use env vars.
-    // #[test]
-    // fn test_as_not_nightly_channel() {
-    //     let mut config = Config::default();
-    //     assert_eq!(config.was_set().unstable_features(), false);
-    //     config.set().unstable_features(true);
-    //     assert_eq!(config.was_set().unstable_features(), false);
-    // }
+    #[stable_only_test]
+    #[test]
+    fn test_as_not_nightly_channel() {
+        let mut config = Config::default();
+        assert_eq!(config.was_set().unstable_features(), false);
+        config.set().unstable_features(true);
+        assert_eq!(config.was_set().unstable_features(), false);
+    }
 
-    // #[test]
-    // fn test_as_nightly_channel() {
-    //     let v = ::std::env::var("CFG_RELEASE_CHANNEL").unwrap_or(String::from(""));
-    //     ::std::env::set_var("CFG_RELEASE_CHANNEL", "nightly");
-    //     let mut config = Config::default();
-    //     config.set().unstable_features(true);
-    //     assert_eq!(config.was_set().unstable_features(), false);
-    //     config.set().unstable_features(true);
-    //     assert_eq!(config.unstable_features(), true);
-    //     ::std::env::set_var("CFG_RELEASE_CHANNEL", v);
-    // }
+    #[nightly_only_test]
+    #[test]
+    fn test_as_nightly_channel() {
+        let mut config = Config::default();
+        config.set().unstable_features(true);
+        // When we don't set the config from toml or command line options it
+        // doesn't get marked as set by the user.
+        assert_eq!(config.was_set().unstable_features(), false);
+        config.set().unstable_features(true);
+        assert_eq!(config.unstable_features(), true);
+    }
 
-    // #[test]
-    // fn test_unstable_from_toml() {
-    //     let mut config = Config::from_toml("unstable_features = true").unwrap();
-    //     assert_eq!(config.was_set().unstable_features(), false);
-    //     let v = ::std::env::var("CFG_RELEASE_CHANNEL").unwrap_or(String::from(""));
-    //     ::std::env::set_var("CFG_RELEASE_CHANNEL", "nightly");
-    //     config = Config::from_toml("unstable_features = true").unwrap();
-    //     assert_eq!(config.was_set().unstable_features(), true);
-    //     assert_eq!(config.unstable_features(), true);
-    //     ::std::env::set_var("CFG_RELEASE_CHANNEL", v);
-    // }
+    #[nightly_only_test]
+    #[test]
+    fn test_unstable_from_toml() {
+        let config = Config::from_toml("unstable_features = true", Path::new("")).unwrap();
+        assert_eq!(config.was_set().unstable_features(), true);
+        assert_eq!(config.unstable_features(), true);
+    }
 
     #[cfg(test)]
     mod deprecated_option_merge_imports {
         use super::*;
 
+        #[nightly_only_test]
         #[test]
         fn test_old_option_set() {
-            if !crate::is_nightly_channel!() {
-                return;
-            }
             let toml = r#"
                 unstable_features = true
                 merge_imports = true
@@ -679,11 +676,9 @@ make_backup = false
             assert_eq!(config.imports_granularity(), ImportGranularity::Crate);
         }
 
+        #[nightly_only_test]
         #[test]
         fn test_both_set() {
-            if !crate::is_nightly_channel!() {
-                return;
-            }
             let toml = r#"
                 unstable_features = true
                 merge_imports = true
@@ -693,11 +688,9 @@ make_backup = false
             assert_eq!(config.imports_granularity(), ImportGranularity::Preserve);
         }
 
+        #[nightly_only_test]
         #[test]
         fn test_new_overridden() {
-            if !crate::is_nightly_channel!() {
-                return;
-            }
             let toml = r#"
                 unstable_features = true
                 merge_imports = true
@@ -707,11 +700,9 @@ make_backup = false
             assert_eq!(config.imports_granularity(), ImportGranularity::Preserve);
         }
 
+        #[nightly_only_test]
         #[test]
         fn test_old_overridden() {
-            if !crate::is_nightly_channel!() {
-                return;
-            }
             let toml = r#"
                 unstable_features = true
                 imports_granularity = "Module"

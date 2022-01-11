@@ -2,7 +2,7 @@
 
 use rustc_ast as ast;
 use rustc_ast::ptr::P;
-use rustc_ast::{ImplKind, ItemKind, MetaItem};
+use rustc_ast::{Impl, ItemKind, MetaItem};
 use rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemModifier};
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
@@ -102,6 +102,7 @@ fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
         tokens: None,
+        could_be_bare_literal: false,
     }))
 }
 
@@ -177,9 +178,9 @@ fn inject_impl_of_structural_trait(
 
     let newitem = cx.item(
         span,
-        Ident::invalid(),
+        Ident::empty(),
         attrs,
-        ItemKind::Impl(box ImplKind {
+        ItemKind::Impl(Box::new(Impl {
             unsafety: ast::Unsafe::No,
             polarity: ast::ImplPolarity::Positive,
             defaultness: ast::Defaultness::Final,
@@ -188,7 +189,7 @@ fn inject_impl_of_structural_trait(
             of_trait: Some(trait_ref),
             self_ty: self_type,
             items: Vec::new(),
-        }),
+        })),
     );
 
     push(Annotatable::Item(newitem));

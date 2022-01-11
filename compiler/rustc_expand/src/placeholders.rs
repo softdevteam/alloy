@@ -1,4 +1,3 @@
-use crate::base::ExtCtxt;
 use crate::expand::{AstFragment, AstFragmentKind};
 
 use rustc_ast as ast;
@@ -24,7 +23,7 @@ pub fn placeholder(
         }
     }
 
-    let ident = Ident::invalid();
+    let ident = Ident::empty();
     let attrs = Vec::new();
     let vis = vis.unwrap_or(ast::Visibility {
         span: DUMMY_SP,
@@ -47,6 +46,12 @@ pub fn placeholder(
         || P(ast::Pat { id, kind: ast::PatKind::MacCall(mac_placeholder()), span, tokens: None });
 
     match kind {
+        AstFragmentKind::Crate => AstFragment::Crate(ast::Crate {
+            attrs: Default::default(),
+            items: Default::default(),
+            span,
+            is_placeholder: Some(id),
+        }),
         AstFragmentKind::Expr => AstFragment::Expr(expr_placeholder()),
         AstFragmentKind::OptExpr => AstFragment::OptExpr(Some(expr_placeholder())),
         AstFragmentKind::Items => AstFragment::Items(smallvec![P(ast::Item {
@@ -175,17 +180,12 @@ pub fn placeholder(
     }
 }
 
-pub struct PlaceholderExpander<'a, 'b> {
+#[derive(Default)]
+pub struct PlaceholderExpander {
     expanded_fragments: FxHashMap<ast::NodeId, AstFragment>,
-    cx: &'a mut ExtCtxt<'b>,
-    monotonic: bool,
 }
 
-impl<'a, 'b> PlaceholderExpander<'a, 'b> {
-    pub fn new(cx: &'a mut ExtCtxt<'b>, monotonic: bool) -> Self {
-        PlaceholderExpander { cx, expanded_fragments: FxHashMap::default(), monotonic }
-    }
-
+impl PlaceholderExpander {
     pub fn add(&mut self, id: ast::NodeId, mut fragment: AstFragment) {
         fragment.mut_visit_with(self);
         self.expanded_fragments.insert(id, fragment);
@@ -196,7 +196,7 @@ impl<'a, 'b> PlaceholderExpander<'a, 'b> {
     }
 }
 
-impl<'a, 'b> MutVisitor for PlaceholderExpander<'a, 'b> {
+impl MutVisitor for PlaceholderExpander {
     fn flat_map_arm(&mut self, arm: ast::Arm) -> SmallVec<[ast::Arm; 1]> {
         if arm.is_placeholder {
             self.remove(arm.id).make_arms()
@@ -361,14 +361,11 @@ impl<'a, 'b> MutVisitor for PlaceholderExpander<'a, 'b> {
         }
     }
 
-    fn visit_block(&mut self, block: &mut P<ast::Block>) {
-        noop_visit_block(block, self);
-
-        for stmt in block.stmts.iter_mut() {
-            if self.monotonic {
-                assert_eq!(stmt.id, ast::DUMMY_NODE_ID);
-                stmt.id = self.cx.resolver.next_node_id();
-            }
+    fn visit_crate(&mut self, krate: &mut ast::Crate) {
+        if let Some(id) = krate.is_placeholder {
+            *krate = self.remove(id).make_crate();
+        } else {
+            noop_visit_crate(krate, self)
         }
     }
 }

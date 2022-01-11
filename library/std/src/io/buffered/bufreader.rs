@@ -1,8 +1,9 @@
 use crate::cmp;
 use crate::fmt;
 use crate::io::{
-    self, BufRead, Initializer, IoSliceMut, Read, Seek, SeekFrom, SizeHint, DEFAULT_BUF_SIZE,
+    self, BufRead, IoSliceMut, Read, ReadBuf, Seek, SeekFrom, SizeHint, DEFAULT_BUF_SIZE,
 };
+use crate::mem::MaybeUninit;
 
 /// The `BufReader<R>` struct adds buffering to any reader.
 ///
@@ -15,7 +16,7 @@ use crate::io::{
 /// *repeated* read calls to the same file or network socket. It does not
 /// help when reading very large amounts at once, or reading just one or a few
 /// times. It also provides no advantage when reading from a source that is
-/// already in memory, like a [`Vec`]`<u8>`.
+/// already in memory, like a <code>[Vec]\<u8></code>.
 ///
 /// When the `BufReader<R>` is dropped, the contents of its buffer will be
 /// discarded. Creating multiple instances of a `BufReader<R>` on the same
@@ -47,9 +48,10 @@ use crate::io::{
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BufReader<R> {
     inner: R,
-    buf: Box<[u8]>,
+    buf: Box<[MaybeUninit<u8>]>,
     pos: usize,
     cap: usize,
+    init: usize,
 }
 
 impl<R: Read> BufReader<R> {
@@ -91,11 +93,8 @@ impl<R: Read> BufReader<R> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize, inner: R) -> BufReader<R> {
-        unsafe {
-            let mut buf = Box::new_uninit_slice(capacity).assume_init();
-            inner.initializer().initialize(&mut buf);
-            BufReader { inner, buf, pos: 0, cap: 0 }
-        }
+        let buf = Box::new_uninit_slice(capacity);
+        BufReader { inner, buf, pos: 0, cap: 0, init: 0 }
     }
 }
 
@@ -171,7 +170,8 @@ impl<R> BufReader<R> {
     /// ```
     #[stable(feature = "bufreader_buffer", since = "1.37.0")]
     pub fn buffer(&self) -> &[u8] {
-        &self.buf[self.pos..self.cap]
+        // SAFETY: self.cap is always <= self.init, so self.buf[self.pos..self.cap] is always init
+        unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[self.pos..self.cap]) }
     }
 
     /// Returns the number of bytes the internal buffer can hold at once.
@@ -242,14 +242,13 @@ impl<R: Seek> BufReader<R> {
                 self.pos = new_pos as usize;
                 return Ok(());
             }
-        } else {
-            if let Some(new_pos) = pos.checked_add(offset as u64) {
-                if new_pos <= self.cap as u64 {
-                    self.pos = new_pos as usize;
-                    return Ok(());
-                }
+        } else if let Some(new_pos) = pos.checked_add(offset as u64) {
+            if new_pos <= self.cap as u64 {
+                self.pos = new_pos as usize;
+                return Ok(());
             }
         }
+
         self.seek(SeekFrom::Current(offset)).map(drop)
     }
 }
@@ -270,6 +269,25 @@ impl<R: Read> Read for BufReader<R> {
         };
         self.consume(nread);
         Ok(nread)
+    }
+
+    fn read_buf(&mut self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        // If we don't have any buffered data and we're doing a massive read
+        // (larger than our internal buffer), bypass our internal buffer
+        // entirely.
+        if self.pos == self.cap && buf.remaining() >= self.buf.len() {
+            self.discard_buffer();
+            return self.inner.read_buf(buf);
+        }
+
+        let prev = buf.filled_len();
+
+        let mut rem = self.fill_buf()?;
+        rem.read_buf(buf)?;
+
+        self.consume(buf.filled_len() - prev); //slice impl of read_buf known to never unfill buf
+
+        Ok(())
     }
 
     // Small read_exacts from a BufReader are extremely common when used with a deserializer.
@@ -304,9 +322,49 @@ impl<R: Read> Read for BufReader<R> {
         self.inner.is_read_vectored()
     }
 
-    // we can't skip unconditionally because of the large buffer case in read.
-    unsafe fn initializer(&self) -> Initializer {
-        self.inner.initializer()
+    // The inner reader might have an optimized `read_to_end`. Drain our buffer and then
+    // delegate to the inner implementation.
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        let nread = self.cap - self.pos;
+        buf.extend_from_slice(&self.buffer());
+        self.discard_buffer();
+        Ok(nread + self.inner.read_to_end(buf)?)
+    }
+
+    // The inner reader might have an optimized `read_to_end`. Drain our buffer and then
+    // delegate to the inner implementation.
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        // In the general `else` case below we must read bytes into a side buffer, check
+        // that they are valid UTF-8, and then append them to `buf`. This requires a
+        // potentially large memcpy.
+        //
+        // If `buf` is empty--the most common case--we can leverage `append_to_string`
+        // to read directly into `buf`'s internal byte buffer, saving an allocation and
+        // a memcpy.
+        if buf.is_empty() {
+            // `append_to_string`'s safety relies on the buffer only being appended to since
+            // it only checks the UTF-8 validity of new data. If there were existing content in
+            // `buf` then an untrustworthy reader (i.e. `self.inner`) could not only append
+            // bytes but also modify existing bytes and render them invalid. On the other hand,
+            // if `buf` is empty then by definition any writes must be appends and
+            // `append_to_string` will validate all of the new bytes.
+            unsafe { crate::io::append_to_string(buf, |b| self.read_to_end(b)) }
+        } else {
+            // We cannot append our byte buffer directly onto the `buf` String as there could
+            // be an incomplete UTF-8 sequence that has only been partially read. We must read
+            // everything into a side buffer first and then call `from_utf8` on the complete
+            // buffer.
+            let mut bytes = Vec::new();
+            self.read_to_end(&mut bytes)?;
+            let string = crate::str::from_utf8(&bytes).map_err(|_| {
+                io::Error::new_const(
+                    io::ErrorKind::InvalidData,
+                    &"stream did not contain valid UTF-8",
+                )
+            })?;
+            *buf += string;
+            Ok(string.len())
+        }
     }
 }
 
@@ -319,10 +377,23 @@ impl<R: Read> BufRead for BufReader<R> {
         // to tell the compiler that the pos..cap slice is always valid.
         if self.pos >= self.cap {
             debug_assert!(self.pos == self.cap);
-            self.cap = self.inner.read(&mut self.buf)?;
+
+            let mut readbuf = ReadBuf::uninit(&mut self.buf);
+
+            // SAFETY: `self.init` is either 0 or set to `readbuf.initialized_len()`
+            // from the last time this function was called
+            unsafe {
+                readbuf.assume_init(self.init);
+            }
+
+            self.inner.read_buf(&mut readbuf)?;
+
+            self.cap = readbuf.filled_len();
+            self.init = readbuf.initialized_len();
+
             self.pos = 0;
         }
-        Ok(&self.buf[self.pos..self.cap])
+        Ok(self.buffer())
     }
 
     fn consume(&mut self, amt: usize) {
@@ -347,7 +418,7 @@ where
 impl<R: Seek> Seek for BufReader<R> {
     /// Seek to an offset, in bytes, in the underlying reader.
     ///
-    /// The position used for seeking with [`SeekFrom::Current`]`(_)` is the
+    /// The position used for seeking with <code>[SeekFrom::Current]\(_)</code> is the
     /// position the underlying reader would be at if the `BufReader<R>` had no
     /// internal buffer.
     ///
@@ -360,11 +431,11 @@ impl<R: Seek> Seek for BufReader<R> {
     ///
     /// See [`std::io::Seek`] for more details.
     ///
-    /// Note: In the edge case where you're seeking with [`SeekFrom::Current`]`(n)`
+    /// Note: In the edge case where you're seeking with <code>[SeekFrom::Current]\(n)</code>
     /// where `n` minus the internal buffer length overflows an `i64`, two
     /// seeks will be performed instead of one. If the second seek returns
     /// [`Err`], the underlying reader will be left at the same position it would
-    /// have if you called `seek` with [`SeekFrom::Current`]`(0)`.
+    /// have if you called `seek` with <code>[SeekFrom::Current]\(0)</code>.
     ///
     /// [`std::io::Seek`]: Seek
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {

@@ -1,6 +1,7 @@
 use crate::expand::{self, AstFragment, Invocation};
 use crate::module::DirOwnership;
 
+use rustc_ast::attr::MarkedAttrs;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Nonterminal};
 use rustc_ast::tokenstream::{CanSynthesizeMissingTokens, TokenStream};
@@ -9,12 +10,12 @@ use rustc_ast::{self as ast, AstLike, Attribute, Item, NodeId, PatKind};
 use rustc_attr::{self as attr, Deprecation, Stability};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::{self, Lrc};
-use rustc_errors::{DiagnosticBuilder, ErrorReported};
+use rustc_errors::{Applicability, DiagnosticBuilder, ErrorReported};
 use rustc_lint_defs::builtin::PROC_MACRO_BACK_COMPAT;
 use rustc_lint_defs::BuiltinLintDiagnostics;
 use rustc_parse::{self, nt_to_tokenstream, parser, MACRO_ARGUMENTS};
 use rustc_session::{parse::ParseSess, Limit, Session};
-use rustc_span::def_id::{CrateNum, DefId};
+use rustc_span::def_id::{CrateNum, DefId, LocalDefId};
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, ExpnData, ExpnKind, LocalExpnId};
 use rustc_span::source_map::SourceMap;
@@ -47,6 +48,7 @@ pub enum Annotatable {
     Param(ast::Param),
     FieldDef(ast::FieldDef),
     Variant(ast::Variant),
+    Crate(ast::Crate),
 }
 
 impl Annotatable {
@@ -65,6 +67,7 @@ impl Annotatable {
             Annotatable::Param(ref p) => p.span,
             Annotatable::FieldDef(ref sf) => sf.span,
             Annotatable::Variant(ref v) => v.span,
+            Annotatable::Crate(ref c) => c.span,
         }
     }
 
@@ -83,6 +86,7 @@ impl Annotatable {
             Annotatable::Param(p) => p.visit_attrs(f),
             Annotatable::FieldDef(sf) => sf.visit_attrs(f),
             Annotatable::Variant(v) => v.visit_attrs(f),
+            Annotatable::Crate(c) => c.visit_attrs(f),
         }
     }
 
@@ -101,6 +105,7 @@ impl Annotatable {
             Annotatable::Param(p) => visitor.visit_param(p),
             Annotatable::FieldDef(sf) => visitor.visit_field_def(sf),
             Annotatable::Variant(v) => visitor.visit_variant(v),
+            Annotatable::Crate(c) => visitor.visit_crate(c),
         }
     }
 
@@ -121,7 +126,8 @@ impl Annotatable {
             | Annotatable::GenericParam(..)
             | Annotatable::Param(..)
             | Annotatable::FieldDef(..)
-            | Annotatable::Variant(..) => panic!("unexpected annotatable"),
+            | Annotatable::Variant(..)
+            | Annotatable::Crate(..) => panic!("unexpected annotatable"),
         }
     }
 
@@ -217,6 +223,13 @@ impl Annotatable {
         match self {
             Annotatable::Variant(v) => v,
             _ => panic!("expected variant"),
+        }
+    }
+
+    pub fn expect_crate(self) -> ast::Crate {
+        match self {
+            Annotatable::Crate(krate) => krate,
+            _ => panic!("expected krate"),
         }
     }
 }
@@ -353,6 +366,7 @@ pub trait MacResult {
     fn make_expr(self: Box<Self>) -> Option<P<ast::Expr>> {
         None
     }
+
     /// Creates zero or more items.
     fn make_items(self: Box<Self>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
         None
@@ -416,6 +430,11 @@ pub trait MacResult {
 
     fn make_variants(self: Box<Self>) -> Option<SmallVec<[ast::Variant; 1]>> {
         None
+    }
+
+    fn make_crate(self: Box<Self>) -> Option<ast::Crate> {
+        // Fn-like macros cannot produce a crate.
+        unreachable!()
     }
 }
 
@@ -652,10 +671,7 @@ pub enum SyntaxExtensionKind {
     /// A trivial attribute "macro" that does nothing,
     /// only keeps the attribute and marks it as inert,
     /// thus making it ineligible for further expansion.
-    NonMacroAttr {
-        /// Suppresses the `unused_attributes` lint for this attribute.
-        mark_used: bool,
-    },
+    NonMacroAttr,
 
     /// A token-based derive macro.
     Derive(
@@ -704,7 +720,7 @@ impl SyntaxExtension {
             SyntaxExtensionKind::Bang(..) | SyntaxExtensionKind::LegacyBang(..) => MacroKind::Bang,
             SyntaxExtensionKind::Attr(..)
             | SyntaxExtensionKind::LegacyAttr(..)
-            | SyntaxExtensionKind::NonMacroAttr { .. } => MacroKind::Attr,
+            | SyntaxExtensionKind::NonMacroAttr => MacroKind::Attr,
             SyntaxExtensionKind::Derive(..) | SyntaxExtensionKind::LegacyDerive(..) => {
                 MacroKind::Derive
             }
@@ -810,8 +826,8 @@ impl SyntaxExtension {
         SyntaxExtension::default(SyntaxExtensionKind::Derive(Box::new(expander)), edition)
     }
 
-    pub fn non_macro_attr(mark_used: bool, edition: Edition) -> SyntaxExtension {
-        SyntaxExtension::default(SyntaxExtensionKind::NonMacroAttr { mark_used }, edition)
+    pub fn non_macro_attr(edition: Edition) -> SyntaxExtension {
+        SyntaxExtension::default(SyntaxExtensionKind::NonMacroAttr, edition)
     }
 
     pub fn expn_data(
@@ -844,6 +860,7 @@ pub type DeriveResolutions = Vec<(ast::Path, Annotatable, Option<Lrc<SyntaxExten
 
 pub trait ResolverExpand {
     fn next_node_id(&mut self) -> NodeId;
+    fn invocation_parent(&self, id: LocalExpnId) -> LocalDefId;
 
     fn resolve_dollar_crates(&mut self);
     fn visit_ast_fragment_with_placeholders(
@@ -895,6 +912,14 @@ pub trait ResolverExpand {
     /// Decodes the proc-macro quoted span in the specified crate, with the specified id.
     /// No caching is performed.
     fn get_proc_macro_quoted_span(&self, krate: CrateNum, id: usize) -> Span;
+
+    /// The order of items in the HIR is unrelated to the order of
+    /// items in the AST. However, we generate proc macro harnesses
+    /// based on the AST order, and later refer to these harnesses
+    /// from the HIR. This field keeps track of the order in which
+    /// we generated proc macros harnesses, so that we can map
+    /// HIR proc macros items back to their harness items.
+    fn declare_proc_macro(&mut self, id: NodeId);
 }
 
 #[derive(Clone, Default)]
@@ -928,6 +953,7 @@ pub struct ExpansionData {
     pub prior_type_ascription: Option<(Span, bool)>,
     /// Some parent node that is close to this macro call
     pub lint_node_id: NodeId,
+    pub is_trailing_mac: bool,
 }
 
 type OnExternModLoaded<'a> =
@@ -951,6 +977,10 @@ pub struct ExtCtxt<'a> {
     ///
     /// `Ident` is the module name.
     pub(super) extern_mod_loaded: OnExternModLoaded<'a>,
+    /// When we 'expand' an inert attribute, we leave it
+    /// in the AST, but insert it here so that we know
+    /// not to expand it again.
+    pub(super) expanded_inert_attrs: MarkedAttrs,
 }
 
 impl<'a> ExtCtxt<'a> {
@@ -974,9 +1004,11 @@ impl<'a> ExtCtxt<'a> {
                 dir_ownership: DirOwnership::Owned { relative: None },
                 prior_type_ascription: None,
                 lint_node_id: ast::CRATE_NODE_ID,
+                is_trailing_mac: false,
             },
             force_mode: false,
             expansions: FxHashMap::default(),
+            expanded_inert_attrs: MarkedAttrs::new(),
         }
     }
 
@@ -1107,7 +1139,7 @@ impl<'a> ExtCtxt<'a> {
                         span,
                         &format!(
                             "cannot resolve relative path in non-file source `{}`",
-                            other.prefer_local()
+                            self.source_map().filename_for_diagnostics(&other)
                         ),
                     ));
                 }
@@ -1122,13 +1154,15 @@ impl<'a> ExtCtxt<'a> {
 }
 
 /// Extracts a string literal from the macro expanded version of `expr`,
-/// emitting `err_msg` if `expr` is not a string literal. This does not stop
-/// compilation on error, merely emits a non-fatal error and returns `None`.
+/// returning a diagnostic error of `err_msg` if `expr` is not a string literal.
+/// The returned bool indicates whether an applicable suggestion has already been
+/// added to the diagnostic to avoid emitting multiple suggestions. `Err(None)`
+/// indicates that an ast error was encountered.
 pub fn expr_to_spanned_string<'a>(
     cx: &'a mut ExtCtxt<'_>,
     expr: P<ast::Expr>,
     err_msg: &str,
-) -> Result<(Symbol, ast::StrStyle, Span), Option<DiagnosticBuilder<'a>>> {
+) -> Result<(Symbol, ast::StrStyle, Span), Option<(DiagnosticBuilder<'a>, bool)>> {
     // Perform eager expansion on the expression.
     // We want to be able to handle e.g., `concat!("foo", "bar")`.
     let expr = cx.expander().fully_expand_fragment(AstFragment::Expr(expr)).make_expr();
@@ -1136,14 +1170,27 @@ pub fn expr_to_spanned_string<'a>(
     Err(match expr.kind {
         ast::ExprKind::Lit(ref l) => match l.kind {
             ast::LitKind::Str(s, style) => return Ok((s, style, expr.span)),
+            ast::LitKind::ByteStr(_) => {
+                let mut err = cx.struct_span_err(l.span, err_msg);
+                err.span_suggestion(
+                    expr.span.shrink_to_lo(),
+                    "consider removing the leading `b`",
+                    String::new(),
+                    Applicability::MaybeIncorrect,
+                );
+                Some((err, true))
+            }
             ast::LitKind::Err(_) => None,
-            _ => Some(cx.struct_span_err(l.span, err_msg)),
+            _ => Some((cx.struct_span_err(l.span, err_msg), false)),
         },
         ast::ExprKind::Err => None,
-        _ => Some(cx.struct_span_err(expr.span, err_msg)),
+        _ => Some((cx.struct_span_err(expr.span, err_msg), false)),
     })
 }
 
+/// Extracts a string literal from the macro expanded version of `expr`,
+/// emitting `err_msg` if `expr` is not a string literal. This does not stop
+/// compilation on error, merely emits a non-fatal error and returns `None`.
 pub fn expr_to_string(
     cx: &mut ExtCtxt<'_>,
     expr: P<ast::Expr>,
@@ -1151,7 +1198,7 @@ pub fn expr_to_string(
 ) -> Option<(Symbol, ast::StrStyle)> {
     expr_to_spanned_string(cx, expr, err_msg)
         .map_err(|err| {
-            err.map(|mut err| {
+            err.map(|(mut err, _)| {
                 err.emit();
             })
         })

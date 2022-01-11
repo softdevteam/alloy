@@ -1,16 +1,13 @@
 //! Type context book-keeping.
 
 use crate::arena::Arena;
-use crate::dep_graph::{DepGraph, DepNode};
+use crate::dep_graph::{DepGraph, DepKind, DepKindStruct};
 use crate::hir::place::Place as HirPlace;
-use crate::ich::{NodeIdHashingMode, StableHashingContext};
 use crate::infer::canonical::{Canonical, CanonicalVarInfo, CanonicalVarInfos};
 use crate::lint::{struct_lint_level, LintDiagnosticBuilder, LintLevelSource};
-use crate::middle;
-use crate::middle::cstore::EncodedMetadata;
 use crate::middle::resolve_lifetime::{self, LifetimeScopeForPath, ObjectLifetimeDefault};
 use crate::middle::stability;
-use crate::mir::interpret::{self, AllocId, Allocation, ConstValue, Scalar};
+use crate::mir::interpret::{self, Allocation, ConstValue, Scalar};
 use crate::mir::{Body, Field, Local, Place, PlaceElem, ProjectionKind, Promoted};
 use crate::thir::Thir;
 use crate::traits;
@@ -27,12 +24,12 @@ use crate::ty::{
 use rustc_ast as ast;
 use rustc_attr as attr;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::memmap::Mmap;
 use rustc_data_structures::profiling::SelfProfilerRef;
 use rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, WorkerLocal};
-use rustc_data_structures::vec_map::VecMap;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -46,7 +43,7 @@ use rustc_hir::{
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_macros::HashStable;
 use rustc_middle::mir::FakeReadCause;
-use rustc_middle::ty::OpaqueTypeKey;
+use rustc_query_system::ich::{NodeIdHashingMode, StableHashingContext};
 use rustc_serialize::opaque::{FileEncodeResult, FileEncoder};
 use rustc_session::config::{BorrowckMode, CrateType, OutputFilenames};
 use rustc_session::lint::{Level, Lint};
@@ -73,7 +70,7 @@ use std::sync::Arc;
 
 pub trait OnDiskCache<'tcx>: rustc_data_structures::sync::Sync {
     /// Creates a new `OnDiskCache` instance from the serialized data in `data`.
-    fn new(sess: &'tcx Session, data: Vec<u8>, start_pos: usize) -> Self
+    fn new(sess: &'tcx Session, data: Mmap, start_pos: usize) -> Self
     where
         Self: Sized;
 
@@ -81,26 +78,7 @@ pub trait OnDiskCache<'tcx>: rustc_data_structures::sync::Sync {
     where
         Self: Sized;
 
-    /// Converts a `DefPathHash` to its corresponding `DefId` in the current compilation
-    /// session, if it still exists. This is used during incremental compilation to
-    /// turn a deserialized `DefPathHash` into its current `DefId`.
-    fn def_path_hash_to_def_id(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        def_path_hash: DefPathHash,
-    ) -> Option<DefId>;
-
-    /// If the given `dep_node`'s hash still exists in the current compilation,
-    /// and its current `DefId` is foreign, calls `store_foreign_def_id` with it.
-    ///
-    /// Normally, `store_foreign_def_id_hash` can be called directly by
-    /// the dependency graph when we construct a `DepNode`. However,
-    /// when we re-use a deserialized `DepNode` from the previous compilation
-    /// session, we only have the `DefPathHash` available. This method is used
-    /// to that any `DepNode` that we re-use has a `DefPathHash` -> `RawId` written
-    /// out for usage in the next compilation session.
-    fn register_reused_dep_node(&self, tcx: TyCtxt<'tcx>, dep_node: &DepNode);
-    fn store_foreign_def_id_hash(&self, def_id: DefId, hash: DefPathHash);
+    fn drop_serialized_data(&self, tcx: TyCtxt<'tcx>);
 
     fn serialize(&self, tcx: TyCtxt<'tcx>, encoder: &mut FileEncoder) -> FileEncodeResult;
 }
@@ -117,8 +95,8 @@ pub struct CtxtInterners<'tcx> {
     /// The arena that types, regions, etc. are allocated from.
     arena: &'tcx WorkerLocal<Arena<'tcx>>,
 
-    /// Specifically use a speedy hash algorithm for these hash sets, since
-    /// they're accessed quite often.
+    // Specifically use a speedy hash algorithm for these hash sets, since
+    // they're accessed quite often.
     type_: InternedSet<'tcx, TyS<'tcx>>,
     type_list: InternedSet<'tcx, List<Ty<'tcx>>>,
     substs: InternedSet<'tcx, InternalSubsts<'tcx>>,
@@ -131,9 +109,9 @@ pub struct CtxtInterners<'tcx> {
     projs: InternedSet<'tcx, List<ProjectionKind>>,
     place_elems: InternedSet<'tcx, List<PlaceElem<'tcx>>>,
     const_: InternedSet<'tcx, Const<'tcx>>,
-    /// Const allocations.
-    allocation: InternedSet<'tcx, Allocation>,
+    const_allocation: InternedSet<'tcx, Allocation>,
     bound_variable_kinds: InternedSet<'tcx, List<ty::BoundVariableKind>>,
+    layout: InternedSet<'tcx, Layout>,
 }
 
 impl<'tcx> CtxtInterners<'tcx> {
@@ -151,8 +129,9 @@ impl<'tcx> CtxtInterners<'tcx> {
             projs: Default::default(),
             place_elems: Default::default(),
             const_: Default::default(),
-            allocation: Default::default(),
+            const_allocation: Default::default(),
             bound_variable_kinds: Default::default(),
+            layout: Default::default(),
         }
     }
 
@@ -477,7 +456,7 @@ pub struct TypeckResults<'tcx> {
 
     /// All the opaque types that are restricted to concrete types
     /// by this function.
-    pub concrete_opaque_types: VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>>,
+    pub concrete_opaque_types: FxHashSet<DefId>,
 
     /// Tracks the minimum captures required for a closure;
     /// see `MinCaptureInformationMap` for more details.
@@ -1031,6 +1010,7 @@ pub struct GlobalCtxt<'tcx> {
 
     pub queries: &'tcx dyn query::QueryEngine<'tcx>,
     pub query_caches: query::QueryCaches<'tcx>,
+    query_kinds: &'tcx [DepKindStruct],
 
     // Internal caches for metadata decoding. No need to track deps on this.
     pub ty_rcache: Lock<FxHashMap<ty::CReaderCacheKey, Ty<'tcx>>>,
@@ -1061,12 +1041,7 @@ pub struct GlobalCtxt<'tcx> {
     /// Stores memory for globals (statics/consts).
     pub(crate) alloc_map: Lock<interpret::AllocMap<'tcx>>,
 
-    layout_interner: ShardedHashMap<&'tcx Layout, ()>,
-
     output_filenames: Arc<OutputFilenames>,
-
-    pub(super) vtables_cache:
-        Lock<FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), AllocId>>,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1106,13 +1081,6 @@ impl<'tcx> TyCtxt<'tcx> {
         self.arena.alloc(ty::AdtDef::new(self, did, kind, variants, repr))
     }
 
-    pub fn intern_const_alloc(self, alloc: Allocation) -> &'tcx Allocation {
-        self.interners
-            .allocation
-            .intern(alloc, |alloc| Interned(self.interners.arena.alloc(alloc)))
-            .0
-    }
-
     /// Allocates a read-only byte or string literal for `mir::interpret`.
     pub fn allocate_bytes(self, bytes: &[u8]) -> interpret::AllocId {
         // Create an allocation that just contains these bytes.
@@ -1121,30 +1089,33 @@ impl<'tcx> TyCtxt<'tcx> {
         self.create_memory_alloc(alloc)
     }
 
+    // FIXME(eddyb) move to `direct_interners!`.
     pub fn intern_stability(self, stab: attr::Stability) -> &'tcx attr::Stability {
         self.stability_interner.intern(stab, |stab| self.arena.alloc(stab))
     }
 
+    // FIXME(eddyb) move to `direct_interners!`.
     pub fn intern_const_stability(self, stab: attr::ConstStability) -> &'tcx attr::ConstStability {
         self.const_stability_interner.intern(stab, |stab| self.arena.alloc(stab))
     }
 
-    pub fn intern_layout(self, layout: Layout) -> &'tcx Layout {
-        self.layout_interner.intern(layout, |layout| self.arena.alloc(layout))
-    }
-
     /// Returns a range of the start/end indices specified with the
     /// `rustc_layout_scalar_valid_range` attribute.
+    // FIXME(eddyb) this is an awkward spot for this method, maybe move it?
     pub fn layout_scalar_valid_range(self, def_id: DefId) -> (Bound<u128>, Bound<u128>) {
         let attrs = self.get_attrs(def_id);
         let get = |name| {
-            let attr = match attrs.iter().find(|a| self.sess.check_name(a, name)) {
+            let attr = match attrs.iter().find(|a| a.has_name(name)) {
                 Some(attr) => attr,
                 None => return Bound::Unbounded,
             };
             debug!("layout_scalar_valid_range: attr={:?}", attr);
             if let Some(
-                &[ast::NestedMetaItem::Literal(ast::Lit { kind: ast::LitKind::Int(a, _), .. })],
+                &[
+                    ast::NestedMetaItem::Literal(ast::Lit {
+                        kind: ast::LitKind::Int(a, _), ..
+                    }),
+                ],
             ) = attr.meta_item_list().as_deref()
             {
                 Bound::Included(a)
@@ -1177,6 +1148,7 @@ impl<'tcx> TyCtxt<'tcx> {
         dep_graph: DepGraph,
         on_disk_cache: Option<&'tcx dyn OnDiskCache<'tcx>>,
         queries: &'tcx dyn query::QueryEngine<'tcx>,
+        query_kinds: &'tcx [DepKindStruct],
         crate_name: &str,
         output_filenames: OutputFilenames,
     ) -> GlobalCtxt<'tcx> {
@@ -1203,19 +1175,22 @@ impl<'tcx> TyCtxt<'tcx> {
             on_disk_cache,
             queries,
             query_caches: query::QueryCaches::default(),
+            query_kinds,
             ty_rcache: Default::default(),
             pred_rcache: Default::default(),
             selection_cache: Default::default(),
             evaluation_cache: Default::default(),
             crate_name: Symbol::intern(crate_name),
             data_layout,
-            layout_interner: Default::default(),
             stability_interner: Default::default(),
             const_stability_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames),
-            vtables_cache: Default::default(),
         }
+    }
+
+    crate fn query_kind(self, k: DepKind) -> &'tcx DepKindStruct {
+        &self.query_kinds[k as usize]
     }
 
     /// Constructs a `TyKind::Error` type and registers a `delay_span_bug` to ensure it gets used.
@@ -1245,10 +1220,6 @@ impl<'tcx> TyCtxt<'tcx> {
         self.sess.consider_optimizing(&cname, msg)
     }
 
-    pub fn lib_features(self) -> &'tcx middle::lib_features::LibFeatures {
-        self.get_lib_features(())
-    }
-
     /// Obtain all lang items of this crate and all dependencies (recursively)
     pub fn lang_items(self) -> &'tcx rustc_hir::lang_items::LanguageItems {
         self.get_lang_items(())
@@ -1257,12 +1228,17 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Obtain the given diagnostic item's `DefId`. Use `is_diagnostic_item` if you just want to
     /// compare against another `DefId`, since `is_diagnostic_item` is cheaper.
     pub fn get_diagnostic_item(self, name: Symbol) -> Option<DefId> {
-        self.all_diagnostic_items(()).get(&name).copied()
+        self.all_diagnostic_items(()).name_to_id.get(&name).copied()
+    }
+
+    /// Obtain the diagnostic item's name
+    pub fn get_diagnostic_name(self, id: DefId) -> Option<Symbol> {
+        self.diagnostic_items(id.krate).id_to_name.get(&id).copied()
     }
 
     /// Check whether the diagnostic item with the given `name` has the given `DefId`.
     pub fn is_diagnostic_item(self, name: Symbol, did: DefId) -> bool {
-        self.diagnostic_items(did.krate).get(&name) == Some(&did)
+        self.diagnostic_items(did.krate).name_to_id.get(&name) == Some(&did)
     }
 
     pub fn stability(self) -> &'tcx stability::Index<'tcx> {
@@ -1315,6 +1291,38 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
+    /// Maps a StableCrateId to the corresponding CrateNum. This method assumes
+    /// that the crate in question has already been loaded by the CrateStore.
+    #[inline]
+    pub fn stable_crate_id_to_crate_num(self, stable_crate_id: StableCrateId) -> CrateNum {
+        if stable_crate_id == self.sess.local_stable_crate_id() {
+            LOCAL_CRATE
+        } else {
+            self.untracked_resolutions.cstore.stable_crate_id_to_crate_num(stable_crate_id)
+        }
+    }
+
+    /// Converts a `DefPathHash` to its corresponding `DefId` in the current compilation
+    /// session, if it still exists. This is used during incremental compilation to
+    /// turn a deserialized `DefPathHash` into its current `DefId`.
+    pub fn def_path_hash_to_def_id(self, hash: DefPathHash) -> DefId {
+        debug!("def_path_hash_to_def_id({:?})", hash);
+
+        let stable_crate_id = hash.stable_crate_id();
+
+        // If this is a DefPathHash from the local crate, we can look up the
+        // DefId in the tcx's `Definitions`.
+        if stable_crate_id == self.sess.local_stable_crate_id() {
+            self.untracked_resolutions.definitions.local_def_path_hash_to_def_id(hash).to_def_id()
+        } else {
+            // If this is a DefPathHash from an upstream crate, let the CrateStore map
+            // it to a DefId.
+            let cstore = &self.untracked_resolutions.cstore;
+            let cnum = cstore.stable_crate_id_to_crate_num(stable_crate_id);
+            cstore.def_path_hash_to_def_id(cnum, hash)
+        }
+    }
+
     pub fn def_path_debug_str(self, def_id: DefId) -> String {
         // We are explicitly not going through queries here in order to get
         // crate name and stable crate id since this code is called from debug!()
@@ -1337,11 +1345,6 @@ impl<'tcx> TyCtxt<'tcx> {
         )
     }
 
-    pub fn encode_metadata(self) -> EncodedMetadata {
-        let _prof_timer = self.prof.verbose_generic_activity("generate_crate_metadata");
-        self.untracked_resolutions.cstore.encode_metadata(self)
-    }
-
     /// Note that this is *untracked* and should only be used within the query
     /// system if the result is otherwise tracked through queries
     pub fn cstore_untracked(self) -> &'tcx ty::CrateStoreDyn {
@@ -1356,20 +1359,15 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline(always)]
     pub fn create_stable_hashing_context(self) -> StableHashingContext<'tcx> {
-        let krate = self.gcx.untracked_crate;
         let resolutions = &self.gcx.untracked_resolutions;
-
-        StableHashingContext::new(self.sess, krate, &resolutions.definitions, &*resolutions.cstore)
+        StableHashingContext::new(self.sess, &resolutions.definitions, &*resolutions.cstore)
     }
 
     #[inline(always)]
     pub fn create_no_span_stable_hashing_context(self) -> StableHashingContext<'tcx> {
-        let krate = self.gcx.untracked_crate;
         let resolutions = &self.gcx.untracked_resolutions;
-
         StableHashingContext::ignore_spans(
             self.sess,
-            krate,
             &resolutions.definitions,
             &*resolutions.cstore,
         )
@@ -1422,8 +1420,8 @@ impl<'tcx> TyCtxt<'tcx> {
     #[inline]
     pub fn lazy_normalization(self) -> bool {
         let features = self.features();
-        // Note: We do not enable lazy normalization for `min_const_generics`.
-        features.const_generics || features.lazy_normalization_consts
+        // Note: We only use lazy normalization for generic const expressions.
+        features.generic_const_exprs
     }
 
     #[inline]
@@ -1669,7 +1667,7 @@ macro_rules! nop_list_lift {
 nop_lift! {type_; Ty<'a> => Ty<'tcx>}
 nop_lift! {region; Region<'a> => Region<'tcx>}
 nop_lift! {const_; &'a Const<'a> => &'tcx Const<'tcx>}
-nop_lift! {allocation; &'a Allocation => &'tcx Allocation}
+nop_lift! {const_allocation; &'a Allocation => &'tcx Allocation}
 nop_lift! {predicate; &'a PredicateInner<'a> => &'tcx PredicateInner<'tcx>}
 
 nop_list_lift! {type_list; Ty<'a> => Ty<'tcx>}
@@ -1794,7 +1792,7 @@ pub mod tls {
         if context == 0 {
             f(None)
         } else {
-            // We could get a `ImplicitCtxt` pointer from another thread.
+            // We could get an `ImplicitCtxt` pointer from another thread.
             // Ensure that `ImplicitCtxt` is `Sync`.
             sync::assert_sync::<ImplicitCtxt<'_, '_>>();
 
@@ -1961,8 +1959,12 @@ impl<'tcx> TyCtxt<'tcx> {
                     "Const Stability interner: #{}",
                     self.0.const_stability_interner.len()
                 )?;
-                writeln!(fmt, "Allocation interner: #{}", self.0.interners.allocation.len())?;
-                writeln!(fmt, "Layout interner: #{}", self.0.layout_interner.len())?;
+                writeln!(
+                    fmt,
+                    "Const Allocation interner: #{}",
+                    self.0.interners.const_allocation.len()
+                )?;
+                writeln!(fmt, "Layout interner: #{}", self.0.interners.layout.len())?;
 
                 Ok(())
             }
@@ -2050,38 +2052,6 @@ impl<'tcx, T> Borrow<[T]> for Interned<'tcx, List<T>> {
     }
 }
 
-impl<'tcx> Borrow<RegionKind> for Interned<'tcx, RegionKind> {
-    fn borrow(&self) -> &RegionKind {
-        &self.0
-    }
-}
-
-impl<'tcx> Borrow<Const<'tcx>> for Interned<'tcx, Const<'tcx>> {
-    fn borrow<'a>(&'a self) -> &'a Const<'tcx> {
-        &self.0
-    }
-}
-
-impl<'tcx> Borrow<Allocation> for Interned<'tcx, Allocation> {
-    fn borrow<'a>(&'a self) -> &'a Allocation {
-        &self.0
-    }
-}
-
-impl<'tcx> PartialEq for Interned<'tcx, Allocation> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl<'tcx> Eq for Interned<'tcx, Allocation> {}
-
-impl<'tcx> Hash for Interned<'tcx, Allocation> {
-    fn hash<H: Hasher>(&self, s: &mut H) {
-        self.0.hash(s)
-    }
-}
-
 macro_rules! direct_interners {
     ($($name:ident: $method:ident($ty:ty),)+) => {
         $(impl<'tcx> PartialEq for Interned<'tcx, $ty> {
@@ -2098,9 +2068,15 @@ macro_rules! direct_interners {
             }
         }
 
+        impl<'tcx> Borrow<$ty> for Interned<'tcx, $ty> {
+            fn borrow<'a>(&'a self) -> &'a $ty {
+                &self.0
+            }
+        }
+
         impl<'tcx> TyCtxt<'tcx> {
             pub fn $method(self, v: $ty) -> &'tcx $ty {
-                self.interners.$name.intern_ref(&v, || {
+                self.interners.$name.intern(v, |v| {
                     Interned(self.interners.arena.alloc(v))
                 }).0
             }
@@ -2111,6 +2087,8 @@ macro_rules! direct_interners {
 direct_interners! {
     region: mk_region(RegionKind),
     const_: mk_const(Const<'tcx>),
+    const_allocation: intern_const_alloc(Allocation),
+    layout: intern_layout(Layout),
 }
 
 macro_rules! slice_interners {
@@ -2156,7 +2134,7 @@ impl<'tcx> TyCtxt<'tcx> {
         })
     }
 
-    /// Computes the def-ids of the transitive super-traits of `trait_def_id`. This (intentionally)
+    /// Computes the def-ids of the transitive supertraits of `trait_def_id`. This (intentionally)
     /// does not compute the full elaborated super-predicates but just the set of def-ids. It is used
     /// to identify which traits may define a given associated type to help avoid cycle errors.
     /// Returns a `DefId` iterator.
@@ -2171,7 +2149,7 @@ impl<'tcx> TyCtxt<'tcx> {
             let generic_predicates = self.super_predicates_of(trait_did);
 
             for (predicate, _) in generic_predicates.predicates {
-                if let ty::PredicateKind::Trait(data, _) = predicate.kind().skip_binder() {
+                if let ty::PredicateKind::Trait(data) = predicate.kind().skip_binder() {
                     if set.insert(data.def_id()) {
                         stack.push(data.def_id());
                     }
@@ -2740,6 +2718,29 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn lifetime_scope(self, id: HirId) -> Option<LifetimeScopeForPath> {
         self.lifetime_scope_map(id.owner).and_then(|mut map| map.remove(&id.local_id))
     }
+
+    /// Whether the `def_id` counts as const fn in the current crate, considering all active
+    /// feature gates
+    pub fn is_const_fn(self, def_id: DefId) -> bool {
+        if self.is_const_fn_raw(def_id) {
+            match self.lookup_const_stability(def_id) {
+                Some(stability) if stability.level.is_unstable() => {
+                    // has a `rustc_const_unstable` attribute, check whether the user enabled the
+                    // corresponding feature gate.
+                    self.features()
+                        .declared_lib_features
+                        .iter()
+                        .any(|&(sym, _)| sym == stability.feature)
+                }
+                // functions without const stability are either stable user written
+                // const fn or the user is using feature gates and we thus don't
+                // care what they do
+                _ => true,
+            }
+        } else {
+            false
+        }
+    }
 }
 
 impl TyCtxtAt<'tcx> {
@@ -2839,7 +2840,8 @@ fn ptr_eq<T, U>(t: *const T, u: *const U) -> bool {
 }
 
 pub fn provide(providers: &mut ty::query::Providers) {
-    providers.in_scope_traits_map = |tcx, id| tcx.hir_crate(()).trait_map.get(&id);
+    providers.in_scope_traits_map =
+        |tcx, id| tcx.hir_crate(()).owners[id].as_ref().map(|owner_info| &owner_info.trait_map);
     providers.resolutions = |tcx, ()| &tcx.untracked_resolutions;
     providers.module_exports = |tcx, id| tcx.resolutions(()).export_map.get(&id).map(|v| &v[..]);
     providers.crate_name = |tcx, id| {
@@ -2854,18 +2856,11 @@ pub fn provide(providers: &mut ty::query::Providers) {
         tcx.arena.alloc(tcx.resolutions(()).glob_map.get(&id).cloned().unwrap_or_default())
     };
 
-    providers.lookup_stability = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_stability(id)
-    };
-    providers.lookup_const_stability = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_const_stability(id)
-    };
-    providers.lookup_deprecation_entry = |tcx, id| {
-        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
-        tcx.stability().local_deprecation_entry(id)
-    };
+    providers.lookup_stability = |tcx, id| tcx.stability().local_stability(id.expect_local());
+    providers.lookup_const_stability =
+        |tcx, id| tcx.stability().local_const_stability(id.expect_local());
+    providers.lookup_deprecation_entry =
+        |tcx, id| tcx.stability().local_deprecation_entry(id.expect_local());
     providers.extern_mod_stmt_cnum =
         |tcx, id| tcx.resolutions(()).extern_crate_map.get(&id).cloned();
     providers.output_filenames = |tcx, ()| tcx.output_filenames.clone();

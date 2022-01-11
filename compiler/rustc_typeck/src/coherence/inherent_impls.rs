@@ -17,9 +17,8 @@ use rustc_span::Span;
 
 /// On-demand query: yields a map containing all types mapped to their inherent impls.
 pub fn crate_inherent_impls(tcx: TyCtxt<'_>, (): ()) -> CrateInherentImpls {
-    let krate = tcx.hir().krate();
     let mut collect = InherentCollect { tcx, impls_map: Default::default() };
-    krate.visit_all_item_likes(&mut collect);
+    tcx.hir().visit_all_item_likes(&mut collect);
     collect.impls_map
 }
 
@@ -57,8 +56,19 @@ impl ItemLikeVisitor<'v> for InherentCollect<'tcx> {
             ty::Foreign(did) => {
                 self.check_def_id(item, did);
             }
-            ty::Dynamic(ref data, ..) if data.principal_def_id().is_some() => {
+            ty::Dynamic(data, ..) if data.principal_def_id().is_some() => {
                 self.check_def_id(item, data.principal_def_id().unwrap());
+            }
+            ty::Dynamic(..) => {
+                struct_span_err!(
+                    self.tcx.sess,
+                    ty.span,
+                    E0785,
+                    "cannot define inherent `impl` for a dyn auto trait"
+                )
+                .span_label(ty.span, "impl requires at least one non-auto trait")
+                .note("define and implement a new trait or type instead")
+                .emit();
             }
             ty::Bool => {
                 self.check_primitive_impl(
@@ -390,7 +400,7 @@ impl InherentCollect<'tcx> {
         lang: &str,
         ty: &str,
         span: Span,
-        assoc_items: &[hir::ImplItemRef<'_>],
+        assoc_items: &[hir::ImplItemRef],
     ) {
         match (lang_def_id, lang_def_id2) {
             (Some(lang_def_id), _) if lang_def_id == impl_def_id.to_def_id() => {
@@ -400,7 +410,7 @@ impl InherentCollect<'tcx> {
                 // OK
             }
             _ => {
-                let to_implement = if assoc_items.len() == 0 {
+                let to_implement = if assoc_items.is_empty() {
                     String::new()
                 } else {
                     let plural = assoc_items.len() > 1;

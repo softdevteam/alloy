@@ -164,7 +164,7 @@ impl ParseSess {
     }
 
     pub(crate) fn ignore_file(&self, path: &FileName) -> bool {
-        self.ignore_path_set.as_ref().is_match(&path)
+        self.ignore_path_set.as_ref().is_match(path)
     }
 
     pub(crate) fn set_silent_emitter(&mut self) {
@@ -173,6 +173,12 @@ impl ParseSess {
 
     pub(crate) fn span_to_filename(&self, span: Span) -> FileName {
         self.parse_sess.source_map().span_to_filename(span).into()
+    }
+
+    pub(crate) fn span_to_file_contents(&self, span: Span) -> Lrc<rustc_span::SourceFile> {
+        self.parse_sess
+            .source_map()
+            .lookup_source_file(span.data().lo)
     }
 
     pub(crate) fn span_to_first_line_string(&self, span: Span) -> String {
@@ -280,10 +286,11 @@ impl LineRangeUtils for ParseSess {
 mod tests {
     use super::*;
 
+    use rustfmt_config_proc_macro::nightly_only_test;
+
     mod emitter {
         use super::*;
         use crate::config::IgnoreList;
-        use crate::is_nightly_channel;
         use crate::utils::mk_sp;
         use rustc_span::{FileName as SourceMapFileName, MultiSpan, RealFileName, DUMMY_SP};
         use std::path::PathBuf;
@@ -311,6 +318,7 @@ mod tests {
                 suggestions: vec![],
                 span: span.unwrap_or_else(MultiSpan::new),
                 sort_span: DUMMY_SP,
+                is_lint: false,
             }
         }
 
@@ -364,11 +372,9 @@ mod tests {
             assert_eq!(can_reset_errors.load(Ordering::Acquire), false);
         }
 
+        #[nightly_only_test]
         #[test]
         fn handles_recoverable_parse_error_in_ignored_file() {
-            if !is_nightly_channel!() {
-                return;
-            }
             let num_emitted_errors = Lrc::new(AtomicU32::new(0));
             let can_reset_errors = Lrc::new(AtomicBool::new(false));
             let ignore_list = get_ignore_list(r#"ignore = ["foo.rs"]"#);
@@ -391,11 +397,9 @@ mod tests {
             assert_eq!(can_reset_errors.load(Ordering::Acquire), true);
         }
 
+        #[nightly_only_test]
         #[test]
         fn handles_recoverable_parse_error_in_non_ignored_file() {
-            if !is_nightly_channel!() {
-                return;
-            }
             let num_emitted_errors = Lrc::new(AtomicU32::new(0));
             let can_reset_errors = Lrc::new(AtomicBool::new(false));
             let source_map = Lrc::new(SourceMap::new(FilePathMapping::empty()));
@@ -417,11 +421,9 @@ mod tests {
             assert_eq!(can_reset_errors.load(Ordering::Acquire), false);
         }
 
+        #[nightly_only_test]
         #[test]
         fn handles_mix_of_recoverable_parse_error() {
-            if !is_nightly_channel!() {
-                return;
-            }
             let num_emitted_errors = Lrc::new(AtomicU32::new(0));
             let can_reset_errors = Lrc::new(AtomicBool::new(false));
             let source_map = Lrc::new(SourceMap::new(FilePathMapping::empty()));

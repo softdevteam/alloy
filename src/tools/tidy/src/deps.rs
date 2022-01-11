@@ -28,18 +28,16 @@ const LICENSES: &[&str] = &[
 const EXCEPTIONS: &[(&str, &str)] = &[
     ("mdbook", "MPL-2.0"),                                  // mdbook
     ("openssl", "Apache-2.0"),                              // cargo, mdbook
-    ("fuchsia-zircon-sys", "BSD-3-Clause"),                 // rustdoc, rustc, cargo
-    ("fuchsia-zircon", "BSD-3-Clause"), // rustdoc, rustc, cargo (jobserver & tempdir)
-    ("colored", "MPL-2.0"),             // rustfmt
-    ("ordslice", "Apache-2.0"),         // rls
-    ("ryu", "Apache-2.0 OR BSL-1.0"),   // rls/cargo/... (because of serde)
-    ("bytesize", "Apache-2.0"),         // cargo
-    ("im-rc", "MPL-2.0+"),              // cargo
-    ("sized-chunks", "MPL-2.0+"),       // cargo via im-rc
-    ("bitmaps", "MPL-2.0+"),            // cargo via im-rc
+    ("colored", "MPL-2.0"),                                 // rustfmt
+    ("ordslice", "Apache-2.0"),                             // rls
+    ("ryu", "Apache-2.0 OR BSL-1.0"),                       // rls/cargo/... (because of serde)
+    ("bytesize", "Apache-2.0"),                             // cargo
+    ("im-rc", "MPL-2.0+"),                                  // cargo
+    ("sized-chunks", "MPL-2.0+"),                           // cargo via im-rc
+    ("bitmaps", "MPL-2.0+"),                                // cargo via im-rc
     ("crossbeam-queue", "MIT/Apache-2.0 AND BSD-2-Clause"), // rls via rayon
-    ("instant", "BSD-3-Clause"),        // rustc_driver/tracing-subscriber/parking_lot
-    ("snap", "BSD-3-Clause"),           // rustc
+    ("instant", "BSD-3-Clause"), // rustc_driver/tracing-subscriber/parking_lot
+    ("snap", "BSD-3-Clause"),    // rustc
     // FIXME: this dependency violates the documentation comment above:
     ("fortanix-sgx-abi", "MPL-2.0"), // libstd but only for `sgx` target
 ];
@@ -84,8 +82,8 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "bitflags",
     "block-buffer",
     "block-padding",
-    "byteorder",
     "byte-tools",
+    "byteorder",
     "cc",
     "cfg-if",
     "chalk-derive",
@@ -115,8 +113,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "fixedbitset",
     "flate2",
     "fortanix-sgx-abi",
-    "fuchsia-zircon",
-    "fuchsia-zircon-sys",
     "generic-array",
     "getopts",
     "getrandom",
@@ -125,12 +121,12 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "hashbrown",
     "hermit-abi",
     "humantime",
+    "if_chain",
     "indexmap",
     "instant",
     "itertools",
     "itoa",
     "jobserver",
-    "kernel32-sys",
     "lazy_static",
     "libc",
     "libz-sys",
@@ -144,10 +140,11 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "memmap2",
     "memoffset",
     "miniz_oxide",
-    "num_cpus",
     "num-integer",
     "num-traits",
+    "num_cpus",
     "object",
+    "odht",
     "once_cell",
     "opaque-debug",
     "parking_lot",
@@ -170,6 +167,7 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "rand_hc",
     "rand_pcg",
     "rand_xorshift",
+    "rand_xoshiro",
     "redox_syscall",
     "regex",
     "regex-automata",
@@ -192,8 +190,8 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "serde_json",
     "sha-1",
     "sha2",
-    "smallvec",
     "sharded-slab",
+    "smallvec",
     "snap",
     "stable_deref_trait",
     "stacker",
@@ -213,6 +211,11 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "tracing-subscriber",
     "tracing-tree",
     "typenum",
+    "unic-char-property",
+    "unic-char-range",
+    "unic-common",
+    "unic-emoji-char",
+    "unic-ucd-version",
     "unicode-normalization",
     "unicode-script",
     "unicode-security",
@@ -222,7 +225,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "version_check",
     "wasi",
     "winapi",
-    "winapi-build",
     "winapi-i686-pc-windows-gnu",
     "winapi-util",
     "winapi-x86_64-pc-windows-gnu",

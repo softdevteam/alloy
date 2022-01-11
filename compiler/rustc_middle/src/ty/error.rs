@@ -33,6 +33,8 @@ impl<T> ExpectedFound<T> {
 #[derive(Clone, Debug, TypeFoldable)]
 pub enum TypeError<'tcx> {
     Mismatch,
+    ConstnessMismatch(ExpectedFound<ty::BoundConstness>),
+    PolarityMismatch(ExpectedFound<ty::ImplPolarity>),
     UnsafetyMismatch(ExpectedFound<hir::Unsafety>),
     AbiMismatch(ExpectedFound<abi::Abi>),
     Mutability,
@@ -40,6 +42,7 @@ pub enum TypeError<'tcx> {
     TupleSize(ExpectedFound<usize>),
     FixedArraySize(ExpectedFound<u64>),
     ArgCount,
+    FieldMisMatch(Symbol, Symbol),
 
     RegionsDoesNotOutlive(Region<'tcx>, Region<'tcx>),
     RegionsInsufficientlyPolymorphic(BoundRegionKind, Region<'tcx>),
@@ -68,12 +71,6 @@ pub enum TypeError<'tcx> {
     IntrinsicCast,
     /// Safe `#[target_feature]` functions are not assignable to safe function pointers.
     TargetFeatureCast(DefId),
-}
-
-pub enum UnconstrainedNumeric {
-    UnconstrainedFloat,
-    UnconstrainedInt,
-    Neither,
 }
 
 /// Explains the source of a type err in a short, human readable way. This is meant to be placed
@@ -106,6 +103,12 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
             CyclicTy(_) => write!(f, "cyclic type of infinite size"),
             CyclicConst(_) => write!(f, "encountered a self-referencing constant"),
             Mismatch => write!(f, "types differ"),
+            ConstnessMismatch(values) => {
+                write!(f, "expected {} bound, found {} bound", values.expected, values.found)
+            }
+            PolarityMismatch(values) => {
+                write!(f, "expected {} polarity, found {} polarity", values.expected, values.found)
+            }
             UnsafetyMismatch(values) => {
                 write!(f, "expected {} fn, found {} fn", values.expected, values.found)
             }
@@ -132,6 +135,7 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
                 pluralize!(values.found)
             ),
             ArgCount => write!(f, "incorrect number of function parameters"),
+            FieldMisMatch(adt, field) => write!(f, "field type mismatch: {}.{}", adt, field),
             RegionsDoesNotOutlive(..) => write!(f, "lifetime mismatch"),
             RegionsInsufficientlyPolymorphic(br, _) => write!(
                 f,
@@ -213,14 +217,16 @@ impl<'tcx> TypeError<'tcx> {
     pub fn must_include_note(&self) -> bool {
         use self::TypeError::*;
         match self {
-            CyclicTy(_) | CyclicConst(_) | UnsafetyMismatch(_) | Mismatch | AbiMismatch(_)
-            | FixedArraySize(_) | ArgumentSorts(..) | Sorts(_) | IntMismatch(_)
-            | FloatMismatch(_) | VariadicMismatch(_) | TargetFeatureCast(_) => false,
+            CyclicTy(_) | CyclicConst(_) | UnsafetyMismatch(_) | ConstnessMismatch(_)
+            | PolarityMismatch(_) | Mismatch | AbiMismatch(_) | FixedArraySize(_)
+            | ArgumentSorts(..) | Sorts(_) | IntMismatch(_) | FloatMismatch(_)
+            | VariadicMismatch(_) | TargetFeatureCast(_) => false,
 
             Mutability
             | ArgumentMutability(_)
             | TupleSize(_)
             | ArgCount
+            | FieldMisMatch(..)
             | RegionsDoesNotOutlive(..)
             | RegionsInsufficientlyPolymorphic(..)
             | RegionsOverlyPolymorphic(..)
@@ -279,13 +285,10 @@ impl<'tcx> ty::TyS<'tcx> {
             }
             ty::FnDef(..) => "fn item".into(),
             ty::FnPtr(_) => "fn pointer".into(),
-            ty::Dynamic(ref inner, ..) => {
-                if let Some(principal) = inner.principal() {
-                    format!("trait object `dyn {}`", tcx.def_path_str(principal.def_id())).into()
-                } else {
-                    "trait object".into()
-                }
+            ty::Dynamic(ref inner, ..) if let Some(principal) = inner.principal() => {
+                format!("trait object `dyn {}`", tcx.def_path_str(principal.def_id())).into()
             }
+            ty::Dynamic(..) => "trait object".into(),
             ty::Closure(..) => "closure".into(),
             ty::Generator(def_id, ..) => tcx.generator_kind(def_id).unwrap().descr().into(),
             ty::GeneratorWitness(..) => "generator witness".into(),
@@ -365,20 +368,19 @@ impl<'tcx> TyCtxt<'tcx> {
                         // Issue #63167
                         db.note("distinct uses of `impl Trait` result in different opaque types");
                     }
-                    (ty::Float(_), ty::Infer(ty::IntVar(_))) => {
+                    (ty::Float(_), ty::Infer(ty::IntVar(_)))
                         if let Ok(
                             // Issue #53280
                             snippet,
-                        ) = self.sess.source_map().span_to_snippet(sp)
-                        {
-                            if snippet.chars().all(|c| c.is_digit(10) || c == '-' || c == '_') {
-                                db.span_suggestion(
-                                    sp,
-                                    "use a float literal",
-                                    format!("{}.0", snippet),
-                                    MachineApplicable,
-                                );
-                            }
+                        ) = self.sess.source_map().span_to_snippet(sp) =>
+                    {
+                        if snippet.chars().all(|c| c.is_digit(10) || c == '-' || c == '_') {
+                            db.span_suggestion(
+                                sp,
+                                "use a float literal",
+                                format!("{}.0", snippet),
+                                MachineApplicable,
+                            );
                         }
                     }
                     (ty::Param(expected), ty::Param(found)) => {
@@ -628,6 +630,7 @@ impl<T> Trait<T> for X {
                             assoc_substs,
                             ty,
                             msg,
+                            false,
                         ) {
                             return true;
                         }
@@ -646,6 +649,7 @@ impl<T> Trait<T> for X {
                             assoc_substs,
                             ty,
                             msg,
+                            false,
                         );
                     }
                 }
@@ -771,13 +775,27 @@ fn foo(&self) -> Self::T { String::new() }
     ) -> bool {
         let assoc = self.associated_item(proj_ty.item_def_id);
         if let ty::Opaque(def_id, _) = *proj_ty.self_ty().kind() {
-            self.constrain_associated_type_structured_suggestion(
+            let opaque_local_def_id = def_id.as_local();
+            let opaque_hir_ty = if let Some(opaque_local_def_id) = opaque_local_def_id {
+                match &self.hir().expect_item(opaque_local_def_id).kind {
+                    hir::ItemKind::OpaqueTy(opaque_hir_ty) => opaque_hir_ty,
+                    _ => bug!("The HirId comes from a `ty::Opaque`"),
+                }
+            } else {
+                return false;
+            };
+
+            let (trait_ref, assoc_substs) = proj_ty.trait_ref_and_own_substs(self);
+
+            self.constrain_generic_bound_associated_type_structured_suggestion(
                 db,
-                self.def_span(def_id),
-                &assoc,
-                proj_ty.trait_ref_and_own_substs(self).1,
+                &trait_ref,
+                opaque_hir_ty.bounds,
+                assoc,
+                assoc_substs,
                 ty,
-                &msg,
+                msg,
+                true,
             )
         } else {
             false
@@ -899,6 +917,11 @@ fn foo(&self) -> Self::T { String::new() }
 
     /// Given a slice of `hir::GenericBound`s, if any of them corresponds to the `trait_ref`
     /// requirement, provide a structured suggestion to constrain it to a given type `ty`.
+    ///
+    /// `is_bound_surely_present` indicates whether we know the bound we're looking for is
+    /// inside `bounds`. If that's the case then we can consider `bounds` containing only one
+    /// trait bound as the one we're looking for. This can help in cases where the associated
+    /// type is defined on a supertrait of the one present in the bounds.
     fn constrain_generic_bound_associated_type_structured_suggestion(
         self,
         db: &mut DiagnosticBuilder<'_>,
@@ -908,23 +931,30 @@ fn foo(&self) -> Self::T { String::new() }
         assoc_substs: &[ty::GenericArg<'tcx>],
         ty: Ty<'tcx>,
         msg: &str,
+        is_bound_surely_present: bool,
     ) -> bool {
         // FIXME: we would want to call `resolve_vars_if_possible` on `ty` before suggesting.
-        bounds.iter().any(|bound| match bound {
-            hir::GenericBound::Trait(ptr, hir::TraitBoundModifier::None) => {
-                // Relate the type param against `T` in `<A as T>::Foo`.
-                ptr.trait_ref.trait_def_id() == Some(trait_ref.def_id)
-                    && self.constrain_associated_type_structured_suggestion(
-                        db,
-                        ptr.span,
-                        assoc,
-                        assoc_substs,
-                        ty,
-                        msg,
-                    )
-            }
-            _ => false,
-        })
+
+        let trait_bounds = bounds.iter().filter_map(|bound| match bound {
+            hir::GenericBound::Trait(ptr, hir::TraitBoundModifier::None) => Some(ptr),
+            _ => None,
+        });
+
+        let matching_trait_bounds = trait_bounds
+            .clone()
+            .filter(|ptr| ptr.trait_ref.trait_def_id() == Some(trait_ref.def_id))
+            .collect::<Vec<_>>();
+
+        let span = match &matching_trait_bounds[..] {
+            &[ptr] => ptr.span,
+            &[] if is_bound_surely_present => match &trait_bounds.collect::<Vec<_>>()[..] {
+                &[ptr] => ptr.span,
+                _ => return false,
+            },
+            _ => return false,
+        };
+
+        self.constrain_associated_type_structured_suggestion(db, span, assoc, assoc_substs, ty, msg)
     }
 
     /// Given a span corresponding to a bound, provide a structured suggestion to set an
@@ -943,7 +973,7 @@ fn foo(&self) -> Self::T { String::new() }
         {
             let (span, sugg) = if has_params {
                 let pos = span.hi() - BytePos(1);
-                let span = Span::new(pos, pos, span.ctxt());
+                let span = Span::new(pos, pos, span.ctxt(), span.parent());
                 (span, format!(", {} = {}", assoc.ident, ty))
             } else {
                 let item_args = self.format_generic_args(assoc_substs);

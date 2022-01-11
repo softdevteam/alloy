@@ -197,6 +197,7 @@ pub const SOCK_DGRAM: c_int = 2;
 pub const SOCK_STREAM: c_int = 1;
 pub const SOCKET_ERROR: c_int = -1;
 pub const SOL_SOCKET: c_int = 0xffff;
+pub const SO_LINGER: c_int = 0x0080;
 pub const SO_RCVTIMEO: c_int = 0x1006;
 pub const SO_SNDTIMEO: c_int = 0x1005;
 pub const IPPROTO_IP: c_int = 0;
@@ -215,6 +216,13 @@ pub const IP_DROP_MEMBERSHIP: c_int = 13;
 pub const IPV6_ADD_MEMBERSHIP: c_int = 12;
 pub const IPV6_DROP_MEMBERSHIP: c_int = 13;
 pub const MSG_PEEK: c_int = 0x2;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct linger {
+    pub l_onoff: c_ushort,
+    pub l_linger: c_ushort,
+}
 
 #[repr(C)]
 pub struct ip_mreq {
@@ -253,6 +261,8 @@ pub const FD_SETSIZE: usize = 64;
 pub const STACK_SIZE_PARAM_IS_A_RESERVATION: DWORD = 0x00010000;
 
 pub const STATUS_SUCCESS: NTSTATUS = 0x00000000;
+
+pub const BCRYPT_USE_SYSTEM_PREFERRED_RNG: DWORD = 0x00000002;
 
 #[repr(C)]
 #[cfg(not(target_pointer_width = "64"))]
@@ -670,10 +680,6 @@ if #[cfg(not(target_vendor = "uwp"))] {
 
     #[link(name = "advapi32")]
     extern "system" {
-        // Forbidden when targeting UWP
-        #[link_name = "SystemFunction036"]
-        pub fn RtlGenRandom(RandomBuffer: *mut u8, RandomBufferLength: ULONG) -> BOOLEAN;
-
         // Allowed but unused by UWP
         pub fn OpenProcessToken(
             ProcessHandle: HANDLE,
@@ -728,6 +734,7 @@ if #[cfg(not(target_vendor = "uwp"))] {
             lpSecurityAttributes: LPSECURITY_ATTRIBUTES,
         ) -> BOOL;
         pub fn SetThreadStackGuarantee(_size: *mut c_ulong) -> BOOL;
+        pub fn GetWindowsDirectoryW(lpBuffer: LPWSTR, uSize: UINT) -> UINT;
     }
 }
 }
@@ -735,8 +742,6 @@ if #[cfg(not(target_vendor = "uwp"))] {
 // UWP specific functions & types
 cfg_if::cfg_if! {
 if #[cfg(target_vendor = "uwp")] {
-    pub const BCRYPT_USE_SYSTEM_PREFERRED_RNG: DWORD = 0x00000002;
-
     #[repr(C)]
     pub struct FILE_STANDARD_INFO {
         pub AllocationSize: LARGE_INTEGER,
@@ -746,15 +751,6 @@ if #[cfg(target_vendor = "uwp")] {
         pub Directory: BOOLEAN,
     }
 
-    #[link(name = "bcrypt")]
-    extern "system" {
-        pub fn BCryptGenRandom(
-            hAlgorithm: LPVOID,
-            pBuffer: *mut u8,
-            cbBuffer: ULONG,
-            dwFlags: ULONG,
-        ) -> LONG;
-    }
     #[link(name = "kernel32")]
     extern "system" {
         pub fn GetFileInformationByHandleEx(
@@ -778,10 +774,11 @@ extern "system" {
     pub fn LeaveCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
     pub fn DeleteCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
 
+    pub fn GetSystemDirectoryW(lpBuffer: LPWSTR, uSize: UINT) -> UINT;
     pub fn RemoveDirectoryW(lpPathName: LPCWSTR) -> BOOL;
     pub fn SetFileAttributesW(lpFileName: LPCWSTR, dwFileAttributes: DWORD) -> BOOL;
     pub fn SetLastError(dwErrCode: DWORD);
-    pub fn GetCommandLineW() -> *mut LPCWSTR;
+    pub fn GetCommandLineW() -> LPWSTR;
     pub fn GetTempPathW(nBufferLength: DWORD, lpBuffer: LPCWSTR) -> DWORD;
     pub fn GetCurrentProcess() -> HANDLE;
     pub fn GetCurrentThread() -> HANDLE;
@@ -982,6 +979,12 @@ extern "system" {
         cchCount2: c_int,
         bIgnoreCase: BOOL,
     ) -> c_int;
+    pub fn GetFullPathNameW(
+        lpFileName: LPCWSTR,
+        nBufferLength: DWORD,
+        lpBuffer: LPWSTR,
+        lpFilePart: *mut LPWSTR,
+    ) -> DWORD;
 }
 
 #[link(name = "ws2_32")]
@@ -1077,6 +1080,18 @@ extern "system" {
     ) -> c_int;
 }
 
+#[link(name = "bcrypt")]
+extern "system" {
+    // >= Vista / Server 2008
+    // https://docs.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptgenrandom
+    pub fn BCryptGenRandom(
+        hAlgorithm: LPVOID,
+        pBuffer: *mut u8,
+        cbBuffer: ULONG,
+        dwFlags: ULONG,
+    ) -> NTSTATUS;
+}
+
 // Functions that aren't available on every version of Windows that we support,
 // but we still use them and just provide some form of a fallback implementation.
 compat_fn! {
@@ -1094,6 +1109,12 @@ compat_fn! {
     pub fn GetSystemTimePreciseAsFileTime(lpSystemTimeAsFileTime: LPFILETIME)
                                           -> () {
         GetSystemTimeAsFileTime(lpSystemTimeAsFileTime)
+    }
+
+    // >= Win11 / Server 2022
+    // https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2a
+    pub fn GetTempPath2W(nBufferLength: DWORD, lpBuffer: LPCWSTR) -> DWORD {
+        GetTempPathW(nBufferLength, lpBuffer)
     }
 }
 

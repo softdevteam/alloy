@@ -1,4 +1,4 @@
-use super::{get_span_of_entire_for_loop, IncrementVisitor, InitializeVisitor, MANUAL_MEMCPY};
+use super::{IncrementVisitor, InitializeVisitor, MANUAL_MEMCPY};
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet;
 use clippy_utils::sugg::Sugg;
@@ -27,7 +27,7 @@ pub(super) fn check<'tcx>(
         start: Some(start),
         end: Some(end),
         limits,
-    }) = higher::range(arg)
+    }) = higher::Range::hir(arg)
     {
         // the var must be a single name
         if let PatKind::Binding(_, canonical_id, _, _) = pat.kind {
@@ -86,7 +86,7 @@ pub(super) fn check<'tcx>(
                 span_lint_and_sugg(
                     cx,
                     MANUAL_MEMCPY,
-                    get_span_of_entire_for_loop(expr),
+                    expr.span,
                     "it looks like you're manually copying between slices",
                     "try replacing the loop by",
                     big_sugg,
@@ -268,7 +268,7 @@ impl std::ops::Sub<&MinifyingSugg<'static>> for MinifyingSugg<'static> {
     }
 }
 
-/// a wrapper around `MinifyingSugg`, which carries a operator like currying
+/// a wrapper around `MinifyingSugg`, which carries an operator like currying
 /// so that the suggested code become more efficient (e.g. `foo + -bar` `foo - bar`).
 struct Offset {
     value: MinifyingSugg<'static>,
@@ -332,7 +332,7 @@ fn is_slice_like<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'_>) -> bool {
         _ => false,
     };
 
-    is_slice || is_type_diagnostic_item(cx, ty, sym::vec_type) || is_type_diagnostic_item(cx, ty, sym::vecdeque_type)
+    is_slice || is_type_diagnostic_item(cx, ty, sym::Vec) || is_type_diagnostic_item(cx, ty, sym::VecDeque)
 }
 
 fn fetch_cloned_expr<'tcx>(expr: &'tcx Expr<'tcx>) -> &'tcx Expr<'tcx> {
@@ -445,7 +445,7 @@ fn get_loop_counters<'a, 'tcx>(
                 let mut initialize_visitor = InitializeVisitor::new(cx, expr, var_id);
                 walk_block(&mut initialize_visitor, block);
 
-                initialize_visitor.get_result().map(|(_, initializer)| Start {
+                initialize_visitor.get_result().map(|(_, _, initializer)| Start {
                     id: var_id,
                     kind: StartKind::Counter { initializer },
                 })

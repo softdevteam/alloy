@@ -1,6 +1,6 @@
 //! Values computed by queries that use MIR.
 
-use crate::mir::{abstract_const, Body, Promoted};
+use crate::mir::{Body, Promoted};
 use crate::ty::{self, Ty, TyCtxt};
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::vec_map::VecMap;
@@ -219,12 +219,13 @@ pub struct BorrowCheckResult<'tcx> {
 /// The result of the `mir_const_qualif` query.
 ///
 /// Each field (except `error_occured`) corresponds to an implementer of the `Qualif` trait in
-/// `rustc_mir/src/transform/check_consts/qualifs.rs`. See that file for more information on each
+/// `rustc_const_eval/src/transform/check_consts/qualifs.rs`. See that file for more information on each
 /// `Qualif`.
 #[derive(Clone, Copy, Debug, Default, TyEncodable, TyDecodable, HashStable)]
 pub struct ConstQualifs {
     pub has_mut_interior: bool,
     pub needs_drop: bool,
+    pub needs_non_const_drop: bool,
     pub custom_eq: bool,
     pub error_occured: Option<ErrorReported>,
 }
@@ -309,11 +310,14 @@ pub struct ClosureOutlivesRequirement<'tcx> {
     pub category: ConstraintCategory,
 }
 
+// Make sure this enum doesn't unintentionally grow
+rustc_data_structures::static_assert_size!(ConstraintCategory, 12);
+
 /// Outlives-constraints can be categorized to determine whether and why they
 /// are interesting (for error reporting). Order of variants indicates sort
 /// order of the category, thereby influencing diagnostic output.
 ///
-/// See also `rustc_mir::borrow_check::constraints`.
+/// See also `rustc_const_eval::borrow_check::constraints`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 #[derive(TyEncodable, TyDecodable, HashStable)]
 pub enum ConstraintCategory {
@@ -332,17 +336,20 @@ pub enum ConstraintCategory {
     CopyBound,
     SizedBound,
     Assignment,
+    /// A constraint that came from a usage of a variable (e.g. in an ADT expression
+    /// like `Foo { field: my_val }`)
+    Usage,
     OpaqueType,
     ClosureUpvar(hir::HirId),
+
+    /// A constraint from a user-written predicate
+    /// with the provided span, written on the item
+    /// with the given `DefId`
+    Predicate(Span),
 
     /// A "boring" constraint (caused by the given location) is one that
     /// the user probably doesn't want to see described in diagnostics,
     /// because it is kind of an artifact of the type system setup.
-    /// Example: `x = Foo { field: y }` technically creates
-    /// intermediate regions representing the "type of `Foo { field: y
-    /// }`", and data flows from `y` into those variables, but they
-    /// are not very interesting. The assignment into `x` on the other
-    /// hand might be.
     Boring,
     // Boring and applicable everywhere.
     BoringNoLocation,
@@ -429,18 +436,6 @@ impl<'tcx> TyCtxt<'tcx> {
             self.mir_for_ctfe_of_const_arg((did, param_did))
         } else {
             self.mir_for_ctfe(def.did)
-        }
-    }
-
-    #[inline]
-    pub fn mir_abstract_const_opt_const_arg(
-        self,
-        def: ty::WithOptConstParam<DefId>,
-    ) -> Result<Option<&'tcx [abstract_const::Node<'tcx>]>, ErrorReported> {
-        if let Some((did, param_did)) = def.as_const_arg() {
-            self.mir_abstract_const_of_const_arg((did, param_did))
-        } else {
-            self.mir_abstract_const(def.did)
         }
     }
 }

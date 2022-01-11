@@ -48,7 +48,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_const_param(&mut self, preceding_attrs: Vec<Attribute>) -> PResult<'a, GenericParam> {
+    crate fn parse_const_param(
+        &mut self,
+        preceding_attrs: Vec<Attribute>,
+    ) -> PResult<'a, GenericParam> {
         let const_span = self.token.span;
 
         self.expect_keyword(kw::Const)?;
@@ -89,6 +92,19 @@ impl<'a> Parser<'a> {
             let attrs = self.parse_outer_attributes()?;
             let param =
                 self.collect_tokens_trailing_token(attrs, ForceCollect::No, |this, attrs| {
+                    if this.eat_keyword_noexpect(kw::SelfUpper) {
+                        // `Self` as a generic param is invalid. Here we emit the diagnostic and continue parsing
+                        // as if `Self` never existed.
+                        this.struct_span_err(
+                            this.prev_token.span,
+                            "unexpected keyword `Self` in generic parameters",
+                        )
+                        .note("you cannot use `Self` as a generic parameter because it is reserved for associated items")
+                        .emit();
+
+                        this.eat(&token::Comma);
+                    }
+
                     let param = if this.check_lifetime() {
                         let lifetime = this.expect_lifetime();
                         // Parse lifetime parameter.

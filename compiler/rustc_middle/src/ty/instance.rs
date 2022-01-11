@@ -7,6 +7,7 @@ use rustc_hir::def::Namespace;
 use rustc_hir::def_id::{CrateNum, DefId};
 use rustc_hir::lang_items::LangItem;
 use rustc_macros::HashStable;
+use rustc_middle::ty::normalize_erasing_regions::NormalizationError;
 
 use std::fmt;
 
@@ -77,7 +78,7 @@ pub enum InstanceDef<'tcx> {
     /// `<[FnMut closure] as FnOnce>::call_once`.
     ///
     /// The `DefId` is the ID of the `call_once` method in `FnOnce`.
-    ClosureOnceShim { call_once: DefId },
+    ClosureOnceShim { call_once: DefId, track_caller: bool },
 
     /// `core::ptr::drop_in_place::<T>`.
     ///
@@ -146,9 +147,25 @@ impl<'tcx> InstanceDef<'tcx> {
             | InstanceDef::FnPtrShim(def_id, _)
             | InstanceDef::Virtual(def_id, _)
             | InstanceDef::Intrinsic(def_id)
-            | InstanceDef::ClosureOnceShim { call_once: def_id }
+            | InstanceDef::ClosureOnceShim { call_once: def_id, track_caller: _ }
             | InstanceDef::DropGlue(def_id, _)
             | InstanceDef::CloneShim(def_id, _) => def_id,
+        }
+    }
+
+    /// Returns the `DefId` of instances which might not require codegen locally.
+    pub fn def_id_if_not_guaranteed_local_codegen(self) -> Option<DefId> {
+        match self {
+            ty::InstanceDef::Item(def) => Some(def.did),
+            ty::InstanceDef::DropGlue(def_id, Some(_)) => Some(def_id),
+            InstanceDef::VtableShim(..)
+            | InstanceDef::ReifyShim(..)
+            | InstanceDef::FnPtrShim(..)
+            | InstanceDef::Virtual(..)
+            | InstanceDef::Intrinsic(..)
+            | InstanceDef::ClosureOnceShim { .. }
+            | InstanceDef::DropGlue(..)
+            | InstanceDef::CloneShim(..) => None,
         }
     }
 
@@ -161,7 +178,7 @@ impl<'tcx> InstanceDef<'tcx> {
             | InstanceDef::FnPtrShim(def_id, _)
             | InstanceDef::Virtual(def_id, _)
             | InstanceDef::Intrinsic(def_id)
-            | InstanceDef::ClosureOnceShim { call_once: def_id }
+            | InstanceDef::ClosureOnceShim { call_once: def_id, track_caller: _ }
             | InstanceDef::DropGlue(def_id, _)
             | InstanceDef::CloneShim(def_id, _) => ty::WithOptConstParam::unknown(def_id),
         }
@@ -231,6 +248,7 @@ impl<'tcx> InstanceDef<'tcx> {
             | InstanceDef::Virtual(def_id, _) => {
                 tcx.codegen_fn_attrs(def_id).flags.contains(CodegenFnAttrFlags::TRACK_CALLER)
             }
+            InstanceDef::ClosureOnceShim { call_once: _, track_caller } => track_caller,
             _ => false,
         }
     }
@@ -381,6 +399,8 @@ impl<'tcx> Instance<'tcx> {
         substs: SubstsRef<'tcx>,
     ) -> Option<Instance<'tcx>> {
         debug!("resolve(def_id={:?}, substs={:?})", def_id, substs);
+        // Use either `resolve_closure` or `resolve_for_vtable`
+        assert!(!tcx.is_closure(def_id), "Called `resolve_for_fn_ptr` on closure: {:?}", def_id);
         Instance::resolve(tcx, param_env, def_id, substs).ok().flatten().map(|mut resolved| {
             match resolved.def {
                 InstanceDef::Item(def) if resolved.def.requires_caller_location(tcx) => {
@@ -442,10 +462,20 @@ impl<'tcx> Instance<'tcx> {
                                 })
                             )
                         {
-                            debug!(
-                                " => vtable fn pointer created for function with #[track_caller]"
-                            );
-                            resolved.def = InstanceDef::ReifyShim(def.did);
+                            if tcx.is_closure(def.did) {
+                                debug!(" => vtable fn pointer created for closure with #[track_caller]: {:?} for method {:?} {:?}",
+                                       def.did, def_id, substs);
+
+                                // Create a shim for the `FnOnce/FnMut/Fn` method we are calling
+                                // - unlike functions, invoking a closure always goes through a
+                                // trait.
+                                resolved = Instance { def: InstanceDef::ReifyShim(def_id), substs };
+                            } else {
+                                debug!(
+                                    " => vtable fn pointer created for function with #[track_caller]: {:?}", def.did
+                                );
+                                resolved.def = InstanceDef::ReifyShim(def.did);
+                            }
                         }
                     }
                     InstanceDef::Virtual(def_id, _) => {
@@ -493,7 +523,9 @@ impl<'tcx> Instance<'tcx> {
             .find(|it| it.kind == ty::AssocKind::Fn)
             .unwrap()
             .def_id;
-        let def = ty::InstanceDef::ClosureOnceShim { call_once };
+        let track_caller =
+            tcx.codegen_fn_attrs(closure_did).flags.contains(CodegenFnAttrFlags::TRACK_CALLER);
+        let def = ty::InstanceDef::ClosureOnceShim { call_once, track_caller };
 
         let self_ty = tcx.mk_closure(closure_did, substs);
 
@@ -544,6 +576,23 @@ impl<'tcx> Instance<'tcx> {
         }
     }
 
+    #[inline(always)]
+    pub fn try_subst_mir_and_normalize_erasing_regions<T>(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+        v: T,
+    ) -> Result<T, NormalizationError<'tcx>>
+    where
+        T: TypeFoldable<'tcx> + Clone,
+    {
+        if let Some(substs) = self.substs_for_mir_body() {
+            tcx.try_subst_and_normalize_erasing_regions(substs, param_env, v)
+        } else {
+            tcx.try_normalize_erasing_regions(param_env, v)
+        }
+    }
+
     /// Returns a new `Instance` where generic parameters in `instance.substs` are replaced by
     /// identity parameters if they are determined to be unused in `instance.def`.
     pub fn polymorphize(self, tcx: TyCtxt<'tcx>) -> Self {
@@ -552,29 +601,26 @@ impl<'tcx> Instance<'tcx> {
             return self;
         }
 
-        if let InstanceDef::Item(def) = self.def {
-            let polymorphized_substs = polymorphize(tcx, def.did, self.substs);
-            debug!("polymorphize: self={:?} polymorphized_substs={:?}", self, polymorphized_substs);
-            Self { def: self.def, substs: polymorphized_substs }
-        } else {
-            self
-        }
+        let polymorphized_substs = polymorphize(tcx, self.def, self.substs);
+        debug!("polymorphize: self={:?} polymorphized_substs={:?}", self, polymorphized_substs);
+        Self { def: self.def, substs: polymorphized_substs }
     }
 }
 
 fn polymorphize<'tcx>(
     tcx: TyCtxt<'tcx>,
-    def_id: DefId,
+    instance: ty::InstanceDef<'tcx>,
     substs: SubstsRef<'tcx>,
 ) -> SubstsRef<'tcx> {
-    debug!("polymorphize({:?}, {:?})", def_id, substs);
-    let unused = tcx.unused_generic_params(def_id);
+    debug!("polymorphize({:?}, {:?})", instance, substs);
+    let unused = tcx.unused_generic_params(instance);
     debug!("polymorphize: unused={:?}", unused);
 
     // If this is a closure or generator then we need to handle the case where another closure
     // from the function is captured as an upvar and hasn't been polymorphized. In this case,
     // the unpolymorphized upvar closure would result in a polymorphized closure producing
     // multiple mono items (and eventually symbol clashes).
+    let def_id = instance.def_id();
     let upvars_ty = if tcx.is_closure(def_id) {
         Some(substs.as_closure().tupled_upvars_ty())
     } else if tcx.type_of(def_id).is_generator() {
@@ -598,7 +644,11 @@ fn polymorphize<'tcx>(
             debug!("fold_ty: ty={:?}", ty);
             match ty.kind {
                 ty::Closure(def_id, substs) => {
-                    let polymorphized_substs = polymorphize(self.tcx, def_id, substs);
+                    let polymorphized_substs = polymorphize(
+                        self.tcx,
+                        ty::InstanceDef::Item(ty::WithOptConstParam::unknown(def_id)),
+                        substs,
+                    );
                     if substs == polymorphized_substs {
                         ty
                     } else {
@@ -606,7 +656,11 @@ fn polymorphize<'tcx>(
                     }
                 }
                 ty::Generator(def_id, substs, movability) => {
-                    let polymorphized_substs = polymorphize(self.tcx, def_id, substs);
+                    let polymorphized_substs = polymorphize(
+                        self.tcx,
+                        ty::InstanceDef::Item(ty::WithOptConstParam::unknown(def_id)),
+                        substs,
+                    );
                     if substs == polymorphized_substs {
                         ty
                     } else {

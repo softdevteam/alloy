@@ -1,4 +1,3 @@
-#![feature(const_fn_transmute)]
 #![allow(dead_code)]
 
 extern crate core;
@@ -100,6 +99,33 @@ mod int_to_float {
 
         const fn from_bits_64(v: u64) -> f64 {
             unsafe { std::mem::transmute(v) }
+        }
+    }
+}
+
+mod num_to_bytes {
+    fn test() {
+        unsafe {
+            let _: [u8; 1] = std::mem::transmute(0u8);
+            let _: [u8; 4] = std::mem::transmute(0u32);
+            let _: [u8; 16] = std::mem::transmute(0u128);
+            let _: [u8; 1] = std::mem::transmute(0i8);
+            let _: [u8; 4] = std::mem::transmute(0i32);
+            let _: [u8; 16] = std::mem::transmute(0i128);
+            let _: [u8; 4] = std::mem::transmute(0.0f32);
+            let _: [u8; 8] = std::mem::transmute(0.0f64);
+        }
+    }
+    const fn test_const() {
+        unsafe {
+            let _: [u8; 1] = std::mem::transmute(0u8);
+            let _: [u8; 4] = std::mem::transmute(0u32);
+            let _: [u8; 16] = std::mem::transmute(0u128);
+            let _: [u8; 1] = std::mem::transmute(0i8);
+            let _: [u8; 4] = std::mem::transmute(0i32);
+            let _: [u8; 16] = std::mem::transmute(0i128);
+            let _: [u8; 4] = std::mem::transmute(0.0f32);
+            let _: [u8; 8] = std::mem::transmute(0.0f64);
         }
     }
 }

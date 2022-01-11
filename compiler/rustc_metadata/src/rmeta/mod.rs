@@ -1,4 +1,5 @@
 use decoder::Metadata;
+use def_path_hash_map::DefPathHashMapRef;
 use table::{Table, TableBuilder};
 
 use rustc_ast::{self as ast, MacroDef};
@@ -12,12 +13,13 @@ use rustc_hir::definitions::DefKey;
 use rustc_hir::lang_items;
 use rustc_index::{bit_set::FiniteBitSet, vec::IndexVec};
 use rustc_middle::hir::exports::Export;
-use rustc_middle::middle::cstore::{CrateDepKind, ForeignModule, LinkagePreference, NativeLib};
 use rustc_middle::middle::exported_symbols::{ExportedSymbol, SymbolExportLevel};
 use rustc_middle::mir;
+use rustc_middle::thir;
 use rustc_middle::ty::{self, ReprOptions, Ty};
 use rustc_serialize::opaque::Encoder;
 use rustc_session::config::SymbolManglingVersion;
+use rustc_session::cstore::{CrateDepKind, ForeignModule, LinkagePreference, NativeLib};
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{ExpnIndex, MacroKind};
 use rustc_span::symbol::{Ident, Symbol};
@@ -31,9 +33,11 @@ use decoder::DecodeContext;
 pub use decoder::{provide, provide_extern};
 crate use decoder::{CrateMetadata, CrateNumMap, MetadataBlob};
 use encoder::EncodeContext;
+pub use encoder::{encode_metadata, EncodedMetadata};
 use rustc_span::hygiene::SyntaxContextData;
 
 mod decoder;
+mod def_path_hash_map;
 mod encoder;
 mod table;
 
@@ -204,6 +208,7 @@ crate struct CrateRoot<'tcx> {
     hash: Svh,
     stable_crate_id: StableCrateId,
     panic_strategy: PanicStrategy,
+    panic_in_drop_strategy: PanicStrategy,
     edition: Edition,
     has_global_allocator: bool,
     has_panic_handler: bool,
@@ -228,6 +233,8 @@ crate struct CrateRoot<'tcx> {
     syntax_contexts: SyntaxContextTable,
     expn_data: ExpnDataTable,
     expn_hashes: ExpnHashTable,
+
+    def_path_hash_map: Lazy<DefPathHashMapRef<'tcx>>,
 
     source_map: Lazy<[rustc_span::SourceFile]>,
 
@@ -305,7 +312,7 @@ define_tables! {
     mir: Table<DefIndex, Lazy!(mir::Body<'tcx>)>,
     mir_for_ctfe: Table<DefIndex, Lazy!(mir::Body<'tcx>)>,
     promoted_mir: Table<DefIndex, Lazy!(IndexVec<mir::Promoted, mir::Body<'tcx>>)>,
-    mir_abstract_consts: Table<DefIndex, Lazy!(&'tcx [mir::abstract_const::Node<'tcx>])>,
+    thir_abstract_consts: Table<DefIndex, Lazy!(&'tcx [thir::abstract_const::Node<'tcx>])>,
     const_defaults: Table<DefIndex, Lazy<rustc_middle::ty::Const<'tcx>>>,
     unused_generic_params: Table<DefIndex, Lazy<FiniteBitSet<u32>>>,
     // `def_keys` and `def_path_hashes` represent a lazy version of a
@@ -339,7 +346,7 @@ enum EntryKind {
     Union(Lazy<VariantData>, ReprOptions),
     Fn(Lazy<FnData>),
     ForeignFn(Lazy<FnData>),
-    Mod(Lazy<ModData>),
+    Mod(Lazy<[Export]>),
     MacroDef(Lazy<MacroDef>),
     ProcMacro(MacroKind),
     Closure,
@@ -356,12 +363,6 @@ enum EntryKind {
 /// Used by rustdoc.
 #[derive(Encodable, Decodable)]
 struct RenderedConst(String);
-
-#[derive(MetadataEncodable, MetadataDecodable)]
-struct ModData {
-    reexports: Lazy<[Export<hir::HirId>]>,
-    expansion: ExpnId,
-}
 
 #[derive(MetadataEncodable, MetadataDecodable)]
 struct FnData {

@@ -71,7 +71,7 @@ fn cast_target_to_abi_params(cast: CastTarget) -> SmallVec<[AbiParam; 2]> {
         .prefix
         .iter()
         .flatten()
-        .map(|&kind| reg_to_abi_param(Reg { kind, size: cast.prefix_chunk_size }))
+        .map(|&reg| reg_to_abi_param(reg))
         .chain((0..rest_count).map(|_| reg_to_abi_param(cast.rest.unit)))
         .collect::<SmallVec<_>>();
 
@@ -92,9 +92,9 @@ impl<'tcx> ArgAbiExt<'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
     fn get_abi_param(&self, tcx: TyCtxt<'tcx>) -> SmallVec<[AbiParam; 2]> {
         match self.mode {
             PassMode::Ignore => smallvec![],
-            PassMode::Direct(attrs) => match &self.layout.abi {
+            PassMode::Direct(attrs) => match self.layout.abi {
                 Abi::Scalar(scalar) => smallvec![apply_arg_attrs_to_abi_param(
-                    AbiParam::new(scalar_to_clif_type(tcx, scalar.clone())),
+                    AbiParam::new(scalar_to_clif_type(tcx, scalar)),
                     attrs
                 )],
                 Abi::Vector { .. } => {
@@ -103,10 +103,10 @@ impl<'tcx> ArgAbiExt<'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
                 }
                 _ => unreachable!("{:?}", self.layout.abi),
             },
-            PassMode::Pair(attrs_a, attrs_b) => match &self.layout.abi {
+            PassMode::Pair(attrs_a, attrs_b) => match self.layout.abi {
                 Abi::ScalarPair(a, b) => {
-                    let a = scalar_to_clif_type(tcx, a.clone());
-                    let b = scalar_to_clif_type(tcx, b.clone());
+                    let a = scalar_to_clif_type(tcx, a);
+                    let b = scalar_to_clif_type(tcx, b);
                     smallvec![
                         apply_arg_attrs_to_abi_param(AbiParam::new(a), attrs_a),
                         apply_arg_attrs_to_abi_param(AbiParam::new(b), attrs_b),
@@ -139,9 +139,9 @@ impl<'tcx> ArgAbiExt<'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
     fn get_abi_return(&self, tcx: TyCtxt<'tcx>) -> (Option<AbiParam>, Vec<AbiParam>) {
         match self.mode {
             PassMode::Ignore => (None, vec![]),
-            PassMode::Direct(_) => match &self.layout.abi {
+            PassMode::Direct(_) => match self.layout.abi {
                 Abi::Scalar(scalar) => {
-                    (None, vec![AbiParam::new(scalar_to_clif_type(tcx, scalar.clone()))])
+                    (None, vec![AbiParam::new(scalar_to_clif_type(tcx, scalar))])
                 }
                 Abi::Vector { .. } => {
                     let vector_ty = crate::intrinsics::clif_vector_type(tcx, self.layout).unwrap();
@@ -149,10 +149,10 @@ impl<'tcx> ArgAbiExt<'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
                 }
                 _ => unreachable!("{:?}", self.layout.abi),
             },
-            PassMode::Pair(_, _) => match &self.layout.abi {
+            PassMode::Pair(_, _) => match self.layout.abi {
                 Abi::ScalarPair(a, b) => {
-                    let a = scalar_to_clif_type(tcx, a.clone());
-                    let b = scalar_to_clif_type(tcx, b.clone());
+                    let a = scalar_to_clif_type(tcx, a);
+                    let b = scalar_to_clif_type(tcx, b);
                     (None, vec![AbiParam::new(a), AbiParam::new(b)])
                 }
                 _ => unreachable!("{:?}", self.layout.abi),
@@ -227,6 +227,7 @@ pub(super) fn adjust_arg_for_abi<'tcx>(
     fx: &mut FunctionCx<'_, '_, 'tcx>,
     arg: CValue<'tcx>,
     arg_abi: &ArgAbi<'tcx, Ty<'tcx>>,
+    is_owned: bool,
 ) -> SmallVec<[Value; 2]> {
     assert_assignable(fx, arg.layout().ty, arg_abi.layout.ty);
     match arg_abi.mode {
@@ -237,10 +238,21 @@ pub(super) fn adjust_arg_for_abi<'tcx>(
             smallvec![a, b]
         }
         PassMode::Cast(cast) => to_casted_value(fx, arg, cast),
-        PassMode::Indirect { .. } => match arg.force_stack(fx) {
-            (ptr, None) => smallvec![ptr.get_addr(fx)],
-            (ptr, Some(meta)) => smallvec![ptr.get_addr(fx), meta],
-        },
+        PassMode::Indirect { .. } => {
+            if is_owned {
+                match arg.force_stack(fx) {
+                    (ptr, None) => smallvec![ptr.get_addr(fx)],
+                    (ptr, Some(meta)) => smallvec![ptr.get_addr(fx), meta],
+                }
+            } else {
+                // Ownership of the value at the backing storage for an argument is passed to the
+                // callee per the ABI, so we must make a copy of the argument unless the argument
+                // local is moved.
+                let place = CPlace::new_stack_slot(fx, arg.layout());
+                place.write_cvalue(fx, arg);
+                smallvec![place.to_ptr().get_addr(fx)]
+            }
+        }
     }
 }
 

@@ -11,18 +11,74 @@ use rustc_codegen_ssa::traits::*;
 use rustc_hir::def_id::DefId;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::interpret::{
-    read_target_uint, Allocation, ErrorHandled, GlobalAlloc, Pointer, Scalar as InterpScalar,
+    read_target_uint, Allocation, ErrorHandled, GlobalAlloc, InitChunk, Pointer,
+    Scalar as InterpScalar,
 };
 use rustc_middle::mir::mono::MonoItem;
+use rustc_middle::ty::layout::LayoutOf;
 use rustc_middle::ty::{self, Instance, Ty};
 use rustc_middle::{bug, span_bug};
-use rustc_target::abi::{AddressSpace, Align, HasDataLayout, LayoutOf, Primitive, Scalar, Size};
+use rustc_target::abi::{
+    AddressSpace, Align, HasDataLayout, Primitive, Scalar, Size, WrappingRange,
+};
+use std::ops::Range;
 use tracing::debug;
 
 pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll Value {
     let mut llvals = Vec::with_capacity(alloc.relocations().len() + 1);
     let dl = cx.data_layout();
     let pointer_size = dl.pointer_size.bytes() as usize;
+
+    // Note: this function may call `inspect_with_uninit_and_ptr_outside_interpreter`,
+    // so `range` must be within the bounds of `alloc` and not contain or overlap a relocation.
+    fn append_chunks_of_init_and_uninit_bytes<'ll, 'a, 'b>(
+        llvals: &mut Vec<&'ll Value>,
+        cx: &'a CodegenCx<'ll, 'b>,
+        alloc: &'a Allocation,
+        range: Range<usize>,
+    ) {
+        let mut chunks = alloc
+            .init_mask()
+            .range_as_init_chunks(Size::from_bytes(range.start), Size::from_bytes(range.end));
+
+        let chunk_to_llval = move |chunk| match chunk {
+            InitChunk::Init(range) => {
+                let range = (range.start.bytes() as usize)..(range.end.bytes() as usize);
+                let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(range);
+                cx.const_bytes(bytes)
+            }
+            InitChunk::Uninit(range) => {
+                let len = range.end.bytes() - range.start.bytes();
+                cx.const_undef(cx.type_array(cx.type_i8(), len))
+            }
+        };
+
+        // Generating partially-uninit consts inhibits optimizations, so it is disabled by default.
+        // See https://github.com/rust-lang/rust/issues/84565.
+        let allow_partially_uninit =
+            match cx.sess().opts.debugging_opts.partially_uninit_const_threshold {
+                Some(max) => range.len() <= max,
+                None => false,
+            };
+
+        if allow_partially_uninit {
+            llvals.extend(chunks.map(chunk_to_llval));
+        } else {
+            let llval = match (chunks.next(), chunks.next()) {
+                (Some(chunk), None) => {
+                    // exactly one chunk, either fully init or fully uninit
+                    chunk_to_llval(chunk)
+                }
+                _ => {
+                    // partially uninit, codegen as if it was initialized
+                    // (using some arbitrary value for uninit bytes)
+                    let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(range);
+                    cx.const_bytes(bytes)
+                }
+            };
+            llvals.push(llval);
+        }
+    }
 
     let mut next_offset = 0;
     for &(offset, alloc_id) in alloc.relocations().iter() {
@@ -32,12 +88,8 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
         if offset > next_offset {
             // This `inspect` is okay since we have checked that it is not within a relocation, it
             // is within the bounds of the allocation, and it doesn't affect interpreter execution
-            // (we inspect the result after interpreter execution). Any undef byte is replaced with
-            // some arbitrary byte value.
-            //
-            // FIXME: relay undef bytes to codegen as undef const bytes
-            let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(next_offset..offset);
-            llvals.push(cx.const_bytes(bytes));
+            // (we inspect the result after interpreter execution).
+            append_chunks_of_init_and_uninit_bytes(&mut llvals, cx, alloc, next_offset..offset);
         }
         let ptr_offset = read_target_uint(
             dl.endian,
@@ -59,7 +111,7 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
                 Pointer::new(alloc_id, Size::from_bytes(ptr_offset)),
                 &cx.tcx,
             ),
-            &Scalar { value: Primitive::Pointer, valid_range: 0..=!0 },
+            Scalar { value: Primitive::Pointer, valid_range: WrappingRange { start: 0, end: !0 } },
             cx.type_i8p_ext(address_space),
         ));
         next_offset = offset + pointer_size;
@@ -68,12 +120,8 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
         let range = next_offset..alloc.len();
         // This `inspect` is okay since we have check that it is after all relocations, it is
         // within the bounds of the allocation, and it doesn't affect interpreter execution (we
-        // inspect the result after interpreter execution). Any undef byte is replaced with some
-        // arbitrary byte value.
-        //
-        // FIXME: relay undef bytes to codegen as undef const bytes
-        let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(range);
-        llvals.push(cx.const_bytes(bytes));
+        // inspect the result after interpreter execution).
+        append_chunks_of_init_and_uninit_bytes(&mut llvals, cx, alloc, range);
     }
 
     cx.const_struct(&llvals, true)
@@ -130,7 +178,7 @@ fn check_and_apply_linkage(
         };
         unsafe {
             // Declare a symbol `foo` with the desired linkage.
-            let g1 = cx.declare_global(&sym, llty2);
+            let g1 = cx.declare_global(sym, llty2);
             llvm::LLVMRustSetLinkage(g1, base::linkage_to_llvm(linkage));
 
             // Declare an internal global `extern_with_linkage_foo` which
@@ -140,7 +188,7 @@ fn check_and_apply_linkage(
             // `extern_with_linkage_foo` will instead be initialized to
             // zero.
             let mut real_name = "_rust_extern_with_linkage_".to_string();
-            real_name.push_str(&sym);
+            real_name.push_str(sym);
             let g2 = cx.define_global(&real_name, llty).unwrap_or_else(|| {
                 cx.sess().span_fatal(
                     cx.tcx.def_span(span_def_id),
@@ -154,7 +202,7 @@ fn check_and_apply_linkage(
     } else {
         // Generate an external declaration.
         // FIXME(nagisa): investigate whether it can be changed into define_global
-        cx.declare_global(&sym, llty)
+        cx.declare_global(sym, llty)
     }
 }
 
@@ -186,7 +234,7 @@ impl CodegenCx<'ll, 'tcx> {
                 _ => self.define_private_global(self.val_ty(cv)),
             };
             llvm::LLVMSetInitializer(gv, cv);
-            set_global_alignment(&self, gv, align);
+            set_global_alignment(self, gv, align);
             llvm::SetUnnamedAddress(gv, llvm::UnnamedAddr::Global);
             gv
         }
@@ -231,7 +279,7 @@ impl CodegenCx<'ll, 'tcx> {
 
             g
         } else {
-            check_and_apply_linkage(&self, &fn_attrs, ty, sym, def_id)
+            check_and_apply_linkage(self, fn_attrs, ty, sym, def_id)
         };
 
         // Thread-local statics in some other crate need to *always* be linked
@@ -321,7 +369,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
         unsafe {
             let attrs = self.tcx.codegen_fn_attrs(def_id);
 
-            let (v, alloc) = match codegen_static_initializer(&self, def_id) {
+            let (v, alloc) = match codegen_static_initializer(self, def_id) {
                 Ok(v) => v,
                 // Error has already been reported
                 Err(_) => return,
@@ -369,7 +417,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
                 self.statics_to_rauw.borrow_mut().push((g, new_g));
                 new_g
             };
-            set_global_alignment(&self, g, self.align_of(ty));
+            set_global_alignment(self, g, self.align_of(ty));
             llvm::LLVMSetInitializer(g, v);
 
             if self.should_assume_dso_local(g, true) {
@@ -382,7 +430,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
                 llvm::LLVMSetGlobalConstant(g, llvm::True);
             }
 
-            debuginfo::create_global_var_metadata(&self, def_id, g);
+            debuginfo::create_global_var_metadata(self, def_id, g);
 
             if attrs.flags.contains(CodegenFnAttrFlags::THREAD_LOCAL) {
                 llvm::set_thread_local_mode(g, self.tls_model);
@@ -442,7 +490,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
 
             // Wasm statics with custom link sections get special treatment as they
             // go into custom sections of the wasm executable.
-            if self.tcx.sess.opts.target_triple.triple().starts_with("wasm32") {
+            if self.tcx.sess.target.is_like_wasm {
                 if let Some(section) = attrs.link_section {
                     let section = llvm::LLVMMDStringInContext(
                         self.llcx,
@@ -470,11 +518,17 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
                     );
                 }
             } else {
-                base::set_link_section(g, &attrs);
+                base::set_link_section(g, attrs);
             }
 
             if attrs.flags.contains(CodegenFnAttrFlags::USED) {
-                self.add_used_global(g);
+                // The semantics of #[used] in Rust only require the symbol to make it into the
+                // object file. It is explicitly allowed for the linker to strip the symbol if it
+                // is dead. As such, use llvm.compiler.used instead of llvm.used.
+                // Additionally, https://reviews.llvm.org/D97448 in LLVM 13 started emitting unique
+                // sections with SHF_GNU_RETAIN flag for llvm.used symbols, which may trigger bugs
+                // in some versions of the gold linker.
+                self.add_compiler_used_global(g);
             }
         }
     }
@@ -483,5 +537,12 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
     fn add_used_global(&self, global: &'ll Value) {
         let cast = unsafe { llvm::LLVMConstPointerCast(global, self.type_i8p()) };
         self.used_statics.borrow_mut().push(cast);
+    }
+
+    /// Add a global value to a list to be stored in the `llvm.compiler.used` variable,
+    /// an array of i8*.
+    fn add_compiler_used_global(&self, global: &'ll Value) {
+        let cast = unsafe { llvm::LLVMConstPointerCast(global, self.type_i8p()) };
+        self.compiler_used_statics.borrow_mut().push(cast);
     }
 }

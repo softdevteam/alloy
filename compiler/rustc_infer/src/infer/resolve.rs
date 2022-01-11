@@ -1,7 +1,7 @@
 use super::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use super::{FixupError, FixupResult, InferCtxt, Span};
 use rustc_middle::mir;
-use rustc_middle::ty::fold::{TypeFolder, TypeVisitor};
+use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFolder, TypeVisitor};
 use rustc_middle::ty::{self, Const, InferConst, Ty, TyCtxt, TypeFoldable};
 
 use std::ops::ControlFlow;
@@ -126,6 +126,11 @@ impl<'a, 'tcx> UnresolvedTypeFinder<'a, 'tcx> {
 
 impl<'a, 'tcx> TypeVisitor<'tcx> for UnresolvedTypeFinder<'a, 'tcx> {
     type BreakTy = (Ty<'tcx>, Option<Span>);
+
+    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+        Some(self.infcx.tcx)
+    }
+
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         let t = self.infcx.shallow_resolve(t);
         if t.has_infer_types() {
@@ -170,81 +175,72 @@ pub fn fully_resolve<'a, 'tcx, T>(infcx: &InferCtxt<'a, 'tcx>, value: T) -> Fixu
 where
     T: TypeFoldable<'tcx>,
 {
-    let mut full_resolver = FullTypeResolver { infcx, err: None };
-    let result = value.fold_with(&mut full_resolver);
-    match full_resolver.err {
-        None => Ok(result),
-        Some(e) => Err(e),
-    }
+    value.try_fold_with(&mut FullTypeResolver { infcx })
 }
 
 // N.B. This type is not public because the protocol around checking the
 // `err` field is not enforceable otherwise.
 struct FullTypeResolver<'a, 'tcx> {
     infcx: &'a InferCtxt<'a, 'tcx>,
-    err: Option<FixupError<'tcx>>,
 }
 
 impl<'a, 'tcx> TypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
+    type Error = FixupError<'tcx>;
+
     fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
+}
 
-    fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
+impl<'a, 'tcx> FallibleTypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
+    fn try_fold_ty(&mut self, t: Ty<'tcx>) -> Result<Ty<'tcx>, Self::Error> {
         if !t.needs_infer() {
-            t // micro-optimize -- if there is nothing in this type that this fold affects...
+            Ok(t) // micro-optimize -- if there is nothing in this type that this fold affects...
         } else {
             let t = self.infcx.shallow_resolve(t);
             match *t.kind() {
-                ty::Infer(ty::TyVar(vid)) => {
-                    self.err = Some(FixupError::UnresolvedTy(vid));
-                    self.tcx().ty_error()
-                }
-                ty::Infer(ty::IntVar(vid)) => {
-                    self.err = Some(FixupError::UnresolvedIntTy(vid));
-                    self.tcx().ty_error()
-                }
-                ty::Infer(ty::FloatVar(vid)) => {
-                    self.err = Some(FixupError::UnresolvedFloatTy(vid));
-                    self.tcx().ty_error()
-                }
+                ty::Infer(ty::TyVar(vid)) => Err(FixupError::UnresolvedTy(vid)),
+                ty::Infer(ty::IntVar(vid)) => Err(FixupError::UnresolvedIntTy(vid)),
+                ty::Infer(ty::FloatVar(vid)) => Err(FixupError::UnresolvedFloatTy(vid)),
                 ty::Infer(_) => {
                     bug!("Unexpected type in full type resolver: {:?}", t);
                 }
-                _ => t.super_fold_with(self),
+                _ => t.try_super_fold_with(self),
             }
         }
     }
 
-    fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
+    fn try_fold_region(&mut self, r: ty::Region<'tcx>) -> Result<ty::Region<'tcx>, Self::Error> {
         match *r {
-            ty::ReVar(rid) => self
+            ty::ReVar(rid) => Ok(self
                 .infcx
                 .lexical_region_resolutions
                 .borrow()
                 .as_ref()
                 .expect("region resolution not performed")
-                .resolve_var(rid),
-            _ => r,
+                .resolve_var(rid)),
+            _ => Ok(r),
         }
     }
 
-    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+    fn try_fold_const(
+        &mut self,
+        c: &'tcx ty::Const<'tcx>,
+    ) -> Result<&'tcx ty::Const<'tcx>, Self::Error> {
         if !c.needs_infer() {
-            c // micro-optimize -- if there is nothing in this const that this fold affects...
+            Ok(c) // micro-optimize -- if there is nothing in this const that this fold affects...
         } else {
             let c = self.infcx.shallow_resolve(c);
             match c.val {
                 ty::ConstKind::Infer(InferConst::Var(vid)) => {
-                    self.err = Some(FixupError::UnresolvedConst(vid));
-                    return self.tcx().const_error(c.ty);
+                    return Err(FixupError::UnresolvedConst(vid));
                 }
                 ty::ConstKind::Infer(InferConst::Fresh(_)) => {
                     bug!("Unexpected const in full const resolver: {:?}", c);
                 }
                 _ => {}
             }
-            c.super_fold_with(self)
+            c.try_super_fold_with(self)
         }
     }
 }

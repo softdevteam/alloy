@@ -17,22 +17,17 @@ use std::cell::Cell;
 use std::mem;
 
 declare_clippy_lint! {
-    /// **What it does:**
-    ///
+    /// ### What it does
     /// Checks for unnested or-patterns, e.g., `Some(0) | Some(2)` and
     /// suggests replacing the pattern with a nested one, `Some(0 | 2)`.
     ///
     /// Another way to think of this is that it rewrites patterns in
     /// *disjunctive normal form (DNF)* into *conjunctive normal form (CNF)*.
     ///
-    /// **Why is this bad?**
-    ///
+    /// ### Why is this bad?
     /// In the example above, `Some` is repeated, which unncessarily complicates the pattern.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// fn main() {
     ///     if let Some(0) | Some(2) = Some(0) {}
@@ -40,12 +35,11 @@ declare_clippy_lint! {
     /// ```
     /// Use instead:
     /// ```rust
-    /// #![feature(or_patterns)]
-    ///
     /// fn main() {
     ///     if let Some(0 | 2) = Some(0) {}
     /// }
     /// ```
+    #[clippy::version = "1.46.0"]
     pub UNNESTED_OR_PATTERNS,
     pedantic,
     "unnested or-patterns, e.g., `Foo(Bar) | Foo(Baz) instead of `Foo(Bar | Baz)`"
@@ -74,7 +68,7 @@ impl EarlyLintPass for UnnestedOrPatterns {
 
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
         if meets_msrv(self.msrv.as_ref(), &msrvs::OR_PATTERNS) {
-            if let ast::ExprKind::Let(pat, _) = &e.kind {
+            if let ast::ExprKind::Let(pat, _, _) = &e.kind {
                 lint_unnested_or_patterns(cx, pat);
             }
         }

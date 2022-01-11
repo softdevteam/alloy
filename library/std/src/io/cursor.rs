@@ -4,7 +4,7 @@ mod tests;
 use crate::io::prelude::*;
 
 use crate::cmp;
-use crate::io::{self, Error, ErrorKind, Initializer, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, Error, ErrorKind, IoSlice, IoSliceMut, ReadBuf, SeekFrom};
 
 use core::convert::TryInto;
 
@@ -12,13 +12,13 @@ use core::convert::TryInto;
 /// [`Seek`] implementation.
 ///
 /// `Cursor`s are used with in-memory buffers, anything implementing
-/// [`AsRef`]`<[u8]>`, to allow them to implement [`Read`] and/or [`Write`],
+/// <code>[AsRef]<\[u8]></code>, to allow them to implement [`Read`] and/or [`Write`],
 /// allowing these buffers to be used anywhere you might use a reader or writer
 /// that does actual I/O.
 ///
 /// The standard library implements some I/O traits on various types which
-/// are commonly used as a buffer, like `Cursor<`[`Vec`]`<u8>>` and
-/// `Cursor<`[`&[u8]`][bytes]`>`.
+/// are commonly used as a buffer, like <code>Cursor<[Vec]\<u8>></code> and
+/// <code>Cursor<[&\[u8\]][bytes]></code>.
 ///
 /// # Examples
 ///
@@ -26,7 +26,7 @@ use core::convert::TryInto;
 /// code, but use an in-memory buffer in our tests. We can do this with
 /// `Cursor`:
 ///
-/// [bytes]: crate::slice
+/// [bytes]: crate::slice "slice"
 /// [`File`]: crate::fs::File
 ///
 /// ```no_run
@@ -292,12 +292,7 @@ where
             SeekFrom::End(n) => (self.inner.as_ref().len() as u64, n),
             SeekFrom::Current(n) => (self.pos, n),
         };
-        let new_pos = if offset >= 0 {
-            base_pos.checked_add(offset as u64)
-        } else {
-            base_pos.checked_sub((offset.wrapping_neg()) as u64)
-        };
-        match new_pos {
+        match base_pos.checked_add_signed(offset) {
             Some(n) => {
                 self.pos = n;
                 Ok(self.pos)
@@ -329,6 +324,16 @@ where
         Ok(n)
     }
 
+    fn read_buf(&mut self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        let prev_filled = buf.filled_len();
+
+        Read::read_buf(&mut self.fill_buf()?, buf)?;
+
+        self.pos += (buf.filled_len() - prev_filled) as u64;
+
+        Ok(())
+    }
+
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let mut nread = 0;
         for buf in bufs {
@@ -350,11 +355,6 @@ where
         Read::read_exact(&mut self.remaining_slice(), buf)?;
         self.pos += n as u64;
         Ok(())
-    }
-
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
     }
 }
 

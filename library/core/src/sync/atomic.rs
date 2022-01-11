@@ -41,7 +41,7 @@
 //! instructions to implement `AtomicI8`. Note that this emulation should not
 //! have an impact on correctness of code, it's just something to be aware of.
 //!
-//! The atomic types in this module may not be available on all platforms. The
+//! The atomic types in this module might not be available on all platforms. The
 //! atomic types here are all widely available, however, and can generally be
 //! relied upon existing. Some notable exceptions are:
 //!
@@ -62,7 +62,7 @@
 //! some atomic operations. Maximally portable code will want to be careful
 //! about which atomic types are used. `AtomicUsize` and `AtomicIsize` are
 //! generally the most portable, but even then they're not available everywhere.
-//! For reference, the `std` library requires pointer-sized atomics, although
+//! For reference, the `std` library requires `AtomicBool`s and pointer-sized atomics, although
 //! `core` does not.
 //!
 //! Currently you'll need to use `#[cfg(target_arch)]` primarily to
@@ -113,6 +113,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 #![cfg_attr(not(target_has_atomic_load_store = "8"), allow(dead_code))]
 #![cfg_attr(not(target_has_atomic_load_store = "8"), allow(unused_imports))]
+#![rustc_diagnostic_item = "atomic_mod"]
 
 use self::Ordering::*;
 
@@ -137,7 +138,8 @@ pub struct AtomicBool {
 
 #[cfg(target_has_atomic_load_store = "8")]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Default for AtomicBool {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl const Default for AtomicBool {
     /// Creates an `AtomicBool` initialized to `false`.
     #[inline]
     fn default() -> Self {
@@ -167,7 +169,8 @@ pub struct AtomicPtr<T> {
 
 #[cfg(target_has_atomic_load_store = "ptr")]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Default for AtomicPtr<T> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for AtomicPtr<T> {
     /// Creates a null `AtomicPtr<T>`.
     fn default() -> AtomicPtr<T> {
         AtomicPtr::new(crate::ptr::null_mut())
@@ -198,6 +201,7 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[non_exhaustive]
+#[rustc_diagnostic_item = "Ordering"]
 pub enum Ordering {
     /// No ordering constraints, only atomic operations.
     ///
@@ -286,6 +290,7 @@ impl AtomicBool {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_stable(feature = "const_atomic_new", since = "1.24.0")]
+    #[must_use]
     pub const fn new(v: bool) -> AtomicBool {
         AtomicBool { v: UnsafeCell::new(v as u8) }
     }
@@ -1268,7 +1273,8 @@ impl<T> AtomicPtr<T> {
 
 #[cfg(target_has_atomic_load_store = "8")]
 #[stable(feature = "atomic_bool_from", since = "1.24.0")]
-impl From<bool> for AtomicBool {
+#[rustc_const_unstable(feature = "const_convert", issue = "88674")]
+impl const From<bool> for AtomicBool {
     /// Converts a `bool` into an `AtomicBool`.
     ///
     /// # Examples
@@ -1286,7 +1292,8 @@ impl From<bool> for AtomicBool {
 
 #[cfg(target_has_atomic_load_store = "ptr")]
 #[stable(feature = "atomic_from", since = "1.23.0")]
-impl<T> From<*mut T> for AtomicPtr<T> {
+#[rustc_const_unstable(feature = "const_convert", issue = "88674")]
+impl<T> const From<*mut T> for AtomicPtr<T> {
     #[inline]
     fn from(p: *mut T) -> Self {
         Self::new(p)
@@ -1349,7 +1356,8 @@ macro_rules! atomic_int {
         pub const $atomic_init: $atomic_type = $atomic_type::new(0);
 
         #[$stable]
-        impl Default for $atomic_type {
+        #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+        impl const Default for $atomic_type {
             #[inline]
             fn default() -> Self {
                 Self::new(Default::default())
@@ -1357,7 +1365,8 @@ macro_rules! atomic_int {
         }
 
         #[$stable_from]
-        impl From<$int_type> for $atomic_type {
+        #[rustc_const_unstable(feature = "const_num_from_num", issue = "87852")]
+        impl const From<$int_type> for $atomic_type {
             #[doc = concat!("Converts an `", stringify!($int_type), "` into an `", stringify!($atomic_type), "`.")]
             #[inline]
             fn from(v: $int_type) -> Self { Self::new(v) }
@@ -1387,6 +1396,7 @@ macro_rules! atomic_int {
             #[inline]
             #[$stable]
             #[$const_stable]
+            #[must_use]
             pub const fn new(v: $int_type) -> Self {
                 Self {v: UnsafeCell::new(v)}
             }
@@ -2664,6 +2674,7 @@ unsafe fn atomic_umin<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 /// ```
 #[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "fence"]
 pub fn fence(order: Ordering) {
     // SAFETY: using an atomic fence is safe.
     unsafe {
@@ -2745,6 +2756,7 @@ pub fn fence(order: Ordering) {
 /// [memory barriers]: https://www.kernel.org/doc/Documentation/memory-barriers.txt
 #[inline]
 #[stable(feature = "compiler_fences", since = "1.21.0")]
+#[rustc_diagnostic_item = "compiler_fence"]
 pub fn compiler_fence(order: Ordering) {
     // SAFETY: using an atomic fence is safe.
     unsafe {

@@ -1,4 +1,4 @@
-// pretty-printers are not loaded
+// ignore-windows-gnu: pretty-printers are not loaded
 // compile-flags:-g
 
 // min-gdb-version: 8.1
@@ -75,5 +75,7 @@ fn main() {
     let a1 = Arc::clone(&a);
     let w2 = Arc::downgrade(&a);
 
-    print!(""); // #break
+    zzz(); // #break
 }
+
+fn zzz() { () }

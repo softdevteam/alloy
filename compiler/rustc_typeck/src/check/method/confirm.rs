@@ -28,7 +28,7 @@ struct ConfirmContext<'a, 'tcx> {
 impl<'a, 'tcx> Deref for ConfirmContext<'a, 'tcx> {
     type Target = FnCtxt<'a, 'tcx>;
     fn deref(&self) -> &Self::Target {
-        &self.fcx
+        self.fcx
     }
 }
 
@@ -120,7 +120,12 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         // We won't add these if we encountered an illegal sized bound, so that we can use
         // a custom error in that case.
         if illegal_sized_bound.is_none() {
-            self.add_obligations(self.tcx.mk_fn_ptr(method_sig), all_substs, method_predicates);
+            self.add_obligations(
+                self.tcx.mk_fn_ptr(method_sig),
+                all_substs,
+                method_predicates,
+                pick.item.def_id,
+            );
         }
 
         // Create the final `MethodCallee`.
@@ -162,7 +167,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
 
         match &pick.autoref_or_ptr_adjustment {
             Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, unsize }) => {
-                let region = self.next_region_var(infer::Autoref(self.span, pick.item));
+                let region = self.next_region_var(infer::Autoref(self.span));
                 target = self.tcx.mk_ref(region, ty::TypeAndMut { mutbl: *mutbl, ty: target });
                 let mutbl = match mutbl {
                     hir::Mutability::Not => AutoBorrowMutability::Not,
@@ -290,7 +295,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             .autoderef(self.span, self_ty)
             .include_raw_pointers()
             .find_map(|(ty, _)| match ty.kind() {
-                ty::Dynamic(ref data, ..) => Some(closure(
+                ty::Dynamic(data, ..) => Some(closure(
                     self,
                     ty,
                     data.principal().unwrap_or_else(|| {
@@ -323,7 +328,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             self.tcx,
             self.span,
             pick.item.def_id,
-            &generics,
+            generics,
             seg,
             IsMethodCall::Yes,
         );
@@ -343,7 +348,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 def_id: DefId,
             ) -> (Option<&'a hir::GenericArgs<'a>>, bool) {
                 if def_id == self.pick.item.def_id {
-                    if let Some(ref data) = self.seg.args {
+                    if let Some(data) = self.seg.args {
                         return (Some(data), false);
                     }
                 }
@@ -365,6 +370,13 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                     }
                     (GenericParamDefKind::Const { .. }, GenericArg::Const(ct)) => {
                         self.cfcx.const_arg_to_const(&ct.value, param.def_id).into()
+                    }
+                    (GenericParamDefKind::Type { .. }, GenericArg::Infer(inf)) => {
+                        self.cfcx.ty_infer(Some(param), inf.span).into()
+                    }
+                    (GenericParamDefKind::Const { .. }, GenericArg::Infer(inf)) => {
+                        let tcx = self.cfcx.tcx();
+                        self.cfcx.ct_infer(tcx.type_of(param.def_id), Some(param), inf.span).into()
                     }
                     _ => unreachable!(),
                 }
@@ -464,16 +476,23 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         fty: Ty<'tcx>,
         all_substs: SubstsRef<'tcx>,
         method_predicates: ty::InstantiatedPredicates<'tcx>,
+        def_id: DefId,
     ) {
         debug!(
-            "add_obligations: fty={:?} all_substs={:?} method_predicates={:?}",
-            fty, all_substs, method_predicates
+            "add_obligations: fty={:?} all_substs={:?} method_predicates={:?} def_id={:?}",
+            fty, all_substs, method_predicates, def_id
         );
 
-        self.add_obligations_for_parameters(
-            traits::ObligationCause::misc(self.span, self.body_id),
+        // FIXME: could replace with the following, but we already calculated `method_predicates`,
+        // so we just call `predicates_for_generics` directly to avoid redoing work.
+        // `self.add_required_obligations(self.span, def_id, &all_substs);`
+        for obligation in traits::predicates_for_generics(
+            traits::ObligationCause::new(self.span, self.body_id, traits::ItemObligation(def_id)),
+            self.param_env,
             method_predicates,
-        );
+        ) {
+            self.register_predicate(obligation);
+        }
 
         // this is a projection from a trait reference, so we have to
         // make sure that the trait reference inputs are well-formed.
@@ -500,7 +519,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         traits::elaborate_predicates(self.tcx, predicates.predicates.iter().copied())
             // We don't care about regions here.
             .filter_map(|obligation| match obligation.predicate.kind().skip_binder() {
-                ty::PredicateKind::Trait(trait_pred, _) if trait_pred.def_id() == sized_def_id => {
+                ty::PredicateKind::Trait(trait_pred) if trait_pred.def_id() == sized_def_id => {
                     let span = iter::zip(&predicates.predicates, &predicates.spans)
                         .find_map(
                             |(p, span)| {

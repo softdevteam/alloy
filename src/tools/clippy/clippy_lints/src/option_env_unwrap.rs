@@ -7,17 +7,16 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::sym;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `option_env!(...).unwrap()` and
+    /// ### What it does
+    /// Checks for usage of `option_env!(...).unwrap()` and
     /// suggests usage of the `env!` macro.
     ///
-    /// **Why is this bad?** Unwrapping the result of `option_env!` will panic
+    /// ### Why is this bad?
+    /// Unwrapping the result of `option_env!` will panic
     /// at run-time if the environment variable doesn't exist, whereas `env!`
     /// catches it at compile-time.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust,no_run
     /// let _ = option_env!("HOME").unwrap();
     /// ```
@@ -27,6 +26,7 @@ declare_clippy_lint! {
     /// ```rust,no_run
     /// let _ = env!("HOME");
     /// ```
+    #[clippy::version = "1.43.0"]
     pub OPTION_ENV_UNWRAP,
     correctness,
     "using `option_env!(...).unwrap()` to get environment variable"

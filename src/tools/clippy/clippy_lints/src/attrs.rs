@@ -1,8 +1,9 @@
 //! checks for attributes
 
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::match_panic_def_id;
+use clippy_utils::msrvs;
 use clippy_utils::source::{first_line_of_span, is_present_in_source, snippet_opt, without_block_comments};
+use clippy_utils::{extract_msrv_attr, match_panic_def_id, meets_msrv};
 use if_chain::if_chain;
 use rustc_ast::{AttrKind, AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
 use rustc_errors::Applicability;
@@ -12,7 +13,8 @@ use rustc_hir::{
 use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty;
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_semver::RustcVersion;
+use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use rustc_span::sym;
 use rustc_span::symbol::{Symbol, SymbolStr};
@@ -41,10 +43,12 @@ static UNIX_SYSTEMS: &[&str] = &[
 static NON_UNIX_SYSTEMS: &[&str] = &["hermit", "none", "wasi"];
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for items annotated with `#[inline(always)]`,
+    /// ### What it does
+    /// Checks for items annotated with `#[inline(always)]`,
     /// unless the annotated function is empty or simply panics.
     ///
-    /// **Why is this bad?** While there are valid uses of this annotation (and once
+    /// ### Why is this bad?
+    /// While there are valid uses of this annotation (and once
     /// you know when to use it, by all means `allow` this lint), it's a common
     /// newbie-mistake to pepper one's code with it.
     ///
@@ -52,22 +56,25 @@ declare_clippy_lint! {
     /// measure if that additional function call really affects your runtime profile
     /// sufficiently to make up for the increase in compile time.
     ///
-    /// **Known problems:** False positives, big time. This lint is meant to be
+    /// ### Known problems
+    /// False positives, big time. This lint is meant to be
     /// deactivated by everyone doing serious performance work. This means having
     /// done the measurement.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// #[inline(always)]
     /// fn not_quite_hot_code(..) { ... }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub INLINE_ALWAYS,
     pedantic,
     "use of `#[inline(always)]`"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `extern crate` and `use` items annotated with
+    /// ### What it does
+    /// Checks for `extern crate` and `use` items annotated with
     /// lint attributes.
     ///
     /// This lint permits `#[allow(unused_imports)]`, `#[allow(deprecated)]`,
@@ -75,12 +82,11 @@ declare_clippy_lint! {
     /// `#[allow(clippy::enum_glob_use)]` on `use` items and `#[allow(unused_imports)]` on
     /// `extern crate` items with a `#[macro_use]` attribute.
     ///
-    /// **Why is this bad?** Lint attributes have no effect on crate imports. Most
+    /// ### Why is this bad?
+    /// Lint attributes have no effect on crate imports. Most
     /// likely a `!` was forgotten.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// // Bad
     /// #[deny(dead_code)]
@@ -95,45 +101,49 @@ declare_clippy_lint! {
     /// #[macro_use]
     /// extern crate baz;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub USELESS_ATTRIBUTE,
     correctness,
     "use of lint attributes on `extern crate` items"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `#[deprecated]` annotations with a `since`
+    /// ### What it does
+    /// Checks for `#[deprecated]` annotations with a `since`
     /// field that is not a valid semantic version.
     ///
-    /// **Why is this bad?** For checking the version of the deprecation, it must be
+    /// ### Why is this bad?
+    /// For checking the version of the deprecation, it must be
     /// a valid semver. Failing that, the contained information is useless.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// #[deprecated(since = "forever")]
     /// fn something_else() { /* ... */ }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub DEPRECATED_SEMVER,
     correctness,
     "use of `#[deprecated(since = \"x\")]` where x is not semver"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for empty lines after outer attributes
+    /// ### What it does
+    /// Checks for empty lines after outer attributes
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// Most likely the attribute was meant to be an inner attribute using a '!'.
     /// If it was meant to be an outer attribute, then the following item
     /// should not be separated by empty lines.
     ///
-    /// **Known problems:** Can cause false positives.
+    /// ### Known problems
+    /// Can cause false positives.
     ///
     /// From the clippy side it's difficult to detect empty lines between an attributes and the
     /// following item because empty lines and comments are not part of the AST. The parsing
     /// currently works for basic cases but is not perfect.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// // Good (as inner attribute)
     /// #![allow(dead_code)]
@@ -149,20 +159,21 @@ declare_clippy_lint! {
     /// #[allow(dead_code)]
     /// fn this_is_fine_too() { }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub EMPTY_LINE_AFTER_OUTER_ATTR,
     nursery,
     "empty line after outer attribute"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `warn`/`deny`/`forbid` attributes targeting the whole clippy::restriction category.
+    /// ### What it does
+    /// Checks for `warn`/`deny`/`forbid` attributes targeting the whole clippy::restriction category.
     ///
-    /// **Why is this bad?** Restriction lints sometimes are in contrast with other lints or even go against idiomatic rust.
+    /// ### Why is this bad?
+    /// Restriction lints sometimes are in contrast with other lints or even go against idiomatic rust.
     /// These lints should only be enabled on a lint-by-lint basis and with careful consideration.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust
     /// #![deny(clippy::restriction)]
@@ -172,24 +183,27 @@ declare_clippy_lint! {
     /// ```rust
     /// #![deny(clippy::as_conversions)]
     /// ```
+    #[clippy::version = "1.47.0"]
     pub BLANKET_CLIPPY_RESTRICTION_LINTS,
     suspicious,
     "enabling the complete restriction group"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `#[cfg_attr(rustfmt, rustfmt_skip)]` and suggests to replace it
+    /// ### What it does
+    /// Checks for `#[cfg_attr(rustfmt, rustfmt_skip)]` and suggests to replace it
     /// with `#[rustfmt::skip]`.
     ///
-    /// **Why is this bad?** Since tool_attributes ([rust-lang/rust#44690](https://github.com/rust-lang/rust/issues/44690))
+    /// ### Why is this bad?
+    /// Since tool_attributes ([rust-lang/rust#44690](https://github.com/rust-lang/rust/issues/44690))
     /// are stable now, they should be used instead of the old `cfg_attr(rustfmt)` attributes.
     ///
-    /// **Known problems:** This lint doesn't detect crate level inner attributes, because they get
+    /// ### Known problems
+    /// This lint doesn't detect crate level inner attributes, because they get
     /// processed before the PreExpansionPass lints get executed. See
     /// [#3123](https://github.com/rust-lang/rust-clippy/pull/3123#issuecomment-422321765)
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// Bad:
     /// ```rust
     /// #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -201,21 +215,21 @@ declare_clippy_lint! {
     /// #[rustfmt::skip]
     /// fn main() { }
     /// ```
+    #[clippy::version = "1.32.0"]
     pub DEPRECATED_CFG_ATTR,
     complexity,
     "usage of `cfg_attr(rustfmt)` instead of tool attributes"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for cfg attributes having operating systems used in target family position.
+    /// ### What it does
+    /// Checks for cfg attributes having operating systems used in target family position.
     ///
-    /// **Why is this bad?** The configuration option will not be recognised and the related item will not be included
+    /// ### Why is this bad?
+    /// The configuration option will not be recognised and the related item will not be included
     /// by the conditional compilation engine.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// Bad:
     /// ```rust
     /// #[cfg(linux)]
@@ -234,6 +248,7 @@ declare_clippy_lint! {
     /// fn conditional() { }
     /// ```
     /// Check the [Rust Reference](https://doc.rust-lang.org/reference/conditional-compilation.html#target_os) for more details.
+    #[clippy::version = "1.45.0"]
     pub MISMATCHED_TARGET_OS,
     correctness,
     "usage of `cfg(operating_system)` instead of `cfg(target_os = \"operating_system\")`"
@@ -491,7 +506,11 @@ fn is_word(nmi: &NestedMetaItem, expected: Symbol) -> bool {
     }
 }
 
-declare_lint_pass!(EarlyAttributes => [
+pub struct EarlyAttributes {
+    pub msrv: Option<RustcVersion>,
+}
+
+impl_lint_pass!(EarlyAttributes => [
     DEPRECATED_CFG_ATTR,
     MISMATCHED_TARGET_OS,
     EMPTY_LINE_AFTER_OUTER_ATTR,
@@ -503,9 +522,11 @@ impl EarlyLintPass for EarlyAttributes {
     }
 
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
-        check_deprecated_cfg_attr(cx, attr);
+        check_deprecated_cfg_attr(cx, attr, self.msrv);
         check_mismatched_target_os(cx, attr);
     }
+
+    extract_msrv_attr!(EarlyContext);
 }
 
 fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::Item) {
@@ -521,8 +542,8 @@ fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::It
                 return;
             }
 
-            let begin_of_attr_to_item = Span::new(attr.span.lo(), item.span.lo(), item.span.ctxt());
-            let end_of_attr_to_item = Span::new(attr.span.hi(), item.span.lo(), item.span.ctxt());
+            let begin_of_attr_to_item = Span::new(attr.span.lo(), item.span.lo(), item.span.ctxt(), item.span.parent());
+            let end_of_attr_to_item = Span::new(attr.span.hi(), item.span.lo(), item.span.ctxt(), item.span.parent());
 
             if let Some(snippet) = snippet_opt(cx, end_of_attr_to_item) {
                 let lines = snippet.split('\n').collect::<Vec<_>>();
@@ -542,8 +563,9 @@ fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::It
     }
 }
 
-fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute) {
+fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute, msrv: Option<RustcVersion>) {
     if_chain! {
+        if meets_msrv(msrv.as_ref(), &msrvs::TOOL_ATTRIBUTES);
         // check cfg_attr
         if attr.has_name(sym::cfg_attr);
         if let Some(items) = attr.meta_item_list();
@@ -557,7 +579,7 @@ fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute) {
             skip_item.path.segments.last().expect("empty path in attribute").ident.name == sym::skip;
         // Only lint outer attributes, because custom inner attributes are unstable
         // Tracking issue: https://github.com/rust-lang/rust/issues/54726
-        if let AttrStyle::Outer = attr.style;
+        if attr.style == AttrStyle::Outer;
         then {
             span_lint_and_sugg(
                 cx,

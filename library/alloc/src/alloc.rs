@@ -95,6 +95,7 @@ pub use std::alloc::Global;
 /// }
 /// ```
 #[stable(feature = "global_alloc", since = "1.28.0")]
+#[must_use = "losing the pointer will leak memory"]
 #[inline]
 pub unsafe fn alloc(layout: Layout) -> *mut u8 {
     unsafe { __rust_alloc(layout.size(), layout.align()) }
@@ -131,6 +132,7 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
 ///
 /// See [`GlobalAlloc::realloc`].
 #[stable(feature = "global_alloc", since = "1.28.0")]
+#[must_use = "losing the pointer will leak memory"]
 #[inline]
 pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
     unsafe { __rust_realloc(ptr, layout.size(), layout.align(), new_size) }
@@ -164,6 +166,7 @@ pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 
 /// }
 /// ```
 #[stable(feature = "global_alloc", since = "1.28.0")]
+#[must_use = "losing the pointer will leak memory"]
 #[inline]
 pub unsafe fn alloc_zeroed(layout: Layout) -> *mut u8 {
     unsafe { __rust_alloc_zeroed(layout.size(), layout.align()) }
@@ -403,7 +406,6 @@ unsafe impl Allocator for Global {
 }
 
 /// The allocator for unique pointers.
-// This function must not unwind. If it does, MIR codegen will fail.
 #[cfg(all(not(no_global_oom_handling), not(test)))]
 #[lang = "exchange_malloc"]
 #[inline]
@@ -528,7 +530,7 @@ pub mod __alloc_error_handler {
         panic!("memory allocation of {} bytes failed", size)
     }
 
-    // if there is a `#[alloc_error_handler]`
+    // if there is an `#[alloc_error_handler]`
     #[rustc_std_internal_symbol]
     pub unsafe extern "C" fn __rg_oom(size: usize, align: usize) -> ! {
         let layout = unsafe { Layout::from_size_align_unchecked(size, align) };

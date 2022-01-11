@@ -3,7 +3,6 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(box_patterns)]
-#![feature(box_syntax)]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
@@ -28,6 +27,7 @@ mod cfg_accessible;
 mod cfg_eval;
 mod compile_error;
 mod concat;
+mod concat_bytes;
 mod concat_idents;
 mod derive;
 mod deriving;
@@ -66,12 +66,14 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
         cfg: cfg::expand_cfg,
         column: source_util::expand_column,
         compile_error: compile_error::expand_compile_error,
+        concat_bytes: concat_bytes::expand_concat_bytes,
         concat_idents: concat_idents::expand_concat_idents,
         concat: concat::expand_concat,
         env: env::expand_env,
         file: source_util::expand_file,
         format_args_nl: format::expand_format_args_nl,
         format_args: format::expand_format_args,
+        const_format_args: format::expand_format_args,
         global_asm: asm::expand_global_asm,
         include_bytes: source_util::expand_include_bytes,
         include_str: source_util::expand_include_str,

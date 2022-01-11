@@ -182,10 +182,6 @@ mod mut_ptr;
 /// // Ensure that the last item was dropped.
 /// assert!(weak.upgrade().is_none());
 /// ```
-///
-/// Notice that the compiler performs this copy automatically when dropping packed structs,
-/// i.e., you do not usually have to worry about such issues unless you call `drop_in_place`
-/// manually.
 #[stable(feature = "drop_in_place", since = "1.8.0")]
 #[lang = "drop_in_place"]
 #[allow(unconditional_recursion)]
@@ -208,6 +204,7 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
 /// assert!(p.is_null());
 /// ```
 #[inline(always)]
+#[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_promotable]
 #[rustc_const_stable(feature = "const_ptr_null", since = "1.24.0")]
@@ -227,6 +224,7 @@ pub const fn null<T>() -> *const T {
 /// assert!(p.is_null());
 /// ```
 #[inline(always)]
+#[must_use]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_promotable]
 #[rustc_const_stable(feature = "const_ptr_null", since = "1.24.0")]
@@ -685,6 +683,13 @@ pub const unsafe fn replace<T>(dst: *mut T, mut src: T) -> T {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_const_unstable(feature = "const_ptr_read", issue = "80377")]
 pub const unsafe fn read<T>(src: *const T) -> T {
+    // We are calling the intrinsics directly to avoid function calls in the generated code
+    // as `intrinsics::copy_nonoverlapping` is a wrapper function.
+    extern "rust-intrinsic" {
+        #[rustc_const_unstable(feature = "const_intrinsic_copy", issue = "80697")]
+        fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+    }
+
     let mut tmp = MaybeUninit::<T>::uninit();
     // SAFETY: the caller must guarantee that `src` is valid for reads.
     // `src` cannot overlap `tmp` because `tmp` was just allocated on
@@ -760,7 +765,7 @@ pub const unsafe fn read<T>(src: *const T) -> T {
 ///
 /// # Examples
 ///
-/// Read an usize value from a byte buffer:
+/// Read a usize value from a byte buffer:
 ///
 /// ```
 /// use std::mem;
@@ -953,7 +958,7 @@ pub const unsafe fn write<T>(dst: *mut T, src: T) {
 ///
 /// # Examples
 ///
-/// Write an usize value to a byte buffer:
+/// Write a usize value to a byte buffer:
 ///
 /// ```
 /// use std::mem;
@@ -1225,7 +1230,7 @@ pub(crate) unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usize {
     let smoda = stride & a_minus_one;
     // SAFETY: a is power-of-two hence non-zero. stride == 0 case is handled above.
     let gcdpow = unsafe { intrinsics::cttz_nonzero(stride).min(intrinsics::cttz_nonzero(a)) };
-    // SAFETY: gcdpow has an upper-bound that’s at most the number of bits in an usize.
+    // SAFETY: gcdpow has an upper-bound that’s at most the number of bits in a usize.
     let gcd = unsafe { unchecked_shl(1usize, gcdpow) };
 
     // SAFETY: gcd is always greater or equal to 1.

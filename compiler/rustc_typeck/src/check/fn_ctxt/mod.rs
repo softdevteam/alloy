@@ -96,7 +96,7 @@ pub struct FnCtxt<'a, 'tcx> {
     ///   `foo(return)`; we warn on the `foo()` expression. (We then
     ///   update the flag to `WarnedAlways` to suppress duplicate
     ///   reports.) Similarly, if we traverse to a fresh statement (or
-    ///   tail expression) from a `Always` setting, we will issue a
+    ///   tail expression) from an `Always` setting, we will issue a
     ///   warning. This corresponds to something like `{return;
     ///   foo();}` or `{return; 22}`, where we would warn on the
     ///   `foo()` or `22`.
@@ -111,6 +111,12 @@ pub struct FnCtxt<'a, 'tcx> {
     pub(super) enclosing_breakables: RefCell<EnclosingBreakables<'tcx>>,
 
     pub(super) inh: &'a Inherited<'a, 'tcx>,
+
+    /// True if the function or closure's return type is known before
+    /// entering the function/closure, i.e. if the return type is
+    /// either given explicitly or inferred from, say, an `Fn*` trait
+    /// bound. Used for diagnostic purposes only.
+    pub(super) return_type_pre_known: bool,
 }
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
@@ -137,6 +143,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 by_id: Default::default(),
             }),
             inh,
+            return_type_pre_known: true,
         }
     }
 
@@ -173,10 +180,6 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
         None
     }
 
-    fn default_constness_for_trait_bounds(&self) -> hir::Constness {
-        self.tcx.hir().get(self.body_id).constness()
-    }
-
     fn get_type_parameter_bounds(
         &self,
         _: Span,
@@ -194,7 +197,7 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
             predicates: tcx.arena.alloc_from_iter(
                 self.param_env.caller_bounds().iter().filter_map(|predicate| {
                     match predicate.kind().skip_binder() {
-                        ty::PredicateKind::Trait(data, _) if data.self_ty().is_param(index) => {
+                        ty::PredicateKind::Trait(data) if data.self_ty().is_param(index) => {
                             // HACK(eddyb) should get the original `Span`.
                             let span = tcx.def_span(def_id);
                             Some((predicate, span))

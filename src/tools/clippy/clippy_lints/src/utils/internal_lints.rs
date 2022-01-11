@@ -1,5 +1,6 @@
 use clippy_utils::consts::{constant_simple, Constant};
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then};
+use clippy_utils::higher;
 use clippy_utils::source::snippet;
 use clippy_utils::ty::match_type;
 use clippy_utils::{
@@ -7,7 +8,8 @@ use clippy_utils::{
     paths, SpanlessEq,
 };
 use if_chain::if_chain;
-use rustc_ast::ast::{Crate as AstCrate, ItemKind, LitKind, ModKind, NodeId};
+use rustc_ast as ast;
+use rustc_ast::ast::{Crate, ItemKind, LitKind, ModKind, NodeId};
 use rustc_ast::visit::FnKind;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
@@ -17,17 +19,18 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::hir_id::CRATE_HIR_ID;
 use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc_hir::{
-    BinOpKind, Block, Crate, Expr, ExprKind, HirId, Item, Local, MatchSource, MutTy, Mutability, Node, Path, Stmt,
-    StmtKind, Ty, TyKind, UnOp,
+    BinOpKind, Block, Expr, ExprKind, HirId, Item, Local, MutTy, Mutability, Node, Path, Stmt, StmtKind, Ty, TyKind,
+    UnOp,
 };
 use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
 use rustc_middle::hir::map::Map;
 use rustc_middle::mir::interpret::ConstValue;
 use rustc_middle::ty;
+use rustc_semver::RustcVersion;
 use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{Symbol, SymbolStr};
-use rustc_span::{BytePos, Span};
+use rustc_span::{sym, BytePos, Span};
 use rustc_typeck::hir_ty_to_ty;
 
 use std::borrow::{Borrow, Cow};
@@ -36,29 +39,33 @@ use std::borrow::{Borrow, Cow};
 pub mod metadata_collector;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for various things we like to keep tidy in clippy.
+    /// ### What it does
+    /// Checks for various things we like to keep tidy in clippy.
     ///
-    /// **Why is this bad?** We like to pretend we're an example of tidy code.
+    /// ### Why is this bad?
+    /// We like to pretend we're an example of tidy code.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:** Wrong ordering of the util::paths constants.
+    /// ### Example
+    /// Wrong ordering of the util::paths constants.
     pub CLIPPY_LINTS_INTERNAL,
     internal,
     "various things that will negatively affect your clippy experience"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Ensures every lint is associated to a `LintPass`.
+    /// ### What it does
+    /// Ensures every lint is associated to a `LintPass`.
     ///
-    /// **Why is this bad?** The compiler only knows lints via a `LintPass`. Without
+    /// ### Why is this bad?
+    /// The compiler only knows lints via a `LintPass`. Without
     /// putting a lint to a `LintPass::get_lints()`'s return, the compiler will not
     /// know the name of the lint.
     ///
-    /// **Known problems:** Only checks for lints associated using the
+    /// ### Known problems
+    /// Only checks for lints associated using the
     /// `declare_lint_pass!`, `impl_lint_pass!`, and `lint_array!` macros.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// declare_lint! { pub LINT_1, ... }
     /// declare_lint! { pub LINT_2, ... }
@@ -73,15 +80,15 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for calls to `cx.span_lint*` and suggests to use the `utils::*`
+    /// ### What it does
+    /// Checks for calls to `cx.span_lint*` and suggests to use the `utils::*`
     /// variant of the function.
     ///
-    /// **Why is this bad?** The `utils::*` variants also add a link to the Clippy documentation to the
+    /// ### Why is this bad?
+    /// The `utils::*` variants also add a link to the Clippy documentation to the
     /// warning/error messages.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// cx.span_lint(LINT_NAME, "message");
@@ -97,14 +104,14 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for calls to `cx.outer().expn_data()` and suggests to use
+    /// ### What it does
+    /// Checks for calls to `cx.outer().expn_data()` and suggests to use
     /// the `cx.outer_expn_data()`
     ///
-    /// **Why is this bad?** `cx.outer_expn_data()` is faster and more concise.
+    /// ### Why is this bad?
+    /// `cx.outer_expn_data()` is faster and more concise.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// expr.span.ctxt().outer().expn_data()
@@ -120,14 +127,14 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Not an actual lint. This lint is only meant for testing our customized internal compiler
+    /// ### What it does
+    /// Not an actual lint. This lint is only meant for testing our customized internal compiler
     /// error message by calling `panic`.
     ///
-    /// **Why is this bad?** ICE in large quantities can damage your teeth
+    /// ### Why is this bad?
+    /// ICE in large quantities can damage your teeth
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// 🍦🍦🍦🍦🍦
@@ -138,14 +145,14 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for cases of an auto-generated lint without an updated description,
+    /// ### What it does
+    /// Checks for cases of an auto-generated lint without an updated description,
     /// i.e. `default lint description`.
     ///
-    /// **Why is this bad?** Indicates that the lint is not finished.
+    /// ### Why is this bad?
+    /// Indicates that the lint is not finished.
     ///
-    /// **Known problems:** None
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// declare_lint! { pub COOL_LINT, nursery, "default lint description" }
@@ -161,7 +168,8 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Lints `span_lint_and_then` function calls, where the
+    /// ### What it does
+    /// Lints `span_lint_and_then` function calls, where the
     /// closure argument has only one statement and that statement is a method
     /// call to `span_suggestion`, `span_help`, `span_note` (using the same
     /// span), `help` or `note`.
@@ -170,12 +178,11 @@ declare_clippy_lint! {
     /// wrapper functions `span_lint_and_sugg`, span_lint_and_help`, or
     /// `span_lint_and_note`.
     ///
-    /// **Why is this bad?** Using the wrapper `span_lint_and_*` functions, is more
+    /// ### Why is this bad?
+    /// Using the wrapper `span_lint_and_*` functions, is more
     /// convenient, readable and less error prone.
     ///
-    /// **Known problems:** None
-    ///
-    /// *Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
@@ -222,14 +229,14 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for calls to `utils::match_type()` on a type diagnostic item
+    /// ### What it does
+    /// Checks for calls to `utils::match_type()` on a type diagnostic item
     /// and suggests to use `utils::is_type_diagnostic_item()` instead.
     ///
-    /// **Why is this bad?** `utils::is_type_diagnostic_item()` does not require hardcoded paths.
+    /// ### Why is this bad?
+    /// `utils::is_type_diagnostic_item()` does not require hardcoded paths.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// utils::match_type(cx, ty, &paths::VEC)
@@ -237,7 +244,7 @@ declare_clippy_lint! {
     ///
     /// Good:
     /// ```rust,ignore
-    /// utils::is_type_diagnostic_item(cx, ty, sym::vec_type)
+    /// utils::is_type_diagnostic_item(cx, ty, sym::Vec)
     /// ```
     pub MATCH_TYPE_ON_DIAGNOSTIC_ITEM,
     internal,
@@ -245,30 +252,27 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// Checks the paths module for invalid paths.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// It indicates a bug in the code.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:** None.
+    /// ### Example
+    /// None.
     pub INVALID_PATHS,
     internal,
     "invalid path"
 }
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// Checks for interning symbols that have already been pre-interned and defined as constants.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// It's faster and easier to use the symbol constant.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// let _ = sym!(f32);
@@ -284,13 +288,13 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for unnecessary conversion from Symbol to a string.
+    /// ### What it does
+    /// Checks for unnecessary conversion from Symbol to a string.
     ///
-    /// **Why is this bad?** It's faster use symbols directly intead of strings.
+    /// ### Why is this bad?
+    /// It's faster use symbols directly intead of strings.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust,ignore
     /// symbol.as_str() == "clippy";
@@ -312,10 +316,31 @@ declare_clippy_lint! {
     "non-idiomatic `if_chain!` usage"
 }
 
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for invalid `clippy::version` attributes.
+    ///
+    /// Valid values are:
+    /// * "pre 1.29.0"
+    /// * any valid semantic version
+    pub INVALID_CLIPPY_VERSION_ATTRIBUTE,
+    internal,
+    "found an invalid `clippy::version` attribute"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for declared clippy lints without the `clippy::version` attribute.
+    ///
+    pub MISSING_CLIPPY_VERSION_ATTRIBUTE,
+    internal,
+    "found clippy lint without `clippy::version` attribute"
+}
+
 declare_lint_pass!(ClippyLintsInternal => [CLIPPY_LINTS_INTERNAL]);
 
 impl EarlyLintPass for ClippyLintsInternal {
-    fn check_crate(&mut self, cx: &EarlyContext<'_>, krate: &AstCrate) {
+    fn check_crate(&mut self, cx: &EarlyContext<'_>, krate: &Crate) {
         if let Some(utils) = krate.items.iter().find(|item| item.ident.name.as_str() == "utils") {
             if let ItemKind::Mod(_, ModKind::Loaded(ref items, ..)) = utils.kind {
                 if let Some(paths) = items.iter().find(|item| item.ident.name.as_str() == "paths") {
@@ -349,7 +374,7 @@ pub struct LintWithoutLintPass {
     registered_lints: FxHashSet<Symbol>,
 }
 
-impl_lint_pass!(LintWithoutLintPass => [DEFAULT_LINT, LINT_WITHOUT_LINT_PASS]);
+impl_lint_pass!(LintWithoutLintPass => [DEFAULT_LINT, LINT_WITHOUT_LINT_PASS, INVALID_CLIPPY_VERSION_ATTRIBUTE, MISSING_CLIPPY_VERSION_ATTRIBUTE]);
 
 impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
@@ -359,6 +384,8 @@ impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
 
         if let hir::ItemKind::Static(ty, Mutability::Not, body_id) = item.kind {
             if is_lint_ref_type(cx, ty) {
+                check_invalid_clippy_version_attribute(cx, item);
+
                 let expr = &cx.tcx.hir().body(body_id).value;
                 if_chain! {
                     if let ExprKind::AddrOf(_, _, inner_exp) = expr.kind;
@@ -410,7 +437,7 @@ impl<'tcx> LateLintPass<'tcx> for LintWithoutLintPass {
         }
     }
 
-    fn check_crate_post(&mut self, cx: &LateContext<'tcx>, _: &'tcx Crate<'_>) {
+    fn check_crate_post(&mut self, cx: &LateContext<'tcx>) {
         if is_lint_allowed(cx, LINT_WITHOUT_LINT_PASS, CRATE_HIR_ID) {
             return;
         }
@@ -454,6 +481,57 @@ fn is_lint_ref_type<'tcx>(cx: &LateContext<'tcx>, ty: &Ty<'_>) -> bool {
     }
 
     false
+}
+
+fn check_invalid_clippy_version_attribute(cx: &LateContext<'_>, item: &'_ Item<'_>) {
+    if let Some(value) = extract_clippy_version_value(cx, item) {
+        // The `sym!` macro doesn't work as it only expects a single token.
+        // It's better to keep it this way and have a direct `Symbol::intern` call here.
+        if value == Symbol::intern("pre 1.29.0") {
+            return;
+        }
+
+        if RustcVersion::parse(&*value.as_str()).is_err() {
+            span_lint_and_help(
+                cx,
+                INVALID_CLIPPY_VERSION_ATTRIBUTE,
+                item.span,
+                "this item has an invalid `clippy::version` attribute",
+                None,
+                "please use a valid sematic version, see `doc/adding_lints.md`",
+            );
+        }
+    } else {
+        span_lint_and_help(
+            cx,
+            MISSING_CLIPPY_VERSION_ATTRIBUTE,
+            item.span,
+            "this lint is missing the `clippy::version` attribute or version value",
+            None,
+            "please use a `clippy::version` attribute, see `doc/adding_lints.md`",
+        );
+    }
+}
+
+/// This function extracts the version value of a `clippy::version` attribute if the given value has
+/// one
+fn extract_clippy_version_value(cx: &LateContext<'_>, item: &'_ Item<'_>) -> Option<Symbol> {
+    let attrs = cx.tcx.hir().attrs(item.hir_id());
+    attrs.iter().find_map(|attr| {
+        if_chain! {
+            // Identify attribute
+            if let ast::AttrKind::Normal(ref attr_kind, _) = &attr.kind;
+            if let [tool_name, attr_name] = &attr_kind.path.segments[..];
+            if tool_name.ident.name == sym::clippy;
+            if attr_name.ident.name == sym::version;
+            if let Some(version) = attr.value_str();
+            then {
+                Some(version)
+            } else {
+                None
+            }
+        }
+    })
 }
 
 struct LintCollector<'a, 'tcx> {
@@ -502,10 +580,10 @@ impl<'tcx> LateLintPass<'tcx> for CompilerLintFunctions {
         }
 
         if_chain! {
-            if let ExprKind::MethodCall(path, _, args, _) = expr.kind;
+            if let ExprKind::MethodCall(path, _, [self_arg, ..], _) = &expr.kind;
             let fn_name = path.ident;
             if let Some(sugg) = self.map.get(&*fn_name.as_str());
-            let ty = cx.typeck_results().expr_ty(&args[0]).peel_refs();
+            let ty = cx.typeck_results().expr_ty(self_arg).peel_refs();
             if match_type(cx, ty, &paths::EARLY_CONTEXT)
                 || match_type(cx, ty, &paths::LATE_CONTEXT);
             then {
@@ -559,9 +637,7 @@ declare_lint_pass!(ProduceIce => [PRODUCE_ICE]);
 
 impl EarlyLintPass for ProduceIce {
     fn check_fn(&mut self, _: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: Span, _: NodeId) {
-        if is_trigger_fn(fn_kind) {
-            panic!("Would you like some help with that?");
-        }
+        assert!(!is_trigger_fn(fn_kind), "Would you like some help with that?");
     }
 }
 
@@ -770,8 +846,7 @@ impl<'tcx> LateLintPass<'tcx> for MatchTypeOnDiagItem {
             let segments: Vec<&str> = segments.iter().map(|sym| &**sym).collect();
             if let Some(ty_did) = path_to_res(cx, &segments[..]).opt_def_id();
             // Check if the matched type is a diagnostic item
-            let diag_items = cx.tcx.diagnostic_items(ty_did.krate);
-            if let Some(item_name) = diag_items.iter().find_map(|(k, v)| if *v == ty_did { Some(k) } else { None });
+            if let Some(item_name) = cx.tcx.get_diagnostic_name(ty_did);
             then {
                 // TODO: check paths constants from external crates.
                 let cx_snippet = snippet(cx, context.span, "_");
@@ -892,7 +967,7 @@ impl<'tcx> LateLintPass<'tcx> for InvalidPaths {
                 }).collect();
             if !check_path(cx, &path[..]);
             then {
-                span_lint(cx, CLIPPY_LINTS_INTERNAL, item.span, "invalid path");
+                span_lint(cx, INVALID_PATHS, item.span, "invalid path");
             }
         }
     }
@@ -907,7 +982,7 @@ pub struct InterningDefinedSymbol {
 impl_lint_pass!(InterningDefinedSymbol => [INTERNING_DEFINED_SYMBOL, UNNECESSARY_SYMBOL_STR]);
 
 impl<'tcx> LateLintPass<'tcx> for InterningDefinedSymbol {
-    fn check_crate(&mut self, cx: &LateContext<'_>, _: &Crate<'_>) {
+    fn check_crate(&mut self, cx: &LateContext<'_>) {
         if !self.symbol_map.is_empty() {
             return;
         }
@@ -1105,16 +1180,10 @@ impl<'tcx> LateLintPass<'tcx> for IfChainStyle {
     }
 
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) {
-        let (cond, then, els) = match expr.kind {
-            ExprKind::If(cond, then, els) => (Some(cond), then, els.is_some()),
-            ExprKind::Match(
-                _,
-                [arm, ..],
-                MatchSource::IfLetDesugar {
-                    contains_else_clause: els,
-                },
-            ) => (None, arm.body, els),
-            _ => return,
+        let (cond, then, els) = if let Some(higher::IfOrIfLet { cond, r#else, then }) = higher::IfOrIfLet::hir(expr) {
+            (cond, then, r#else.is_some())
+        } else {
+            return;
         };
         let then_block = match then.kind {
             ExprKind::Block(block, _) => block,
@@ -1130,7 +1199,6 @@ impl<'tcx> LateLintPass<'tcx> for IfChainStyle {
         };
         // check for `if a && b;`
         if_chain! {
-            if let Some(cond) = cond;
             if let ExprKind::Binary(op, _, _) = cond.kind;
             if op.node == BinOpKind::And;
             if cx.sess().source_map().is_multiline(cond.span);
@@ -1165,9 +1233,7 @@ fn check_nested_if_chains(
         _ => return,
     };
     if_chain! {
-        if matches!(tail.kind,
-            ExprKind::If(_, _, None)
-            | ExprKind::Match(.., MatchSource::IfLetDesugar { contains_else_clause: false }));
+        if let Some(higher::IfOrIfLet { r#else: None, .. }) = higher::IfOrIfLet::hir(tail);
         let sm = cx.sess().source_map();
         if head
             .iter()
@@ -1231,5 +1297,10 @@ fn if_chain_local_span(cx: &LateContext<'_>, local: &Local<'_>, if_chain_span: S
     let sm = cx.sess().source_map();
     let span = sm.span_extend_to_prev_str(span, "let", false);
     let span = sm.span_extend_to_next_char(span, ';', false);
-    Span::new(span.lo() - BytePos(3), span.hi() + BytePos(1), span.ctxt())
+    Span::new(
+        span.lo() - BytePos(3),
+        span.hi() + BytePos(1),
+        span.ctxt(),
+        span.parent(),
+    )
 }

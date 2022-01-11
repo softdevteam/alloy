@@ -1,3 +1,4 @@
+use crate::stable_hasher::{HashStable, StableHasher};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::iter::FromIterator;
@@ -9,24 +10,33 @@ mod index_map;
 pub use index_map::SortedIndexMultiMap;
 
 /// `SortedMap` is a data structure with similar characteristics as BTreeMap but
-/// slightly different trade-offs: lookup, insertion, and removal are O(log(N))
+/// slightly different trade-offs: lookup, insertion, and removal are *O*(log(*n*))
 /// and elements can be iterated in order cheaply.
 ///
 /// `SortedMap` can be faster than a `BTreeMap` for small sizes (<50) since it
 /// stores data in a more compact way. It also supports accessing contiguous
 /// ranges of elements as a slice, and slices of already sorted elements can be
 /// inserted efficiently.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug, Encodable, Decodable)]
-pub struct SortedMap<K: Ord, V> {
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Encodable, Decodable)]
+pub struct SortedMap<K, V> {
     data: Vec<(K, V)>,
 }
 
-impl<K: Ord, V> SortedMap<K, V> {
+impl<K, V> Default for SortedMap<K, V> {
     #[inline]
-    pub fn new() -> SortedMap<K, V> {
-        SortedMap { data: vec![] }
+    fn default() -> SortedMap<K, V> {
+        SortedMap { data: Vec::new() }
     }
+}
 
+impl<K, V> SortedMap<K, V> {
+    #[inline]
+    pub const fn new() -> SortedMap<K, V> {
+        SortedMap { data: Vec::new() }
+    }
+}
+
+impl<K: Ord, V> SortedMap<K, V> {
     /// Construct a `SortedMap` from a presorted set of elements. This is faster
     /// than creating an empty map and then inserting the elements individually.
     ///
@@ -278,6 +288,13 @@ impl<K: Ord, V> FromIterator<(K, V)> for SortedMap<K, V> {
         data.dedup_by(|&mut (ref k1, _), &mut (ref k2, _)| k1.cmp(k2) == Ordering::Equal);
 
         SortedMap { data }
+    }
+}
+
+impl<K: HashStable<CTX>, V: HashStable<CTX>, CTX> HashStable<CTX> for SortedMap<K, V> {
+    #[inline]
+    fn hash_stable(&self, ctx: &mut CTX, hasher: &mut StableHasher) {
+        self.data.hash_stable(ctx, hasher);
     }
 }
 

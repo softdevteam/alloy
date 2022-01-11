@@ -11,9 +11,9 @@
 use super::{recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to, SocketAncillary};
 use super::{sockaddr_un, SocketAddr};
 use crate::fmt;
-use crate::io::{self, Initializer, IoSlice, IoSliceMut};
+use crate::io::{self, IoSlice, IoSliceMut};
 use crate::net::Shutdown;
-use crate::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 #[cfg(any(
     target_os = "android",
     target_os = "linux",
@@ -21,13 +21,14 @@ use crate::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
     target_os = "freebsd",
     target_os = "ios",
     target_os = "macos",
+    target_os = "netbsd",
     target_os = "openbsd"
 ))]
 use crate::os::unix::ucred;
 use crate::path::Path;
 use crate::sys::cvt;
 use crate::sys::net::Socket;
-use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::sys_common::{AsInner, FromInner};
 use crate::time::Duration;
 
 #[unstable(feature = "peer_credentials_unix_socket", issue = "42839", reason = "unstable")]
@@ -38,6 +39,7 @@ use crate::time::Duration;
     target_os = "freebsd",
     target_os = "ios",
     target_os = "macos",
+    target_os = "netbsd",
     target_os = "openbsd"
 ))]
 pub use ucred::UCred;
@@ -99,7 +101,44 @@ impl UnixStream {
             let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::connect(*inner.as_inner(), &addr as *const _ as *const _, len))?;
+            cvt(libc::connect(inner.as_raw_fd(), &addr as *const _ as *const _, len))?;
+            Ok(UnixStream(inner))
+        }
+    }
+
+    /// Connects to the socket specified by [`address`].
+    ///
+    /// [`address`]: crate::os::unix::net::SocketAddr
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(unix_socket_abstract)]
+    /// use std::os::unix::net::{UnixListener, UnixStream};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let listener = UnixListener::bind("/path/to/the/socket")?;
+    ///     let addr = listener.local_addr()?;
+    ///
+    ///     let sock = match UnixStream::connect_addr(&addr) {
+    ///         Ok(sock) => sock,
+    ///         Err(e) => {
+    ///             println!("Couldn't connect: {:?}", e);
+    ///             return Err(e)
+    ///         }
+    ///     };
+    ///     Ok(())
+    /// }
+    /// ````
+    #[unstable(feature = "unix_socket_abstract", issue = "85410")]
+    pub fn connect_addr(socket_addr: &SocketAddr) -> io::Result<UnixStream> {
+        unsafe {
+            let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
+            cvt(libc::connect(
+                inner.as_raw_fd(),
+                &socket_addr.addr as *const _ as *const _,
+                socket_addr.len,
+            ))?;
             Ok(UnixStream(inner))
         }
     }
@@ -165,7 +204,7 @@ impl UnixStream {
     /// ```
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        SocketAddr::new(|addr, len| unsafe { libc::getsockname(*self.0.as_inner(), addr, len) })
+        SocketAddr::new(|addr, len| unsafe { libc::getsockname(self.as_raw_fd(), addr, len) })
     }
 
     /// Returns the socket address of the remote half of this connection.
@@ -183,7 +222,7 @@ impl UnixStream {
     /// ```
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        SocketAddr::new(|addr, len| unsafe { libc::getpeername(*self.0.as_inner(), addr, len) })
+        SocketAddr::new(|addr, len| unsafe { libc::getpeername(self.as_raw_fd(), addr, len) })
     }
 
     /// Gets the peer credentials for this Unix domain socket.
@@ -208,6 +247,7 @@ impl UnixStream {
         target_os = "freebsd",
         target_os = "ios",
         target_os = "macos",
+        target_os = "netbsd",
         target_os = "openbsd"
     ))]
     pub fn peer_cred(&self) -> io::Result<UCred> {
@@ -584,11 +624,6 @@ impl io::Read for UnixStream {
     fn is_read_vectored(&self) -> bool {
         io::Read::is_read_vectored(&&*self)
     }
-
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
-    }
 }
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
@@ -604,11 +639,6 @@ impl<'a> io::Read for &'a UnixStream {
     #[inline]
     fn is_read_vectored(&self) -> bool {
         self.0.is_read_vectored()
-    }
-
-    #[inline]
-    unsafe fn initializer(&self) -> Initializer {
-        Initializer::nop()
     }
 }
 
@@ -656,7 +686,7 @@ impl<'a> io::Write for &'a UnixStream {
 impl AsRawFd for UnixStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        *self.0.as_inner()
+        self.0.as_raw_fd()
     }
 }
 
@@ -664,7 +694,7 @@ impl AsRawFd for UnixStream {
 impl FromRawFd for UnixStream {
     #[inline]
     unsafe fn from_raw_fd(fd: RawFd) -> UnixStream {
-        UnixStream(Socket::from_inner(fd))
+        UnixStream(Socket::from_inner(FromInner::from_inner(OwnedFd::from_raw_fd(fd))))
     }
 }
 
@@ -672,6 +702,30 @@ impl FromRawFd for UnixStream {
 impl IntoRawFd for UnixStream {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.0.into_inner()
+        self.0.into_raw_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for UnixStream {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<UnixStream> for OwnedFd {
+    #[inline]
+    fn from(unix_stream: UnixStream) -> OwnedFd {
+        unsafe { OwnedFd::from_raw_fd(unix_stream.into_raw_fd()) }
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<OwnedFd> for UnixStream {
+    #[inline]
+    fn from(owned: OwnedFd) -> Self {
+        unsafe { Self::from_raw_fd(owned.into_raw_fd()) }
     }
 }

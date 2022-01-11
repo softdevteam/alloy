@@ -54,6 +54,7 @@ static HOSTS: &[&str] = &[
 static TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
     "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
     "aarch64-fuchsia",
     "aarch64-linux-android",
     "aarch64-pc-windows-msvc",
@@ -98,6 +99,7 @@ static TARGETS: &[&str] = &[
     "i686-unknown-freebsd",
     "i686-unknown-linux-gnu",
     "i686-unknown-linux-musl",
+    "m68k-unknown-linux-gnu",
     "mips-unknown-linux-gnu",
     "mips-unknown-linux-musl",
     "mips64-unknown-linux-gnuabi64",

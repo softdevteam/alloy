@@ -9,17 +9,20 @@ use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for a read and a write to the same variable where
+    /// ### What it does
+    /// Checks for a read and a write to the same variable where
     /// whether the read occurs before or after the write depends on the evaluation
     /// order of sub-expressions.
     ///
-    /// **Why is this bad?** It is often confusing to read. In addition, the
-    /// sub-expression evaluation order for Rust is not well documented.
+    /// ### Why is this bad?
+    /// It is often confusing to read. As described [here](https://doc.rust-lang.org/reference/expressions.html?highlight=subexpression#evaluation-order-of-operands),
+    /// the operands of these expressions are evaluated before applying the effects of the expression.
     ///
-    /// **Known problems:** Code which intentionally depends on the evaluation
+    /// ### Known problems
+    /// Code which intentionally depends on the evaluation
     /// order, or which is correct for any evaluation order.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let mut x = 0;
     ///
@@ -37,22 +40,26 @@ declare_clippy_lint! {
     /// };
     /// let a = tmp + x;
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub EVAL_ORDER_DEPENDENCE,
     suspicious,
     "whether a variable read occurs before a write depends on sub-expression evaluation order"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for diverging calls that are not match arms or
+    /// ### What it does
+    /// Checks for diverging calls that are not match arms or
     /// statements.
     ///
-    /// **Why is this bad?** It is often confusing to read. In addition, the
+    /// ### Why is this bad?
+    /// It is often confusing to read. In addition, the
     /// sub-expression evaluation order for Rust is not well documented.
     ///
-    /// **Known problems:** Someone might want to use `some_bool || panic!()` as a
+    /// ### Known problems
+    /// Someone might want to use `some_bool || panic!()` as a
     /// shorthand.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,no_run
     /// # fn b() -> bool { true }
     /// # fn c() -> bool { true }
@@ -61,6 +68,7 @@ declare_clippy_lint! {
     /// let x = (a, b, c, panic!());
     /// // can simply be replaced by `panic!()`
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub DIVERGING_SUB_EXPRESSION,
     complexity,
     "whether an expression contains a diverging sub expression"
@@ -135,7 +143,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DivergenceVisitor<'a, 'tcx> {
                 match typ.kind() {
                     ty::FnDef(..) | ty::FnPtr(_) => {
                         let sig = typ.fn_sig(self.cx.tcx);
-                        if let ty::Never = self.cx.tcx.erase_late_bound_regions(sig).output().kind() {
+                        if self.cx.tcx.erase_late_bound_regions(sig).output().kind() == &ty::Never {
                             self.report_diverging_sub_expr(e);
                         }
                     },

@@ -1,11 +1,10 @@
 error[E0277]: `T` cannot be shared between threads safely
   --> $DIR/phantom-auto-trait.rs:21:12
    |
-LL | fn is_zen<T: Zen>(_: T) {}
-   |              --- required by this bound in `is_zen`
-...
 LL |     is_zen(x)
-   |            ^ `T` cannot be shared between threads safely
+   |     ------ ^ `T` cannot be shared between threads safely
+   |     |
+   |     required by a bound introduced by this call
    |
 note: required because of the requirements on the impl of `Zen` for `&T`
   --> $DIR/phantom-auto-trait.rs:10:24
@@ -18,19 +17,23 @@ note: required because it appears within the type `Guard<'_, T>`
    |
 LL | struct Guard<'a, T: 'a> {
    |        ^^^^^
+note: required by a bound in `is_zen`
+  --> $DIR/phantom-auto-trait.rs:18:14
+   |
+LL | fn is_zen<T: Zen>(_: T) {}
+   |              ^^^ required by this bound in `is_zen`
 help: consider restricting type parameter `T`
    |
 LL | fn not_sync<T: std::marker::Sync>(x: Guard<T>) {
-   |              ^^^^^^^^^^^^^^^^^^^
+   |              +++++++++++++++++++
 
 error[E0277]: `T` cannot be shared between threads safely
   --> $DIR/phantom-auto-trait.rs:26:12
    |
-LL | fn is_zen<T: Zen>(_: T) {}
-   |              --- required by this bound in `is_zen`
-...
 LL |     is_zen(x)
-   |            ^ `T` cannot be shared between threads safely
+   |     ------ ^ `T` cannot be shared between threads safely
+   |     |
+   |     required by a bound introduced by this call
    |
 note: required because of the requirements on the impl of `Zen` for `&T`
   --> $DIR/phantom-auto-trait.rs:10:24
@@ -48,10 +51,15 @@ note: required because it appears within the type `Nested<Guard<'_, T>>`
    |
 LL | struct Nested<T>(T);
    |        ^^^^^^
+note: required by a bound in `is_zen`
+  --> $DIR/phantom-auto-trait.rs:18:14
+   |
+LL | fn is_zen<T: Zen>(_: T) {}
+   |              ^^^ required by this bound in `is_zen`
 help: consider restricting type parameter `T`
    |
 LL | fn nested_not_sync<T: std::marker::Sync>(x: Nested<Guard<T>>) {
-   |                     ^^^^^^^^^^^^^^^^^^^
+   |                     +++++++++++++++++++
 
 error: aborting due to 2 previous errors
 

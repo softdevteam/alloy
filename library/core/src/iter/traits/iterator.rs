@@ -1,11 +1,7 @@
-// ignore-tidy-filelength
-// This file almost exclusively consists of the definition of `Iterator`. We
-// can't split that into multiple files.
-
 use crate::cmp::{self, Ordering};
-use crate::ops::{ControlFlow, Try};
+use crate::ops::{ChangeOutputType, ControlFlow, FromResidual, Residual, Try};
 
-use super::super::TrustedRandomAccess;
+use super::super::TrustedRandomAccessNoCoerce;
 use super::super::{Chain, Cloned, Copied, Cycle, Enumerate, Filter, FilterMap, Fuse};
 use super::super::{FlatMap, Flatten};
 use super::super::{FromIterator, Intersperse, IntersperseWith, Product, Sum, Zip};
@@ -100,7 +96,7 @@ pub trait Iterator {
     /// Specifically, `size_hint()` returns a tuple where the first element
     /// is the lower bound, and the second element is the upper bound.
     ///
-    /// The second half of the tuple that is returned is an [`Option`]`<`[`usize`]`>`.
+    /// The second half of the tuple that is returned is an <code>[Option]<[usize]></code>.
     /// A [`None`] here means that either there is no known upper bound, or the
     /// upper bound is larger than [`usize`].
     ///
@@ -119,10 +115,8 @@ pub trait Iterator {
     /// That said, the implementation should provide a correct estimation,
     /// because otherwise it would be a violation of the trait's protocol.
     ///
-    /// The default implementation returns `(0, `[`None`]`)` which is correct for any
+    /// The default implementation returns <code>(0, [None])</code> which is correct for any
     /// iterator.
-    ///
-    /// [`usize`]: type@usize
     ///
     /// # Examples
     ///
@@ -252,8 +246,11 @@ pub trait Iterator {
     /// of elements the iterator is advanced by before running out of elements (i.e. the
     /// length of the iterator). Note that `k` is always less than `n`.
     ///
-    /// Calling `advance_by(0)` does not consume any elements and always returns [`Ok(())`][Ok].
+    /// Calling `advance_by(0)` can do meaningful work, for example [`Flatten`]
+    /// can advance its outer iterator until it finds an inner iterator that is not empty, which
+    /// then often allows it to return a more accurate `size_hint()` than in its initial state.
     ///
+    /// [`Flatten`]: crate::iter::Flatten
     /// [`next`]: Iterator::next
     ///
     /// # Examples
@@ -333,21 +330,22 @@ pub trait Iterator {
     /// regardless of the step given.
     ///
     /// Note 2: The time at which ignored elements are pulled is not fixed.
-    /// `StepBy` behaves like the sequence `next(), nth(step-1), nth(step-1), …`,
-    /// but is also free to behave like the sequence
-    /// `advance_n_and_return_first(step), advance_n_and_return_first(step), …`
+    /// `StepBy` behaves like the sequence `self.next()`, `self.nth(step-1)`,
+    /// `self.nth(step-1)`, …, but is also free to behave like the sequence
+    /// `advance_n_and_return_first(&mut self, step)`,
+    /// `advance_n_and_return_first(&mut self, step)`, …
     /// Which way is used may change for some iterators for performance reasons.
     /// The second way will advance the iterator earlier and may consume more items.
     ///
     /// `advance_n_and_return_first` is the equivalent of:
     /// ```
-    /// fn advance_n_and_return_first<I>(iter: &mut I, total_step: usize) -> Option<I::Item>
+    /// fn advance_n_and_return_first<I>(iter: &mut I, n: usize) -> Option<I::Item>
     /// where
     ///     I: Iterator,
     /// {
     ///     let next = iter.next();
-    ///     if total_step > 1 {
-    ///         iter.nth(total_step-2);
+    ///     if n > 1 {
+    ///         iter.nth(n - 2);
     ///     }
     ///     next
     /// }
@@ -460,8 +458,10 @@ pub trait Iterator {
     /// In other words, it zips two iterators together, into a single one.
     ///
     /// If either iterator returns [`None`], [`next`] from the zipped iterator
-    /// will return [`None`]. If the first iterator returns [`None`], `zip` will
-    /// short-circuit and `next` will not be called on the second iterator.
+    /// will return [`None`].
+    /// If the zipped iterator has no more elements to return then each further attempt to advance
+    /// it will first try to advance the first iterator at most one time and if it still yielded an item
+    /// try to advance the second iterator at most one time.
     ///
     /// # Examples
     ///
@@ -693,7 +693,7 @@ pub trait Iterator {
     /// more idiomatic to use a `for` loop, but `for_each` may be more legible
     /// when processing items at the end of longer iterator chains. In some
     /// cases `for_each` may also be faster than a loop, because it will use
-    /// internal iteration on adaptors like `Chain`.
+    /// internal iteration on adapters like `Chain`.
     ///
     /// [`for`]: ../../book/ch03-05-control-flow.html#looping-through-a-collection-with-for
     ///
@@ -873,7 +873,6 @@ pub trait Iterator {
     /// The returned iterator might panic if the to-be-returned index would
     /// overflow a [`usize`].
     ///
-    /// [`usize`]: type@usize
     /// [`zip`]: Iterator::zip
     ///
     /// # Examples
@@ -1024,6 +1023,7 @@ pub trait Iterator {
     /// assert_eq!(iter.next(), None);
     /// ```
     #[inline]
+    #[doc(alias = "drop_while")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn skip_while<P>(self, predicate: P) -> SkipWhile<Self, P>
     where
@@ -1125,7 +1125,6 @@ pub trait Iterator {
     /// Basic usage:
     ///
     /// ```
-    /// #![feature(iter_map_while)]
     /// let a = [-1i32, 4, 0, 1];
     ///
     /// let mut iter = a.iter().map_while(|x| 16i32.checked_div(*x));
@@ -1156,7 +1155,6 @@ pub trait Iterator {
     /// Stopping after an initial [`None`]:
     ///
     /// ```
-    /// #![feature(iter_map_while)]
     /// use std::convert::TryFrom;
     ///
     /// let a = [0, 1, 2, -3, 4, 5, -6];
@@ -1174,7 +1172,6 @@ pub trait Iterator {
     /// removed:
     ///
     /// ```
-    /// #![feature(iter_map_while)]
     /// use std::convert::TryFrom;
     ///
     /// let a = [1, 2, -3, 4];
@@ -1200,7 +1197,7 @@ pub trait Iterator {
     ///
     /// [`fuse`]: Iterator::fuse
     #[inline]
-    #[unstable(feature = "iter_map_while", reason = "recently added", issue = "68537")]
+    #[stable(feature = "iter_map_while", since = "1.57.0")]
     fn map_while<B, P>(self, predicate: P) -> MapWhile<Self, P>
     where
         Self: Sized,
@@ -1292,7 +1289,7 @@ pub trait Iterator {
         Take::new(self, n)
     }
 
-    /// An iterator adaptor similar to [`fold`] that holds internal state and
+    /// An iterator adapter similar to [`fold`] that holds internal state and
     /// produces a new iterator.
     ///
     /// [`fold`]: Iterator::fold
@@ -1603,7 +1600,7 @@ pub trait Iterator {
 
     /// Borrows an iterator, rather than consuming it.
     ///
-    /// This is useful to allow applying iterator adaptors while still
+    /// This is useful to allow applying iterator adapters while still
     /// retaining ownership of the original iterator.
     ///
     /// # Examples
@@ -1810,10 +1807,11 @@ pub trait Iterator {
     /// The relative order of partitioned items is not maintained.
     ///
     /// # Current implementation
+    ///
     /// Current algorithms tries finding the first element for which the predicate evaluates
     /// to false, and the last element for which it evaluates to true and repeatedly swaps them.
     ///
-    /// Time Complexity: *O*(*N*)
+    /// Time complexity: *O*(*n*)
     ///
     /// See also [`is_partitioned()`] and [`partition()`].
     ///
@@ -1960,8 +1958,8 @@ pub trait Iterator {
     /// assert_eq!(it.next(), Some(&40));
     /// ```
     ///
-    /// While you cannot `break` from a closure, the [`crate::ops::ControlFlow`]
-    /// type allows a similar idea:
+    /// While you cannot `break` from a closure, the [`ControlFlow`] type allows
+    /// a similar idea:
     ///
     /// ```
     /// use std::ops::ControlFlow;
@@ -2027,8 +2025,8 @@ pub trait Iterator {
     /// assert_eq!(it.next(), Some("stale_bread.json"));
     /// ```
     ///
-    /// The [`crate::ops::ControlFlow`] type can be used with this method for the
-    /// situations in which you'd use `break` and `continue` in a normal loop:
+    /// The [`ControlFlow`] type can be used with this method for the situations
+    /// in which you'd use `break` and `continue` in a normal loop:
     ///
     /// ```
     /// use std::ops::ControlFlow;
@@ -2077,7 +2075,7 @@ pub trait Iterator {
     /// to produce a single value from it.
     ///
     /// Note: `fold()`, and similar methods that traverse the entire iterator,
-    /// may not terminate for infinite iterators, even on traits for which a
+    /// might not terminate for infinite iterators, even on traits for which a
     /// result is determinable in finite time.
     ///
     /// Note: [`reduce()`] can be used to use the first element as the initial
@@ -2181,8 +2179,9 @@ pub trait Iterator {
     /// If the iterator is empty, returns [`None`]; otherwise, returns the
     /// result of the reduction.
     ///
+    /// The reducing function is a closure with two arguments: an 'accumulator', and an element.
     /// For iterators with at least one element, this is the same as [`fold()`]
-    /// with the first element of the iterator as the initial value, folding
+    /// with the first element of the iterator as the initial accumulator value, folding
     /// every subsequent element into it.
     ///
     /// [`fold()`]: Iterator::fold
@@ -2196,8 +2195,8 @@ pub trait Iterator {
     ///     where I: Iterator,
     ///           I::Item: Ord,
     /// {
-    ///     iter.reduce(|a, b| {
-    ///         if a >= b { a } else { b }
+    ///     iter.reduce(|accum, item| {
+    ///         if accum >= item { accum } else { item }
     ///     })
     /// }
     /// let a = [10, 20, 5, -23, 0];
@@ -2215,6 +2214,86 @@ pub trait Iterator {
     {
         let first = self.next()?;
         Some(self.fold(first, f))
+    }
+
+    /// Reduces the elements to a single one by repeatedly applying a reducing operation. If the
+    /// closure returns a failure, the failure is propagated back to the caller immediately.
+    ///
+    /// The return type of this method depends on the return type of the closure. If the closure
+    /// returns `Result<Self::Item, E>`, then this function will return `Result<Option<Self::Item>,
+    /// E>`. If the closure returns `Option<Self::Item>`, then this function will return
+    /// `Option<Option<Self::Item>>`.
+    ///
+    /// When called on an empty iterator, this function will return either `Some(None)` or
+    /// `Ok(None)` depending on the type of the provided closure.
+    ///
+    /// For iterators with at least one element, this is essentially the same as calling
+    /// [`try_fold()`] with the first element of the iterator as the initial accumulator value.
+    ///
+    /// [`try_fold()`]: Iterator::try_fold
+    ///
+    /// # Examples
+    ///
+    /// Safely calculate the sum of a series of numbers:
+    ///
+    /// ```
+    /// #![feature(iterator_try_reduce)]
+    ///
+    /// let numbers: Vec<usize> = vec![10, 20, 5, 23, 0];
+    /// let sum = numbers.into_iter().try_reduce(|x, y| x.checked_add(y));
+    /// assert_eq!(sum, Some(Some(58)));
+    /// ```
+    ///
+    /// Determine when a reduction short circuited:
+    ///
+    /// ```
+    /// #![feature(iterator_try_reduce)]
+    ///
+    /// let numbers = vec![1, 2, 3, usize::MAX, 4, 5];
+    /// let sum = numbers.into_iter().try_reduce(|x, y| x.checked_add(y));
+    /// assert_eq!(sum, None);
+    /// ```
+    ///
+    /// Determine when a reduction was not performed because there are no elements:
+    ///
+    /// ```
+    /// #![feature(iterator_try_reduce)]
+    ///
+    /// let numbers: Vec<usize> = Vec::new();
+    /// let sum = numbers.into_iter().try_reduce(|x, y| x.checked_add(y));
+    /// assert_eq!(sum, Some(None));
+    /// ```
+    ///
+    /// Use a [`Result`] instead of an [`Option`]:
+    ///
+    /// ```
+    /// #![feature(iterator_try_reduce)]
+    ///
+    /// let numbers = vec!["1", "2", "3", "4", "5"];
+    /// let max: Result<Option<_>, <usize as std::str::FromStr>::Err> =
+    ///     numbers.into_iter().try_reduce(|x, y| {
+    ///         if x.parse::<usize>()? > y.parse::<usize>()? { Ok(x) } else { Ok(y) }
+    ///     });
+    /// assert_eq!(max, Ok(Some("5")));
+    /// ```
+    #[inline]
+    #[unstable(feature = "iterator_try_reduce", reason = "new API", issue = "87053")]
+    fn try_reduce<F, R>(&mut self, f: F) -> ChangeOutputType<R, Option<R::Output>>
+    where
+        Self: Sized,
+        F: FnMut(Self::Item, Self::Item) -> R,
+        R: Try<Output = Self::Item>,
+        R::Residual: Residual<Option<Self::Item>>,
+    {
+        let first = match self.next() {
+            Some(i) => i,
+            None => return Try::from_output(None),
+        };
+
+        match self.try_fold(first, f).branch() {
+            ControlFlow::Break(r) => FromResidual::from_residual(r),
+            ControlFlow::Continue(i) => Try::from_output(Some(i)),
+        }
     }
 
     /// Tests if every element of the iterator matches a predicate.
@@ -2419,6 +2498,10 @@ pub trait Iterator {
     /// Applies function to the elements of iterator and returns
     /// the first true result or the first error.
     ///
+    /// The return type of this method depends on the return type of the closure.
+    /// If you return `Result<bool, E>` from the closure, you'll get a `Result<Option<Self::Item>; E>`.
+    /// If you return `Option<bool>` from the closure, you'll get an `Option<Option<Self::Item>>`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -2436,32 +2519,48 @@ pub trait Iterator {
     /// let result = a.iter().try_find(|&&s| is_my_num(s, 5));
     /// assert!(result.is_err());
     /// ```
+    ///
+    /// This also supports other types which implement `Try`, not just `Result`.
+    /// ```
+    /// #![feature(try_find)]
+    ///
+    /// use std::num::NonZeroU32;
+    /// let a = [3, 5, 7, 4, 9, 0, 11];
+    /// let result = a.iter().try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// assert_eq!(result, Some(Some(&4)));
+    /// let result = a.iter().take(3).try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// assert_eq!(result, Some(None));
+    /// let result = a.iter().rev().try_find(|&&x| NonZeroU32::new(x).map(|y| y.is_power_of_two()));
+    /// assert_eq!(result, None);
+    /// ```
     #[inline]
     #[unstable(feature = "try_find", reason = "new API", issue = "63178")]
-    fn try_find<F, R, E>(&mut self, f: F) -> Result<Option<Self::Item>, E>
+    fn try_find<F, R>(&mut self, f: F) -> ChangeOutputType<R, Option<Self::Item>>
     where
         Self: Sized,
         F: FnMut(&Self::Item) -> R,
         R: Try<Output = bool>,
-        // FIXME: This bound is rather strange, but means minimal breakage on nightly.
-        // See #85115 for the issue tracking a holistic solution for this and try_map.
-        R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
+        R::Residual: Residual<Option<Self::Item>>,
     {
         #[inline]
-        fn check<F, T, R, E>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, E>>
+        fn check<I, V, R>(
+            mut f: impl FnMut(&I) -> V,
+        ) -> impl FnMut((), I) -> ControlFlow<R::TryType>
         where
-            F: FnMut(&T) -> R,
-            R: Try<Output = bool>,
-            R: crate::ops::TryV2<Residual = Result<crate::convert::Infallible, E>>,
+            V: Try<Output = bool, Residual = R>,
+            R: Residual<Option<I>>,
         {
             move |(), x| match f(&x).branch() {
                 ControlFlow::Continue(false) => ControlFlow::CONTINUE,
-                ControlFlow::Continue(true) => ControlFlow::Break(Ok(x)),
-                ControlFlow::Break(Err(x)) => ControlFlow::Break(Err(x)),
+                ControlFlow::Continue(true) => ControlFlow::Break(Try::from_output(Some(x))),
+                ControlFlow::Break(r) => ControlFlow::Break(FromResidual::from_residual(r)),
             }
         }
 
-        self.try_fold((), check(f)).break_value().transpose()
+        match self.try_fold((), check(f)) {
+            ControlFlow::Break(x) => x,
+            ControlFlow::Continue(()) => Try::from_output(None),
+        }
     }
 
     /// Searches for an element in an iterator, returning its index.
@@ -2838,12 +2937,20 @@ pub trait Iterator {
     /// Basic usage:
     ///
     /// ```
-    /// let a = [(1, 2), (3, 4)];
+    /// let a = [(1, 2), (3, 4), (5, 6)];
     ///
     /// let (left, right): (Vec<_>, Vec<_>) = a.iter().cloned().unzip();
     ///
-    /// assert_eq!(left, [1, 3]);
-    /// assert_eq!(right, [2, 4]);
+    /// assert_eq!(left, [1, 3, 5]);
+    /// assert_eq!(right, [2, 4, 6]);
+    ///
+    /// // you can also unzip multiple nested tuples at once
+    /// let a = [(1, (2, 3)), (4, (5, 6))];
+    ///
+    /// let (x, (y, z)): (Vec<_>, (Vec<_>, Vec<_>)) = a.iter().cloned().unzip();
+    /// assert_eq!(x, [1, 4]);
+    /// assert_eq!(y, [2, 5]);
+    /// assert_eq!(z, [3, 6]);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn unzip<A, B, FromA, FromB>(self) -> (FromA, FromB)
@@ -2852,28 +2959,9 @@ pub trait Iterator {
         FromB: Default + Extend<B>,
         Self: Sized + Iterator<Item = (A, B)>,
     {
-        fn extend<'a, A, B>(
-            ts: &'a mut impl Extend<A>,
-            us: &'a mut impl Extend<B>,
-        ) -> impl FnMut((), (A, B)) + 'a {
-            move |(), (t, u)| {
-                ts.extend_one(t);
-                us.extend_one(u);
-            }
-        }
-
-        let mut ts: FromA = Default::default();
-        let mut us: FromB = Default::default();
-
-        let (lower_bound, _) = self.size_hint();
-        if lower_bound > 0 {
-            ts.extend_reserve(lower_bound);
-            us.extend_reserve(lower_bound);
-        }
-
-        self.fold((), extend(&mut ts, &mut us));
-
-        (ts, us)
+        let mut unzipped: (FromA, FromB) = Default::default();
+        unzipped.extend(self);
+        unzipped
     }
 
     /// Creates an iterator which copies all of its elements.
@@ -3455,7 +3543,7 @@ pub trait Iterator {
         self.map(f).is_sorted()
     }
 
-    /// See [TrustedRandomAccess]
+    /// See [TrustedRandomAccess][super::super::TrustedRandomAccess]
     // The unusual name is to avoid name collisions in method resolution
     // see #76479.
     #[inline]
@@ -3463,7 +3551,7 @@ pub trait Iterator {
     #[unstable(feature = "trusted_random_access", issue = "none")]
     unsafe fn __iterator_get_unchecked(&mut self, _idx: usize) -> Self::Item
     where
-        Self: TrustedRandomAccess,
+        Self: TrustedRandomAccessNoCoerce,
     {
         unreachable!("Always specialized");
     }
@@ -3472,6 +3560,7 @@ pub trait Iterator {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<I: Iterator + ?Sized> Iterator for &mut I {
     type Item = I::Item;
+    #[inline]
     fn next(&mut self) -> Option<I::Item> {
         (**self).next()
     }

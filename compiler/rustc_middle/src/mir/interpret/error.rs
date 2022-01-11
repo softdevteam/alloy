@@ -46,7 +46,7 @@ static_assert_size!(InterpErrorInfo<'_>, 8);
 /// Packages the kind of error we got from the const code interpreter
 /// up with a Rust-level backtrace of where the error occurred.
 /// These should always be constructed by calling `.into()` on
-/// a `InterpError`. In `rustc_mir::interpret`, we have `throw_err_*`
+/// an `InterpError`. In `rustc_mir::interpret`, we have `throw_err_*`
 /// macros for this.
 #[derive(Debug)]
 pub struct InterpErrorInfo<'tcx>(Box<InterpErrorInfoInner<'tcx>>);
@@ -287,6 +287,8 @@ pub enum UndefinedBehaviorInfo<'tcx> {
         target_size: u64,
         data_size: u64,
     },
+    /// A discriminant of an uninhabited enum variant is written.
+    UninhabitedEnumVariantWritten,
 }
 
 impl fmt::Display for UndefinedBehaviorInfo<'_> {
@@ -391,6 +393,9 @@ impl fmt::Display for UndefinedBehaviorInfo<'_> {
                 "scalar size mismatch: expected {} bytes but got {} bytes instead",
                 target_size, data_size
             ),
+            UninhabitedEnumVariantWritten => {
+                write!(f, "writing discriminant of an uninhabited enum")
+            }
         }
     }
 }
@@ -402,10 +407,11 @@ impl fmt::Display for UndefinedBehaviorInfo<'_> {
 pub enum UnsupportedOpInfo {
     /// Free-form case. Only for errors that are never caught!
     Unsupported(String),
-    /// Could not find MIR for a function.
-    NoMirFor(DefId),
     /// Encountered a pointer where we needed raw bytes.
     ReadPointerAsBytes,
+    /// Overwriting parts of a pointer; the resulting state cannot be represented in our
+    /// `Allocation` data structure.
+    PartialPointerOverwrite(Pointer<AllocId>),
     //
     // The variants below are only reachable from CTFE/const prop, miri will never emit them.
     //
@@ -420,10 +426,12 @@ impl fmt::Display for UnsupportedOpInfo {
         use UnsupportedOpInfo::*;
         match self {
             Unsupported(ref msg) => write!(f, "{}", msg),
-            ReadExternStatic(did) => write!(f, "cannot read from extern static ({:?})", did),
-            NoMirFor(did) => write!(f, "no MIR body is available for {:?}", did),
-            ReadPointerAsBytes => write!(f, "unable to turn pointer into raw bytes",),
+            ReadPointerAsBytes => write!(f, "unable to turn pointer into raw bytes"),
+            PartialPointerOverwrite(ptr) => {
+                write!(f, "unable to overwrite parts of a pointer in memory at {:?}", ptr)
+            }
             ThreadLocalStatic(did) => write!(f, "cannot access thread local static ({:?})", did),
+            ReadExternStatic(did) => write!(f, "cannot read from extern static ({:?})", did),
         }
     }
 }
@@ -484,9 +492,6 @@ impl dyn MachineStopType {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
-static_assert_size!(InterpError<'_>, 64);
-
 pub enum InterpError<'tcx> {
     /// The program caused undefined behavior.
     UndefinedBehavior(UndefinedBehaviorInfo<'tcx>),
@@ -530,12 +535,12 @@ impl InterpError<'_> {
     /// To avoid performance issues, there are places where we want to be sure to never raise these formatting errors,
     /// so this method lets us detect them and `bug!` on unexpected errors.
     pub fn formatted_string(&self) -> bool {
-        match self {
+        matches!(
+            self,
             InterpError::Unsupported(UnsupportedOpInfo::Unsupported(_))
-            | InterpError::UndefinedBehavior(UndefinedBehaviorInfo::ValidationFailure { .. })
-            | InterpError::UndefinedBehavior(UndefinedBehaviorInfo::Ub(_)) => true,
-            _ => false,
-        }
+                | InterpError::UndefinedBehavior(UndefinedBehaviorInfo::ValidationFailure { .. })
+                | InterpError::UndefinedBehavior(UndefinedBehaviorInfo::Ub(_))
+        )
     }
 
     /// Should this error be reported as a hard error, preventing compilation, or a soft error,

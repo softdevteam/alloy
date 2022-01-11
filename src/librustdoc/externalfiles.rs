@@ -1,4 +1,4 @@
-use crate::html::markdown::{ErrorCodes, IdMap, Markdown, Playground};
+use crate::html::markdown::{ErrorCodes, HeadingOffset, IdMap, Markdown, Playground};
 use crate::rustc_span::edition::Edition;
 use std::fs;
 use std::path::Path;
@@ -8,13 +8,13 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 crate struct ExternalHtml {
-    /// Content that will be included inline in the <head> section of a
+    /// Content that will be included inline in the `<head>` section of a
     /// rendered Markdown file or generated documentation
     crate in_header: String,
-    /// Content that will be included inline between <body> and the content of
+    /// Content that will be included inline between `<body>` and the content of
     /// a rendered Markdown file or generated documentation
     crate before_content: String,
-    /// Content that will be included inline between the content and </body> of
+    /// Content that will be included inline between the content and `</body>` of
     /// a rendered Markdown file or generated documentation
     crate after_content: String,
 }
@@ -39,14 +39,32 @@ impl ExternalHtml {
         let bc = format!(
             "{}{}",
             bc,
-            Markdown(&m_bc, &[], id_map, codes, edition, playground).into_string()
+            Markdown {
+                content: &m_bc,
+                links: &[],
+                ids: id_map,
+                error_codes: codes,
+                edition,
+                playground,
+                heading_offset: HeadingOffset::H2,
+            }
+            .into_string()
         );
         let ac = load_external_files(after_content, diag)?;
         let m_ac = load_external_files(md_after_content, diag)?;
         let ac = format!(
             "{}{}",
             ac,
-            Markdown(&m_ac, &[], id_map, codes, edition, playground).into_string()
+            Markdown {
+                content: &m_ac,
+                links: &[],
+                ids: id_map,
+                error_codes: codes,
+                edition,
+                playground,
+                heading_offset: HeadingOffset::H2,
+            }
+            .into_string()
         );
         Some(ExternalHtml { in_header: ih, before_content: bc, after_content: ac })
     }

@@ -15,6 +15,7 @@
 #![feature(staged_api)]
 #![feature(rustc_attrs)]
 #![feature(asm)]
+#![feature(c_unwind)]
 
 #[cfg(target_os = "android")]
 mod android;
@@ -30,7 +31,7 @@ pub unsafe extern "C" fn __rust_panic_cleanup(_: *mut u8) -> *mut (dyn Any + Sen
 
 // "Leak" the payload and shim to the relevant abort on the platform in question.
 #[rustc_std_internal_symbol]
-pub unsafe extern "C" fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> u32 {
+pub unsafe extern "C-unwind" fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> u32 {
     // Android has the ability to attach a message as part of the abort.
     #[cfg(target_os = "android")]
     android::android_set_abort_message(_payload);
@@ -43,6 +44,7 @@ pub unsafe extern "C" fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> 
                 libc::abort();
             }
         } else if #[cfg(any(target_os = "hermit",
+                            target_os = "solid_asp3",
                             all(target_vendor = "fortanix", target_env = "sgx")
         ))] {
             unsafe fn abort() -> ! {
@@ -115,7 +117,7 @@ pub unsafe extern "C" fn __rust_start_panic(_payload: *mut &mut dyn BoxMeUp) -> 
 pub mod personalities {
     #[rustc_std_internal_symbol]
     #[cfg(not(any(
-        all(target_arch = "wasm32", not(target_os = "emscripten"),),
+        all(target_family = "wasm", not(target_os = "emscripten")),
         all(target_os = "windows", target_env = "gnu", target_arch = "x86_64",),
     )))]
     pub extern "C" fn rust_eh_personality() {}

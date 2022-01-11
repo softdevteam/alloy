@@ -77,6 +77,7 @@ pub(crate) enum OverflowableItem<'a> {
     FieldDef(&'a ast::FieldDef),
     TuplePatField(&'a TuplePatField<'a>),
     Ty(&'a ast::Ty),
+    Pat(&'a ast::Pat),
 }
 
 impl<'a> Rewrite for OverflowableItem<'a> {
@@ -116,6 +117,7 @@ impl<'a> OverflowableItem<'a> {
             OverflowableItem::FieldDef(sf) => f(*sf),
             OverflowableItem::TuplePatField(pat) => f(*pat),
             OverflowableItem::Ty(ty) => f(*ty),
+            OverflowableItem::Pat(pat) => f(*pat),
         }
     }
 
@@ -126,21 +128,19 @@ impl<'a> OverflowableItem<'a> {
             OverflowableItem::MacroArg(MacroArg::Expr(expr)) => is_simple_expr(expr),
             OverflowableItem::NestedMetaItem(nested_meta_item) => match nested_meta_item {
                 ast::NestedMetaItem::Literal(..) => true,
-                ast::NestedMetaItem::MetaItem(ref meta_item) => match meta_item.kind {
-                    ast::MetaItemKind::Word => true,
-                    _ => false,
-                },
+                ast::NestedMetaItem::MetaItem(ref meta_item) => {
+                    matches!(meta_item.kind, ast::MetaItemKind::Word)
+                }
             },
             _ => false,
         }
     }
 
     pub(crate) fn is_expr(&self) -> bool {
-        match self {
-            OverflowableItem::Expr(..) => true,
-            OverflowableItem::MacroArg(MacroArg::Expr(..)) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            OverflowableItem::Expr(..) | OverflowableItem::MacroArg(MacroArg::Expr(..))
+        )
     }
 
     pub(crate) fn is_nested_call(&self) -> bool {
@@ -154,10 +154,7 @@ impl<'a> OverflowableItem<'a> {
     pub(crate) fn to_expr(&self) -> Option<&'a ast::Expr> {
         match self {
             OverflowableItem::Expr(expr) => Some(expr),
-            OverflowableItem::MacroArg(macro_arg) => match macro_arg {
-                MacroArg::Expr(ref expr) => Some(expr),
-                _ => None,
-            },
+            OverflowableItem::MacroArg(MacroArg::Expr(ref expr)) => Some(expr),
             _ => None,
         }
     }
@@ -178,10 +175,9 @@ impl<'a> OverflowableItem<'a> {
                     ast::NestedMetaItem::MetaItem(..) => true,
                 }
             }
-            OverflowableItem::SegmentParam(seg) => match seg {
-                SegmentParam::Type(ty) => can_be_overflowed_type(context, ty, len),
-                _ => false,
-            },
+            OverflowableItem::SegmentParam(SegmentParam::Type(ty)) => {
+                can_be_overflowed_type(context, ty, len)
+            }
             OverflowableItem::TuplePatField(pat) => can_be_overflowed_pat(context, pat, len),
             OverflowableItem::Ty(ty) => can_be_overflowed_type(context, ty, len),
             _ => false,
@@ -238,7 +234,7 @@ macro_rules! impl_into_overflowable_item_for_rustfmt_types {
     }
 }
 
-impl_into_overflowable_item_for_ast_node!(Expr, GenericParam, NestedMetaItem, FieldDef, Ty);
+impl_into_overflowable_item_for_ast_node!(Expr, GenericParam, NestedMetaItem, FieldDef, Ty, Pat);
 impl_into_overflowable_item_for_rustfmt_types!([MacroArg], [SegmentParam, TuplePatField]);
 
 pub(crate) fn into_overflowable_list<'a, T>(
@@ -398,7 +394,7 @@ impl<'a> Context<'a> {
     ) -> Option<String> {
         let last_item = self.last_item()?;
         let rewrite = match last_item {
-            OverflowableItem::Expr(ref expr) => {
+            OverflowableItem::Expr(expr) => {
                 match expr.kind {
                     // When overflowing the closure which consists of a single control flow
                     // expression, force to use block if its condition uses multi line.

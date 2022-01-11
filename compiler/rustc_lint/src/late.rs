@@ -16,7 +16,7 @@
 
 use crate::{passes::LateLintPassObject, LateContext, LateLintPass, LintStore};
 use rustc_ast as ast;
-use rustc_data_structures::sync::{join, par_iter, ParallelIterator};
+use rustc_data_structures::sync::join;
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit as hir_visit;
@@ -244,6 +244,11 @@ impl<'tcx, T: LateLintPass<'tcx>> hir_visit::Visitor<'tcx> for LateContextAndPas
         hir_visit::walk_ty(self, t);
     }
 
+    fn visit_infer(&mut self, inf: &'tcx hir::InferArg) {
+        lint_callback!(self, check_infer, inf);
+        hir_visit::walk_inf(self, inf);
+    }
+
     fn visit_name(&mut self, sp: Span, name: Symbol) {
         lint_callback!(self, check_name, sp, name);
     }
@@ -425,8 +430,6 @@ pub fn late_lint_mod<'tcx, T: LateLintPass<'tcx>>(
 fn late_lint_pass_crate<'tcx, T: LateLintPass<'tcx>>(tcx: TyCtxt<'tcx>, pass: T) {
     let access_levels = &tcx.privacy_access_levels(());
 
-    let krate = tcx.hir().krate();
-
     let context = LateContext {
         tcx,
         enclosing_body: None,
@@ -445,15 +448,10 @@ fn late_lint_pass_crate<'tcx, T: LateLintPass<'tcx>>(tcx: TyCtxt<'tcx>, pass: T)
     cx.with_lint_attrs(hir::CRATE_HIR_ID, |cx| {
         // since the root module isn't visited as an item (because it isn't an
         // item), warn for it here.
-        lint_callback!(cx, check_crate, krate);
-
-        hir_visit::walk_crate(cx, krate);
-        for attr in krate.non_exported_macro_attrs {
-            // This HIR ID is a lie, since the macro ID isn't available.
-            cx.visit_attribute(hir::CRATE_HIR_ID, attr);
-        }
-
-        lint_callback!(cx, check_crate_post, krate);
+        lint_callback!(cx, check_crate,);
+        tcx.hir().walk_toplevel_module(cx);
+        tcx.hir().walk_attributes(cx);
+        lint_callback!(cx, check_crate_post,);
     })
 }
 
@@ -501,9 +499,7 @@ pub fn check_crate<'tcx, T: LateLintPass<'tcx>>(
         || {
             tcx.sess.time("module_lints", || {
                 // Run per-module lints
-                par_iter(&tcx.hir().krate().modules).for_each(|(&module, _)| {
-                    tcx.ensure().lint_mod(module);
-                });
+                tcx.hir().par_for_each_module(|module| tcx.ensure().lint_mod(module));
             });
         },
     );

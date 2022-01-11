@@ -1,4 +1,3 @@
-// min-llvm-version: 10.0.1
 // assembly-output: emit-asm
 // compile-flags: -O
 // compile-flags: --target armv7-unknown-linux-gnueabihf
@@ -59,12 +58,6 @@ macro_rules! check {
 // CHECK: mov r0, r0
 // CHECK: @NO_APP
 check!(reg "" reg i32 "mov");
-
-// CHECK-LABEL: reg_thumb:
-// CHECK: @APP
-// CHECK: mov r0, r0
-// CHECK: @NO_APP
-check!(reg_thumb "" reg_thumb i32 "mov");
 
 // CHECK-LABEL: sreg:
 // CHECK: @APP

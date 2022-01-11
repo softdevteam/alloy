@@ -19,20 +19,20 @@ use crate::token;
 use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::Span;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AssocCtxt {
     Trait,
     Impl,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FnCtxt {
     Free,
     Foreign,
     Assoc(AssocCtxt),
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum FnKind<'a> {
     /// E.g., `fn foo()`, `fn foo(&self)`, or `extern "Abi" fn foo()`.
     Fn(FnCtxt, Ident, &'a FnSig, &'a Visibility, Option<&'a Block>),
@@ -211,6 +211,9 @@ pub trait Visitor<'ast>: Sized {
     fn visit_pat_field(&mut self, fp: &'ast PatField) {
         walk_pat_field(self, fp)
     }
+    fn visit_crate(&mut self, krate: &'ast Crate) {
+        walk_crate(self, krate)
+    }
 }
 
 #[macro_export]
@@ -242,7 +245,10 @@ pub fn walk_local<'a, V: Visitor<'a>>(visitor: &mut V, local: &'a Local) {
     }
     visitor.visit_pat(&local.pat);
     walk_list!(visitor, visit_ty, &local.ty);
-    walk_list!(visitor, visit_expr, &local.init);
+    if let Some((init, els)) = local.kind.init_else_opt() {
+        visitor.visit_expr(init);
+        walk_list!(visitor, visit_block, els);
+    }
 }
 
 pub fn walk_label<'a, V: Visitor<'a>>(visitor: &mut V, label: &'a Label) {
@@ -282,7 +288,7 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
             visitor.visit_ty(typ);
             walk_list!(visitor, visit_expr, expr);
         }
-        ItemKind::Fn(box FnKind(_, ref sig, ref generics, ref body)) => {
+        ItemKind::Fn(box Fn { defaultness: _, ref generics, ref sig, ref body }) => {
             visitor.visit_generics(generics);
             let kind = FnKind::Fn(FnCtxt::Free, item.ident, sig, &item.vis, body.as_deref());
             visitor.visit_fn(kind, item.span, item.id)
@@ -297,7 +303,7 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
             walk_list!(visitor, visit_foreign_item, &foreign_module.items);
         }
         ItemKind::GlobalAsm(ref asm) => walk_inline_asm(visitor, asm),
-        ItemKind::TyAlias(box TyAliasKind(_, ref generics, ref bounds, ref ty)) => {
+        ItemKind::TyAlias(box TyAlias { defaultness: _, ref generics, ref bounds, ref ty }) => {
             visitor.visit_generics(generics);
             walk_list!(visitor, visit_param_bound, bounds);
             walk_list!(visitor, visit_ty, ty);
@@ -306,12 +312,12 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
             visitor.visit_generics(generics);
             visitor.visit_enum_def(enum_definition, generics, item.id, item.span)
         }
-        ItemKind::Impl(box ImplKind {
-            unsafety: _,
-            polarity: _,
+        ItemKind::Impl(box Impl {
             defaultness: _,
-            constness: _,
+            unsafety: _,
             ref generics,
+            constness: _,
+            polarity: _,
             ref of_trait,
             ref self_ty,
             ref items,
@@ -326,7 +332,13 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
             visitor.visit_generics(generics);
             visitor.visit_variant_data(struct_definition);
         }
-        ItemKind::Trait(box TraitKind(.., ref generics, ref bounds, ref items)) => {
+        ItemKind::Trait(box Trait {
+            unsafety: _,
+            is_auto: _,
+            ref generics,
+            ref bounds,
+            ref items,
+        }) => {
             visitor.visit_generics(generics);
             walk_list!(visitor, visit_param_bound, bounds);
             walk_list!(visitor, visit_assoc_item, items, AssocCtxt::Trait);
@@ -404,9 +416,6 @@ pub fn walk_ty<'a, V: Visitor<'a>>(visitor: &mut V, typ: &'a Ty) {
         TyKind::Typeof(ref expression) => visitor.visit_anon_const(expression),
         TyKind::Infer | TyKind::ImplicitSelf | TyKind::Err => {}
         TyKind::MacCall(ref mac) => visitor.visit_mac_call(mac),
-        TyKind::AnonymousStruct(ref fields, ..) | TyKind::AnonymousUnion(ref fields, ..) => {
-            walk_list!(visitor, visit_field_def, fields)
-        }
         TyKind::Never | TyKind::CVarArgs => {}
     }
 }
@@ -547,12 +556,12 @@ pub fn walk_foreign_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a ForeignI
             visitor.visit_ty(ty);
             walk_list!(visitor, visit_expr, expr);
         }
-        ForeignItemKind::Fn(box FnKind(_, sig, generics, body)) => {
+        ForeignItemKind::Fn(box Fn { defaultness: _, ref generics, ref sig, ref body }) => {
             visitor.visit_generics(generics);
             let kind = FnKind::Fn(FnCtxt::Foreign, ident, sig, vis, body.as_deref());
             visitor.visit_fn(kind, span, id);
         }
-        ForeignItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
+        ForeignItemKind::TyAlias(box TyAlias { defaultness: _, generics, bounds, ty }) => {
             visitor.visit_generics(generics);
             walk_list!(visitor, visit_param_bound, bounds);
             walk_list!(visitor, visit_ty, ty);
@@ -653,12 +662,12 @@ pub fn walk_assoc_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a AssocItem,
             visitor.visit_ty(ty);
             walk_list!(visitor, visit_expr, expr);
         }
-        AssocItemKind::Fn(box FnKind(_, sig, generics, body)) => {
+        AssocItemKind::Fn(box Fn { defaultness: _, ref generics, ref sig, ref body }) => {
             visitor.visit_generics(generics);
             let kind = FnKind::Fn(FnCtxt::Assoc(ctxt), ident, sig, vis, body.as_deref());
             visitor.visit_fn(kind, span, id);
         }
-        AssocItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
+        AssocItemKind::TyAlias(box TyAlias { defaultness: _, generics, bounds, ty }) => {
             visitor.visit_generics(generics);
             walk_list!(visitor, visit_param_bound, bounds);
             walk_list!(visitor, visit_ty, ty);
@@ -714,13 +723,10 @@ fn walk_inline_asm<'a, V: Visitor<'a>>(visitor: &mut V, asm: &'a InlineAsm) {
     for (op, _) in &asm.operands {
         match op {
             InlineAsmOperand::In { expr, .. }
+            | InlineAsmOperand::Out { expr: Some(expr), .. }
             | InlineAsmOperand::InOut { expr, .. }
             | InlineAsmOperand::Sym { expr, .. } => visitor.visit_expr(expr),
-            InlineAsmOperand::Out { expr, .. } => {
-                if let Some(expr) = expr {
-                    visitor.visit_expr(expr);
-                }
-            }
+            InlineAsmOperand::Out { expr: None, .. } => {}
             InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
                 visitor.visit_expr(in_expr);
                 if let Some(out_expr) = out_expr {
@@ -779,9 +785,9 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
         }
-        ExprKind::Let(ref pat, ref scrutinee) => {
+        ExprKind::Let(ref pat, ref expr, _) => {
             visitor.visit_pat(pat);
-            visitor.visit_expr(scrutinee);
+            visitor.visit_expr(expr);
         }
         ExprKind::If(ref head_expression, ref if_block, ref optional_else) => {
             visitor.visit_expr(head_expression);

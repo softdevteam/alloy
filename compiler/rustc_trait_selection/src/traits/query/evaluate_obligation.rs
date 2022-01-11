@@ -71,7 +71,7 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
         // Run canonical query. If overflow occurs, rerun from scratch but this time
         // in standard trait query mode so that overflow is handled appropriately
         // within `SelectionContext`.
-        self.tcx.evaluate_obligation(c_pred)
+        self.tcx.at(obligation.cause.span(self.tcx)).evaluate_obligation(c_pred)
     }
 
     // Helper function that canonicalizes and runs the query. If an
@@ -83,17 +83,21 @@ impl<'cx, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'cx, 'tcx> {
     ) -> EvaluationResult {
         match self.evaluate_obligation(obligation) {
             Ok(result) => result,
-            Err(OverflowError) => {
+            Err(OverflowError::Canonical) => {
                 let mut selcx = SelectionContext::with_query_mode(&self, TraitQueryMode::Standard);
-                selcx.evaluate_root_obligation(obligation).unwrap_or_else(|r| {
-                    span_bug!(
-                        obligation.cause.span,
-                        "Overflow should be caught earlier in standard query mode: {:?}, {:?}",
-                        obligation,
-                        r,
-                    )
+                selcx.evaluate_root_obligation(obligation).unwrap_or_else(|r| match r {
+                    OverflowError::Canonical => {
+                        span_bug!(
+                            obligation.cause.span,
+                            "Overflow should be caught earlier in standard query mode: {:?}, {:?}",
+                            obligation,
+                            r,
+                        )
+                    }
+                    OverflowError::ErrorReporting => EvaluationResult::EvaluatedToErr,
                 })
             }
+            Err(OverflowError::ErrorReporting) => EvaluationResult::EvaluatedToErr,
         }
     }
 }

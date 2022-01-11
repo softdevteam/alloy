@@ -4,6 +4,7 @@ use rustc_span::{BytePos, Span};
 
 use crate::comment::{combine_strs_with_missing_comments, FindUncommented};
 use crate::config::lists::*;
+use crate::config::Version;
 use crate::expr::{can_be_overflowed_expr, rewrite_unary_prefix, wrap_struct_field};
 use crate::lists::{
     definitive_tactic, itemize_list, shape_for_tactic, struct_lit_formatting, struct_lit_shape,
@@ -22,11 +23,11 @@ use crate::utils::{format_mutability, mk_sp, mk_sp_lo_plus_one, rewrite_ident};
 /// Returns `true` if the given pattern is "short".
 /// A short pattern is defined by the following grammar:
 ///
-/// [small, ntp]:
+/// `[small, ntp]`:
 ///     - single token
 ///     - `&[single-line, ntp]`
 ///
-/// [small]:
+/// `[small]`:
 ///     - `[small, ntp]`
 ///     - unary tuple constructor `([small, ntp])`
 ///     - `&[small]`
@@ -226,26 +227,36 @@ impl Rewrite for Pat {
             PatKind::Path(ref q_self, ref path) => {
                 rewrite_path(context, PathContext::Expr, q_self.as_ref(), path, shape)
             }
-            PatKind::TupleStruct(_, ref path, ref pat_vec) => {
-                let path_str = rewrite_path(context, PathContext::Expr, None, path, shape)?;
+            PatKind::TupleStruct(ref q_self, ref path, ref pat_vec) => {
+                let path_str =
+                    rewrite_path(context, PathContext::Expr, q_self.as_ref(), path, shape)?;
                 rewrite_tuple_pat(pat_vec, Some(path_str), self.span, context, shape)
             }
             PatKind::Lit(ref expr) => expr.rewrite(context, shape),
-            PatKind::Slice(ref slice_pat) => {
+            PatKind::Slice(ref slice_pat) if context.config.version() == Version::One => {
                 let rw: Vec<String> = slice_pat
                     .iter()
                     .map(|p| {
                         if let Some(rw) = p.rewrite(context, shape) {
                             rw
                         } else {
-                            format!("{}", context.snippet(p.span))
+                            context.snippet(p.span).to_string()
                         }
                     })
                     .collect();
                 Some(format!("[{}]", rw.join(", ")))
             }
-            PatKind::Struct(_, ref path, ref fields, ellipsis) => {
-                rewrite_struct_pat(path, fields, ellipsis, self.span, context, shape)
+            PatKind::Slice(ref slice_pat) => overflow::rewrite_with_square_brackets(
+                context,
+                "",
+                slice_pat.iter(),
+                shape,
+                self.span,
+                None,
+                None,
+            ),
+            PatKind::Struct(ref qself, ref path, ref fields, ellipsis) => {
+                rewrite_struct_pat(qself, path, fields, ellipsis, self.span, context, shape)
             }
             PatKind::MacCall(ref mac) => {
                 rewrite_macro(mac, None, context, shape, MacroPosition::Pat)
@@ -258,6 +269,7 @@ impl Rewrite for Pat {
 }
 
 fn rewrite_struct_pat(
+    qself: &Option<ast::QSelf>,
     path: &ast::Path,
     fields: &[ast::PatField],
     ellipsis: bool,
@@ -267,7 +279,7 @@ fn rewrite_struct_pat(
 ) -> Option<String> {
     // 2 =  ` {`
     let path_shape = shape.sub_width(2)?;
-    let path_str = rewrite_path(context, PathContext::Expr, None, path, path_shape)?;
+    let path_str = rewrite_path(context, PathContext::Expr, qself.as_ref(), path, path_shape)?;
 
     if fields.is_empty() && !ellipsis {
         return Some(format!("{} {{}}", path_str));
@@ -310,23 +322,22 @@ fn rewrite_struct_pat(
         if fields_str.contains('\n') || fields_str.len() > one_line_width {
             // Add a missing trailing comma.
             if context.config.trailing_comma() == SeparatorTactic::Never {
-                fields_str.push_str(",");
+                fields_str.push(',');
             }
-            fields_str.push_str("\n");
+            fields_str.push('\n');
             fields_str.push_str(&nested_shape.indent.to_string(context.config));
-            fields_str.push_str("..");
         } else {
             if !fields_str.is_empty() {
                 // there are preceding struct fields being matched on
                 if tactic == DefinitiveListTactic::Vertical {
                     // if the tactic is Vertical, write_list already added a trailing ,
-                    fields_str.push_str(" ");
+                    fields_str.push(' ');
                 } else {
                     fields_str.push_str(", ");
                 }
             }
-            fields_str.push_str("..");
         }
+        fields_str.push_str("..");
     }
 
     // ast::Pat doesn't have attrs so use &[]
@@ -411,10 +422,7 @@ impl<'a> Spanned for TuplePatField<'a> {
 impl<'a> TuplePatField<'a> {
     fn is_dotdot(&self) -> bool {
         match self {
-            TuplePatField::Pat(pat) => match pat.kind {
-                ast::PatKind::Rest => true,
-                _ => false,
-            },
+            TuplePatField::Pat(pat) => matches!(pat.kind, ast::PatKind::Rest),
             TuplePatField::Dotdot(_) => true,
         }
     }
@@ -448,11 +456,11 @@ fn rewrite_tuple_pat(
     context: &RewriteContext<'_>,
     shape: Shape,
 ) -> Option<String> {
-    let mut pat_vec: Vec<_> = pats.iter().map(|x| TuplePatField::Pat(x)).collect();
-
-    if pat_vec.is_empty() {
+    if pats.is_empty() {
         return Some(format!("{}()", path_str.unwrap_or_default()));
     }
+    let mut pat_vec: Vec<_> = pats.iter().map(TuplePatField::Pat).collect();
+
     let wildcard_suffix_len = count_wildcard_suffix_len(context, &pat_vec, span, shape);
     let (pat_vec, span) = if context.config.condense_wildcard_suffixes() && wildcard_suffix_len >= 2
     {
@@ -474,7 +482,7 @@ fn rewrite_tuple_pat(
     let path_str = path_str.unwrap_or_default();
 
     overflow::rewrite_with_parens(
-        &context,
+        context,
         &path_str,
         pat_vec.iter(),
         shape,
@@ -510,10 +518,11 @@ fn count_wildcard_suffix_len(
     )
     .collect();
 
-    for item in items.iter().rev().take_while(|i| match i.item {
-        Some(ref internal_string) if internal_string == "_" => true,
-        _ => false,
-    }) {
+    for item in items
+        .iter()
+        .rev()
+        .take_while(|i| matches!(i.item, Some(ref internal_string) if internal_string == "_"))
+    {
         suffix_len += 1;
 
         if item.has_comment() {

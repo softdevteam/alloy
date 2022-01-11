@@ -131,6 +131,7 @@ impl SocketAddr {
     /// assert_eq!(socket.port(), 8080);
     /// ```
     #[stable(feature = "ip_addr", since = "1.7.0")]
+    #[must_use]
     pub fn new(ip: IpAddr, port: u16) -> SocketAddr {
         match ip {
             IpAddr::V4(a) => SocketAddr::V4(SocketAddrV4::new(a, port)),
@@ -148,6 +149,7 @@ impl SocketAddr {
     /// let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
     /// assert_eq!(socket.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
     /// ```
+    #[must_use]
     #[stable(feature = "ip_addr", since = "1.7.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn ip(&self) -> IpAddr {
@@ -188,6 +190,7 @@ impl SocketAddr {
     /// let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
     /// assert_eq!(socket.port(), 8080);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn port(&self) -> u16 {
@@ -231,6 +234,7 @@ impl SocketAddr {
     /// assert_eq!(socket.is_ipv4(), true);
     /// assert_eq!(socket.is_ipv6(), false);
     /// ```
+    #[must_use]
     #[stable(feature = "sockaddr_checker", since = "1.16.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn is_ipv4(&self) -> bool {
@@ -252,6 +256,7 @@ impl SocketAddr {
     /// assert_eq!(socket.is_ipv4(), false);
     /// assert_eq!(socket.is_ipv6(), true);
     /// ```
+    #[must_use]
     #[stable(feature = "sockaddr_checker", since = "1.16.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn is_ipv6(&self) -> bool {
@@ -272,6 +277,7 @@ impl SocketAddrV4 {
     /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub fn new(ip: Ipv4Addr, port: u16) -> SocketAddrV4 {
         SocketAddrV4 {
             inner: c::sockaddr_in {
@@ -293,6 +299,7 @@ impl SocketAddrV4 {
     /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
     /// assert_eq!(socket.ip(), &Ipv4Addr::new(127, 0, 0, 1));
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn ip(&self) -> &Ipv4Addr {
@@ -327,6 +334,7 @@ impl SocketAddrV4 {
     /// let socket = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8080);
     /// assert_eq!(socket.port(), 8080);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn port(&self) -> u16 {
@@ -368,6 +376,7 @@ impl SocketAddrV6 {
     /// let socket = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 8080, 0, 0);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     pub fn new(ip: Ipv6Addr, port: u16, flowinfo: u32, scope_id: u32) -> SocketAddrV6 {
         SocketAddrV6 {
             inner: c::sockaddr_in6 {
@@ -391,6 +400,7 @@ impl SocketAddrV6 {
     /// let socket = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 8080, 0, 0);
     /// assert_eq!(socket.ip(), &Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn ip(&self) -> &Ipv6Addr {
@@ -423,6 +433,7 @@ impl SocketAddrV6 {
     /// let socket = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 8080, 0, 0);
     /// assert_eq!(socket.port(), 8080);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn port(&self) -> u16 {
@@ -465,6 +476,7 @@ impl SocketAddrV6 {
     /// let socket = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 8080, 10, 0);
     /// assert_eq!(socket.flowinfo(), 10);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn flowinfo(&self) -> u32 {
@@ -504,6 +516,7 @@ impl SocketAddrV6 {
     /// let socket = SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 8080, 0, 78);
     /// assert_eq!(socket.scope_id(), 78);
     /// ```
+    #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_const_unstable(feature = "const_socketaddr", issue = "82485")]
     pub const fn scope_id(&self) -> u32 {
@@ -561,8 +574,8 @@ impl From<SocketAddrV6> for SocketAddr {
 impl<I: Into<IpAddr>> From<(I, u16)> for SocketAddr {
     /// Converts a tuple struct (Into<[`IpAddr`]>, `u16`) into a [`SocketAddr`].
     ///
-    /// This conversion creates a [`SocketAddr::V4`] for a [`IpAddr::V4`]
-    /// and creates a [`SocketAddr::V6`] for a [`IpAddr::V6`].
+    /// This conversion creates a [`SocketAddr::V4`] for an [`IpAddr::V4`]
+    /// and creates a [`SocketAddr::V6`] for an [`IpAddr::V6`].
     ///
     /// `u16` is treated as port of the newly created [`SocketAddr`].
     fn from(pieces: (I, u16)) -> SocketAddr {
@@ -765,15 +778,15 @@ impl hash::Hash for SocketAddrV6 {
 ///
 ///  * [`SocketAddr`]: [`to_socket_addrs`] is the identity function.
 ///
-///  * [`SocketAddrV4`], [`SocketAddrV6`], `(`[`IpAddr`]`, `[`u16`]`)`,
-///    `(`[`Ipv4Addr`]`, `[`u16`]`)`, `(`[`Ipv6Addr`]`, `[`u16`]`)`:
+///  * [`SocketAddrV4`], [`SocketAddrV6`], <code>([IpAddr], [u16])</code>,
+///    <code>([Ipv4Addr], [u16])</code>, <code>([Ipv6Addr], [u16])</code>:
 ///    [`to_socket_addrs`] constructs a [`SocketAddr`] trivially.
 ///
-///  * `(`[`&str`]`, `[`u16`]`)`: [`&str`] should be either a string representation
+///  * <code>(&[str], [u16])</code>: <code>&[str]</code> should be either a string representation
 ///    of an [`IpAddr`] address as expected by [`FromStr`] implementation or a host
 ///    name. [`u16`] is the port number.
 ///
-///  * [`&str`]: the string should be either a string representation of a
+///  * <code>&[str]</code>: the string should be either a string representation of a
 ///    [`SocketAddr`] as expected by its [`FromStr`] implementation or a string like
 ///    `<host_name>:<port>` pair where `<port>` is a [`u16`] value.
 ///
@@ -789,11 +802,10 @@ impl hash::Hash for SocketAddrV6 {
 /// Addresses returned by the operating system that are not IP addresses are
 /// silently ignored.
 ///
-/// [`FromStr`]: crate::str::FromStr
-/// [`&str`]: str
-/// [`TcpStream`]: crate::net::TcpStream
+/// [`FromStr`]: crate::str::FromStr "std::str::FromStr"
+/// [`TcpStream`]: crate::net::TcpStream "net::TcpStream"
 /// [`to_socket_addrs`]: ToSocketAddrs::to_socket_addrs
-/// [`UdpSocket`]: crate::net::UdpSocket
+/// [`UdpSocket`]: crate::net::UdpSocket "net::UdpSocket"
 ///
 /// # Examples
 ///
@@ -872,9 +884,9 @@ pub trait ToSocketAddrs {
     #[stable(feature = "rust1", since = "1.0.0")]
     type Iter: Iterator<Item = SocketAddr>;
 
-    /// Converts this object to an iterator of resolved `SocketAddr`s.
+    /// Converts this object to an iterator of resolved [`SocketAddr`]s.
     ///
-    /// The returned iterator may not actually yield any values depending on the
+    /// The returned iterator might not actually yield any values depending on the
     /// outcome of any resolution performed.
     ///
     /// Note that this function may block the current thread while resolution is

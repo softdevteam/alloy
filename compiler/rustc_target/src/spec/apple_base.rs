@@ -1,6 +1,6 @@
 use std::env;
 
-use crate::spec::{FramePointer, SplitDebuginfo, TargetOptions};
+use crate::spec::{FramePointer, LldFlavor, SplitDebuginfo, TargetOptions};
 
 pub fn opts(os: &str) -> TargetOptions {
     // ELF TLS is only available in macOS 10.7+. If you try to compile for 10.6
@@ -13,8 +13,10 @@ pub fn opts(os: &str) -> TargetOptions {
     // warnings about the usage of ELF TLS.
     //
     // Here we detect what version is being requested, defaulting to 10.7. ELF
-    // TLS is flagged as enabled if it looks to be supported.
-    let version = macos_deployment_target();
+    // TLS is flagged as enabled if it looks to be supported. The architecture
+    // only matters for default deployment target which is 11.0 for ARM64 and
+    // 10.7 for everything else.
+    let has_elf_tls = macos_deployment_target("x86_64") >= (10, 7);
 
     TargetOptions {
         os: os.to_string(),
@@ -31,10 +33,11 @@ pub fn opts(os: &str) -> TargetOptions {
         has_rpath: true,
         dll_suffix: ".dylib".to_string(),
         archive_format: "darwin".to_string(),
-        has_elf_tls: version >= (10, 7),
+        has_elf_tls,
         abi_return_struct_as_int: true,
         emit_debug_gdb_scripts: false,
         eh_frame_header: false,
+        lld_flavor: LldFlavor::Ld64,
 
         // The historical default for macOS targets is to run `dsymutil` which
         // generates a packed version of debuginfo split from the main file.
@@ -62,13 +65,30 @@ fn deployment_target(var_name: &str) -> Option<(u32, u32)> {
         .and_then(|(a, b)| a.parse::<u32>().and_then(|a| b.parse::<u32>().map(|b| (a, b))).ok())
 }
 
-fn macos_deployment_target() -> (u32, u32) {
-    deployment_target("MACOSX_DEPLOYMENT_TARGET").unwrap_or((10, 7))
+fn macos_default_deployment_target(arch: &str) -> (u32, u32) {
+    if arch == "arm64" { (11, 0) } else { (10, 7) }
+}
+
+fn macos_deployment_target(arch: &str) -> (u32, u32) {
+    deployment_target("MACOSX_DEPLOYMENT_TARGET")
+        .unwrap_or_else(|| macos_default_deployment_target(arch))
 }
 
 pub fn macos_llvm_target(arch: &str) -> String {
-    let (major, minor) = macos_deployment_target();
+    let (major, minor) = macos_deployment_target(arch);
     format!("{}-apple-macosx{}.{}.0", arch, major, minor)
+}
+
+pub fn macos_link_env(arch: &str) -> Vec<(String, String)> {
+    // Use the default deployment target for linking just as with the LLVM target if not
+    // specified via MACOSX_DEPLOYMENT_TARGET, otherwise the system linker would use its
+    // default which varies with Xcode version.
+    if env::var("MACOSX_DEPLOYMENT_TARGET").is_err() {
+        let default = macos_default_deployment_target(arch);
+        vec![("MACOSX_DEPLOYMENT_TARGET".to_string(), format!("{}.{}", default.0, default.1))]
+    } else {
+        vec![]
+    }
 }
 
 pub fn macos_link_env_remove() -> Vec<String> {
@@ -89,6 +109,17 @@ pub fn macos_link_env_remove() -> Vec<String> {
 
 fn ios_deployment_target() -> (u32, u32) {
     deployment_target("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or((7, 0))
+}
+
+pub fn ios_llvm_target(arch: &str) -> String {
+    // Modern iOS tooling extracts information about deployment target
+    // from LC_BUILD_VERSION. This load command will only be emitted when
+    // we build with a version specific `llvm_target`, with the version
+    // set high enough. Luckily one LC_BUILD_VERSION is enough, for Xcode
+    // to pick it up (since std and core are still built with the fallback
+    // of version 7.0 and hence emit the old LC_IPHONE_MIN_VERSION).
+    let (major, minor) = ios_deployment_target();
+    format!("{}-apple-ios{}.{}.0", arch, major, minor)
 }
 
 pub fn ios_sim_llvm_target(arch: &str) -> String {

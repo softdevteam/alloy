@@ -1,13 +1,10 @@
 error: future cannot be sent between threads safely
-  --> $DIR/async-fn-nonsend.rs:49:5
+  --> $DIR/async-fn-nonsend.rs:49:17
    |
-LL | fn assert_send(_: impl Send) {}
-   |                        ---- required by this bound in `assert_send`
-...
 LL |     assert_send(local_dropped_before_await());
-   |     ^^^^^^^^^^^ future returned by `local_dropped_before_await` is not `Send`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ future returned by `local_dropped_before_await` is not `Send`
    |
-   = help: within `impl Future`, the trait `Send` is not implemented for `Rc<()>`
+   = help: within `impl Future<Output = ()>`, the trait `Send` is not implemented for `Rc<()>`
 note: future is not `Send` as this value is used across an await
   --> $DIR/async-fn-nonsend.rs:24:5
    |
@@ -18,17 +15,19 @@ LL |     fut().await;
    |     ^^^^^^^^^^^ await occurs here, with `x` maybe used later
 LL | }
    | - `x` is later dropped here
-
-error: future cannot be sent between threads safely
-  --> $DIR/async-fn-nonsend.rs:51:5
+note: required by a bound in `assert_send`
+  --> $DIR/async-fn-nonsend.rs:46:24
    |
 LL | fn assert_send(_: impl Send) {}
-   |                        ---- required by this bound in `assert_send`
-...
-LL |     assert_send(non_send_temporary_in_match());
-   |     ^^^^^^^^^^^ future returned by `non_send_temporary_in_match` is not `Send`
+   |                        ^^^^ required by this bound in `assert_send`
+
+error: future cannot be sent between threads safely
+  --> $DIR/async-fn-nonsend.rs:51:17
    |
-   = help: within `impl Future`, the trait `Send` is not implemented for `Rc<()>`
+LL |     assert_send(non_send_temporary_in_match());
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ future returned by `non_send_temporary_in_match` is not `Send`
+   |
+   = help: within `impl Future<Output = ()>`, the trait `Send` is not implemented for `Rc<()>`
 note: future is not `Send` as this value is used across an await
   --> $DIR/async-fn-nonsend.rs:33:20
    |
@@ -39,15 +38,17 @@ LL |         Some(_) => fut().await,
 ...
 LL | }
    | - `non_send()` is later dropped here
-
-error: future cannot be sent between threads safely
-  --> $DIR/async-fn-nonsend.rs:53:5
+note: required by a bound in `assert_send`
+  --> $DIR/async-fn-nonsend.rs:46:24
    |
 LL | fn assert_send(_: impl Send) {}
-   |                        ---- required by this bound in `assert_send`
-...
+   |                        ^^^^ required by this bound in `assert_send`
+
+error: future cannot be sent between threads safely
+  --> $DIR/async-fn-nonsend.rs:53:17
+   |
 LL |     assert_send(non_sync_with_method_call());
-   |     ^^^^^^^^^^^ future returned by `non_sync_with_method_call` is not `Send`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^ future returned by `non_sync_with_method_call` is not `Send`
    |
    = help: the trait `Send` is not implemented for `dyn std::fmt::Write`
 note: future is not `Send` as this value is used across an await
@@ -61,6 +62,11 @@ LL |         fut().await;
 LL |     }
 LL | }
    | - `f` is later dropped here
+note: required by a bound in `assert_send`
+  --> $DIR/async-fn-nonsend.rs:46:24
+   |
+LL | fn assert_send(_: impl Send) {}
+   |                        ^^^^ required by this bound in `assert_send`
 
 error: aborting due to 3 previous errors
 

@@ -1,0 +1,10 @@
+error: Missing required bounds on TRef
+  --> $DIR/issue-86787.rs:11:5
+   |
+LL |     type TRef<'a>;
+   |     ^^^^^^^^^^^^^-
+   |                  |
+   |                  help: add the required where clauses: `where Self: 'a`
+
+error: aborting due to previous error
+

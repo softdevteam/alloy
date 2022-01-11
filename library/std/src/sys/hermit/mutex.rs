@@ -46,8 +46,17 @@ impl<T> Spinlock<T> {
     #[inline]
     fn obtain_lock(&self) {
         let ticket = self.queue.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut counter: u16 = 0;
         while self.dequeue.load(Ordering::SeqCst) != ticket {
-            hint::spin_loop();
+            counter += 1;
+            if counter < 100 {
+                hint::spin_loop();
+            } else {
+                counter = 0;
+                unsafe {
+                    abi::yield_now();
+                }
+            }
         }
     }
 
@@ -156,7 +165,7 @@ pub struct Mutex {
     inner: Spinlock<MutexInner>,
 }
 
-pub type MovableMutex = Box<Mutex>;
+pub type MovableMutex = Mutex;
 
 unsafe impl Send for Mutex {}
 unsafe impl Sync for Mutex {}

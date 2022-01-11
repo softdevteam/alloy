@@ -1,5 +1,5 @@
-#![feature(box_syntax)]
-#![warn(clippy::no_effect)]
+#![feature(box_syntax, fn_traits, unboxed_closures)]
+#![warn(clippy::no_effect_underscore_binding)]
 #![allow(dead_code)]
 #![allow(path_statements)]
 #![allow(clippy::deref_addrof)]
@@ -58,6 +58,36 @@ unsafe fn unsafe_fn() -> i32 {
     0
 }
 
+struct GreetStruct1;
+
+impl FnOnce<(&str,)> for GreetStruct1 {
+    type Output = ();
+
+    extern "rust-call" fn call_once(self, (who,): (&str,)) -> Self::Output {
+        println!("hello {}", who);
+    }
+}
+
+struct GreetStruct2();
+
+impl FnOnce<(&str,)> for GreetStruct2 {
+    type Output = ();
+
+    extern "rust-call" fn call_once(self, (who,): (&str,)) -> Self::Output {
+        println!("hello {}", who);
+    }
+}
+
+struct GreetStruct3 {}
+
+impl FnOnce<(&str,)> for GreetStruct3 {
+    type Output = ();
+
+    extern "rust-call" fn call_once(self, (who,): (&str,)) -> Self::Output {
+        println!("hello {}", who);
+    }
+}
+
 fn main() {
     let s = get_struct();
     let s2 = get_struct();
@@ -90,6 +120,10 @@ fn main() {
     || x += 5;
     let s: String = "foo".into();
     FooString { s: s };
+    let _unused = 1;
+    let _penguin = || println!("Some helpful closure");
+    let _duck = Struct { field: 0 };
+    let _cat = [2, 4, 6, 8][2];
 
     #[allow(clippy::no_effect)]
     0;
@@ -97,9 +131,14 @@ fn main() {
     // Do not warn
     get_number();
     unsafe { unsafe_fn() };
+    let _used = get_struct();
+    let _x = vec![1];
     DropUnit;
     DropStruct { field: 0 };
     DropTuple(0);
     DropEnum::Tuple(0);
     DropEnum::Struct { field: 0 };
+    GreetStruct1("world");
+    GreetStruct2()("world");
+    GreetStruct3 {}("world");
 }

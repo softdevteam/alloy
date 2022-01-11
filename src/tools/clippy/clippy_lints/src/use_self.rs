@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::ty::same_type_and_consts;
-use clippy_utils::{in_macro, meets_msrv, msrvs};
+use clippy_utils::{meets_msrv, msrvs};
 use if_chain::if_chain;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
@@ -8,7 +8,7 @@ use rustc_hir::{
     self as hir,
     def::{CtorOf, DefKind, Res},
     def_id::LocalDefId,
-    intravisit::{walk_ty, NestedVisitorMap, Visitor},
+    intravisit::{walk_inf, walk_ty, NestedVisitorMap, Visitor},
     Expr, ExprKind, FnRetTy, FnSig, GenericArg, HirId, Impl, ImplItemKind, Item, ItemKind, Path, QPath, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
@@ -20,19 +20,20 @@ use rustc_span::Span;
 use rustc_typeck::hir_ty_to_ty;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for unnecessary repetition of structure name when a
+    /// ### What it does
+    /// Checks for unnecessary repetition of structure name when a
     /// replacement with `Self` is applicable.
     ///
-    /// **Why is this bad?** Unnecessary repetition. Mixed use of `Self` and struct
+    /// ### Why is this bad?
+    /// Unnecessary repetition. Mixed use of `Self` and struct
     /// name
     /// feels inconsistent.
     ///
-    /// **Known problems:**
+    /// ### Known problems
     /// - Unaddressed false negative in fn bodies of trait implementations
     /// - False positive with assotiated types in traits (#4140)
     ///
-    /// **Example:**
-    ///
+    /// ### Example
     /// ```rust
     /// struct Foo {}
     /// impl Foo {
@@ -50,6 +51,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub USE_SELF,
     nursery,
     "unnecessary structure name repetition whereas `Self` is applicable"
@@ -169,7 +171,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
                 //
                 // See also https://github.com/rust-lang/rust-clippy/issues/2894.
                 for (impl_hir_ty, trait_sem_ty) in impl_inputs_outputs.zip(trait_method_sig.inputs_and_output) {
-                    if trait_sem_ty.walk().any(|inner| inner == self_ty.into()) {
+                    if trait_sem_ty.walk(cx.tcx).any(|inner| inner == self_ty.into()) {
                         let mut visitor = SkipTyCollector::default();
                         visitor.visit_ty(impl_hir_ty);
                         types_to_skip.extend(visitor.types_to_skip);
@@ -196,7 +198,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
 
     fn check_ty(&mut self, cx: &LateContext<'_>, hir_ty: &hir::Ty<'_>) {
         if_chain! {
-            if !in_macro(hir_ty.span);
+            if !hir_ty.span.from_expansion();
             if meets_msrv(self.msrv.as_ref(), &msrvs::TYPE_ALIAS_ENUM_VARIANTS);
             if let Some(&StackItem::Check {
                 impl_id,
@@ -213,8 +215,8 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
             };
             if same_type_and_consts(ty, cx.tcx.type_of(impl_id));
             let hir = cx.tcx.hir();
-            let id = hir.get_parent_node(hir_ty.hir_id);
-            if !hir.opt_span(id).map_or(false, in_macro);
+            // prevents false positive on `#[derive(serde::Deserialize)]`
+            if !hir.span(hir.get_parent_node(hir_ty.hir_id)).in_derive_expansion();
             then {
                 span_lint(cx, hir_ty.span);
             }
@@ -223,7 +225,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
 
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &Expr<'_>) {
         if_chain! {
-            if !in_macro(expr.span);
+            if !expr.span.from_expansion();
             if meets_msrv(self.msrv.as_ref(), &msrvs::TYPE_ALIAS_ENUM_VARIANTS);
             if let Some(&StackItem::Check { impl_id, .. }) = self.stack.last();
             if cx.typeck_results().expr_ty(expr) == cx.tcx.type_of(impl_id);
@@ -263,6 +265,11 @@ struct SkipTyCollector {
 impl<'tcx> Visitor<'tcx> for SkipTyCollector {
     type Map = Map<'tcx>;
 
+    fn visit_infer(&mut self, inf: &hir::InferArg) {
+        self.types_to_skip.push(inf.hir_id);
+
+        walk_inf(self, inf);
+    }
     fn visit_ty(&mut self, hir_ty: &hir::Ty<'_>) {
         self.types_to_skip.push(hir_ty.hir_id);
 

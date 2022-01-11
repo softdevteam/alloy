@@ -1,14 +1,14 @@
 [package]
-authors = ["The Rust Project Developers"]
 name = "rustc_metadata"
 version = "0.0.0"
-edition = "2018"
+edition = "2021"
 
 [lib]
 doctest = false
 
 [dependencies]
 libc = "0.2"
+odht = { version = "0.3.1", features = ["nightly"] }
 snap = "1"
 tracing = "0.1"
 smallvec = { version = "1.6.1", features = ["union", "may_dangle"] }

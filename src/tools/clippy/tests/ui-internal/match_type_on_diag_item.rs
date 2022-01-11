@@ -1,4 +1,5 @@
 #![deny(clippy::internal)]
+#![allow(clippy::missing_clippy_version_attribute)]
 #![feature(rustc_private)]
 
 extern crate clippy_utils;
@@ -27,7 +28,6 @@ impl<'tcx> LateLintPass<'tcx> for Pass {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr) {
         let ty = cx.typeck_results().expr_ty(expr);
 
-        let _ = match_type(cx, ty, &paths::VEC); // FIXME: Doesn't lint external paths
         let _ = match_type(cx, ty, &OPTION);
         let _ = match_type(cx, ty, &["core", "result", "Result"]);
 

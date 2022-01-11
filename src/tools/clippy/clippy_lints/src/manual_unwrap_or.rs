@@ -15,15 +15,13 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::sym;
 
 declare_clippy_lint! {
-    /// **What it does:**
+    /// ### What it does
     /// Finds patterns that reimplement `Option::unwrap_or` or `Result::unwrap_or`.
     ///
-    /// **Why is this bad?**
+    /// ### Why is this bad?
     /// Concise code helps focusing on behavior instead of boilerplate.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// let foo: Option<i32> = None;
     /// match foo {
@@ -37,6 +35,7 @@ declare_clippy_lint! {
     /// let foo: Option<i32> = None;
     /// foo.unwrap_or(1);
     /// ```
+    #[clippy::version = "1.49.0"]
     pub MANUAL_UNWRAP_OR,
     complexity,
     "finds patterns that can be encoded more concisely with `Option::unwrap_or` or `Result::unwrap_or`"
@@ -84,9 +83,9 @@ fn lint_manual_unwrap_or<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
     if_chain! {
         if let ExprKind::Match(scrutinee, match_arms, _) = expr.kind;
         let ty = cx.typeck_results().expr_ty(scrutinee);
-        if let Some(ty_name) = if is_type_diagnostic_item(cx, ty, sym::option_type) {
+        if let Some(ty_name) = if is_type_diagnostic_item(cx, ty, sym::Option) {
             Some("Option")
-        } else if is_type_diagnostic_item(cx, ty, sym::result_type) {
+        } else if is_type_diagnostic_item(cx, ty, sym::Result) {
             Some("Result")
         } else {
             None
@@ -100,7 +99,7 @@ fn lint_manual_unwrap_or<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
                 reindent_multiline(or_body_snippet.into(), true, Some(indent));
 
             let suggestion = if scrutinee.span.from_expansion() {
-                    // we don't want parenthesis around macro, e.g. `(some_macro!()).unwrap_or(0)`
+                    // we don't want parentheses around macro, e.g. `(some_macro!()).unwrap_or(0)`
                     sugg::Sugg::hir_with_macro_callsite(cx, scrutinee, "..")
                 }
                 else {

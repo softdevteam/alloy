@@ -2,8 +2,8 @@
 
 use crate::mir;
 use crate::ty::codec::{TyDecoder, TyEncoder};
-use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
-use crate::ty::sty::{ClosureSubsts, GeneratorSubsts};
+use crate::ty::fold::{FallibleTypeFolder, TypeFoldable, TypeFolder, TypeVisitor};
+use crate::ty::sty::{ClosureSubsts, GeneratorSubsts, InlineConstSubsts};
 use crate::ty::{self, Lift, List, ParamConst, Ty, TyCtxt};
 
 use rustc_hir::def_id::DefId;
@@ -22,7 +22,7 @@ use std::ops::ControlFlow;
 
 /// An entity in the Rust type system, which can be one of
 /// several kinds (types, lifetimes, and consts).
-/// To reduce memory usage, a `GenericArg` is a interned pointer,
+/// To reduce memory usage, a `GenericArg` is an interned pointer,
 /// with the lowest 2 bits being reserved for a tag to
 /// indicate the type (`Ty`, `Region`, or `Const`) it points to.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -153,11 +153,14 @@ impl<'a, 'tcx> Lift<'tcx> for GenericArg<'a> {
 }
 
 impl<'tcx> TypeFoldable<'tcx> for GenericArg<'tcx> {
-    fn super_fold_with<F: TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
+    fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
+        self,
+        folder: &mut F,
+    ) -> Result<Self, F::Error> {
         match self.unpack() {
-            GenericArgKind::Lifetime(lt) => lt.fold_with(folder).into(),
-            GenericArgKind::Type(ty) => ty.fold_with(folder).into(),
-            GenericArgKind::Const(ct) => ct.fold_with(folder).into(),
+            GenericArgKind::Lifetime(lt) => lt.try_fold_with(folder).map(Into::into),
+            GenericArgKind::Type(ty) => ty.try_fold_with(folder).map(Into::into),
+            GenericArgKind::Const(ct) => ct.try_fold_with(folder).map(Into::into),
         }
     }
 
@@ -204,12 +207,20 @@ impl<'a, 'tcx> InternalSubsts<'tcx> {
         GeneratorSubsts { substs: self }
     }
 
-    /// Creates a `InternalSubsts` that maps each generic parameter to itself.
+    /// Interpret these substitutions as the substitutions of an inline const.
+    /// Inline const substitutions have a particular structure controlled by the
+    /// compiler that encodes information like the inferred type;
+    /// see `ty::InlineConstSubsts` struct for more comments.
+    pub fn as_inline_const(&'tcx self) -> InlineConstSubsts<'tcx> {
+        InlineConstSubsts { substs: self }
+    }
+
+    /// Creates an `InternalSubsts` that maps each generic parameter to itself.
     pub fn identity_for_item(tcx: TyCtxt<'tcx>, def_id: DefId) -> SubstsRef<'tcx> {
         Self::for_item(tcx, def_id, |param, _| tcx.mk_param_from_def(param))
     }
 
-    /// Creates a `InternalSubsts` for generic parameter definitions,
+    /// Creates an `InternalSubsts` for generic parameter definitions,
     /// by calling closures to obtain each kind.
     /// The closures get to observe the `InternalSubsts` as they're
     /// being built, which can be used to correctly
@@ -234,7 +245,7 @@ impl<'a, 'tcx> InternalSubsts<'tcx> {
         })
     }
 
-    fn fill_item<F>(
+    pub fn fill_item<F>(
         substs: &mut SmallVec<[GenericArg<'tcx>; 8]>,
         tcx: TyCtxt<'tcx>,
         defs: &ty::Generics,
@@ -249,7 +260,7 @@ impl<'a, 'tcx> InternalSubsts<'tcx> {
         Self::fill_single(substs, defs, mk_kind)
     }
 
-    fn fill_single<F>(
+    pub fn fill_single<F>(
         substs: &mut SmallVec<[GenericArg<'tcx>; 8]>,
         defs: &ty::Generics,
         mk_kind: &mut F,
@@ -364,7 +375,10 @@ impl<'a, 'tcx> InternalSubsts<'tcx> {
 }
 
 impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
-    fn super_fold_with<F: TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
+    fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
+        self,
+        folder: &mut F,
+    ) -> Result<Self, F::Error> {
         // This code is hot enough that it's worth specializing for the most
         // common length lists, to avoid the overhead of `SmallVec` creation.
         // The match arms are in order of frequency. The 1, 2, and 0 cases are
@@ -373,22 +387,27 @@ impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
         // calling `intern_substs`.
         match self.len() {
             1 => {
-                let param0 = self[0].fold_with(folder);
-                if param0 == self[0] { self } else { folder.tcx().intern_substs(&[param0]) }
+                let param0 = self[0].try_fold_with(folder)?;
+                if param0 == self[0] { Ok(self) } else { Ok(folder.tcx().intern_substs(&[param0])) }
             }
             2 => {
-                let param0 = self[0].fold_with(folder);
-                let param1 = self[1].fold_with(folder);
+                let param0 = self[0].try_fold_with(folder)?;
+                let param1 = self[1].try_fold_with(folder)?;
                 if param0 == self[0] && param1 == self[1] {
-                    self
+                    Ok(self)
                 } else {
-                    folder.tcx().intern_substs(&[param0, param1])
+                    Ok(folder.tcx().intern_substs(&[param0, param1]))
                 }
             }
-            0 => self,
+            0 => Ok(self),
             _ => {
-                let params: SmallVec<[_; 8]> = self.iter().map(|k| k.fold_with(folder)).collect();
-                if params[..] == self[..] { self } else { folder.tcx().intern_substs(&params) }
+                let params: SmallVec<[_; 8]> =
+                    self.iter().map(|k| k.try_fold_with(folder)).collect::<Result<_, _>>()?;
+                if params[..] == self[..] {
+                    Ok(self)
+                } else {
+                    Ok(folder.tcx().intern_substs(&params))
+                }
             }
         }
     }
@@ -486,7 +505,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
     }
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        if !t.needs_subst() {
+        if !t.potentially_needs_subst() {
             return t;
         }
 
@@ -497,10 +516,6 @@ impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
     }
 
     fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
-        if !c.needs_subst() {
-            return c;
-        }
-
         if let ty::ConstKind::Param(p) = c.val {
             self.const_for_param(p, c)
         } else {

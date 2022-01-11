@@ -7,9 +7,10 @@ pub mod query;
 pub mod select;
 pub mod specialization_graph;
 mod structural_impls;
+pub mod util;
 
 use crate::infer::canonical::Canonical;
-use crate::mir::abstract_const::NotConstEvaluatable;
+use crate::thir::abstract_const::NotConstEvaluatable;
 use crate::ty::subst::SubstsRef;
 use crate::ty::{self, AdtKind, Ty, TyCtxt};
 
@@ -17,13 +18,13 @@ use rustc_data_structures::sync::Lrc;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::Constness;
 use rustc_span::symbol::Symbol;
 use rustc_span::{Span, DUMMY_SP};
 use smallvec::SmallVec;
 
 use std::borrow::Cow;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 pub use self::select::{EvaluationCache, EvaluationResult, OverflowError, SelectionCache};
@@ -109,7 +110,7 @@ impl Deref for ObligationCause<'tcx> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
+#[derive(Clone, Debug, PartialEq, Eq, Lift)]
 pub struct ObligationCauseData<'tcx> {
     pub span: Span,
 
@@ -122,6 +123,14 @@ pub struct ObligationCauseData<'tcx> {
     pub body_id: hir::HirId,
 
     pub code: ObligationCauseCode<'tcx>,
+}
+
+impl Hash for ObligationCauseData<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.body_id.hash(state);
+        self.span.hash(state);
+        std::mem::discriminant(&self.code).hash(state);
+    }
 }
 
 impl<'tcx> ObligationCause<'tcx> {
@@ -225,6 +234,8 @@ pub enum ObligationCauseCode<'tcx> {
     SizedReturnType,
     /// Yield type must be `Sized`.
     SizedYieldType,
+    /// Box expression result type must be `Sized`.
+    SizedBoxType,
     /// Inline asm operand type must be `Sized`.
     InlineAsmSized,
     /// `[T, ..n]` implies that `T` must be `Copy`.
@@ -252,19 +263,26 @@ pub enum ObligationCauseCode<'tcx> {
 
     DerivedObligation(DerivedObligationCause<'tcx>),
 
+    FunctionArgumentObligation {
+        /// The node of the relevant argument in the function call.
+        arg_hir_id: hir::HirId,
+        /// The node of the function call.
+        call_hir_id: hir::HirId,
+        /// The obligation introduced by this argument.
+        parent_code: Lrc<ObligationCauseCode<'tcx>>,
+    },
+
     /// Error derived when matching traits/impls; see ObligationCause for more details
     CompareImplConstObligation,
 
     /// Error derived when matching traits/impls; see ObligationCause for more details
     CompareImplMethodObligation {
-        item_name: Symbol,
         impl_item_def_id: DefId,
         trait_item_def_id: DefId,
     },
 
     /// Error derived when matching traits/impls; see ObligationCause for more details
     CompareImplTypeObligation {
-        item_name: Symbol,
         impl_item_def_id: DefId,
         trait_item_def_id: DefId,
     },
@@ -304,6 +322,9 @@ pub enum ObligationCauseCode<'tcx> {
     /// Intrinsic has wrong type
     IntrinsicType,
 
+    /// A let else block does not diverge
+    LetElse,
+
     /// Method receiver
     MethodReceiver,
 
@@ -336,7 +357,7 @@ pub enum ObligationCauseCode<'tcx> {
     WellFormed(Option<WellFormedLoc>),
 
     /// From `match_impl`. The cause for us having to match an impl, and the DefId we are matching against.
-    MatchImpl(Lrc<ObligationCauseCode<'tcx>>, DefId),
+    MatchImpl(ObligationCause<'tcx>, DefId),
 }
 
 /// The 'location' at which we try to perform HIR-based wf checking.
@@ -364,11 +385,12 @@ impl ObligationCauseCode<'_> {
     // Return the base obligation, ignoring derived obligations.
     pub fn peel_derives(&self) -> &Self {
         let mut base_cause = self;
-        while let BuiltinDerivedObligation(cause)
-        | ImplDerivedObligation(cause)
-        | DerivedObligation(cause) = base_cause
+        while let BuiltinDerivedObligation(DerivedObligationCause { parent_code, .. })
+        | ImplDerivedObligation(DerivedObligationCause { parent_code, .. })
+        | DerivedObligation(DerivedObligationCause { parent_code, .. })
+        | FunctionArgumentObligation { parent_code, .. } = base_cause
         {
-            base_cause = &cause.parent_code;
+            base_cause = &parent_code;
         }
         base_cause
     }
@@ -426,15 +448,28 @@ pub struct DerivedObligationCause<'tcx> {
 
 #[derive(Clone, Debug, TypeFoldable, Lift)]
 pub enum SelectionError<'tcx> {
+    /// The trait is not implemented.
     Unimplemented,
+    /// After a closure impl has selected, its "outputs" were evaluated
+    /// (which for closures includes the "input" type params) and they
+    /// didn't resolve. See `confirm_poly_trait_refs` for more.
     OutputTypeParameterMismatch(
         ty::PolyTraitRef<'tcx>,
         ty::PolyTraitRef<'tcx>,
         ty::error::TypeError<'tcx>,
     ),
+    /// The trait pointed by `DefId` is not object safe.
     TraitNotObjectSafe(DefId),
+    /// A given constant couldn't be evaluated.
     NotConstEvaluatable(NotConstEvaluatable),
+    /// Exceeded the recursion depth during type projection.
     Overflow,
+    /// Signaling that an error has already been emitted, to avoid
+    /// multiple errors being shown.
+    ErrorReporting,
+    /// Multiple applicable `impl`s where found. The `DefId`s correspond to
+    /// all the `impl`s' Items.
+    Ambiguous(Vec<DefId>),
 }
 
 /// When performing resolution, it is typically the case that there
@@ -495,7 +530,7 @@ pub enum ImplSource<'tcx, N> {
     /// for some type parameter. The `Vec<N>` represents the
     /// obligations incurred from normalizing the where-clause (if
     /// any).
-    Param(Vec<N>, Constness),
+    Param(Vec<N>, ty::BoundConstness),
 
     /// Virtual calls through an object.
     Object(ImplSourceObjectData<'tcx, N>),
@@ -503,8 +538,11 @@ pub enum ImplSource<'tcx, N> {
     /// Successful resolution for a builtin trait.
     Builtin(ImplSourceBuiltinData<N>),
 
+    /// ImplSource for trait upcasting coercion
+    TraitUpcasting(ImplSourceTraitUpcastingData<'tcx, N>),
+
     /// ImplSource automatically generated for a closure. The `DefId` is the ID
-    /// of the closure expression. This is a `ImplSource::UserDefined` in spirit, but the
+    /// of the closure expression. This is an `ImplSource::UserDefined` in spirit, but the
     /// impl is generated by the compiler and does not appear in the source.
     Closure(ImplSourceClosureData<'tcx, N>),
 
@@ -522,6 +560,9 @@ pub enum ImplSource<'tcx, N> {
 
     /// ImplSource for a trait alias.
     TraitAlias(ImplSourceTraitAliasData<'tcx, N>),
+
+    /// ImplSource for a `const Drop` implementation.
+    ConstDrop(ImplSourceConstDropData),
 }
 
 impl<'tcx, N> ImplSource<'tcx, N> {
@@ -536,8 +577,10 @@ impl<'tcx, N> ImplSource<'tcx, N> {
             ImplSource::Object(d) => d.nested,
             ImplSource::FnPointer(d) => d.nested,
             ImplSource::DiscriminantKind(ImplSourceDiscriminantKindData)
-            | ImplSource::Pointee(ImplSourcePointeeData) => Vec::new(),
+            | ImplSource::Pointee(ImplSourcePointeeData)
+            | ImplSource::ConstDrop(ImplSourceConstDropData) => Vec::new(),
             ImplSource::TraitAlias(d) => d.nested,
+            ImplSource::TraitUpcasting(d) => d.nested,
         }
     }
 
@@ -552,8 +595,10 @@ impl<'tcx, N> ImplSource<'tcx, N> {
             ImplSource::Object(d) => &d.nested[..],
             ImplSource::FnPointer(d) => &d.nested[..],
             ImplSource::DiscriminantKind(ImplSourceDiscriminantKindData)
-            | ImplSource::Pointee(ImplSourcePointeeData) => &[],
+            | ImplSource::Pointee(ImplSourcePointeeData)
+            | ImplSource::ConstDrop(ImplSourceConstDropData) => &[],
             ImplSource::TraitAlias(d) => &d.nested[..],
+            ImplSource::TraitUpcasting(d) => &d.nested[..],
         }
     }
 
@@ -605,6 +650,16 @@ impl<'tcx, N> ImplSource<'tcx, N> {
                 substs: d.substs,
                 nested: d.nested.into_iter().map(f).collect(),
             }),
+            ImplSource::TraitUpcasting(d) => {
+                ImplSource::TraitUpcasting(ImplSourceTraitUpcastingData {
+                    upcast_trait_ref: d.upcast_trait_ref,
+                    vtable_vptr_slot: d.vtable_vptr_slot,
+                    nested: d.nested.into_iter().map(f).collect(),
+                })
+            }
+            ImplSource::ConstDrop(ImplSourceConstDropData) => {
+                ImplSource::ConstDrop(ImplSourceConstDropData)
+            }
         }
     }
 }
@@ -651,6 +706,20 @@ pub struct ImplSourceAutoImplData<N> {
 }
 
 #[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
+pub struct ImplSourceTraitUpcastingData<'tcx, N> {
+    /// `Foo` upcast to the obligation trait. This will be some supertrait of `Foo`.
+    pub upcast_trait_ref: ty::PolyTraitRef<'tcx>,
+
+    /// The vtable is formed by concatenating together the method lists of
+    /// the base object trait and all supertraits, pointers to supertrait vtable will
+    /// be provided when necessary; this is the position of `upcast_trait_ref`'s vtable
+    /// within that vtable.
+    pub vtable_vptr_slot: Option<usize>,
+
+    pub nested: Vec<N>,
+}
+
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceBuiltinData<N> {
     pub nested: Vec<N>,
 }
@@ -661,8 +730,9 @@ pub struct ImplSourceObjectData<'tcx, N> {
     pub upcast_trait_ref: ty::PolyTraitRef<'tcx>,
 
     /// The vtable is formed by concatenating together the method lists of
-    /// the base object trait and all supertraits; this is the start of
-    /// `upcast_trait_ref`'s methods in that vtable.
+    /// the base object trait and all supertraits, pointers to supertrait vtable will
+    /// be provided when necessary; this is the start of `upcast_trait_ref`'s methods
+    /// in that vtable.
     pub vtable_base: usize,
 
     pub nested: Vec<N>,
@@ -681,6 +751,9 @@ pub struct ImplSourceDiscriminantKindData;
 #[derive(Clone, Debug, PartialEq, Eq, TyEncodable, TyDecodable, HashStable)]
 pub struct ImplSourcePointeeData;
 
+#[derive(Clone, Debug, PartialEq, Eq, TyEncodable, TyDecodable, HashStable)]
+pub struct ImplSourceConstDropData;
+
 #[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceTraitAliasData<'tcx, N> {
     pub alias_def_id: DefId,
@@ -688,7 +761,7 @@ pub struct ImplSourceTraitAliasData<'tcx, N> {
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, HashStable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, HashStable, PartialOrd, Ord)]
 pub enum ObjectSafetyViolation {
     /// `Self: Sized` declared on the trait.
     SizedSelf(SmallVec<[Span; 1]>),
@@ -837,7 +910,7 @@ impl ObjectSafetyViolation {
 }
 
 /// Reasons a method might not be object-safe.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable, PartialOrd, Ord)]
 pub enum MethodViolationCode {
     /// e.g., `fn foo()`
     StaticMethod(Option<(&'static str, Span)>, Span, bool /* has args */),

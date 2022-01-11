@@ -39,7 +39,7 @@ use crate::time::Duration;
 ///
 /// fn main() -> std::io::Result<()> {
 ///     {
-///         let mut socket = UdpSocket::bind("127.0.0.1:34254")?;
+///         let socket = UdpSocket::bind("127.0.0.1:34254")?;
 ///
 ///         // Receives a single datagram message on the socket. If `buf` is too small to hold
 ///         // the message, it will be cut off.
@@ -408,7 +408,7 @@ impl UdpSocket {
     /// Sets the value of the `IP_MULTICAST_LOOP` option for this socket.
     ///
     /// If enabled, multicast packets will be looped back to the local socket.
-    /// Note that this may not have any effect on IPv6 sockets.
+    /// Note that this might not have any effect on IPv6 sockets.
     ///
     /// # Examples
     ///
@@ -447,7 +447,7 @@ impl UdpSocket {
     /// this socket. The default value is 1 which means that multicast packets
     /// don't leave the local network unless explicitly requested.
     ///
-    /// Note that this may not have any effect on IPv6 sockets.
+    /// Note that this might not have any effect on IPv6 sockets.
     ///
     /// # Examples
     ///
@@ -483,7 +483,7 @@ impl UdpSocket {
     /// Sets the value of the `IPV6_MULTICAST_LOOP` option for this socket.
     ///
     /// Controls whether this socket sees the multicast packets it sends itself.
-    /// Note that this may not have any affect on IPv4 sockets.
+    /// Note that this might not have any affect on IPv4 sockets.
     ///
     /// # Examples
     ///
@@ -778,6 +778,12 @@ impl UdpSocket {
         self.0.set_nonblocking(nonblocking)
     }
 }
+
+// In addition to the `impl`s here, `UdpSocket` also has `impl`s for
+// `AsFd`/`From<OwnedFd>`/`Into<OwnedFd>` and
+// `AsRawFd`/`IntoRawFd`/`FromRawFd`, on Unix and WASI, and
+// `AsSocket`/`From<OwnedSocket>`/`Into<OwnedSocket>` and
+// `AsRawSocket`/`IntoRawSocket`/`FromRawSocket` on Windows.
 
 impl AsInner<net_imp::UdpSocket> for UdpSocket {
     fn as_inner(&self) -> &net_imp::UdpSocket {

@@ -104,8 +104,10 @@ pub enum DefKind {
     Use,
     /// An `extern` block.
     ForeignMod,
-    /// Anonymous constant, e.g. the `1 + 2` in `[u8; 1 + 2]`, or `const { 1 + 2}`
+    /// Anonymous constant, e.g. the `1 + 2` in `[u8; 1 + 2]`
     AnonConst,
+    /// An inline constant, e.g. `const { 1 + 2 }`
+    InlineConst,
     /// Opaque type, aka `impl Trait`.
     OpaqueTy,
     Field,
@@ -155,6 +157,7 @@ impl DefKind {
             DefKind::Use => "import",
             DefKind::ForeignMod => "foreign module",
             DefKind::AnonConst => "constant expression",
+            DefKind::InlineConst => "inline constant",
             DefKind::Field => "field",
             DefKind::Impl => "implementation",
             DefKind::Closure => "closure",
@@ -174,6 +177,7 @@ impl DefKind {
             | DefKind::OpaqueTy
             | DefKind::Impl
             | DefKind::Use
+            | DefKind::InlineConst
             | DefKind::ExternCrate => "an",
             DefKind::Macro(macro_kind) => macro_kind.article(),
             _ => "a",
@@ -207,6 +211,7 @@ impl DefKind {
 
             // Not namespaced.
             DefKind::AnonConst
+            | DefKind::InlineConst
             | DefKind::Field
             | DefKind::LifetimeParam
             | DefKind::ExternCrate
@@ -307,7 +312,7 @@ pub enum Res<Id = hir::HirId> {
     /// We do however allow `Self` in repeat expression even if it is generic to not break code
     /// which already works on stable while causing the `const_evaluatable_unchecked` future compat lint.
     ///
-    /// FIXME(lazy_normalization_consts): Remove this bodge once that feature is stable.
+    /// FIXME(generic_const_exprs): Remove this bodge once that feature is stable.
     SelfTy(
         /// Optionally, the trait associated with this `Self` type.
         Option<DefId>,
@@ -438,11 +443,11 @@ impl<T> PerNS<T> {
     }
 
     pub fn into_iter(self) -> IntoIter<T, 3> {
-        IntoIter::new([self.value_ns, self.type_ns, self.macro_ns])
+        [self.value_ns, self.type_ns, self.macro_ns].into_iter()
     }
 
     pub fn iter(&self) -> IntoIter<&T, 3> {
-        IntoIter::new([&self.value_ns, &self.type_ns, &self.macro_ns])
+        [&self.value_ns, &self.type_ns, &self.macro_ns].into_iter()
     }
 }
 
@@ -476,7 +481,7 @@ impl<T> PerNS<Option<T>> {
 
     /// Returns an iterator over the items which are `Some`.
     pub fn present_items(self) -> impl Iterator<Item = T> {
-        IntoIter::new([self.type_ns, self.value_ns, self.macro_ns]).filter_map(|it| it)
+        [self.type_ns, self.value_ns, self.macro_ns].into_iter().flatten()
     }
 }
 
@@ -596,6 +601,11 @@ impl<Id> Res<Id> {
             Res::NonMacroAttr(attr_kind) => Res::NonMacroAttr(attr_kind),
             Res::Err => Res::Err,
         }
+    }
+
+    #[track_caller]
+    pub fn expect_non_local<OtherId>(self) -> Res<OtherId> {
+        self.map_id(|_| panic!("unexpected `Res::Local`"))
     }
 
     pub fn macro_kind(self) -> Option<MacroKind> {

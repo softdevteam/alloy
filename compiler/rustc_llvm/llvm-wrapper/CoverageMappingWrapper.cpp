@@ -10,6 +10,7 @@ using namespace llvm;
 
 struct LLVMRustCounterMappingRegion {
   coverage::Counter Count;
+  coverage::Counter FalseCount;
   uint32_t FileID;
   uint32_t ExpandedFileID;
   uint32_t LineStart;
@@ -53,7 +54,7 @@ extern "C" void LLVMRustCoverageWriteMappingToBuffer(
   MappingRegions.reserve(NumMappingRegions);
   for (const auto &Region : makeArrayRef(RustMappingRegions, NumMappingRegions)) {
     MappingRegions.emplace_back(
-        Region.Count, Region.FileID, Region.ExpandedFileID,
+        Region.Count, Region.FalseCount, Region.FileID, Region.ExpandedFileID,
         Region.LineStart, Region.ColumnStart, Region.LineEnd, Region.ColumnEnd,
         Region.Kind);
   }
@@ -98,10 +99,7 @@ extern "C" void LLVMRustCoverageWriteMapSectionNameToString(LLVMModuleRef M,
 
 extern "C" void LLVMRustCoverageWriteFuncSectionNameToString(LLVMModuleRef M,
                                                              RustStringRef Str) {
-#if LLVM_VERSION_GE(11, 0)
   WriteSectionNameToString(M, IPSK_covfun, Str);
-// else do nothing; the `Version` check will abort codegen on the Rust side
-#endif
 }
 
 extern "C" void LLVMRustCoverageWriteMappingVarNameToString(RustStringRef Str) {
@@ -111,9 +109,9 @@ extern "C" void LLVMRustCoverageWriteMappingVarNameToString(RustStringRef Str) {
 }
 
 extern "C" uint32_t LLVMRustCoverageMappingVersion() {
-#if LLVM_VERSION_GE(11, 0)
-  return coverage::CovMapVersion::Version4;
+#if LLVM_VERSION_GE(13, 0)
+  return coverage::CovMapVersion::Version6;
 #else
-  return coverage::CovMapVersion::Version3;
+  return coverage::CovMapVersion::Version5;
 #endif
 }

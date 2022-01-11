@@ -4,7 +4,6 @@
 
 use rustc_tools_util::VersionInfo;
 use std::env;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{self, Command};
 
@@ -14,6 +13,8 @@ Usage:
     cargo clippy [options] [--] [<opts>...]
 
 Common options:
+    --no-deps                Run Clippy only on the given crate, without linting the dependencies
+    --fix                    Automatically apply lint suggestions. This flag implies `--no-deps`
     -h, --help               Print this message
     -V, --version            Print version info and exit
 
@@ -71,11 +72,16 @@ impl ClippyCmd {
     {
         let mut cargo_subcommand = "check";
         let mut args = vec![];
+        let mut clippy_args: Vec<String> = vec![];
 
         for arg in old_args.by_ref() {
             match arg.as_str() {
                 "--fix" => {
                     cargo_subcommand = "fix";
+                    continue;
+                },
+                "--no-deps" => {
+                    clippy_args.push("--no-deps".into());
                     continue;
                 },
                 "--" => break,
@@ -85,7 +91,7 @@ impl ClippyCmd {
             args.push(arg);
         }
 
-        let mut clippy_args: Vec<String> = old_args.collect();
+        clippy_args.append(&mut (old_args.collect()));
         if cargo_subcommand == "fix" && !clippy_args.iter().any(|arg| arg == "--no-deps") {
             clippy_args.push("--no-deps".into());
         }
@@ -109,22 +115,6 @@ impl ClippyCmd {
         path
     }
 
-    fn target_dir() -> Option<(&'static str, OsString)> {
-        env::var_os("CLIPPY_DOGFOOD")
-            .map(|_| {
-                env::var_os("CARGO_MANIFEST_DIR").map_or_else(
-                    || std::ffi::OsString::from("clippy_dogfood"),
-                    |d| {
-                        std::path::PathBuf::from(d)
-                            .join("target")
-                            .join("dogfood")
-                            .into_os_string()
-                    },
-                )
-            })
-            .map(|p| ("CARGO_TARGET_DIR", p))
-    }
-
     fn into_std_cmd(self) -> Command {
         let mut cmd = Command::new("cargo");
         let clippy_args: String = self
@@ -134,7 +124,6 @@ impl ClippyCmd {
             .collect();
 
         cmd.env("RUSTC_WORKSPACE_WRAPPER", Self::path())
-            .envs(ClippyCmd::target_dir())
             .env("CLIPPY_ARGS", clippy_args)
             .arg(self.cargo_subcommand)
             .args(&self.args);

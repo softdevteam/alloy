@@ -8,14 +8,14 @@ use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Lints for suspicious operations in impls of arithmetic operators, e.g.
+    /// ### What it does
+    /// Lints for suspicious operations in impls of arithmetic operators, e.g.
     /// subtracting elements in an Add impl.
     ///
-    /// **Why this is bad?** This is probably a typo or copy-and-paste error and not intended.
+    /// ### Why is this bad?
+    /// This is probably a typo or copy-and-paste error and not intended.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// impl Add for Foo {
     ///     type Output = Foo;
@@ -25,20 +25,21 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub SUSPICIOUS_ARITHMETIC_IMPL,
     suspicious,
     "suspicious use of operators in impl of arithmetic trait"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Lints for suspicious operations in impls of OpAssign, e.g.
+    /// ### What it does
+    /// Lints for suspicious operations in impls of OpAssign, e.g.
     /// subtracting elements in an AddAssign impl.
     ///
-    /// **Why this is bad?** This is probably a typo or copy-and-paste error and not intended.
+    /// ### Why is this bad?
+    /// This is probably a typo or copy-and-paste error and not intended.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```ignore
     /// impl AddAssign for Foo {
     ///     fn add_assign(&mut self, other: Foo) {
@@ -46,6 +47,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub SUSPICIOUS_OP_ASSIGN_IMPL,
     suspicious,
     "suspicious use of operators in impl of OpAssign trait"

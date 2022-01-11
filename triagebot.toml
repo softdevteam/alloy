@@ -2,11 +2,13 @@
 allow-unauthenticated = [
     "C-*", "A-*", "E-*", "NLL-*", "O-*", "S-*", "T-*", "WG-*", "F-*",
     "D-*",
+    "needs-fcp",
+    "relnotes",
     "requires-nightly",
     "regression-*",
     "perf-*",
-    # I-* without I-nominated
-    "I-*", "!I-nominated",
+    # I-* without I-*nominated
+    "I-*", "!I-*nominated",
     "AsyncAwait-OnDeck",
 ]
 
@@ -102,6 +104,8 @@ message_on_add = """\
 - Needs `I-nominated`?
 """
 message_on_remove = "Issue #{number}'s prioritization request has been removed."
+message_on_close = "Issue #{number} has been closed while requested for prioritization."
+message_on_reopen = "Issue #{number} has been reopened."
 
 [notify-zulip."T-rustdoc"]
 required_labels = ["I-nominated"]
@@ -111,6 +115,14 @@ message_on_add = """\
 @*T-rustdoc* issue #{number} "{title}" has been nominated for `T-rustdoc` discussion.
 """
 message_on_remove = "Issue #{number}'s nomination request has been removed."
+
+[notify-zulip."A-edition-2021"]
+required_labels = ["C-bug"]
+zulip_stream = 268952 # #edition 2021
+topic = "Edition Bugs"
+message_on_add = """\
+Issue #{number} "{title}" has been added.
+"""
 
 [github-releases]
 format = "rustc"

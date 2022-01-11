@@ -3,16 +3,18 @@
 use super::fd::WasiFd;
 use crate::ffi::{CStr, CString, OsStr, OsString};
 use crate::fmt;
-use crate::io::{self, IoSlice, IoSliceMut, SeekFrom};
+use crate::io::{self, IoSlice, IoSliceMut, ReadBuf, SeekFrom};
 use crate::iter;
 use crate::mem::{self, ManuallyDrop};
+use crate::os::raw::c_int;
 use crate::os::wasi::ffi::{OsStrExt, OsStringExt};
+use crate::os::wasi::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 use crate::path::{Path, PathBuf};
 use crate::ptr;
 use crate::sync::Arc;
 use crate::sys::time::SystemTime;
 use crate::sys::unsupported;
-use crate::sys_common::FromInner;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
 
 pub use crate::sys_common::fs::{remove_dir_all, try_exists};
 
@@ -409,6 +411,10 @@ impl File {
         true
     }
 
+    pub fn read_buf(&self, buf: &mut ReadBuf<'_>) -> io::Result<()> {
+        crate::io::default_read_buf(|buf| self.read(buf), buf)
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.write_vectored(&[IoSlice::new(buf)])
     }
@@ -441,22 +447,50 @@ impl File {
         unsupported()
     }
 
-    pub fn fd(&self) -> &WasiFd {
-        &self.fd
-    }
-
-    pub fn into_fd(self) -> WasiFd {
-        self.fd
-    }
-
     pub fn read_link(&self, file: &Path) -> io::Result<PathBuf> {
         read_link(&self.fd, file)
     }
 }
 
-impl FromInner<u32> for File {
-    fn from_inner(fd: u32) -> File {
-        unsafe { File { fd: WasiFd::from_raw(fd) } }
+impl AsInner<WasiFd> for File {
+    fn as_inner(&self) -> &WasiFd {
+        &self.fd
+    }
+}
+
+impl IntoInner<WasiFd> for File {
+    fn into_inner(self) -> WasiFd {
+        self.fd
+    }
+}
+
+impl FromInner<WasiFd> for File {
+    fn from_inner(fd: WasiFd) -> File {
+        File { fd }
+    }
+}
+
+impl AsFd for File {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+impl AsRawFd for File {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for File {
+    fn into_raw_fd(self) -> RawFd {
+        self.fd.into_raw_fd()
+    }
+}
+
+impl FromRawFd for File {
+    unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
+        unsafe { Self { fd: FromRawFd::from_raw_fd(raw_fd) } }
     }
 }
 
@@ -473,7 +507,7 @@ impl DirBuilder {
 
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("File").field("fd", &self.fd.as_raw()).finish()
+        f.debug_struct("File").field("fd", &self.as_raw_fd()).finish()
     }
 }
 
@@ -653,7 +687,7 @@ fn open_parent(p: &Path) -> io::Result<(ManuallyDrop<WasiFd>, PathBuf)> {
             let relative = CStr::from_ptr(relative_path).to_bytes().to_vec();
 
             return Ok((
-                ManuallyDrop::new(WasiFd::from_raw(fd as u32)),
+                ManuallyDrop::new(WasiFd::from_raw_fd(fd as c_int)),
                 PathBuf::from(OsString::from_vec(relative)),
             ));
         }

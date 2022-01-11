@@ -88,7 +88,7 @@
 //! ```
 //!
 //! *Note: The actual definition of [`Write`] uses [`io::Result`], which
-//! is just a synonym for [`Result`]`<T, `[`io::Error`]`>`.*
+//! is just a synonym for <code>[Result]<T, [io::Error]></code>.*
 //!
 //! This method doesn't produce a value, but the write may
 //! fail. It's crucial to handle the error case, and *not* write
@@ -217,13 +217,13 @@
 //! early return of [`Err`] that it provides.
 //!
 //! [`expect`]: Result::expect
-//! [`Write`]: ../../std/io/trait.Write.html
-//! [`write_all`]: ../../std/io/trait.Write.html#method.write_all
-//! [`io::Result`]: ../../std/io/type.Result.html
+//! [`Write`]: ../../std/io/trait.Write.html "io::Write"
+//! [`write_all`]: ../../std/io/trait.Write.html#method.write_all "io::Write::write_all"
+//! [`io::Result`]: ../../std/io/type.Result.html "io::Result"
 //! [`?`]: crate::ops::Try
 //! [`Ok(T)`]: Ok
 //! [`Err(E)`]: Err
-//! [`io::Error`]: ../../std/io/struct.Error.html
+//! [io::Error]: ../../std/io/struct.Error.html "io::Error"
 //!
 //! # Method overview
 //!
@@ -329,8 +329,8 @@
 //!   [`Ok`], or returns the provided default value if the [`Result`] is
 //!   [`Err`]
 //! * [`map_or_else`] applies the provided function to the contained value
-//!   of [`Ok`], or applies the provided fallback function to the contained
-//!   value of [`Err`]
+//!   of [`Ok`], or applies the provided default fallback function to the
+//!   contained value of [`Err`]
 //!
 //! [`map_or`]: Result::map_or
 //! [`map_or_else`]: Result::map_or_else
@@ -378,6 +378,24 @@
 //!
 //! [`and_then`]: Result::and_then
 //! [`or_else`]: Result::or_else
+//!
+//! ## Comparison operators
+//!
+//! If `T` and `E` both implement [`PartialOrd`] then [`Result<T, E>`] will
+//! derive its [`PartialOrd`] implementation.  With this order, an [`Ok`]
+//! compares as less than any [`Err`], while two [`Ok`] or two [`Err`]
+//! compare as their contained values would in `T` or `E` respectively.  If `T`
+//! and `E` both also implement [`Ord`], then so does [`Result<T, E>`].
+//!
+//! ```
+//! assert!(Ok(1) < Err(0));
+//! let x: Result<i32, ()> = Ok(0);
+//! let y = Ok(1);
+//! assert!(x < y);
+//! let x: Result<(), i32> = Err(0);
+//! let y = Err(1);
+//! assert!(x < y);
+//! ```
 //!
 //! ## Iterating over `Result`
 //!
@@ -480,7 +498,7 @@ use crate::{convert, fmt, hint};
 /// See the [module documentation](self) for details.
 #[derive(Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 #[must_use = "this `Result` may be an `Err` variant, which should be handled"]
-#[rustc_diagnostic_item = "result_type"]
+#[rustc_diagnostic_item = "Result"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Result<T, E> {
     /// Contains the success value
@@ -711,7 +729,8 @@ impl<T, E> Result<T, E> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn as_mut(&mut self) -> Result<&mut T, &mut E> {
+    #[rustc_const_unstable(feature = "const_result", issue = "82814")]
+    pub const fn as_mut(&mut self) -> Result<&mut T, &mut E> {
         match *self {
             Ok(ref mut x) => Ok(x),
             Err(ref mut x) => Err(x),
@@ -777,9 +796,8 @@ impl<T, E> Result<T, E> {
         }
     }
 
-    /// Maps a `Result<T, E>` to `U` by applying a fallback function to a
-    /// contained [`Err`] value, or a default function to a
-    /// contained [`Ok`] value.
+    /// Maps a `Result<T, E>` to `U` by applying fallback function `default` to
+    /// a contained [`Err`] value, or function `f` to a contained [`Ok`] value.
     ///
     /// This function can be used to unpack a successful result
     /// while handling an error.
@@ -834,6 +852,53 @@ impl<T, E> Result<T, E> {
             Ok(t) => Ok(t),
             Err(e) => Err(op(e)),
         }
+    }
+
+    /// Calls the provided closure with a reference to the contained value (if [`Ok`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(result_option_inspect)]
+    ///
+    /// let x: u8 = "4"
+    ///     .parse::<u8>()
+    ///     .inspect(|x| println!("original: {}", x))
+    ///     .map(|x| x.pow(3))
+    ///     .expect("failed to parse number");
+    /// ```
+    #[inline]
+    #[unstable(feature = "result_option_inspect", issue = "91345")]
+    pub fn inspect<F: FnOnce(&T)>(self, f: F) -> Self {
+        if let Ok(ref t) = self {
+            f(t);
+        }
+
+        self
+    }
+
+    /// Calls the provided closure with a reference to the contained error (if [`Err`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(result_option_inspect)]
+    ///
+    /// use std::{fs, io};
+    ///
+    /// fn read() -> io::Result<String> {
+    ///     fs::read_to_string("address.txt")
+    ///         .inspect_err(|e| eprintln!("failed to read file: {}", e))
+    /// }
+    /// ```
+    #[inline]
+    #[unstable(feature = "result_option_inspect", issue = "91345")]
+    pub fn inspect_err<F: FnOnce(&E)>(self, f: F) -> Self {
+        if let Err(ref e) = self {
+            f(e);
+        }
+
+        self
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -1078,19 +1143,17 @@ impl<T, E> Result<T, E> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(option_result_unwrap_unchecked)]
     /// let x: Result<u32, &str> = Ok(2);
     /// assert_eq!(unsafe { x.unwrap_unchecked() }, 2);
     /// ```
     ///
     /// ```no_run
-    /// #![feature(option_result_unwrap_unchecked)]
     /// let x: Result<u32, &str> = Err("emergency failure");
     /// unsafe { x.unwrap_unchecked(); } // Undefined behavior!
     /// ```
     #[inline]
     #[track_caller]
-    #[unstable(feature = "option_result_unwrap_unchecked", reason = "newly added", issue = "81383")]
+    #[stable(feature = "option_result_unwrap_unchecked", since = "1.58.0")]
     pub unsafe fn unwrap_unchecked(self) -> T {
         debug_assert!(self.is_ok());
         match self {
@@ -1112,19 +1175,17 @@ impl<T, E> Result<T, E> {
     /// # Examples
     ///
     /// ```no_run
-    /// #![feature(option_result_unwrap_unchecked)]
     /// let x: Result<u32, &str> = Ok(2);
     /// unsafe { x.unwrap_err_unchecked() }; // Undefined behavior!
     /// ```
     ///
     /// ```
-    /// #![feature(option_result_unwrap_unchecked)]
     /// let x: Result<u32, &str> = Err("emergency failure");
     /// assert_eq!(unsafe { x.unwrap_err_unchecked() }, "emergency failure");
     /// ```
     #[inline]
     #[track_caller]
-    #[unstable(feature = "option_result_unwrap_unchecked", reason = "newly added", issue = "81383")]
+    #[stable(feature = "option_result_unwrap_unchecked", since = "1.58.0")]
     pub unsafe fn unwrap_err_unchecked(self) -> E {
         debug_assert!(self.is_err());
         match self {
@@ -1871,7 +1932,7 @@ impl<A, E, V: FromIterator<A>> FromIterator<Result<A, E>> for Result<V, E> {
 }
 
 #[unstable(feature = "try_trait_v2", issue = "84277")]
-impl<T, E> ops::TryV2 for Result<T, E> {
+impl<T, E> ops::Try for Result<T, E> {
     type Output = T;
     type Residual = Result<convert::Infallible, E>;
 
@@ -1897,4 +1958,9 @@ impl<T, E, F: From<E>> ops::FromResidual<Result<convert::Infallible, E>> for Res
             Err(e) => Err(From::from(e)),
         }
     }
+}
+
+#[unstable(feature = "try_trait_v2_residual", issue = "91285")]
+impl<T, E> ops::Residual<T> for Result<convert::Infallible, E> {
+    type TryType = Result<T, E>;
 }

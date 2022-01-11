@@ -232,6 +232,7 @@ impl HirEqInterExpr<'_, '_, '_> {
             (&ExprKind::If(lc, lt, ref le), &ExprKind::If(rc, rt, ref re)) => {
                 self.eq_expr(lc, rc) && self.eq_expr(&**lt, &**rt) && both(le, re, |l, r| self.eq_expr(l, r))
             },
+            (&ExprKind::Let(lp, le, _), &ExprKind::Let(rp, re, _)) => self.eq_pat(lp, rp) && self.eq_expr(le, re),
             (&ExprKind::Lit(ref l), &ExprKind::Lit(ref r)) => l.node == r.node,
             (&ExprKind::Loop(lb, ref ll, ref lls, _), &ExprKind::Loop(rb, ref rl, ref rls, _)) => {
                 lls == rls && self.eq_block(lb, rb) && both(ll, rl, |l, r| l.ident.name == r.ident.name)
@@ -288,6 +289,7 @@ impl HirEqInterExpr<'_, '_, '_> {
             (GenericArg::Const(l), GenericArg::Const(r)) => self.eq_body(l.value.body, r.value.body),
             (GenericArg::Lifetime(l_lt), GenericArg::Lifetime(r_lt)) => Self::eq_lifetime(l_lt, r_lt),
             (GenericArg::Type(l_ty), GenericArg::Type(r_ty)) => self.eq_ty(l_ty, r_ty),
+            (GenericArg::Infer(l_inf), GenericArg::Infer(r_inf)) => self.eq_ty(&l_inf.to_ty(), &r_inf.to_ty()),
             _ => false,
         }
     }
@@ -538,7 +540,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
         std::mem::discriminant(&b.rules).hash(&mut self.s);
     }
 
-    #[allow(clippy::many_single_char_names, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     pub fn hash_expr(&mut self, e: &Expr<'_>) {
         let simple_const = self
             .maybe_typeck_results
@@ -663,6 +665,10 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                         InlineAsmOperand::Sym { expr } => self.hash_expr(expr),
                     }
                 }
+            },
+            ExprKind::Let(pat, expr, _) => {
+                self.hash_expr(expr);
+                self.hash_pat(pat);
             },
             ExprKind::LlvmInlineAsm(..) | ExprKind::Err => {},
             ExprKind::Lit(ref l) => {
@@ -885,7 +891,11 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
 
     pub fn hash_ty(&mut self, ty: &Ty<'_>) {
         std::mem::discriminant(&ty.kind).hash(&mut self.s);
-        match ty.kind {
+        self.hash_tykind(&ty.kind);
+    }
+
+    pub fn hash_tykind(&mut self, ty: &TyKind<'_>) {
+        match ty {
             TyKind::Slice(ty) => {
                 self.hash_ty(ty);
             },
@@ -898,7 +908,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 mut_ty.mutbl.hash(&mut self.s);
             },
             TyKind::Rptr(lifetime, ref mut_ty) => {
-                self.hash_lifetime(lifetime);
+                self.hash_lifetime(*lifetime);
                 self.hash_ty(mut_ty.ty);
                 mut_ty.mutbl.hash(&mut self.s);
             },
@@ -918,7 +928,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 bfn.decl.c_variadic.hash(&mut self.s);
             },
             TyKind::Tup(ty_list) => {
-                for ty in ty_list {
+                for ty in *ty_list {
                     self.hash_ty(ty);
                 }
             },
@@ -927,7 +937,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_generic_args(arg_list);
             },
             TyKind::TraitObject(_, lifetime, _) => {
-                self.hash_lifetime(lifetime);
+                self.hash_lifetime(*lifetime);
             },
             TyKind::Typeof(anon_const) => {
                 self.hash_body(anon_const.body);
@@ -949,6 +959,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 GenericArg::Lifetime(l) => self.hash_lifetime(l),
                 GenericArg::Type(ref ty) => self.hash_ty(ty),
                 GenericArg::Const(ref ca) => self.hash_body(ca.value.body),
+                GenericArg::Infer(ref inf) => self.hash_ty(&inf.to_ty()),
             }
         }
     }

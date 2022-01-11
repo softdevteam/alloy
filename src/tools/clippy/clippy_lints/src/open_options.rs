@@ -8,20 +8,21 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::{Span, Spanned};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for duplicate open options as well as combinations
+    /// ### What it does
+    /// Checks for duplicate open options as well as combinations
     /// that make no sense.
     ///
-    /// **Why is this bad?** In the best case, the code will be harder to read than
+    /// ### Why is this bad?
+    /// In the best case, the code will be harder to read than
     /// necessary. I don't know the worst case.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```rust
     /// use std::fs::OpenOptions;
     ///
     /// OpenOptions::new().read(true).truncate(true);
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NONSENSICAL_OPEN_OPTIONS,
     correctness,
     "nonsensical combination of options for opening a file"
@@ -31,11 +32,11 @@ declare_lint_pass!(OpenOptions => [NONSENSICAL_OPEN_OPTIONS]);
 
 impl<'tcx> LateLintPass<'tcx> for OpenOptions {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) {
-        if let ExprKind::MethodCall(path, _, arguments, _) = e.kind {
-            let obj_ty = cx.typeck_results().expr_ty(&arguments[0]).peel_refs();
+        if let ExprKind::MethodCall(path, _, [self_arg, ..], _) = &e.kind {
+            let obj_ty = cx.typeck_results().expr_ty(self_arg).peel_refs();
             if path.ident.name == sym!(open) && match_type(cx, obj_ty, &paths::OPEN_OPTIONS) {
                 let mut options = Vec::new();
-                get_open_options(cx, &arguments[0], &mut options);
+                get_open_options(cx, self_arg, &mut options);
                 check_open_options(cx, &options, e.span);
             }
         }

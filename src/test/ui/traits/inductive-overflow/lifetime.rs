@@ -15,17 +15,17 @@ impl<'a> Y for C<'a> {
 struct C<'a>(&'a ());
 struct X<T: Y>(T::P);
 
-impl<T: NotAuto> NotAuto for Box<T> {}
-impl<T: Y> NotAuto for X<T> where T::P: NotAuto {} //~ NOTE: required
+impl<T: NotAuto> NotAuto for Box<T> {} //~ NOTE: required
+impl<T: Y> NotAuto for X<T> where T::P: NotAuto {}
 impl<'a> NotAuto for C<'a> {}
 
 fn is_send<S: NotAuto>() {}
 //~^ NOTE: required
-
+//~| NOTE: required
 fn main() {
     // Should only be a few notes.
     is_send::<X<C<'static>>>();
     //~^ ERROR overflow evaluating
-    //~| 2 redundant requirements hidden
+    //~| 3 redundant requirements hidden
     //~| required because of
 }

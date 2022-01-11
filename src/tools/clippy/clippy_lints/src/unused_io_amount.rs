@@ -5,9 +5,11 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for unused written/read amount.
+    /// ### What it does
+    /// Checks for unused written/read amount.
     ///
-    /// **Why is this bad?** `io::Write::write(_vectored)` and
+    /// ### Why is this bad?
+    /// `io::Write::write(_vectored)` and
     /// `io::Read::read(_vectored)` are not guaranteed to
     /// process the entire buffer. They return how many bytes were processed, which
     /// might be smaller
@@ -15,9 +17,10 @@ declare_clippy_lint! {
     /// partial-write/read, use
     /// `write_all`/`read_exact` instead.
     ///
-    /// **Known problems:** Detects only common patterns.
+    /// ### Known problems
+    /// Detects only common patterns.
     ///
-    /// **Example:**
+    /// ### Example
     /// ```rust,ignore
     /// use std::io;
     /// fn foo<W: io::Write>(w: &mut W) -> io::Result<()> {
@@ -26,6 +29,7 @@ declare_clippy_lint! {
     ///     Ok(())
     /// }
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub UNUSED_IO_AMOUNT,
     correctness,
     "unused written/read amount"
@@ -42,20 +46,20 @@ impl<'tcx> LateLintPass<'tcx> for UnusedIoAmount {
 
         match expr.kind {
             hir::ExprKind::Match(res, _, _) if is_try(cx, expr).is_some() => {
-                if let hir::ExprKind::Call(func, args) = res.kind {
+                if let hir::ExprKind::Call(func, [ref arg_0, ..]) = res.kind {
                     if matches!(
                         func.kind,
                         hir::ExprKind::Path(hir::QPath::LangItem(hir::LangItem::TryTraitBranch, _))
                     ) {
-                        check_map_error(cx, &args[0], expr);
+                        check_map_error(cx, arg_0, expr);
                     }
                 } else {
                     check_map_error(cx, res, expr);
                 }
             },
-            hir::ExprKind::MethodCall(path, _, args, _) => match &*path.ident.as_str() {
+            hir::ExprKind::MethodCall(path, _, [ref arg_0, ..], _) => match &*path.ident.as_str() {
                 "expect" | "unwrap" | "unwrap_or" | "unwrap_or_else" => {
-                    check_map_error(cx, &args[0], expr);
+                    check_map_error(cx, arg_0, expr);
                 },
                 _ => (),
             },

@@ -1,14 +1,12 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::eager_or_lazy::is_lazyness_candidate;
+use clippy_utils::eager_or_lazy::switch_to_lazy_eval;
 use clippy_utils::source::{snippet, snippet_with_applicability, snippet_with_macro_callsite};
-use clippy_utils::ty::{implements_trait, is_type_diagnostic_item, match_type};
-use clippy_utils::{contains_return, get_trait_def_id, last_path_segment, paths};
+use clippy_utils::ty::{implements_trait, match_type};
+use clippy_utils::{contains_return, is_trait_item, last_path_segment, paths};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
-use rustc_hir::{BlockCheckMode, UnsafeSource};
 use rustc_lint::LateContext;
-use rustc_middle::ty;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym};
 use std::borrow::Cow;
@@ -34,15 +32,23 @@ pub(super) fn check<'tcx>(
         or_has_args: bool,
         span: Span,
     ) -> bool {
+        let is_default_default = || is_trait_item(cx, fun, sym::Default);
+
+        let implements_default = |arg, default_trait_id| {
+            let arg_ty = cx.typeck_results().expr_ty(arg);
+            implements_trait(cx, arg_ty, default_trait_id, &[])
+        };
+
         if_chain! {
             if !or_has_args;
             if name == "unwrap_or";
             if let hir::ExprKind::Path(ref qpath) = fun.kind;
+            if let Some(default_trait_id) = cx.tcx.get_diagnostic_item(sym::Default);
             let path = last_path_segment(qpath).ident.name;
-            if matches!(path, kw::Default | sym::new);
-            let arg_ty = cx.typeck_results().expr_ty(arg);
-            if let Some(default_trait_id) = get_trait_def_id(cx, &paths::DEFAULT_TRAIT);
-            if implements_trait(cx, arg_ty, default_trait_id, &[]);
+            // needs to target Default::default in particular or be *::new and have a Default impl
+            // available
+            if (matches!(path, kw::Default) && is_default_default())
+                || (matches!(path, sym::new) && implements_default(arg, default_trait_id));
 
             then {
                 let mut applicability = Applicability::MachineApplicable;
@@ -86,25 +92,10 @@ pub(super) fn check<'tcx>(
             (&paths::RESULT, true, &["or", "unwrap_or"], "else"),
         ];
 
-        if let hir::ExprKind::MethodCall(path, _, args, _) = &arg.kind {
-            if path.ident.name == sym::len {
-                let ty = cx.typeck_results().expr_ty(&args[0]).peel_refs();
-
-                match ty.kind() {
-                    ty::Slice(_) | ty::Array(_, _) | ty::Str => return,
-                    _ => (),
-                }
-
-                if is_type_diagnostic_item(cx, ty, sym::vec_type) {
-                    return;
-                }
-            }
-        }
-
         if_chain! {
             if KNOW_TYPES.iter().any(|k| k.2.contains(&name));
 
-            if is_lazyness_candidate(cx, arg);
+            if switch_to_lazy_eval(cx, arg);
             if !contains_return(arg);
 
             let self_ty = cx.typeck_results().expr_ty(self_expr);
@@ -156,26 +147,30 @@ pub(super) fn check<'tcx>(
         }
     }
 
-    if args.len() == 2 {
-        match args[1].kind {
+    if let [self_arg, arg] = args {
+        let inner_arg = if let hir::ExprKind::Block(
+            hir::Block {
+                stmts: [],
+                expr: Some(expr),
+                ..
+            },
+            _,
+        ) = arg.kind
+        {
+            expr
+        } else {
+            arg
+        };
+        match inner_arg.kind {
             hir::ExprKind::Call(fun, or_args) => {
                 let or_has_args = !or_args.is_empty();
-                if !check_unwrap_or_default(cx, name, fun, &args[0], &args[1], or_has_args, expr.span) {
+                if !check_unwrap_or_default(cx, name, fun, self_arg, arg, or_has_args, expr.span) {
                     let fun_span = if or_has_args { None } else { Some(fun.span) };
-                    check_general_case(cx, name, method_span, &args[0], &args[1], expr.span, fun_span);
+                    check_general_case(cx, name, method_span, self_arg, arg, expr.span, fun_span);
                 }
             },
             hir::ExprKind::Index(..) | hir::ExprKind::MethodCall(..) => {
-                check_general_case(cx, name, method_span, &args[0], &args[1], expr.span, None);
-            },
-            hir::ExprKind::Block(block, _) => {
-                if let BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided) = block.rules {
-                    if let Some(block_expr) = block.expr {
-                        if let hir::ExprKind::MethodCall(..) = block_expr.kind {
-                            check_general_case(cx, name, method_span, &args[0], &args[1], expr.span, None);
-                        }
-                    }
-                }
+                check_general_case(cx, name, method_span, self_arg, arg, expr.span, None);
             },
             _ => (),
         }

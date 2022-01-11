@@ -25,7 +25,10 @@ fn main() {
         || target.contains("haiku")
         || target.contains("vxworks")
         || target.contains("wasm32")
+        || target.contains("wasm64")
         || target.contains("asmjs")
+        || target.contains("espidf")
+        || target.contains("solid")
     {
         // These platforms don't have any special requirements.
     } else {

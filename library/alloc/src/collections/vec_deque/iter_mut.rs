@@ -1,5 +1,5 @@
 use core::fmt;
-use core::iter::{FusedIterator, TrustedLen, TrustedRandomAccess};
+use core::iter::{FusedIterator, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce};
 use core::marker::PhantomData;
 
 use super::{count, wrap_index, RingSlices};
@@ -13,10 +13,21 @@ use super::{count, wrap_index, RingSlices};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IterMut<'a, T: 'a> {
     // Internal safety invariant: the entire slice is dereferencable.
-    pub(crate) ring: *mut [T],
-    pub(crate) tail: usize,
-    pub(crate) head: usize,
-    pub(crate) phantom: PhantomData<&'a mut [T]>,
+    ring: *mut [T],
+    tail: usize,
+    head: usize,
+    phantom: PhantomData<&'a mut [T]>,
+}
+
+impl<'a, T> IterMut<'a, T> {
+    pub(super) unsafe fn new(
+        ring: *mut [T],
+        tail: usize,
+        head: usize,
+        phantom: PhantomData<&'a mut [T]>,
+    ) -> Self {
+        IterMut { ring, tail, head, phantom }
+    }
 }
 
 // SAFETY: we do nothing thread-local and there is no interior mutability,
@@ -90,11 +101,8 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
     #[inline]
     #[doc(hidden)]
-    unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item
-    where
-        Self: TrustedRandomAccess,
-    {
-        // Safety: The TrustedRandomAccess contract requires that callers only  pass an index
+    unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item {
+        // Safety: The TrustedRandomAccess contract requires that callers only pass an index
         // that is in bounds.
         unsafe {
             let idx = wrap_index(self.tail.wrapping_add(idx), self.ring.len());
@@ -146,6 +154,10 @@ unsafe impl<T> TrustedLen for IterMut<'_, T> {}
 
 #[doc(hidden)]
 #[unstable(feature = "trusted_random_access", issue = "none")]
-unsafe impl<T> TrustedRandomAccess for IterMut<'_, T> {
+unsafe impl<T> TrustedRandomAccess for IterMut<'_, T> {}
+
+#[doc(hidden)]
+#[unstable(feature = "trusted_random_access", issue = "none")]
+unsafe impl<T> TrustedRandomAccessNoCoerce for IterMut<'_, T> {
     const MAY_HAVE_SIDE_EFFECT: bool = false;
 }

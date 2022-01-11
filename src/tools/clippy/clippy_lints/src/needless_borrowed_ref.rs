@@ -7,12 +7,15 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for bindings that destructure a reference and borrow the inner
+    /// ### What it does
+    /// Checks for bindings that destructure a reference and borrow the inner
     /// value with `&ref`.
     ///
-    /// **Why is this bad?** This pattern has no effect in almost all cases.
+    /// ### Why is this bad?
+    /// This pattern has no effect in almost all cases.
     ///
-    /// **Known problems:** In some cases, `&ref` is needed to avoid a lifetime mismatch error.
+    /// ### Known problems
+    /// In some cases, `&ref` is needed to avoid a lifetime mismatch error.
     /// Example:
     /// ```rust
     /// fn foo(a: &Option<String>, b: &Option<String>) {
@@ -23,7 +26,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     ///
-    /// **Example:**
+    /// ### Example
     /// Bad:
     /// ```rust
     /// let mut v = Vec::<String>::new();
@@ -35,6 +38,7 @@ declare_clippy_lint! {
     /// let mut v = Vec::<String>::new();
     /// let _ = v.iter_mut().filter(|a| a.is_empty());
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub NEEDLESS_BORROWED_REFERENCE,
     complexity,
     "destructuring a reference and borrowing the inner value"

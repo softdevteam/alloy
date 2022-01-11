@@ -65,16 +65,18 @@ impl CommandEnv {
 
     // The following functions build up changes
     pub fn set(&mut self, key: &OsStr, value: &OsStr) {
+        let key = EnvKey::from(key);
         self.maybe_saw_path(&key);
-        self.vars.insert(key.to_owned().into(), Some(value.to_owned()));
+        self.vars.insert(key, Some(value.to_owned()));
     }
 
     pub fn remove(&mut self, key: &OsStr) {
+        let key = EnvKey::from(key);
         self.maybe_saw_path(&key);
         if self.clear {
-            self.vars.remove(key);
+            self.vars.remove(&key);
         } else {
-            self.vars.insert(key.to_owned().into(), None);
+            self.vars.insert(key, None);
         }
     }
 
@@ -87,7 +89,7 @@ impl CommandEnv {
         self.saw_path || self.clear
     }
 
-    fn maybe_saw_path(&mut self, key: &OsStr) {
+    fn maybe_saw_path(&mut self, key: &EnvKey) {
         if !self.saw_path && key == "PATH" {
             self.saw_path = true;
         }
@@ -104,13 +106,14 @@ impl CommandEnv {
 /// This struct is created by
 /// [`Command::get_envs`][crate::process::Command::get_envs]. See its
 /// documentation for more.
-#[unstable(feature = "command_access", issue = "44434")]
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+#[stable(feature = "command_access", since = "1.57.0")]
 #[derive(Debug)]
 pub struct CommandEnvs<'a> {
     iter: crate::collections::btree_map::Iter<'a, EnvKey, Option<OsString>>,
 }
 
-#[unstable(feature = "command_access", issue = "44434")]
+#[stable(feature = "command_access", since = "1.57.0")]
 impl<'a> Iterator for CommandEnvs<'a> {
     type Item = (&'a OsStr, Option<&'a OsStr>);
     fn next(&mut self) -> Option<Self::Item> {
@@ -121,7 +124,7 @@ impl<'a> Iterator for CommandEnvs<'a> {
     }
 }
 
-#[unstable(feature = "command_access", issue = "44434")]
+#[stable(feature = "command_access", since = "1.57.0")]
 impl<'a> ExactSizeIterator for CommandEnvs<'a> {
     fn len(&self) -> usize {
         self.iter.len()

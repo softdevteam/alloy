@@ -261,6 +261,33 @@ pub enum ErrorKind {
     #[stable(feature = "rust1", since = "1.0.0")]
     Interrupted,
 
+    /// This operation is unsupported on this platform.
+    ///
+    /// This means that the operation can never succeed.
+    #[stable(feature = "unsupported_error", since = "1.53.0")]
+    Unsupported,
+
+    // ErrorKinds which are primarily categorisations for OS error
+    // codes should be added above.
+    //
+    /// An error returned when an operation could not be completed because an
+    /// "end of file" was reached prematurely.
+    ///
+    /// This typically means that an operation could only succeed if it read a
+    /// particular number of bytes but only a smaller number of bytes could be
+    /// read.
+    #[stable(feature = "read_exact", since = "1.6.0")]
+    UnexpectedEof,
+
+    /// An operation could not be completed, because it failed
+    /// to allocate enough memory.
+    #[stable(feature = "out_of_memory_error", since = "1.54.0")]
+    OutOfMemory,
+
+    // "Unusual" error kinds which do not correspond simply to (sets
+    // of) OS error codes, should be added just above this comment.
+    // `Other` and `Uncategorised` should remain at the end:
+    //
     /// A custom error that does not fall under any other I/O error kind.
     ///
     /// This can be used to construct your own [`Error`]s that do not match any
@@ -273,26 +300,6 @@ pub enum ErrorKind {
     /// New [`ErrorKind`]s might be added in the future for some of those.
     #[stable(feature = "rust1", since = "1.0.0")]
     Other,
-
-    /// An error returned when an operation could not be completed because an
-    /// "end of file" was reached prematurely.
-    ///
-    /// This typically means that an operation could only succeed if it read a
-    /// particular number of bytes but only a smaller number of bytes could be
-    /// read.
-    #[stable(feature = "read_exact", since = "1.6.0")]
-    UnexpectedEof,
-
-    /// This operation is unsupported on this platform.
-    ///
-    /// This means that the operation can never succeed.
-    #[stable(feature = "unsupported_error", since = "1.53.0")]
-    Unsupported,
-
-    /// An operation could not be completed, because it failed
-    /// to allocate enough memory.
-    #[stable(feature = "out_of_memory_error", since = "1.54.0")]
-    OutOfMemory,
 
     /// Any I/O error from the standard library that's not part of this list.
     ///
@@ -307,13 +314,13 @@ pub enum ErrorKind {
 impl ErrorKind {
     pub(crate) fn as_str(&self) -> &'static str {
         use ErrorKind::*;
+        // Strictly alphabetical, please.  (Sadly rustfmt cannot do this yet.)
         match *self {
             AddrInUse => "address in use",
             AddrNotAvailable => "address not available",
             AlreadyExists => "entity already exists",
             ArgumentListTooLong => "argument list too long",
             BrokenPipe => "broken pipe",
-            ResourceBusy => "resource busy",
             ConnectionAborted => "connection aborted",
             ConnectionRefused => "connection refused",
             ConnectionReset => "connection reset",
@@ -321,9 +328,10 @@ impl ErrorKind {
             Deadlock => "deadlock",
             DirectoryNotEmpty => "directory not empty",
             ExecutableFileBusy => "executable file busy",
-            FilenameTooLong => "filename too long",
-            FilesystemQuotaExceeded => "filesystem quota exceeded",
             FileTooLarge => "file too large",
+            FilenameTooLong => "filename too long",
+            FilesystemLoop => "filesystem loop or indirection limit (e.g. symlink loop)",
+            FilesystemQuotaExceeded => "filesystem quota exceeded",
             HostUnreachable => "host unreachable",
             Interrupted => "operation interrupted",
             InvalidData => "invalid data",
@@ -332,16 +340,16 @@ impl ErrorKind {
             NetworkDown => "network down",
             NetworkUnreachable => "network unreachable",
             NotADirectory => "not a directory",
-            StorageFull => "no storage space",
             NotConnected => "not connected",
             NotFound => "entity not found",
+            NotSeekable => "seek on unseekable file",
             Other => "other error",
             OutOfMemory => "out of memory",
             PermissionDenied => "permission denied",
             ReadOnlyFilesystem => "read-only filesystem or storage medium",
+            ResourceBusy => "resource busy",
             StaleNetworkFileHandle => "stale network file handle",
-            FilesystemLoop => "filesystem loop or indirection limit (e.g. symlink loop)",
-            NotSeekable => "seek on unseekable file",
+            StorageFull => "no storage space",
             TimedOut => "timed out",
             TooManyLinks => "too many links",
             Uncategorized => "uncategorized error",
@@ -384,6 +392,9 @@ impl Error {
     /// originate from the OS itself. The `error` argument is an arbitrary
     /// payload which will be contained in this [`Error`].
     ///
+    /// If no extra payload is required, use the `From` conversion from
+    /// `ErrorKind`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -394,6 +405,9 @@ impl Error {
     ///
     /// // errors can also be created from other errors
     /// let custom_error2 = Error::new(ErrorKind::Interrupted, custom_error);
+    ///
+    /// // creating an error without payload
+    /// let eof_error = Error::from(ErrorKind::UnexpectedEof);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new<E>(kind: ErrorKind, error: E) -> Error
@@ -426,14 +440,21 @@ impl Error {
     /// `GetLastError` on Windows) and will return a corresponding instance of
     /// [`Error`] for the error code.
     ///
+    /// This should be called immediately after a call to a platform function,
+    /// otherwise the state of the error value is indeterminate. In particular,
+    /// other standard library functions may call platform functions that may
+    /// (or may not) reset the error value even if they succeed.
+    ///
     /// # Examples
     ///
     /// ```
     /// use std::io::Error;
     ///
-    /// println!("last OS error: {:?}", Error::last_os_error());
+    /// let os_error = Error::last_os_error();
+    /// println!("last OS error: {:?}", os_error);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     #[inline]
     pub fn last_os_error() -> Error {
         Error::from_raw_os_error(sys::os::errno() as i32)
@@ -465,6 +486,7 @@ impl Error {
     /// # }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     #[inline]
     pub fn from_raw_os_error(code: i32) -> Error {
         Error { repr: Repr::Os(code) }
@@ -500,6 +522,7 @@ impl Error {
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     #[inline]
     pub fn raw_os_error(&self) -> Option<i32> {
         match self.repr {
@@ -538,6 +561,7 @@ impl Error {
     /// }
     /// ```
     #[stable(feature = "io_error_inner", since = "1.3.0")]
+    #[must_use]
     #[inline]
     pub fn get_ref(&self) -> Option<&(dyn error::Error + Send + Sync + 'static)> {
         match self.repr {
@@ -611,6 +635,7 @@ impl Error {
     /// }
     /// ```
     #[stable(feature = "io_error_inner", since = "1.3.0")]
+    #[must_use]
     #[inline]
     pub fn get_mut(&mut self) -> Option<&mut (dyn error::Error + Send + Sync + 'static)> {
         match self.repr {
@@ -649,6 +674,7 @@ impl Error {
     /// }
     /// ```
     #[stable(feature = "io_error_inner", since = "1.3.0")]
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[inline]
     pub fn into_inner(self) -> Option<Box<dyn error::Error + Send + Sync>> {
         match self.repr {
@@ -678,6 +704,7 @@ impl Error {
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[must_use]
     #[inline]
     pub fn kind(&self) -> ErrorKind {
         match self.repr {

@@ -37,14 +37,29 @@ if (!DOMTokenList.prototype.remove) {
     };
 }
 
-(function () {
-    var rustdocVars = document.getElementById("rustdoc-vars");
-    if (rustdocVars) {
-        window.rootPath = rustdocVars.attributes["data-root-path"].value;
-        window.currentCrate = rustdocVars.attributes["data-current-crate"].value;
-        window.searchJS = rustdocVars.attributes["data-search-js"].value;
-        window.searchIndexJS = rustdocVars.attributes["data-search-index-js"].value;
+// Get a value from the rustdoc-vars div, which is used to convey data from
+// Rust to the JS. If there is no such element, return null.
+function getVar(name) {
+    var el = document.getElementById("rustdoc-vars");
+    if (el) {
+        return el.attributes["data-" + name].value;
+    } else {
+        return null;
     }
+}
+
+// Given a basename (e.g. "storage") and an extension (e.g. ".js"), return a URL
+// for a resource under the root-path, with the resource-suffix.
+function resourcePath(basename, extension) {
+    return getVar("root-path") + basename + getVar("resource-suffix") + extension;
+}
+
+
+(function () {
+    window.rootPath = getVar("root-path");
+    window.currentCrate = getVar("current-crate");
+    window.searchJS =  resourcePath("search", ".js");
+    window.searchIndexJS = resourcePath("search-index", ".js");
     var sidebarVars = document.getElementById("sidebar-vars");
     if (sidebarVars) {
         window.sidebarCurrent = {
@@ -79,6 +94,7 @@ function getVirtualKey(ev) {
 
 var THEME_PICKER_ELEMENT_ID = "theme-picker";
 var THEMES_ELEMENT_ID = "theme-choices";
+var MAIN_ID = "main-content";
 
 function getThemesElement() {
     return document.getElementById(THEMES_ELEMENT_ID);
@@ -115,7 +131,7 @@ function hideThemeButtonState() {
 (function () {
     var themeChoices = getThemesElement();
     var themePicker = getThemePickerElement();
-    var availableThemes/* INSERT THEMES HERE */;
+    var availableThemes = getVar("themes").split(",");
 
     function switchThemeButtonState() {
         if (themeChoices.style.display === "block") {
@@ -263,7 +279,9 @@ function hideThemeButtonState() {
                 search_input.placeholder = searchState.input.origPlaceholder;
             });
 
-            search_input.removeAttribute('disabled');
+            if (search_input.value != '') {
+                loadSearch();
+            }
 
             // `crates{version}.js` should always be loaded before this script, so we can use it
             // safely.
@@ -345,7 +363,7 @@ function hideThemeButtonState() {
     }
 
     var toggleAllDocsId = "toggle-all-docs";
-    var main = document.getElementById("main");
+    var main = document.getElementById(MAIN_ID);
     var savedHash = "";
 
     function handleHashes(ev) {
@@ -564,6 +582,7 @@ function hideThemeButtonState() {
     // delayed sidebar rendering.
     window.initSidebarItems = function(items) {
         var sidebar = document.getElementsByClassName("sidebar-elems")[0];
+        var others;
         var current = window.sidebarCurrent;
 
         function addSidebarCrates(crates) {
@@ -592,7 +611,7 @@ function hideThemeButtonState() {
                 li.appendChild(link);
                 ul.appendChild(li);
             }
-            sidebar.appendChild(div);
+            others.appendChild(div);
         }
 
         function block(shortty, longty) {
@@ -633,10 +652,14 @@ function hideThemeButtonState() {
                 ul.appendChild(li);
             }
             div.appendChild(ul);
-            sidebar.appendChild(div);
+            others.appendChild(div);
         }
 
         if (sidebar) {
+            others = document.createElement("div");
+            others.className = "others";
+            sidebar.appendChild(others);
+
             var isModule = hasClass(document.body, "mod");
             if (!isModule) {
                 block("primitive", "Primitive Types");
@@ -706,8 +729,9 @@ function hideThemeButtonState() {
                     }
                 }
 
-                var code = document.createElement("code");
+                var code = document.createElement("h3");
                 code.innerHTML = struct.text;
+                addClass(code, "code-header");
                 addClass(code, "in-band");
 
                 onEachLazy(code.getElementsByTagName("a"), function(elem) {
@@ -764,7 +788,7 @@ function hideThemeButtonState() {
         } else {
             addClass(innerToggle, "will-expand");
             onEachLazy(document.getElementsByClassName("rustdoc-toggle"), function(e) {
-                if (e.parentNode.id !== "main" ||
+                if (e.parentNode.id !== MAIN_ID ||
                     (!hasClass(e, "implementors-toggle") &&
                      !hasClass(e, "type-contents-toggle")))
                 {
@@ -878,6 +902,14 @@ function hideThemeButtonState() {
         }
     });
 
+    onEachLazy(document.querySelectorAll(".rustdoc-toggle > summary:not(.hideme)"), function(el) {
+        el.addEventListener("click", function(e) {
+            if (e.target.tagName != "SUMMARY" && e.target.tagName != "A") {
+                e.preventDefault();
+            }
+        });
+    });
+
     onEachLazy(document.getElementsByClassName("notable-traits"), function(e) {
         e.onclick = function() {
             this.getElementsByClassName('notable-traits-tooltiptext')[0]
@@ -910,6 +942,7 @@ function hideThemeButtonState() {
         });
 
         var book_info = document.createElement("span");
+        book_info.className = "top";
         book_info.innerHTML = "You can find more information in \
             <a href=\"https://doc.rust-lang.org/rustdoc/\">the rustdoc book</a>.";
 
@@ -960,8 +993,16 @@ function hideThemeButtonState() {
         container.appendChild(div_shortcuts);
         container.appendChild(div_infos);
 
+        var rustdoc_version = document.createElement("span");
+        rustdoc_version.className = "bottom";
+        var rustdoc_version_code = document.createElement("code");
+        rustdoc_version_code.innerText = "rustdoc " + getVar("rustdoc-version");
+        rustdoc_version.appendChild(rustdoc_version_code);
+
+        container.appendChild(rustdoc_version);
+
         popup.appendChild(container);
-        insertAfter(popup, searchState.outputElement());
+        insertAfter(popup, document.querySelector("main"));
         // So that it's only built once and then it'll do nothing when called!
         buildHelperPopup = function() {};
     };
@@ -985,7 +1026,7 @@ function hideThemeButtonState() {
         });
 
         var el = document.createElement('textarea');
-        el.value = 'use ' + path.join('::') + ';';
+        el.value = path.join('::');
         el.setAttribute('readonly', '');
         // To not make it appear on the screen.
         el.style.position = 'absolute';

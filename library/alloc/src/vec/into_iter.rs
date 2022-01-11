@@ -2,7 +2,9 @@ use crate::alloc::{Allocator, Global};
 use crate::raw_vec::RawVec;
 use core::fmt;
 use core::intrinsics::arith_offset;
-use core::iter::{FusedIterator, InPlaceIterable, SourceIter, TrustedLen, TrustedRandomAccess};
+use core::iter::{
+    FusedIterator, InPlaceIterable, SourceIter, TrustedLen, TrustedRandomAccessNoCoerce,
+};
 use core::marker::PhantomData;
 use core::mem::{self};
 use core::ptr::{self, NonNull};
@@ -20,6 +22,7 @@ use core::slice::{self};
 /// let iter: std::vec::IntoIter<_> = v.into_iter();
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_insignificant_dtor]
 pub struct IntoIter<
     T,
     #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global,
@@ -159,6 +162,29 @@ impl<T, A: Allocator> Iterator for IntoIter<T, A> {
     }
 
     #[inline]
+    fn advance_by(&mut self, n: usize) -> Result<(), usize> {
+        let step_size = self.len().min(n);
+        let to_drop = ptr::slice_from_raw_parts_mut(self.ptr as *mut T, step_size);
+        if mem::size_of::<T>() == 0 {
+            // SAFETY: due to unchecked casts of unsigned amounts to signed offsets the wraparound
+            // effectively results in unsigned pointers representing positions 0..usize::MAX,
+            // which is valid for ZSTs.
+            self.ptr = unsafe { arith_offset(self.ptr as *const i8, step_size as isize) as *mut T }
+        } else {
+            // SAFETY: the min() above ensures that step_size is in bounds
+            self.ptr = unsafe { self.ptr.add(step_size) };
+        }
+        // SAFETY: the min() above ensures that step_size is in bounds
+        unsafe {
+            ptr::drop_in_place(to_drop);
+        }
+        if step_size < n {
+            return Err(step_size);
+        }
+        Ok(())
+    }
+
+    #[inline]
     fn count(self) -> usize {
         self.len()
     }
@@ -166,7 +192,7 @@ impl<T, A: Allocator> Iterator for IntoIter<T, A> {
     #[doc(hidden)]
     unsafe fn __iterator_get_unchecked(&mut self, i: usize) -> Self::Item
     where
-        Self: TrustedRandomAccess,
+        Self: TrustedRandomAccessNoCoerce,
     {
         // SAFETY: the caller must guarantee that `i` is in bounds of the
         // `Vec<T>`, so `i` cannot overflow an `isize`, and the `self.ptr.add(i)`
@@ -200,6 +226,29 @@ impl<T, A: Allocator> DoubleEndedIterator for IntoIter<T, A> {
             Some(unsafe { ptr::read(self.end) })
         }
     }
+
+    #[inline]
+    fn advance_back_by(&mut self, n: usize) -> Result<(), usize> {
+        let step_size = self.len().min(n);
+        if mem::size_of::<T>() == 0 {
+            // SAFETY: same as for advance_by()
+            self.end = unsafe {
+                arith_offset(self.end as *const i8, step_size.wrapping_neg() as isize) as *mut T
+            }
+        } else {
+            // SAFETY: same as for advance_by()
+            self.end = unsafe { self.end.offset(step_size.wrapping_neg() as isize) };
+        }
+        let to_drop = ptr::slice_from_raw_parts_mut(self.end as *mut T, step_size);
+        // SAFETY: same as for advance_by()
+        unsafe {
+            ptr::drop_in_place(to_drop);
+        }
+        if step_size < n {
+            return Err(step_size);
+        }
+        Ok(())
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -217,11 +266,21 @@ unsafe impl<T, A: Allocator> TrustedLen for IntoIter<T, A> {}
 
 #[doc(hidden)]
 #[unstable(issue = "none", feature = "std_internals")]
+#[rustc_unsafe_specialization_marker]
+pub trait NonDrop {}
+
 // T: Copy as approximation for !Drop since get_unchecked does not advance self.ptr
 // and thus we can't implement drop-handling
-unsafe impl<T, A: Allocator> TrustedRandomAccess for IntoIter<T, A>
+#[unstable(issue = "none", feature = "std_internals")]
+impl<T: Copy> NonDrop for T {}
+
+#[doc(hidden)]
+#[unstable(issue = "none", feature = "std_internals")]
+// TrustedRandomAccess (without NoCoerce) must not be implemented because
+// subtypes/supertypes of `T` might not be `NonDrop`
+unsafe impl<T, A: Allocator> TrustedRandomAccessNoCoerce for IntoIter<T, A>
 where
-    T: Copy,
+    T: NonDrop,
 {
     const MAY_HAVE_SIDE_EFFECT: bool = false;
 }

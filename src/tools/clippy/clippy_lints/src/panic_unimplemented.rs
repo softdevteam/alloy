@@ -7,64 +7,68 @@ use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `panic!`.
+    /// ### What it does
+    /// Checks for usage of `panic!`.
     ///
-    /// **Why is this bad?** `panic!` will stop the execution of the executable
+    /// ### Why is this bad?
+    /// `panic!` will stop the execution of the executable
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// panic!("even with a good reason");
     /// ```
+    #[clippy::version = "1.40.0"]
     pub PANIC,
     restriction,
     "usage of the `panic!` macro"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `unimplemented!`.
+    /// ### What it does
+    /// Checks for usage of `unimplemented!`.
     ///
-    /// **Why is this bad?** This macro should not be present in production code
+    /// ### Why is this bad?
+    /// This macro should not be present in production code
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// unimplemented!();
     /// ```
+    #[clippy::version = "pre 1.29.0"]
     pub UNIMPLEMENTED,
     restriction,
     "`unimplemented!` should not be present in production code"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `todo!`.
+    /// ### What it does
+    /// Checks for usage of `todo!`.
     ///
-    /// **Why is this bad?** This macro should not be present in production code
+    /// ### Why is this bad?
+    /// This macro should not be present in production code
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// todo!();
     /// ```
+    #[clippy::version = "1.40.0"]
     pub TODO,
     restriction,
     "`todo!` should not be present in production code"
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for usage of `unreachable!`.
+    /// ### What it does
+    /// Checks for usage of `unreachable!`.
     ///
-    /// **Why is this bad?** This macro can cause code to panic
+    /// ### Why is this bad?
+    /// This macro can cause code to panic
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     /// ```no_run
     /// unreachable!();
     /// ```
+    #[clippy::version = "1.40.0"]
     pub UNREACHABLE,
     restriction,
     "usage of the `unreachable!` macro"

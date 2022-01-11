@@ -24,6 +24,8 @@ $ $cg_clif_dir/build/bin/cg_clif my_crate.rs
 
 ## Jit mode
 
+> ⚠⚠⚠ The JIT mode is highly experimental. It may be slower than AOT compilation due to lack of incremental compilation. It may also be hard to setup if you have cargo dependencies. ⚠⚠⚠
+
 In jit mode cg_clif will immediately execute your code without creating an executable file.
 
 > This requires all dependencies to be available as dynamic library.
@@ -36,7 +38,7 @@ $ $cg_clif_dir/build/cargo jit
 or
 
 ```bash
-$ $cg_clif_dir/build/bin/cg_clif -Cllvm-args=mode=jit -Cprefer-dynamic my_crate.rs
+$ $cg_clif_dir/build/bin/cg_clif -Zunstable-features -Cllvm-args=mode=jit -Cprefer-dynamic my_crate.rs
 ```
 
 There is also an experimental lazy jit mode. In this mode functions are only compiled once they are
@@ -52,7 +54,7 @@ These are a few functions that allow you to easily run rust code from the shell 
 
 ```bash
 function jit_naked() {
-    echo "$@" | $cg_clif_dir/build/bin/cg_clif - -Cllvm-args=mode=jit -Cprefer-dynamic
+    echo "$@" | $cg_clif_dir/build/bin/cg_clif - -Zunstable-features -Cllvm-args=mode=jit -Cprefer-dynamic
 }
 
 function jit() {

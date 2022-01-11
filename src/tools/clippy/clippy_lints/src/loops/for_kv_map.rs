@@ -1,22 +1,16 @@
 use super::FOR_KV_MAP;
 use clippy_utils::diagnostics::{multispan_sugg, span_lint_and_then};
 use clippy_utils::source::snippet;
-use clippy_utils::ty::{is_type_diagnostic_item, match_type};
-use clippy_utils::visitors::LocalUsedVisitor;
-use clippy_utils::{paths, sugg};
+use clippy_utils::sugg;
+use clippy_utils::ty::is_type_diagnostic_item;
+use clippy_utils::visitors::is_local_used;
 use rustc_hir::{BorrowKind, Expr, ExprKind, Mutability, Pat, PatKind};
 use rustc_lint::LateContext;
 use rustc_middle::ty;
 use rustc_span::sym;
 
 /// Checks for the `FOR_KV_MAP` lint.
-pub(super) fn check<'tcx>(
-    cx: &LateContext<'tcx>,
-    pat: &'tcx Pat<'_>,
-    arg: &'tcx Expr<'_>,
-    body: &'tcx Expr<'_>,
-    expr: &'tcx Expr<'_>,
-) {
+pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, pat: &'tcx Pat<'_>, arg: &'tcx Expr<'_>, body: &'tcx Expr<'_>) {
     let pat_span = pat.span;
 
     if let PatKind::Tuple(pat, _) = pat.kind {
@@ -39,11 +33,11 @@ pub(super) fn check<'tcx>(
                 _ => arg,
             };
 
-            if is_type_diagnostic_item(cx, ty, sym::hashmap_type) || match_type(cx, ty, &paths::BTREEMAP) {
+            if is_type_diagnostic_item(cx, ty, sym::HashMap) || is_type_diagnostic_item(cx, ty, sym::BTreeMap) {
                 span_lint_and_then(
                     cx,
                     FOR_KV_MAP,
-                    expr.span,
+                    arg_span,
                     &format!("you seem to want to iterate on a map's {}s", kind),
                     |diag| {
                         let map = sugg::Sugg::hir(cx, arg, "map");
@@ -66,9 +60,7 @@ pub(super) fn check<'tcx>(
 fn pat_is_wild<'tcx>(cx: &LateContext<'tcx>, pat: &'tcx PatKind<'_>, body: &'tcx Expr<'_>) -> bool {
     match *pat {
         PatKind::Wild => true,
-        PatKind::Binding(_, id, ident, None) if ident.as_str().starts_with('_') => {
-            !LocalUsedVisitor::new(cx, id).check_expr(body)
-        },
+        PatKind::Binding(_, id, ident, None) if ident.as_str().starts_with('_') => !is_local_used(cx, body, id),
         _ => false,
     }
 }

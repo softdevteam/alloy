@@ -1,12 +1,12 @@
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::def_id::CrateNum;
 use rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
-use rustc_middle::ich::NodeIdHashingMode;
 use rustc_middle::mir::interpret::{ConstValue, Scalar};
 use rustc_middle::ty::print::{PrettyPrinter, Print, Printer};
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
 use rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeFoldable};
 use rustc_middle::util::common::record_time;
+use rustc_query_system::ich::NodeIdHashingMode;
 
 use tracing::debug;
 
@@ -55,7 +55,8 @@ pub(super) fn mangle(
 
     let hash = get_symbol_hash(tcx, instance, instance_ty, instantiating_crate);
 
-    let mut printer = SymbolPrinter { tcx, path: SymbolPath::new(), keep_within_component: false }
+    let mut printer = SymbolPrinter { tcx, path: SymbolPath::new(), keep_within_component: false };
+    printer
         .print_def_path(
             def_id,
             if let ty::InstanceDef::DropGlue(_, _) = instance.def {
@@ -106,9 +107,9 @@ fn get_symbol_hash<'tcx>(
         tcx.def_path_hash(def_id).hash_stable(&mut hcx, &mut hasher);
 
         // Include the main item-type. Note that, in this case, the
-        // assertions about `needs_subst` may not hold, but this item-type
+        // assertions about `definitely_needs_subst` may not hold, but this item-type
         // ought to be the same for every reference anyway.
-        assert!(!item_type.has_erasable_regions());
+        assert!(!item_type.has_erasable_regions(tcx));
         hcx.while_hashing_spans(false, |hcx| {
             hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
                 item_type.hash_stable(hcx, &mut hasher);
@@ -198,7 +199,7 @@ struct SymbolPrinter<'tcx> {
 // `PrettyPrinter` aka pretty printing of e.g. types in paths,
 // symbol names should have their own printing machinery.
 
-impl Printer<'tcx> for SymbolPrinter<'tcx> {
+impl Printer<'tcx> for &mut SymbolPrinter<'tcx> {
     type Error = fmt::Error;
 
     type Path = Self;
@@ -242,7 +243,7 @@ impl Printer<'tcx> for SymbolPrinter<'tcx> {
         Ok(self)
     }
 
-    fn print_const(mut self, ct: &'tcx ty::Const<'tcx>) -> Result<Self::Const, Self::Error> {
+    fn print_const(self, ct: &'tcx ty::Const<'tcx>) -> Result<Self::Const, Self::Error> {
         // only print integers
         if let ty::ConstKind::Value(ConstValue::Scalar(Scalar::Int { .. })) = ct.val {
             if ct.ty.is_integral() {
@@ -253,7 +254,7 @@ impl Printer<'tcx> for SymbolPrinter<'tcx> {
         Ok(self)
     }
 
-    fn path_crate(mut self, cnum: CrateNum) -> Result<Self::Path, Self::Error> {
+    fn path_crate(self, cnum: CrateNum) -> Result<Self::Path, Self::Error> {
         self.write_str(&self.tcx.crate_name(cnum).as_str())?;
         Ok(self)
     }
@@ -344,7 +345,7 @@ impl Printer<'tcx> for SymbolPrinter<'tcx> {
     }
 }
 
-impl PrettyPrinter<'tcx> for SymbolPrinter<'tcx> {
+impl PrettyPrinter<'tcx> for &mut SymbolPrinter<'tcx> {
     fn region_should_not_be_omitted(&self, _region: ty::Region<'_>) -> bool {
         false
     }

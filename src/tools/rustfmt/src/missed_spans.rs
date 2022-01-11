@@ -51,6 +51,14 @@ impl<'a> FmtVisitor<'a> {
     }
 
     pub(crate) fn format_missing_with_indent(&mut self, end: BytePos) {
+        self.format_missing_indent(end, true)
+    }
+
+    pub(crate) fn format_missing_no_indent(&mut self, end: BytePos) {
+        self.format_missing_indent(end, false)
+    }
+
+    fn format_missing_indent(&mut self, end: BytePos, should_indent: bool) {
         let config = self.config;
         self.format_missing_inner(end, |this, last_snippet, snippet| {
             this.push_str(last_snippet.trim_end());
@@ -58,14 +66,10 @@ impl<'a> FmtVisitor<'a> {
                 // No new lines in the snippet.
                 this.push_str("\n");
             }
-            let indent = this.block_indent.to_string(config);
-            this.push_str(&indent);
-        })
-    }
-
-    pub(crate) fn format_missing_no_indent(&mut self, end: BytePos) {
-        self.format_missing_inner(end, |this, last_snippet, _| {
-            this.push_str(last_snippet.trim_end());
+            if should_indent {
+                let indent = this.block_indent.to_string(config);
+                this.push_str(&indent);
+            }
         })
     }
 
@@ -230,8 +234,7 @@ impl<'a> FmtVisitor<'a> {
         let last_char = big_snippet
             .chars()
             .rev()
-            .skip_while(|rev_c| [' ', '\t'].contains(rev_c))
-            .next();
+            .find(|rev_c| ![' ', '\t'].contains(rev_c));
 
         let fix_indent = last_char.map_or(true, |rev_c| ['{', '\n'].contains(&rev_c));
         let mut on_same_line = false;
@@ -262,7 +265,7 @@ impl<'a> FmtVisitor<'a> {
         let comment_shape = Shape::legacy(comment_width, comment_indent);
 
         if on_same_line {
-            match subslice.find("\n") {
+            match subslice.find('\n') {
                 None => {
                     self.push_str(subslice);
                 }
@@ -299,8 +302,7 @@ impl<'a> FmtVisitor<'a> {
             match snippet[status.line_start..]
                 .chars()
                 // skip trailing whitespaces
-                .skip_while(|c| *c == ' ' || *c == '\t')
-                .next()
+                .find(|c| !(*c == ' ' || *c == '\t'))
             {
                 Some('\n') | Some('\r') => {
                     if !is_last_comment_block(subslice) {

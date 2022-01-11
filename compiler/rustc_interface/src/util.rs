@@ -10,6 +10,7 @@ use rustc_errors::registry::Registry;
 use rustc_metadata::dynamic_lib::DynamicLibrary;
 #[cfg(parallel_compiler)]
 use rustc_middle::ty::tls;
+use rustc_parse::validate_attr;
 #[cfg(parallel_compiler)]
 use rustc_query_impl::QueryCtxt;
 use rustc_resolve::{self, Resolver};
@@ -115,24 +116,11 @@ fn get_stack_size() -> Option<usize> {
 /// for `'static` bounds.
 #[cfg(not(parallel_compiler))]
 pub fn scoped_thread<F: FnOnce() -> R + Send, R: Send>(cfg: thread::Builder, f: F) -> R {
-    struct Ptr(*mut ());
-    unsafe impl Send for Ptr {}
-    unsafe impl Sync for Ptr {}
-
-    let mut f = Some(f);
-    let run = Ptr(&mut f as *mut _ as *mut ());
-    let mut result = None;
-    let result_ptr = Ptr(&mut result as *mut _ as *mut ());
-
-    let thread = cfg.spawn(move || {
-        let run = unsafe { (*(run.0 as *mut Option<F>)).take().unwrap() };
-        let result = unsafe { &mut *(result_ptr.0 as *mut Option<R>) };
-        *result = Some(run());
-    });
-
-    match thread.unwrap().join() {
-        Ok(()) => result.unwrap(),
-        Err(p) => panic::resume_unwind(p),
+    // SAFETY: join() is called immediately, so any closure captures are still
+    // alive.
+    match unsafe { cfg.spawn_unchecked(f) }.unwrap().join() {
+        Ok(v) => v,
+        Err(e) => panic::resume_unwind(e),
     }
 }
 
@@ -414,7 +402,7 @@ pub fn get_codegen_sysroot(
         .iter()
         .chain(sysroot_candidates.iter())
         .map(|sysroot| {
-            filesearch::make_target_lib_path(&sysroot, &target).with_file_name("codegen-backends")
+            filesearch::make_target_lib_path(sysroot, target).with_file_name("codegen-backends")
         })
         .find(|f| {
             info!("codegen backend candidate: {}", f.display());
@@ -494,7 +482,7 @@ pub(crate) fn check_attr_crate_type(
 ) {
     // Unconditionally collect crate types from attributes to make them used
     for a in attrs.iter() {
-        if sess.check_name(a, sym::crate_type) {
+        if a.has_name(sym::crate_type) {
             if let Some(n) = a.value_str() {
                 if categorize_crate_type(n).is_some() {
                     return;
@@ -528,6 +516,19 @@ pub(crate) fn check_attr_crate_type(
                         );
                     }
                 }
+            } else {
+                // This is here mainly to check for using a macro, such as
+                // #![crate_type = foo!()]. That is not supported since the
+                // crate type needs to be known very early in compilation long
+                // before expansion. Otherwise, validation would normally be
+                // caught in AstValidator (via `check_builtin_attribute`), but
+                // by the time that runs the macro is expanded, and it doesn't
+                // give an error.
+                validate_attr::emit_fatal_malformed_builtin_attribute(
+                    &sess.parse_sess,
+                    a,
+                    sym::crate_type,
+                );
             }
         }
     }
@@ -552,7 +553,7 @@ pub fn collect_crate_types(session: &Session, attrs: &[ast::Attribute]) -> Vec<C
     let attr_types: Vec<CrateType> = attrs
         .iter()
         .filter_map(|a| {
-            if session.check_name(a, sym::crate_type) {
+            if a.has_name(sym::crate_type) {
                 match a.value_str() {
                     Some(s) => categorize_crate_type(s),
                     _ => None,
@@ -603,6 +604,7 @@ pub fn build_output_filenames(
     input: &Input,
     odir: &Option<PathBuf>,
     ofile: &Option<PathBuf>,
+    temps_dir: &Option<PathBuf>,
     attrs: &[ast::Attribute],
     sess: &Session,
 ) -> OutputFilenames {
@@ -618,13 +620,14 @@ pub fn build_output_filenames(
                 .opts
                 .crate_name
                 .clone()
-                .or_else(|| rustc_attr::find_crate_name(&sess, attrs).map(|n| n.to_string()))
+                .or_else(|| rustc_attr::find_crate_name(sess, attrs).map(|n| n.to_string()))
                 .unwrap_or_else(|| input.filestem().to_owned());
 
             OutputFilenames::new(
                 dirpath,
                 stem,
                 None,
+                temps_dir.clone(),
                 sess.opts.cg.extra_filename.clone(),
                 sess.opts.output_types.clone(),
             )
@@ -653,6 +656,7 @@ pub fn build_output_filenames(
                 out_file.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
                 out_file.file_stem().unwrap_or_default().to_str().unwrap().to_string(),
                 ofile,
+                temps_dir.clone(),
                 sess.opts.cg.extra_filename.clone(),
                 sess.opts.output_types.clone(),
             )
@@ -775,7 +779,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
     fn visit_item_kind(&mut self, i: &mut ast::ItemKind) {
         let is_const = match i {
             ast::ItemKind::Static(..) | ast::ItemKind::Const(..) => true,
-            ast::ItemKind::Fn(box ast::FnKind(_, ref sig, _, _)) => Self::is_sig_const(sig),
+            ast::ItemKind::Fn(box ast::Fn { ref sig, .. }) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_visit_item_kind(i, s))
@@ -784,7 +788,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
     fn flat_map_trait_item(&mut self, i: P<ast::AssocItem>) -> SmallVec<[P<ast::AssocItem>; 1]> {
         let is_const = match i.kind {
             ast::AssocItemKind::Const(..) => true,
-            ast::AssocItemKind::Fn(box ast::FnKind(_, ref sig, _, _)) => Self::is_sig_const(sig),
+            ast::AssocItemKind::Fn(box ast::Fn { ref sig, .. }) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_flat_map_assoc_item(i, s))
@@ -810,6 +814,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
                 id: resolver.next_node_id(),
                 span: rustc_span::DUMMY_SP,
                 tokens: None,
+                could_be_bare_literal: false,
             }
         }
 

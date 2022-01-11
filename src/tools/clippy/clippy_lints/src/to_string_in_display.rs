@@ -7,15 +7,15 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::symbol::sym;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for uses of `to_string()` in `Display` traits.
+    /// ### What it does
+    /// Checks for uses of `to_string()` in `Display` traits.
     ///
-    /// **Why is this bad?** Usually `to_string` is implemented indirectly
+    /// ### Why is this bad?
+    /// Usually `to_string` is implemented indirectly
     /// via `Display`. Hence using it while implementing `Display` would
     /// lead to infinite recursion.
     ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
+    /// ### Example
     ///
     /// ```rust
     /// use std::fmt;
@@ -39,6 +39,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
+    #[clippy::version = "1.48.0"]
     pub TO_STRING_IN_DISPLAY,
     correctness,
     "`to_string` method used while implementing `Display` trait"
@@ -92,11 +93,11 @@ impl LateLintPass<'_> for ToStringInDisplay {
         if_chain! {
             if self.in_display_impl;
             if let Some(self_hir_id) = self.self_hir_id;
-            if let ExprKind::MethodCall(path, _, args, _) = expr.kind;
+            if let ExprKind::MethodCall(path, _, [ref self_arg, ..], _) = expr.kind;
             if path.ident.name == sym!(to_string);
             if let Some(expr_def_id) = cx.typeck_results().type_dependent_def_id(expr.hir_id);
             if is_diag_trait_item(cx, expr_def_id, sym::ToString);
-            if path_to_local_id(&args[0], self_hir_id);
+            if path_to_local_id(self_arg, self_hir_id);
             then {
                 span_lint(
                     cx,

@@ -348,7 +348,7 @@ macro_rules! make_mir_visitor {
                         ty::InstanceDef::VtableShim(_def_id) |
                         ty::InstanceDef::ReifyShim(_def_id) |
                         ty::InstanceDef::Virtual(_def_id, _) |
-                        ty::InstanceDef::ClosureOnceShim { call_once: _def_id } |
+                        ty::InstanceDef::ClosureOnceShim { call_once: _def_id, track_caller: _ } |
                         ty::InstanceDef::DropGlue(_def_id, None) => {}
 
                         ty::InstanceDef::FnPtrShim(_def_id, ty) |
@@ -412,7 +412,7 @@ macro_rules! make_mir_visitor {
                         for output in & $($mutability)? asm.outputs[..] {
                             self.visit_place(
                                 output,
-                                PlaceContext::MutatingUse(MutatingUseContext::AsmOutput),
+                                PlaceContext::MutatingUse(MutatingUseContext::LlvmAsmOutput),
                                 location
                             );
                         }
@@ -581,27 +581,26 @@ macro_rules! make_mir_visitor {
                         options: _,
                         line_spans: _,
                         destination: _,
+                        cleanup: _,
                     } => {
                         for op in operands {
                             match op {
                                 InlineAsmOperand::In { value, .. } => {
                                     self.visit_operand(value, location);
                                 }
-                                InlineAsmOperand::Out { place, .. } => {
-                                    if let Some(place) = place {
-                                        self.visit_place(
-                                            place,
-                                            PlaceContext::MutatingUse(MutatingUseContext::Store),
-                                            location,
-                                        );
-                                    }
+                                InlineAsmOperand::Out { place: Some(place), .. } => {
+                                    self.visit_place(
+                                        place,
+                                        PlaceContext::MutatingUse(MutatingUseContext::AsmOutput),
+                                        location,
+                                    );
                                 }
                                 InlineAsmOperand::InOut { in_value, out_place, .. } => {
                                     self.visit_operand(in_value, location);
                                     if let Some(out_place) = out_place {
                                         self.visit_place(
                                             out_place,
-                                            PlaceContext::MutatingUse(MutatingUseContext::Store),
+                                            PlaceContext::MutatingUse(MutatingUseContext::AsmOutput),
                                             location,
                                         );
                                     }
@@ -610,7 +609,8 @@ macro_rules! make_mir_visitor {
                                 | InlineAsmOperand::SymFn { value } => {
                                     self.visit_constant(value, location);
                                 }
-                                InlineAsmOperand::SymStatic { def_id: _ } => {}
+                                InlineAsmOperand::Out { place: None, .. }
+                                | InlineAsmOperand::SymStatic { def_id: _ } => {}
                             }
                         }
                     }
@@ -753,6 +753,11 @@ macro_rules! make_mir_visitor {
                         for operand in operands {
                             self.visit_operand(operand, location);
                         }
+                    }
+
+                    Rvalue::ShallowInitBox(operand, ty) => {
+                        self.visit_operand(operand, location);
+                        self.visit_ty(ty, TyContext::Location(location));
                     }
                 }
             }
@@ -1000,8 +1005,12 @@ macro_rules! visit_place_fns {
 
                     if new_local == local { None } else { Some(PlaceElem::Index(new_local)) }
                 }
+                PlaceElem::Field(field, ty) => {
+                    let mut new_ty = ty;
+                    self.visit_ty(&mut new_ty, TyContext::Location(location));
+                    if ty != new_ty { Some(PlaceElem::Field(field, new_ty)) } else { None }
+                }
                 PlaceElem::Deref
-                | PlaceElem::Field(..)
                 | PlaceElem::ConstantIndex { .. }
                 | PlaceElem::Subslice { .. }
                 | PlaceElem::Downcast(..) => None,
@@ -1170,8 +1179,10 @@ pub enum MutatingUseContext {
     /// Appears as LHS of an assignment.
     Store,
     /// Can often be treated as a `Store`, but needs to be separate because
-    /// ASM is allowed to read outputs as well, so a `Store`-`AsmOutput` sequence
+    /// ASM is allowed to read outputs as well, so a `Store`-`LlvmAsmOutput` sequence
     /// cannot be simplified the way a `Store`-`Store` can be.
+    LlvmAsmOutput,
+    /// Output operand of an inline assembly block.
     AsmOutput,
     /// Destination of a call.
     Call,
@@ -1202,7 +1213,7 @@ pub enum NonUseContext {
     StorageDead,
     /// User type annotation assertions for NLL.
     AscribeUserTy,
-    /// The data of an user variable, for debug info.
+    /// The data of a user variable, for debug info.
     VarDebugInfo,
 }
 
@@ -1260,6 +1271,7 @@ impl PlaceContext {
             PlaceContext::MutatingUse(
                 MutatingUseContext::Store
                     | MutatingUseContext::Call
+                    | MutatingUseContext::LlvmAsmOutput
                     | MutatingUseContext::AsmOutput,
             )
         )

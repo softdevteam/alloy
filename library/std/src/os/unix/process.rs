@@ -1,10 +1,12 @@
-//! Unix-specific extensions to primitives in the `std::process` module.
+//! Unix-specific extensions to primitives in the [`std::process`] module.
+//!
+//! [`std::process`]: crate::process
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::ffi::OsStr;
 use crate::io;
-use crate::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::process;
 use crate::sealed::Sealed;
 use crate::sys;
@@ -37,7 +39,7 @@ pub trait CommandExt: Sealed {
 
     /// Sets the supplementary group IDs for the calling process. Translates to
     /// a `setgroups` call in the child process.
-    #[unstable(feature = "setgroups", issue = "38527", reason = "")]
+    #[unstable(feature = "setgroups", issue = "90747")]
     fn groups(
         &mut self,
         #[cfg(not(target_os = "vxworks"))] groups: &[u32],
@@ -83,7 +85,7 @@ pub trait CommandExt: Sealed {
     ///
     /// When this closure is run, aspects such as the stdio file descriptors and
     /// working directory have successfully been changed, so output to these
-    /// locations may not appear where intended.
+    /// locations might not appear where intended.
     ///
     /// [POSIX fork() specification]:
     ///     https://pubs.opengroup.org/onlinepubs/9699919799/functions/fork.html
@@ -205,7 +207,7 @@ impl CommandExt for process::Command {
 /// [`ExitStatusError`](process::ExitStatusError).
 ///
 /// On Unix, `ExitStatus` **does not necessarily represent an exit status**, as
-/// passed to the `exit` system call or returned by
+/// passed to the `_exit` system call or returned by
 /// [`ExitStatus::code()`](crate::process::ExitStatus::code).  It represents **any wait status**
 /// as returned by one of the `wait` family of system
 /// calls.
@@ -237,27 +239,27 @@ pub trait ExitStatusExt: Sealed {
     fn signal(&self) -> Option<i32>;
 
     /// If the process was terminated by a signal, says whether it dumped core.
-    #[unstable(feature = "unix_process_wait_more", issue = "80695")]
+    #[stable(feature = "unix_process_wait_more", since = "1.58.0")]
     fn core_dumped(&self) -> bool;
 
     /// If the process was stopped by a signal, returns that signal.
     ///
     /// In other words, if `WIFSTOPPED`, this returns `WSTOPSIG`.  This is only possible if the status came from
     /// a `wait` system call which was passed `WUNTRACED`, and was then converted into an `ExitStatus`.
-    #[unstable(feature = "unix_process_wait_more", issue = "80695")]
+    #[stable(feature = "unix_process_wait_more", since = "1.58.0")]
     fn stopped_signal(&self) -> Option<i32>;
 
     /// Whether the process was continued from a stopped status.
     ///
     /// Ie, `WIFCONTINUED`.  This is only possible if the status came from a `wait` system call
     /// which was passed `WCONTINUED`, and was then converted into an `ExitStatus`.
-    #[unstable(feature = "unix_process_wait_more", issue = "80695")]
+    #[stable(feature = "unix_process_wait_more", since = "1.58.0")]
     fn continued(&self) -> bool;
 
     /// Returns the underlying raw `wait` status.
     ///
     /// The returned integer is a **wait status, not an exit status**.
-    #[unstable(feature = "unix_process_wait_more", issue = "80695")]
+    #[stable(feature = "unix_process_wait_more", since = "1.58.0")]
     fn into_raw(self) -> i32;
 }
 
@@ -321,7 +323,17 @@ impl ExitStatusExt for process::ExitStatusError {
 impl FromRawFd for process::Stdio {
     #[inline]
     unsafe fn from_raw_fd(fd: RawFd) -> process::Stdio {
-        let fd = sys::fd::FileDesc::new(fd);
+        let fd = sys::fd::FileDesc::from_raw_fd(fd);
+        let io = sys::process::Stdio::Fd(fd);
+        process::Stdio::from_inner(io)
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<OwnedFd> for process::Stdio {
+    #[inline]
+    fn from(fd: OwnedFd) -> process::Stdio {
+        let fd = sys::fd::FileDesc::from_inner(fd);
         let io = sys::process::Stdio::Fd(fd);
         process::Stdio::from_inner(io)
     }
@@ -331,7 +343,7 @@ impl FromRawFd for process::Stdio {
 impl AsRawFd for process::ChildStdin {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        self.as_inner().fd().raw()
+        self.as_inner().as_raw_fd()
     }
 }
 
@@ -339,7 +351,7 @@ impl AsRawFd for process::ChildStdin {
 impl AsRawFd for process::ChildStdout {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        self.as_inner().fd().raw()
+        self.as_inner().as_raw_fd()
     }
 }
 
@@ -347,7 +359,7 @@ impl AsRawFd for process::ChildStdout {
 impl AsRawFd for process::ChildStderr {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
-        self.as_inner().fd().raw()
+        self.as_inner().as_raw_fd()
     }
 }
 
@@ -355,7 +367,7 @@ impl AsRawFd for process::ChildStderr {
 impl IntoRawFd for process::ChildStdin {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.into_inner().into_fd().into_raw()
+        self.into_inner().into_inner().into_raw_fd()
     }
 }
 
@@ -363,7 +375,7 @@ impl IntoRawFd for process::ChildStdin {
 impl IntoRawFd for process::ChildStdout {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.into_inner().into_fd().into_raw()
+        self.into_inner().into_inner().into_raw_fd()
     }
 }
 
@@ -371,11 +383,60 @@ impl IntoRawFd for process::ChildStdout {
 impl IntoRawFd for process::ChildStderr {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
-        self.into_inner().into_fd().into_raw()
+        self.into_inner().into_inner().into_raw_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for crate::process::ChildStdin {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.as_inner().as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<crate::process::ChildStdin> for OwnedFd {
+    #[inline]
+    fn from(child_stdin: crate::process::ChildStdin) -> OwnedFd {
+        child_stdin.into_inner().into_inner().into_inner()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for crate::process::ChildStdout {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.as_inner().as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<crate::process::ChildStdout> for OwnedFd {
+    #[inline]
+    fn from(child_stdout: crate::process::ChildStdout) -> OwnedFd {
+        child_stdout.into_inner().into_inner().into_inner()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl AsFd for crate::process::ChildStderr {
+    #[inline]
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.as_inner().as_fd()
+    }
+}
+
+#[unstable(feature = "io_safety", issue = "87074")]
+impl From<crate::process::ChildStderr> for OwnedFd {
+    #[inline]
+    fn from(child_stderr: crate::process::ChildStderr) -> OwnedFd {
+        child_stderr.into_inner().into_inner().into_inner()
     }
 }
 
 /// Returns the OS-assigned process identifier associated with this process's parent.
+#[must_use]
 #[stable(feature = "unix_ppid", since = "1.27.0")]
 pub fn parent_id() -> u32 {
     crate::sys::os::getppid()

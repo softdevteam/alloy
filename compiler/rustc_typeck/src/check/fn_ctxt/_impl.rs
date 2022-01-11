@@ -4,7 +4,7 @@ use crate::astconv::{
 };
 use crate::check::callee::{self, DeferredCallResolution};
 use crate::check::method::{self, MethodCallee, SelfSource};
-use crate::check::{BreakableCtxt, Diverges, Expectation, FallbackMode, FnCtxt, LocalTy};
+use crate::check::{BreakableCtxt, Diverges, Expectation, FnCtxt, LocalTy};
 
 use rustc_ast::TraitObjectSyntax;
 use rustc_data_structures::captures::Captures;
@@ -29,14 +29,12 @@ use rustc_middle::ty::{
 };
 use rustc_session::lint;
 use rustc_session::lint::builtin::BARE_TRAIT_OBJECTS;
-use rustc_session::parse::feature_err;
 use rustc_span::edition::Edition;
+use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::{original_sp, DUMMY_SP};
 use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::{self, BytePos, MultiSpan, Span};
-use rustc_span::{hygiene::DesugaringKind, Symbol};
 use rustc_trait_selection::infer::InferCtxtExt as _;
-use rustc_trait_selection::opaque_types::InferCtxtExt as _;
 use rustc_trait_selection::traits::error_reporting::InferCtxtExt as _;
 use rustc_trait_selection::traits::{
     self, ObligationCause, ObligationCauseCode, StatementAsExpression, TraitEngine, TraitEngineExt,
@@ -84,19 +82,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// version (resolve_vars_if_possible), this version will
     /// also select obligations if it seems useful, in an effort
     /// to get more type information.
-    pub(in super::super) fn resolve_vars_with_obligations(&self, mut ty: Ty<'tcx>) -> Ty<'tcx> {
-        debug!("resolve_vars_with_obligations(ty={:?})", ty);
+    pub(in super::super) fn resolve_vars_with_obligations(&self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        self.resolve_vars_with_obligations_and_mutate_fulfillment(ty, |_| {})
+    }
 
+    #[instrument(skip(self, mutate_fulfillment_errors), level = "debug")]
+    pub(in super::super) fn resolve_vars_with_obligations_and_mutate_fulfillment(
+        &self,
+        mut ty: Ty<'tcx>,
+        mutate_fulfillment_errors: impl Fn(&mut Vec<traits::FulfillmentError<'tcx>>),
+    ) -> Ty<'tcx> {
         // No Infer()? Nothing needs doing.
         if !ty.has_infer_types_or_consts() {
-            debug!("resolve_vars_with_obligations: ty={:?}", ty);
+            debug!("no inference var, nothing needs doing");
             return ty;
         }
 
         // If `ty` is a type variable, see whether we already know what it is.
         ty = self.resolve_vars_if_possible(ty);
         if !ty.has_infer_types_or_consts() {
-            debug!("resolve_vars_with_obligations: ty={:?}", ty);
+            debug!(?ty);
             return ty;
         }
 
@@ -104,10 +109,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // possible. This can help substantially when there are
         // indirect dependencies that don't seem worth tracking
         // precisely.
-        self.select_obligations_where_possible(false, |_| {});
+        self.select_obligations_where_possible(false, mutate_fulfillment_errors);
         ty = self.resolve_vars_if_possible(ty);
 
-        debug!("resolve_vars_with_obligations: ty={:?}", ty);
+        debug!(?ty);
         ty
     }
 
@@ -223,6 +228,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// This should be invoked **before any unifications have
     /// occurred**, so that annotations like `Vec<_>` are preserved
     /// properly.
+    #[instrument(skip(self), level = "debug")]
     pub fn write_user_type_annotation_from_substs(
         &self,
         hir_id: hir::HirId,
@@ -230,37 +236,25 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         substs: SubstsRef<'tcx>,
         user_self_ty: Option<UserSelfTy<'tcx>>,
     ) {
-        debug!(
-            "write_user_type_annotation_from_substs: hir_id={:?} def_id={:?} substs={:?} \
-             user_self_ty={:?} in fcx {}",
-            hir_id,
-            def_id,
-            substs,
-            user_self_ty,
-            self.tag(),
-        );
+        debug!("fcx {}", self.tag());
 
-        if Self::can_contain_user_lifetime_bounds((substs, user_self_ty)) {
+        if self.can_contain_user_lifetime_bounds((substs, user_self_ty)) {
             let canonicalized = self.infcx.canonicalize_user_type_annotation(UserType::TypeOf(
                 def_id,
                 UserSubsts { substs, user_self_ty },
             ));
-            debug!("write_user_type_annotation_from_substs: canonicalized={:?}", canonicalized);
+            debug!(?canonicalized);
             self.write_user_type_annotation(hir_id, canonicalized);
         }
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub fn write_user_type_annotation(
         &self,
         hir_id: hir::HirId,
         canonical_user_type_annotation: CanonicalUserType<'tcx>,
     ) {
-        debug!(
-            "write_user_type_annotation: hir_id={:?} canonical_user_type_annotation={:?} tag={}",
-            hir_id,
-            canonical_user_type_annotation,
-            self.tag(),
-        );
+        debug!("fcx {}", self.tag());
 
         if !canonical_user_type_annotation.is_identity() {
             self.typeck_results
@@ -268,15 +262,25 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 .user_provided_types_mut()
                 .insert(hir_id, canonical_user_type_annotation);
         } else {
-            debug!("write_user_type_annotation: skipping identity substs");
+            debug!("skipping identity substs");
         }
     }
 
+    #[instrument(skip(self, expr), level = "debug")]
     pub fn apply_adjustments(&self, expr: &hir::Expr<'_>, adj: Vec<Adjustment<'tcx>>) {
-        debug!("apply_adjustments(expr={:?}, adj={:?})", expr, adj);
+        debug!("expr = {:#?}", expr);
 
         if adj.is_empty() {
             return;
+        }
+
+        for a in &adj {
+            if let Adjust::NeverToAny = a.kind {
+                if a.target.is_ty_var() {
+                    self.diverging_type_vars.borrow_mut().insert(a.target);
+                    debug!("apply_adjustments: adding `{:?}` as diverging type var", a.target);
+                }
+            }
         }
 
         let autoborrow_mut = adj.iter().any(|adj| {
@@ -300,20 +304,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     // is a valid NeverToAny adjustment, because it can't
                     // be reached.
                     (&[Adjustment { kind: Adjust::NeverToAny, .. }], _) => return,
-                    (&[
-                        Adjustment { kind: Adjust::Deref(_), .. },
-                        Adjustment { kind: Adjust::Borrow(AutoBorrow::Ref(..)), .. },
-                    ], &[
-                        Adjustment { kind: Adjust::Deref(_), .. },
-                        .. // Any following adjustments are allowed.
-                    ]) => {
+                    (
+                        &[
+                            Adjustment { kind: Adjust::Deref(_), .. },
+                            Adjustment { kind: Adjust::Borrow(AutoBorrow::Ref(..)), .. },
+                        ],
+                        &[
+                            Adjustment { kind: Adjust::Deref(_), .. },
+                            .., // Any following adjustments are allowed.
+                        ],
+                    ) => {
                         // A reborrow has no effect before a dereference.
                     }
                     // FIXME: currently we never try to compose autoderefs
                     // and ReifyFnPointer/UnsafeFnPointer, but we could.
-                    _ =>
-                        bug!("while adjusting {:?}, can't compose {:?} and {:?}",
-                             expr, entry.get(), adj)
+                    _ => bug!(
+                        "while adjusting {:?}, can't compose {:?} and {:?}",
+                        expr,
+                        entry.get(),
+                        adj
+                    ),
                 };
                 *entry.get_mut() = adj;
             }
@@ -363,50 +373,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Replaces the opaque types from the given value with type variables,
     /// and records the `OpaqueTypeMap` for later use during writeback. See
     /// `InferCtxt::instantiate_opaque_types` for more details.
+    #[instrument(skip(self, value_span), level = "debug")]
     pub(in super::super) fn instantiate_opaque_types_from_value<T: TypeFoldable<'tcx>>(
         &self,
-        parent_id: hir::HirId,
         value: T,
         value_span: Span,
-        feature: Option<Symbol>,
     ) -> T {
-        let parent_def_id = self.tcx.hir().local_def_id(parent_id);
-        debug!(
-            "instantiate_opaque_types_from_value(parent_def_id={:?}, value={:?})",
-            parent_def_id, value
-        );
-
-        let (value, opaque_type_map) =
-            self.register_infer_ok_obligations(self.instantiate_opaque_types(
-                parent_def_id,
-                self.body_id,
-                self.param_env,
-                value,
-                value_span,
-            ));
-
-        let mut opaque_types = self.opaque_types.borrow_mut();
-        let mut opaque_types_vars = self.opaque_types_vars.borrow_mut();
-
-        for (ty, decl) in opaque_type_map {
-            if let Some(feature) = feature {
-                if let hir::OpaqueTyOrigin::TyAlias = decl.origin {
-                    if !self.tcx.features().enabled(feature) {
-                        feature_err(
-                            &self.tcx.sess.parse_sess,
-                            feature,
-                            value_span,
-                            "type alias impl trait is not permitted here",
-                        )
-                        .emit();
-                    }
-                }
-            }
-            let _ = opaque_types.insert(ty, decl);
-            let _ = opaque_types_vars.insert(decl.concrete_ty, decl.opaque_type);
-        }
-
-        value
+        self.register_infer_ok_obligations(self.instantiate_opaque_types(
+            self.body_id,
+            self.param_env,
+            value,
+            value_span,
+        ))
     }
 
     /// Convenience method which tracks extra diagnostic information for normalization
@@ -514,7 +492,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let ty = self.to_ty(ast_ty);
         debug!("to_ty_saving_user_provided_ty: ty={:?}", ty);
 
-        if Self::can_contain_user_lifetime_bounds(ty) {
+        if self.can_contain_user_lifetime_bounds(ty) {
             let c_ty = self.infcx.canonicalize_response(UserType::Ty(ty));
             debug!("to_ty_saving_user_provided_ty: c_ty={:?}", c_ty);
             self.typeck_results.borrow_mut().user_provided_types_mut().insert(ast_ty.hir_id, c_ty);
@@ -559,11 +537,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // reader, although I have my doubts). Also pass in types with inference
     // types, because they may be repeated. Other sorts of things are already
     // sufficiently enforced with erased regions. =)
-    fn can_contain_user_lifetime_bounds<T>(t: T) -> bool
+    fn can_contain_user_lifetime_bounds<T>(&self, t: T) -> bool
     where
         T: TypeFoldable<'tcx>,
     {
-        t.has_free_regions() || t.has_projections() || t.has_infer_types()
+        t.has_free_regions(self.tcx) || t.has_projections() || t.has_infer_types()
     }
 
     pub fn node_ty(&self, id: hir::HirId) -> Ty<'tcx> {
@@ -581,6 +559,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    pub fn node_ty_opt(&self, id: hir::HirId) -> Option<Ty<'tcx>> {
+        match self.typeck_results.borrow().node_types().get(id) {
+            Some(&t) => Some(t),
+            None if self.is_tainted_by_errors() => Some(self.tcx.ty_error()),
+            None => None,
+        }
+    }
+
     /// Registers an obligation for checking later, during regionck, that `arg` is well-formed.
     pub fn register_wf_obligation(
         &self,
@@ -593,7 +579,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self.register_predicate(traits::Obligation::new(
             cause,
             self.param_env,
-            ty::PredicateKind::WellFormed(arg).to_predicate(self.tcx),
+            ty::Binder::dummy(ty::PredicateKind::WellFormed(arg)).to_predicate(self.tcx),
         ));
     }
 
@@ -603,38 +589,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             matches!(arg.unpack(), GenericArgKind::Type(..) | GenericArgKind::Const(..))
         }) {
             self.register_wf_obligation(arg, expr.span, traits::MiscObligation);
-        }
-    }
-
-    /// Given a fully substituted set of bounds (`generic_bounds`), and the values with which each
-    /// type/region parameter was instantiated (`substs`), creates and registers suitable
-    /// trait/region obligations.
-    ///
-    /// For example, if there is a function:
-    ///
-    /// ```
-    /// fn foo<'a,T:'a>(...)
-    /// ```
-    ///
-    /// and a reference:
-    ///
-    /// ```
-    /// let f = foo;
-    /// ```
-    ///
-    /// Then we will create a fresh region variable `'$0` and a fresh type variable `$1` for `'a`
-    /// and `T`. This routine will add a region obligation `$1:'$0` and register it locally.
-    pub fn add_obligations_for_parameters(
-        &self,
-        cause: traits::ObligationCause<'tcx>,
-        predicates: ty::InstantiatedPredicates<'tcx>,
-    ) {
-        assert!(!predicates.has_escaping_bound_vars());
-
-        debug!("add_obligations_for_parameters(predicates={:?})", predicates);
-
-        for obligation in traits::predicates_for_generics(cause, self.param_env, predicates) {
-            self.register_predicate(obligation);
         }
     }
 
@@ -660,86 +614,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
-    // Tries to apply a fallback to `ty` if it is an unsolved variable.
-    //
-    // - Unconstrained ints are replaced with `i32`.
-    //
-    // - Unconstrained floats are replaced with with `f64`.
-    //
-    // - Non-numerics get replaced with `!` when `#![feature(never_type_fallback)]`
-    //   is enabled. Otherwise, they are replaced with `()`.
-    //
-    // Fallback becomes very dubious if we have encountered type-checking errors.
-    // In that case, fallback to Error.
-    // The return value indicates whether fallback has occurred.
-    pub(in super::super) fn fallback_if_possible(&self, ty: Ty<'tcx>, mode: FallbackMode) -> bool {
-        use rustc_middle::ty::error::UnconstrainedNumeric::Neither;
-        use rustc_middle::ty::error::UnconstrainedNumeric::{UnconstrainedFloat, UnconstrainedInt};
-
-        assert!(ty.is_ty_infer());
-        let fallback = match self.type_is_unconstrained_numeric(ty) {
-            _ if self.is_tainted_by_errors() => self.tcx().ty_error(),
-            UnconstrainedInt => self.tcx.types.i32,
-            UnconstrainedFloat => self.tcx.types.f64,
-            Neither if self.type_var_diverges(ty) => self.tcx.mk_diverging_default(),
-            Neither => {
-                // This type variable was created from the instantiation of an opaque
-                // type. The fact that we're attempting to perform fallback for it
-                // means that the function neither constrained it to a concrete
-                // type, nor to the opaque type itself.
-                //
-                // For example, in this code:
-                //
-                //```
-                // type MyType = impl Copy;
-                // fn defining_use() -> MyType { true }
-                // fn other_use() -> MyType { defining_use() }
-                // ```
-                //
-                // `defining_use` will constrain the instantiated inference
-                // variable to `bool`, while `other_use` will constrain
-                // the instantiated inference variable to `MyType`.
-                //
-                // When we process opaque types during writeback, we
-                // will handle cases like `other_use`, and not count
-                // them as defining usages
-                //
-                // However, we also need to handle cases like this:
-                //
-                // ```rust
-                // pub type Foo = impl Copy;
-                // fn produce() -> Option<Foo> {
-                //     None
-                //  }
-                //  ```
-                //
-                // In the above snippet, the inference variable created by
-                // instantiating `Option<Foo>` will be completely unconstrained.
-                // We treat this as a non-defining use by making the inference
-                // variable fall back to the opaque type itself.
-                if let FallbackMode::All = mode {
-                    if let Some(opaque_ty) = self.opaque_types_vars.borrow().get(ty) {
-                        debug!(
-                            "fallback_if_possible: falling back opaque type var {:?} to {:?}",
-                            ty, opaque_ty
-                        );
-                        *opaque_ty
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-        };
-        debug!("fallback_if_possible: defaulting `{:?}` to `{:?}`", ty, fallback);
-        self.demand_eqtype(rustc_span::DUMMY_SP, ty, fallback);
-        true
-    }
-
+    #[instrument(skip(self), level = "debug")]
     pub(in super::super) fn select_all_obligations_or_error(&self) {
-        debug!("select_all_obligations_or_error");
-        if let Err(errors) = self.fulfillment_cx.borrow_mut().select_all_or_error(&self) {
+        let errors = self
+            .fulfillment_cx
+            .borrow_mut()
+            .select_all_with_constness_or_error(&self, self.inh.constness);
+
+        if !errors.is_empty() {
             self.report_fulfillment_errors(&errors, self.inh.body_id, false);
         }
     }
@@ -750,10 +632,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         fallback_has_occurred: bool,
         mutate_fulfillment_errors: impl Fn(&mut Vec<traits::FulfillmentError<'tcx>>),
     ) {
-        let result = self.fulfillment_cx.borrow_mut().select_where_possible(self);
-        if let Err(mut errors) = result {
-            mutate_fulfillment_errors(&mut errors);
-            self.report_fulfillment_errors(&errors, self.inh.body_id, fallback_has_occurred);
+        let mut result = self
+            .fulfillment_cx
+            .borrow_mut()
+            .select_with_constness_where_possible(self, self.inh.constness);
+        if !result.is_empty() {
+            mutate_fulfillment_errors(&mut result);
+            self.report_fulfillment_errors(&result, self.inh.body_id, fallback_has_occurred);
         }
     }
 
@@ -772,16 +657,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         ret_ty.builtin_deref(true).unwrap()
     }
 
+    #[instrument(skip(self), level = "debug")]
     fn self_type_matches_expected_vid(
         &self,
         trait_ref: ty::PolyTraitRef<'tcx>,
         expected_vid: ty::TyVid,
     ) -> bool {
         let self_ty = self.shallow_resolve(trait_ref.skip_binder().self_ty());
-        debug!(
-            "self_type_matches_expected_vid(trait_ref={:?}, self_ty={:?}, expected_vid={:?})",
-            trait_ref, self_ty, expected_vid
-        );
+        debug!(?self_ty);
+
         match *self_ty.kind() {
             ty::Infer(ty::TyVar(found_vid)) => {
                 // FIXME: consider using `sub_root_var` here so we
@@ -794,6 +678,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[instrument(skip(self), level = "debug")]
     pub(in super::super) fn obligations_for_self_ty<'b>(
         &'b self,
         self_ty: ty::TyVid,
@@ -803,12 +688,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // FIXME: consider using `sub_root_var` here so we
         // can see through subtyping.
         let ty_var_root = self.root_var(self_ty);
-        debug!(
-            "obligations_for_self_ty: self_ty={:?} ty_var_root={:?} pending_obligations={:?}",
-            self_ty,
-            ty_var_root,
-            self.fulfillment_cx.borrow().pending_obligations()
-        );
+        trace!("pending_obligations = {:#?}", self.fulfillment_cx.borrow().pending_obligations());
 
         self.fulfillment_cx
             .borrow()
@@ -821,10 +701,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         bound_predicate.rebind(data).required_poly_trait_ref(self.tcx),
                         obligation,
                     )),
-                    ty::PredicateKind::Trait(data, _) => {
+                    ty::PredicateKind::Trait(data) => {
                         Some((bound_predicate.rebind(data).to_poly_trait_ref(), obligation))
                     }
                     ty::PredicateKind::Subtype(..) => None,
+                    ty::PredicateKind::Coerce(..) => None,
                     ty::PredicateKind::RegionOutlives(..) => None,
                     ty::PredicateKind::TypeOutlives(..) => None,
                     ty::PredicateKind::WellFormed(..) => None,
@@ -837,7 +718,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     // possibly be referring to the current closure,
                     // because we haven't produced the `Closure` for
                     // this closure yet; this is exactly why the other
-                    // code is looking for a self type of a unresolved
+                    // code is looking for a self type of an unresolved
                     // inference variable.
                     ty::PredicateKind::ClosureKind(..) => None,
                     ty::PredicateKind::TypeWellFormedFromEnv(..) => None,
@@ -857,6 +738,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Unifies the output type with the expected type early, for more coercions
     /// and forward type information on the input expressions.
+    #[instrument(skip(self, call_span), level = "debug")]
     pub(in super::super) fn expected_inputs_for_expected_output(
         &self,
         call_span: Span,
@@ -886,14 +768,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         // we can.  We don't care if some things turn
                         // out unconstrained or ambiguous, as we're
                         // just trying to get hints here.
-                        self.save_and_restore_in_snapshot_flag(|_| {
+                        let errors = self.save_and_restore_in_snapshot_flag(|_| {
                             let mut fulfill = <dyn TraitEngine<'_>>::new(self.tcx);
                             for obligation in ok.obligations {
                                 fulfill.register_predicate_obligation(self, obligation);
                             }
                             fulfill.select_where_possible(self)
-                        })
-                        .map_err(|_| ())?;
+                        });
+
+                        if !errors.is_empty() {
+                            return Err(());
+                        }
                     }
                     Err(_) => return Err(()),
                 }
@@ -903,10 +788,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 Ok(formal_args.iter().map(|&ty| self.resolve_vars_if_possible(ty)).collect())
             })
             .unwrap_or_default();
-        debug!(
-            "expected_inputs_for_expected_output(formal={:?} -> {:?}, expected={:?} -> {:?})",
-            formal_args, formal_ret, expect_args, expected_ret
-        );
+        debug!(?formal_args, ?formal_ret, ?expect_args, ?expected_ret);
         expect_args
     }
 
@@ -952,13 +834,25 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     path.segments,
                 );
             }
-            QPath::TypeRelative(ref qself, ref segment) => (self.to_ty(qself), qself, segment),
+            QPath::TypeRelative(ref qself, ref segment) => {
+                // Don't use `self.to_ty`, since this will register a WF obligation.
+                // If we're trying to call a non-existent method on a trait
+                // (e.g. `MyTrait::missing_method`), then resolution will
+                // give us a `QPath::TypeRelative` with a trait object as
+                // `qself`. In that case, we want to avoid registering a WF obligation
+                // for `dyn MyTrait`, since we don't actually need the trait
+                // to be object-safe.
+                // We manually call `register_wf_obligation` in the success path
+                // below.
+                (<dyn AstConv<'_>>::ast_ty_to_ty(self, qself), qself, segment)
+            }
             QPath::LangItem(..) => {
                 bug!("`resolve_ty_and_res_fully_qualified_call` called on `LangItem`")
             }
         };
         if let Some(&cached_result) = self.typeck_results.borrow().type_dependent_defs().get(hir_id)
         {
+            self.register_wf_obligation(ty.into(), qself.span, traits::WellFormed(None));
             // Return directly on cache hit. This is useful to avoid doubly reporting
             // errors with default match binding modes. See #44614.
             let def = cached_result.map_or(Res::Err, |(kind, def_id)| Res::Def(kind, def_id));
@@ -972,6 +866,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     method::MethodError::PrivateMatch(kind, def_id, _) => Ok((kind, def_id)),
                     _ => Err(ErrorReported),
                 };
+
+                // If we have a path like `MyTrait::missing_method`, then don't register
+                // a WF obligation for `dyn MyTrait` when method lookup fails. Otherwise,
+                // register a WF obligation so that we can detect any additional
+                // errors in the self type.
+                if !(matches!(error, method::MethodError::NoMatch(_)) && ty.is_trait()) {
+                    self.register_wf_obligation(ty.into(), qself.span, traits::WellFormed(None));
+                }
                 if item_name.name != kw::Empty {
                     if let Some(mut e) = self.report_method_error(
                         span,
@@ -988,7 +890,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             });
 
         if result.is_ok() {
-            self.maybe_lint_bare_trait(qpath, hir_id);
+            self.maybe_lint_bare_trait(qpath, hir_id, span);
+            self.register_wf_obligation(ty.into(), qself.span, traits::WellFormed(None));
         }
 
         // Write back the new resolution.
@@ -1000,7 +903,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         )
     }
 
-    fn maybe_lint_bare_trait(&self, qpath: &QPath<'_>, hir_id: hir::HirId) {
+    fn maybe_lint_bare_trait(&self, qpath: &QPath<'_>, hir_id: hir::HirId, span: Span) {
         if let QPath::TypeRelative(self_ty, _) = qpath {
             if let TyKind::TraitObject([poly_trait_ref, ..], _, TraitObjectSyntax::None) =
                 self_ty.kind
@@ -1008,24 +911,29 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let msg = "trait objects without an explicit `dyn` are deprecated";
                 let (sugg, app) = match self.tcx.sess.source_map().span_to_snippet(self_ty.span) {
                     Ok(s) if poly_trait_ref.trait_ref.path.is_global() => {
-                        (format!("<dyn ({})>", s), Applicability::MachineApplicable)
+                        (format!("dyn ({})", s), Applicability::MachineApplicable)
                     }
-                    Ok(s) => (format!("<dyn {}>", s), Applicability::MachineApplicable),
-                    Err(_) => ("<dyn <type>>".to_string(), Applicability::HasPlaceholders),
+                    Ok(s) => (format!("dyn {}", s), Applicability::MachineApplicable),
+                    Err(_) => ("dyn <type>".to_string(), Applicability::HasPlaceholders),
                 };
-                let replace = String::from("use `dyn`");
+                // Wrap in `<..>` if it isn't already.
+                let sugg = match self.tcx.sess.source_map().span_to_snippet(span) {
+                    Ok(s) if s.starts_with('<') => sugg,
+                    _ => format!("<{}>", sugg),
+                };
+                let sugg_label = "use `dyn`";
                 if self.sess().edition() >= Edition::Edition2021 {
                     let mut err = rustc_errors::struct_span_err!(
                         self.sess(),
                         self_ty.span,
-                        E0783,
+                        E0782,
                         "{}",
                         msg,
                     );
                     err.span_suggestion(
                         self_ty.span,
-                        &sugg,
-                        replace,
+                        sugg_label,
+                        sugg,
                         Applicability::MachineApplicable,
                     )
                     .emit();
@@ -1036,7 +944,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         self_ty.span,
                         |lint| {
                             let mut db = lint.build(msg);
-                            db.span_suggestion(self_ty.span, &replace, sugg, app);
+                            db.span_suggestion(self_ty.span, sugg_label, sugg, app);
                             db.emit()
                         },
                     );
@@ -1195,12 +1103,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         (_, _) => return None,
                     };
 
-                let last_hir_id = self.tcx.hir().local_def_id_to_hir_id(last_local_id);
-                let exp_hir_id = self.tcx.hir().local_def_id_to_hir_id(exp_local_id);
-
                 match (
-                    &self.tcx.hir().expect_item(last_hir_id).kind,
-                    &self.tcx.hir().expect_item(exp_hir_id).kind,
+                    &self.tcx.hir().expect_item(last_local_id).kind,
+                    &self.tcx.hir().expect_item(exp_local_id).kind,
                 ) {
                     (
                         hir::ItemKind::OpaqueTy(hir::OpaqueTy { bounds: last_bounds, .. }),
@@ -1240,12 +1145,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         {
             return None;
         }
-        let original_span = original_sp(last_stmt.span, blk.span);
-        Some((original_span.with_lo(original_span.hi() - BytePos(1)), needs_box))
+        let span = if last_stmt.span.from_expansion() {
+            let mac_call = original_sp(last_stmt.span, blk.span);
+            self.tcx.sess.source_map().mac_call_stmt_semi_span(mac_call)?
+        } else {
+            last_stmt.span.with_lo(last_stmt.span.hi() - BytePos(1))
+        };
+        Some((span, needs_box))
     }
 
     // Instantiates the given path, which must refer to an item with the given
     // number of type parameters and type.
+    #[instrument(skip(self, span), level = "debug")]
     pub fn instantiate_value_path(
         &self,
         segments: &[hir::PathSegment<'_>],
@@ -1254,11 +1165,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         span: Span,
         hir_id: hir::HirId,
     ) -> (Ty<'tcx>, Res) {
-        debug!(
-            "instantiate_value_path(segments={:?}, self_ty={:?}, res={:?}, hir_id={})",
-            segments, self_ty, res, hir_id,
-        );
-
         let tcx = self.tcx;
 
         let path_segs = match res {
@@ -1272,16 +1178,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let mut user_self_ty = None;
         let mut is_alias_variant_ctor = false;
         match res {
-            Res::Def(DefKind::Ctor(CtorOf::Variant, _), _) => {
-                if let Some(self_ty) = self_ty {
-                    let adt_def = self_ty.ty_adt_def().unwrap();
-                    user_self_ty = Some(UserSelfTy { impl_def_id: adt_def.did, self_ty });
-                    is_alias_variant_ctor = true;
-                }
+            Res::Def(DefKind::Ctor(CtorOf::Variant, _), _)
+                if let Some(self_ty) = self_ty =>
+            {
+                let adt_def = self_ty.ty_adt_def().unwrap();
+                user_self_ty = Some(UserSelfTy { impl_def_id: adt_def.did, self_ty });
+                is_alias_variant_ctor = true;
             }
             Res::Def(DefKind::AssocFn | DefKind::AssocConst, def_id) => {
                 let container = tcx.associated_item(def_id).container;
-                debug!("instantiate_value_path: def_id={:?} container={:?}", def_id, container);
+                debug!(?def_id, ?container);
                 match container {
                     ty::TraitContainer(trait_did) => {
                         callee::check_legal_trait_for_method_call(tcx, span, None, span, trait_did)
@@ -1471,6 +1377,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     (GenericParamDefKind::Const { .. }, GenericArg::Const(ct)) => {
                         self.fcx.const_arg_to_const(&ct.value, param.def_id).into()
                     }
+                    (GenericParamDefKind::Type { .. }, GenericArg::Infer(inf)) => {
+                        self.fcx.ty_infer(Some(param), inf.span).into()
+                    }
+                    (GenericParamDefKind::Const { .. }, GenericArg::Infer(inf)) => {
+                        let tcx = self.fcx.tcx();
+                        self.fcx.ct_infer(tcx.type_of(param.def_id), Some(param), inf.span).into()
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -1580,20 +1493,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Add all the obligations that are required, substituting and normalized appropriately.
     #[tracing::instrument(level = "debug", skip(self, span, def_id, substs))]
-    fn add_required_obligations(&self, span: Span, def_id: DefId, substs: &SubstsRef<'tcx>) {
-        let (bounds, spans) = self.instantiate_bounds(span, def_id, &substs);
+    crate fn add_required_obligations(&self, span: Span, def_id: DefId, substs: &SubstsRef<'tcx>) {
+        let (bounds, _) = self.instantiate_bounds(span, def_id, &substs);
 
-        for (i, mut obligation) in traits::predicates_for_generics(
+        for obligation in traits::predicates_for_generics(
             traits::ObligationCause::new(span, self.body_id, traits::ItemObligation(def_id)),
             self.param_env,
             bounds,
-        )
-        .enumerate()
-        {
-            // This makes the error point at the bound, but we want to point at the argument
-            if let Some(span) = spans.get(i) {
-                obligation.cause.make_mut().code = traits::BindingObligation(def_id, *span);
-            }
+        ) {
             self.register_predicate(obligation);
         }
     }

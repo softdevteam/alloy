@@ -1,10 +1,9 @@
-// min-llvm-version: 10.0.1
 // assembly-output: emit-asm
 // compile-flags: --target armv7-unknown-linux-gnueabihf
 // compile-flags: -C target-feature=+neon
 // needs-llvm-components: arm
 
-#![feature(no_core, lang_items, rustc_attrs, repr_simd)]
+#![feature(no_core, lang_items, rustc_attrs, repr_simd, asm_sym)]
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(asm_sub_register, non_camel_case_types)]
@@ -163,36 +162,6 @@ check!(reg_f32 f32 reg "mov");
 // CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
 // CHECK: @NO_APP
 check!(reg_ptr ptr reg "mov");
-
-// CHECK-LABEL: reg_thumb_i8:
-// CHECK: @APP
-// CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
-// CHECK: @NO_APP
-check!(reg_thumb_i8 i8 reg_thumb "mov");
-
-// CHECK-LABEL: reg_thumb_i16:
-// CHECK: @APP
-// CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
-// CHECK: @NO_APP
-check!(reg_thumb_i16 i16 reg_thumb "mov");
-
-// CHECK-LABEL: reg_thumb_i32:
-// CHECK: @APP
-// CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
-// CHECK: @NO_APP
-check!(reg_thumb_i32 i32 reg_thumb "mov");
-
-// CHECK-LABEL: reg_thumb_f32:
-// CHECK: @APP
-// CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
-// CHECK: @NO_APP
-check!(reg_thumb_f32 f32 reg_thumb "mov");
-
-// CHECK-LABEL: reg_thumb_ptr:
-// CHECK: @APP
-// CHECK: mov {{[a-z0-9]+}}, {{[a-z0-9]+}}
-// CHECK: @NO_APP
-check!(reg_thumb_ptr ptr reg_thumb "mov");
 
 // CHECK-LABEL: sreg_i32:
 // CHECK: @APP

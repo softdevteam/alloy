@@ -1,13 +1,9 @@
-// revisions: min_tait full_tait
-#![feature(min_type_alias_impl_trait)]
-#![cfg_attr(full_tait, feature(type_alias_impl_trait))]
-//[full_tait]~^ WARN incomplete
+#![feature(type_alias_impl_trait)]
 
 fn main() {}
 
 trait Trait {}
-type Underconstrained<T: Trait> = impl 'static;
-//~^ ERROR: at least one trait must be specified
+type Underconstrained<T: Trait> = impl Send;
 
 // no `Trait` bound
 fn underconstrain<T>(_: T) -> Underconstrained<T> {

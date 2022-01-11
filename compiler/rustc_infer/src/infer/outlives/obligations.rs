@@ -1,5 +1,5 @@
 //! Code that handles "type-outlives" constraints like `T: 'a`. This
-//! is based on the `push_outlives_components` function defined on the tcx,
+//! is based on the `push_outlives_components` function defined in rustc_infer,
 //! but it adds a bit of heuristics on top, in particular to deal with
 //! associated types and projections.
 //!
@@ -59,13 +59,13 @@
 //! might later infer `?U` to something like `&'b u32`, which would
 //! imply that `'b: 'a`.
 
+use crate::infer::outlives::components::{push_outlives_components, Component};
 use crate::infer::outlives::env::RegionBoundPairs;
 use crate::infer::outlives::verify::VerifyBoundCx;
 use crate::infer::{
     self, GenericKind, InferCtxt, RegionObligation, SubregionOrigin, UndoLog, VerifyBound,
 };
-use crate::traits::ObligationCause;
-use rustc_middle::ty::outlives::Component;
+use crate::traits::{ObligationCause, ObligationCauseCode};
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_middle::ty::{self, Region, Ty, TyCtxt, TypeFoldable};
 
@@ -99,7 +99,14 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
         cause: &ObligationCause<'tcx>,
     ) {
         let origin = SubregionOrigin::from_obligation_cause(cause, || {
-            infer::RelateParamBound(cause.span, sup_type)
+            infer::RelateParamBound(
+                cause.span,
+                sup_type,
+                match cause.code.peel_derives() {
+                    ObligationCauseCode::BindingObligation(_, span) => Some(*span),
+                    _ => None,
+                },
+            )
         });
 
         self.register_region_obligation(
@@ -264,7 +271,7 @@ where
         assert!(!ty.has_escaping_bound_vars());
 
         let mut components = smallvec![];
-        self.tcx.push_outlives_components(ty, &mut components);
+        push_outlives_components(self.tcx, ty, &mut components);
         self.components_must_outlive(origin, &components, region);
     }
 

@@ -130,6 +130,9 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                     traits::NonStructuralMatchTy::Opaque => {
                         "opaque types cannot be used in patterns".to_string()
                     }
+                    traits::NonStructuralMatchTy::Closure => {
+                        "closures cannot be used in patterns".to_string()
+                    }
                     traits::NonStructuralMatchTy::Generator => {
                         "generators cannot be used in patterns".to_string()
                     }
@@ -237,7 +240,7 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
         // code at the moment, because types like `for <'a> fn(&'a ())` do
         // not *yet* implement `PartialEq`. So for now we leave this here.
         has_impl
-            || ty.walk().any(|t| match t.unpack() {
+            || ty.walk(self.tcx()).any(|t| match t.unpack() {
                 ty::subst::GenericArgKind::Lifetime(_) => false,
                 ty::subst::GenericArgKind::Type(t) => t.is_fn_ptr(),
                 ty::subst::GenericArgKind::Const(_) => false,
@@ -322,16 +325,18 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                     && !self.saw_const_match_lint.get()
                 {
                     self.saw_const_match_lint.set(true);
-                    let msg = format!(
-                        "to use a constant of type `{}` in a pattern, \
-                        `{}` must be annotated with `#[derive(PartialEq, Eq)]`",
-                        cv.ty, cv.ty,
-                    );
                     tcx.struct_span_lint_hir(
                         lint::builtin::INDIRECT_STRUCTURAL_MATCH,
                         id,
                         span,
-                        |lint| lint.build(&msg).emit(),
+                        |lint| {
+                            let msg = format!(
+                                "to use a constant of type `{}` in a pattern, \
+                                 `{}` must be annotated with `#[derive(PartialEq, Eq)]`",
+                                cv.ty, cv.ty,
+                            );
+                            lint.build(&msg).emit()
+                        },
                     );
                 }
                 // Since we are behind a reference, we can just bubble the error up so we get a

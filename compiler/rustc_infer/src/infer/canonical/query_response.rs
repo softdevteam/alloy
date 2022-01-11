@@ -49,6 +49,7 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
     ///   the same thing happens, but the resulting query is marked as ambiguous.
     /// - Finally, if any of the obligations result in a hard error,
     ///   then `Err(NoSolution)` is returned.
+    #[instrument(skip(self, inference_vars, answer, fulfill_cx), level = "trace")]
     pub fn make_canonicalized_query_response<T>(
         &self,
         inference_vars: CanonicalVarValues<'tcx>,
@@ -62,7 +63,7 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
         let query_response = self.make_query_response(inference_vars, answer, fulfill_cx)?;
         let canonical_result = self.canonicalize_response(query_response);
 
-        debug!("make_canonicalized_query_response: canonical_result = {:#?}", canonical_result);
+        debug!("canonical_result = {:#?}", canonical_result);
 
         Ok(self.tcx.arena.alloc(canonical_result))
     }
@@ -94,6 +95,7 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
 
     /// Helper for `make_canonicalized_query_response` that does
     /// everything up until the final canonicalization.
+    #[instrument(skip(self, fulfill_cx), level = "debug")]
     fn make_query_response<T>(
         &self,
         inference_vars: CanonicalVarValues<'tcx>,
@@ -105,15 +107,8 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
     {
         let tcx = self.tcx;
 
-        debug!(
-            "make_query_response(\
-             inference_vars={:?}, \
-             answer={:?})",
-            inference_vars, answer,
-        );
-
         // Select everything, returning errors.
-        let true_errors = fulfill_cx.select_where_possible(self).err().unwrap_or_else(Vec::new);
+        let true_errors = fulfill_cx.select_where_possible(self);
         debug!("true_errors = {:#?}", true_errors);
 
         if !true_errors.is_empty() {
@@ -123,7 +118,7 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
         }
 
         // Anything left unselected *now* must be an ambiguity.
-        let ambig_errors = fulfill_cx.select_all_or_error(self).err().unwrap_or_else(Vec::new);
+        let ambig_errors = fulfill_cx.select_all_or_error(self);
         debug!("ambig_errors = {:#?}", ambig_errors);
 
         let region_obligations = self.take_registered_region_obligations();
@@ -669,8 +664,10 @@ impl<'tcx> TypeRelatingDelegate<'tcx> for QueryTypeRelatingDelegate<'_, 'tcx> {
         self.obligations.push(Obligation {
             cause: self.cause.clone(),
             param_env: self.param_env,
-            predicate: ty::PredicateKind::RegionOutlives(ty::OutlivesPredicate(sup, sub))
-                .to_predicate(self.infcx.tcx),
+            predicate: ty::Binder::dummy(ty::PredicateKind::RegionOutlives(ty::OutlivesPredicate(
+                sup, sub,
+            )))
+            .to_predicate(self.infcx.tcx),
             recursion_depth: 0,
         });
     }
@@ -678,7 +675,7 @@ impl<'tcx> TypeRelatingDelegate<'tcx> for QueryTypeRelatingDelegate<'_, 'tcx> {
     fn const_equate(&mut self, _a: &'tcx Const<'tcx>, _b: &'tcx Const<'tcx>) {
         span_bug!(
             self.cause.span(self.infcx.tcx),
-            "lazy_normalization_consts: unreachable `const_equate`"
+            "generic_const_exprs: unreachable `const_equate`"
         );
     }
 

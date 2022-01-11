@@ -21,7 +21,7 @@ fn docs_link(diag: &mut DiagnosticBuilder<'_>, lint: &'static Lint) {
                 "for further information visit https://rust-lang.github.io/rust-clippy/{}/index.html#{}",
                 &option_env!("RUST_RELEASE_NUM").map_or("master".to_string(), |n| {
                     // extract just major + minor version and ignore patch versions
-                    format!("rust-{}", n.rsplitn(2, '.').nth(1).unwrap())
+                    format!("rust-{}", n.rsplit_once('.').unwrap().1)
                 }),
                 lint
             ));
@@ -65,14 +65,14 @@ pub fn span_lint<T: LintContext>(cx: &T, lint: &'static Lint, sp: impl Into<Mult
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// error: constant division of 0.0 with 0.0 will always result in NaN
 ///   --> $DIR/zero_div_zero.rs:6:25
 ///    |
 /// 6  |     let other_f64_nan = 0.0f64 / 0.0;
 ///    |                         ^^^^^^^^^^^^
 ///    |
-///    = help: Consider using `f64::NAN` if you would like a constant representing NaN
+///    = help: consider using `f64::NAN` if you would like a constant representing NaN
 /// ```
 pub fn span_lint_and_help<'a, T: LintContext>(
     cx: &'a T,
@@ -103,7 +103,7 @@ pub fn span_lint_and_help<'a, T: LintContext>(
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// error: calls to `std::mem::forget` with a reference instead of an owned value. Forgetting a reference does nothing.
 ///   --> $DIR/drop_forget_ref.rs:10:5
 ///    |
@@ -189,7 +189,7 @@ pub fn span_lint_hir_and_then(
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// error: This `.fold` can be more succinctly expressed as `.any`
 /// --> $DIR/methods.rs:390:13
 ///     |

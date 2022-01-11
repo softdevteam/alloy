@@ -56,10 +56,6 @@ extern "C" {
 
     pub(crate) fn GC_gcollect();
 
-    pub(crate) fn GC_get_full_gc_total_time() -> usize;
-
-    pub(crate) fn GC_get_prof_stats(prof_stats: *mut ProfileStats, stats_size: usize) -> usize;
-
     pub(crate) fn GC_malloc_explicitly_typed(size: usize, descriptor: usize) -> *mut u8;
 
     pub(crate) fn GC_make_descriptor(bitmap: *const usize, len: usize) -> usize;

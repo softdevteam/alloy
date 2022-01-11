@@ -40,9 +40,8 @@ declare_lint_pass!(NoopMethodCall => [NOOP_METHOD_CALL]);
 impl<'tcx> LateLintPass<'tcx> for NoopMethodCall {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         // We only care about method calls.
-        let (call, elements) = match expr.kind {
-            ExprKind::MethodCall(call, _, elements, _) => (call, elements),
-            _ => return,
+        let ExprKind::MethodCall(call, _, elements, _) = &expr.kind else {
+            return
         };
         // We only care about method calls corresponding to the `Clone`, `Deref` and `Borrow`
         // traits and ignore any other method call.
@@ -51,9 +50,10 @@ impl<'tcx> LateLintPass<'tcx> for NoopMethodCall {
             Some((DefKind::AssocFn, did)) => match cx.tcx.trait_of_item(did) {
                 // Check that we're dealing with a trait method for one of the traits we care about.
                 Some(trait_id)
-                    if [sym::Clone, sym::Deref, sym::Borrow]
-                        .iter()
-                        .any(|s| cx.tcx.is_diagnostic_item(*s, trait_id)) =>
+                    if matches!(
+                        cx.tcx.get_diagnostic_name(trait_id),
+                        Some(sym::Borrow | sym::Clone | sym::Deref)
+                    ) =>
                 {
                     (trait_id, did)
                 }
@@ -62,50 +62,47 @@ impl<'tcx> LateLintPass<'tcx> for NoopMethodCall {
             _ => return,
         };
         let substs = cx.typeck_results().node_substs(expr.hir_id);
-        if substs.needs_subst() {
+        if substs.definitely_needs_subst(cx.tcx) {
             // We can't resolve on types that require monomorphization, so we don't handle them if
             // we need to perfom substitution.
             return;
         }
         let param_env = cx.tcx.param_env(trait_id);
         // Resolve the trait method instance.
-        let i = match ty::Instance::resolve(cx.tcx, param_env, did, substs) {
-            Ok(Some(i)) => i,
-            _ => return,
+        let Ok(Some(i)) = ty::Instance::resolve(cx.tcx, param_env, did, substs) else {
+            return
         };
         // (Re)check that it implements the noop diagnostic.
-        for s in [sym::noop_method_clone, sym::noop_method_deref, sym::noop_method_borrow].iter() {
-            if cx.tcx.is_diagnostic_item(*s, i.def_id()) {
-                let method = &call.ident.name;
-                let receiver = &elements[0];
-                let receiver_ty = cx.typeck_results().expr_ty(receiver);
-                let expr_ty = cx.typeck_results().expr_ty_adjusted(expr);
-                if receiver_ty != expr_ty {
-                    // This lint will only trigger if the receiver type and resulting expression \
-                    // type are the same, implying that the method call is unnecessary.
-                    return;
-                }
-                let expr_span = expr.span;
-                let note = format!(
-                    "the type `{:?}` which `{}` is being called on is the same as \
-                     the type returned from `{}`, so the method call does not do \
-                     anything and can be removed",
-                    receiver_ty, method, method,
-                );
-
-                let span = expr_span.with_lo(receiver.span.hi());
-                cx.struct_span_lint(NOOP_METHOD_CALL, span, |lint| {
-                    let method = &call.ident.name;
-                    let message = format!(
-                        "call to `.{}()` on a reference in this situation does nothing",
-                        &method,
-                    );
-                    lint.build(&message)
-                        .span_label(span, "unnecessary method call")
-                        .note(&note)
-                        .emit()
-                });
-            }
+        let Some(name) = cx.tcx.get_diagnostic_name(i.def_id()) else { return };
+        if !matches!(
+            name,
+            sym::noop_method_borrow | sym::noop_method_clone | sym::noop_method_deref
+        ) {
+            return;
         }
+        let method = &call.ident.name;
+        let receiver = &elements[0];
+        let receiver_ty = cx.typeck_results().expr_ty(receiver);
+        let expr_ty = cx.typeck_results().expr_ty_adjusted(expr);
+        if receiver_ty != expr_ty {
+            // This lint will only trigger if the receiver type and resulting expression \
+            // type are the same, implying that the method call is unnecessary.
+            return;
+        }
+        let expr_span = expr.span;
+        let note = format!(
+            "the type `{:?}` which `{}` is being called on is the same as \
+             the type returned from `{}`, so the method call does not do \
+             anything and can be removed",
+            receiver_ty, method, method,
+        );
+
+        let span = expr_span.with_lo(receiver.span.hi());
+        cx.struct_span_lint(NOOP_METHOD_CALL, span, |lint| {
+            let method = &call.ident.name;
+            let message =
+                format!("call to `.{}()` on a reference in this situation does nothing", &method,);
+            lint.build(&message).span_label(span, "unnecessary method call").note(&note).emit()
+        });
     }
 }

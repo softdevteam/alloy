@@ -18,8 +18,8 @@ pub(super) fn check<'tcx>(
     arg: &'tcx hir::Expr<'_>,
     simplify_using: &str,
 ) {
-    let is_option = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::option_type);
-    let is_result = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::result_type);
+    let is_option = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::Option);
+    let is_result = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::Result);
 
     if is_option || is_result {
         if let hir::ExprKind::Closure(_, _, eid, _, _) = arg.kind {
@@ -30,7 +30,7 @@ pub(super) fn check<'tcx>(
                 return;
             }
 
-            if eager_or_lazy::is_eagerness_candidate(cx, body_expr) {
+            if eager_or_lazy::switch_to_eager_eval(cx, body_expr) {
                 let msg = if is_option {
                     "unnecessary closure used to substitute value for `Option::None`"
                 } else {

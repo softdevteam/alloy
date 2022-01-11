@@ -100,7 +100,7 @@ pub trait FileLoader {
     /// Query the existence of a file.
     fn file_exists(&self, path: &Path) -> bool;
 
-    /// Read the contents of an UTF-8 file into memory.
+    /// Read the contents of a UTF-8 file into memory.
     fn read_file(&self, path: &Path) -> io::Result<String>;
 }
 
@@ -427,7 +427,7 @@ impl SourceMap {
         }
     }
 
-    fn span_to_string(&self, sp: Span, prefer_local: bool) -> String {
+    fn span_to_string(&self, sp: Span, filename_display_pref: FileNameDisplayPreference) -> String {
         if self.files.borrow().source_files.is_empty() || sp.is_dummy() {
             return "no-location".to_string();
         }
@@ -436,7 +436,7 @@ impl SourceMap {
         let hi = self.lookup_char_pos(sp.hi());
         format!(
             "{}:{}:{}: {}:{}",
-            if prefer_local { lo.file.name.prefer_local() } else { lo.file.name.prefer_remapped() },
+            lo.file.name.display(filename_display_pref),
             lo.line,
             lo.col.to_usize() + 1,
             hi.line,
@@ -446,18 +446,22 @@ impl SourceMap {
 
     /// Format the span location suitable for embedding in build artifacts
     pub fn span_to_embeddable_string(&self, sp: Span) -> String {
-        self.span_to_string(sp, false)
+        self.span_to_string(sp, FileNameDisplayPreference::Remapped)
     }
 
     /// Format the span location to be printed in diagnostics. Must not be emitted
     /// to build artifacts as this may leak local file paths. Use span_to_embeddable_string
     /// for string suitable for embedding.
     pub fn span_to_diagnostic_string(&self, sp: Span) -> String {
-        self.span_to_string(sp, true)
+        self.span_to_string(sp, self.path_mapping.filename_display_for_diagnostics)
     }
 
     pub fn span_to_filename(&self, sp: Span) -> FileName {
         self.lookup_char_pos(sp.lo()).file.name.clone()
+    }
+
+    pub fn filename_for_diagnostics<'a>(&self, filename: &'a FileName) -> FileNameDisplay<'a> {
+        filename.display(self.path_mapping.filename_display_for_diagnostics)
     }
 
     pub fn is_multiline(&self, sp: Span) -> bool {
@@ -470,11 +474,12 @@ impl SourceMap {
         f.lookup_line(sp.lo()) != f.lookup_line(sp.hi())
     }
 
+    #[instrument(skip(self), level = "trace")]
     pub fn is_valid_span(&self, sp: Span) -> Result<(Loc, Loc), SpanLinesError> {
         let lo = self.lookup_char_pos(sp.lo());
-        debug!("span_to_lines: lo={:?}", lo);
+        trace!(?lo);
         let hi = self.lookup_char_pos(sp.hi());
-        debug!("span_to_lines: hi={:?}", hi);
+        trace!(?hi);
         if lo.file.start_pos != hi.file.start_pos {
             return Err(SpanLinesError::DistinctSources(DistinctSources {
                 begin: (lo.file.name.clone(), lo.file.start_pos),
@@ -567,6 +572,17 @@ impl SourceMap {
         }
     }
 
+    /// Returns whether or not this span points into a file
+    /// in the current crate. This may be `false` for spans
+    /// produced by a macro expansion, or for spans associated
+    /// with the definition of an item in a foreign crate
+    pub fn is_local_span(&self, sp: Span) -> bool {
+        let local_begin = self.lookup_byte_offset(sp.lo());
+        let local_end = self.lookup_byte_offset(sp.hi());
+        // This might be a weird span that covers multiple files
+        local_begin.sf.src.is_some() && local_end.sf.src.is_some()
+    }
+
     /// Returns the source snippet as `String` corresponding to the given `Span`.
     pub fn span_to_snippet(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, start_index, end_index| {
@@ -577,14 +593,19 @@ impl SourceMap {
     }
 
     pub fn span_to_margin(&self, sp: Span) -> Option<usize> {
-        match self.span_to_prev_source(sp) {
-            Err(_) => None,
-            Ok(source) => {
-                let last_line = source.rsplit_once('\n').unwrap_or(("", &source)).1;
+        Some(self.indentation_before(sp)?.len())
+    }
 
-                Some(last_line.len() - last_line.trim_start().len())
-            }
-        }
+    pub fn indentation_before(&self, sp: Span) -> Option<String> {
+        self.span_to_source(sp, |src, start_index, _| {
+            let before = &src[..start_index];
+            let last_line = before.rsplit_once('\n').map_or(before, |(_, last)| last);
+            Ok(last_line
+                .split_once(|c: char| !c.is_whitespace())
+                .map_or(last_line, |(indent, _)| indent)
+                .to_string())
+        })
+        .ok()
     }
 
     /// Returns the source snippet as `String` before the given `Span`.
@@ -634,6 +655,18 @@ impl SourceMap {
     pub fn span_to_next_source(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, _, end_index| {
             src.get(end_index..).map(|s| s.to_string()).ok_or(SpanSnippetError::IllFormedSpan(sp))
+        })
+    }
+
+    /// Extends the given `Span` while the next character matches the predicate
+    pub fn span_extend_while(
+        &self,
+        span: Span,
+        f: impl Fn(char) -> bool,
+    ) -> Result<Span, SpanSnippetError> {
+        self.span_to_source(span, |s, _start, end| {
+            let n = s[end..].char_indices().find(|&(_, c)| !f(c)).map_or(s.len() - end, |(i, _)| i);
+            Ok(span.with_hi(span.hi() + BytePos(n as u32)))
         })
     }
 
@@ -779,7 +812,7 @@ impl SourceMap {
             start_of_next_point.checked_add(width - 1).unwrap_or(start_of_next_point);
 
         let end_of_next_point = BytePos(cmp::max(sp.lo().0 + 1, end_of_next_point));
-        Span::new(BytePos(start_of_next_point), end_of_next_point, sp.ctxt())
+        Span::new(BytePos(start_of_next_point), end_of_next_point, sp.ctxt(), None)
     }
 
     /// Finds the width of the character, either before or after the end of provided span,
@@ -982,15 +1015,13 @@ impl SourceMap {
         None
     }
     pub fn ensure_source_file_source_present(&self, source_file: Lrc<SourceFile>) -> bool {
-        source_file.add_external_src(|| match source_file.name {
-            FileName::Real(ref name) => {
-                if let Some(local_path) = name.local_path() {
+        source_file.add_external_src(|| {
+            match source_file.name {
+                FileName::Real(ref name) if let Some(local_path) = name.local_path() => {
                     self.file_loader.read_file(local_path).ok()
-                } else {
-                    None
                 }
+                _ => None,
             }
-            _ => None,
         })
     }
 
@@ -999,20 +1030,53 @@ impl SourceMap {
         let source_file = &self.files()[source_file_index];
         source_file.is_imported()
     }
+
+    /// Gets the span of a statement. If the statement is a macro expansion, the
+    /// span in the context of the block span is found. The trailing semicolon is included
+    /// on a best-effort basis.
+    pub fn stmt_span(&self, stmt_span: Span, block_span: Span) -> Span {
+        if !stmt_span.from_expansion() {
+            return stmt_span;
+        }
+        let mac_call = original_sp(stmt_span, block_span);
+        self.mac_call_stmt_semi_span(mac_call).map_or(mac_call, |s| mac_call.with_hi(s.hi()))
+    }
+
+    /// Tries to find the span of the semicolon of a macro call statement.
+    /// The input must be the *call site* span of a statement from macro expansion.
+    ///
+    ///           v output
+    ///     mac!();
+    ///     ^^^^^^ input
+    pub fn mac_call_stmt_semi_span(&self, mac_call: Span) -> Option<Span> {
+        let span = self.span_extend_while(mac_call, char::is_whitespace).ok()?;
+        let span = span.shrink_to_hi().with_hi(BytePos(span.hi().0.checked_add(1)?));
+        if self.span_to_snippet(span).as_deref() != Ok(";") {
+            return None;
+        }
+        Some(span)
+    }
 }
 
 #[derive(Clone)]
 pub struct FilePathMapping {
     mapping: Vec<(PathBuf, PathBuf)>,
+    filename_display_for_diagnostics: FileNameDisplayPreference,
 }
 
 impl FilePathMapping {
     pub fn empty() -> FilePathMapping {
-        FilePathMapping { mapping: vec![] }
+        FilePathMapping::new(Vec::new())
     }
 
     pub fn new(mapping: Vec<(PathBuf, PathBuf)>) -> FilePathMapping {
-        FilePathMapping { mapping }
+        let filename_display_for_diagnostics = if mapping.is_empty() {
+            FileNameDisplayPreference::Local
+        } else {
+            FileNameDisplayPreference::Remapped
+        };
+
+        FilePathMapping { mapping, filename_display_for_diagnostics }
     }
 
     /// Applies any path prefix substitution as defined by the mapping.
@@ -1033,22 +1097,19 @@ impl FilePathMapping {
 
     fn map_filename_prefix(&self, file: &FileName) -> (FileName, bool) {
         match file {
-            FileName::Real(realfile) => {
-                if let RealFileName::LocalPath(local_path) = realfile {
-                    let (mapped_path, mapped) = self.map_prefix(local_path.to_path_buf());
-                    let realfile = if mapped {
-                        RealFileName::Remapped {
-                            local_path: Some(local_path.clone()),
-                            virtual_name: mapped_path,
-                        }
-                    } else {
-                        realfile.clone()
-                    };
-                    (FileName::Real(realfile), mapped)
+            FileName::Real(realfile) if let RealFileName::LocalPath(local_path) = realfile => {
+                let (mapped_path, mapped) = self.map_prefix(local_path.to_path_buf());
+                let realfile = if mapped {
+                    RealFileName::Remapped {
+                        local_path: Some(local_path.clone()),
+                        virtual_name: mapped_path,
+                    }
                 } else {
-                    unreachable!("attempted to remap an already remapped filename");
-                }
+                    realfile.clone()
+                };
+                (FileName::Real(realfile), mapped)
             }
+            FileName::Real(_) => unreachable!("attempted to remap an already remapped filename"),
             other => (other.clone(), false),
         }
     }

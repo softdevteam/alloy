@@ -63,7 +63,7 @@ error[E0412]: cannot find type `F` in this scope
    |
 LL |     self , ... ,   self ,   self , ... ) where F : FnOnce ( & 'a & 'b usize ) {
    |                                                ^
-   | 
+   |
   ::: $SRC_DIR/core/src/ops/function.rs:LL:COL
    |
 LL | pub trait Fn<Args>: FnMut<Args> {
@@ -72,11 +72,11 @@ LL | pub trait Fn<Args>: FnMut<Args> {
 help: a trait with a similar name exists
    |
 LL |     self , ... ,   self ,   self , ... ) where Fn : FnOnce ( & 'a & 'b usize ) {
-   |                                                ^^
+   |                                                ~~
 help: you might be missing a type parameter
    |
 LL | fn ordering4 < 'a , 'b, F     > ( a :            ,   self , self ,   self ,
-   |                       ^^^
+   |                       +++
 
 error[E0491]: in type `&'a &'b usize`, reference has a longer lifetime than the data it references
   --> $DIR/issue-86053-1.rs:11:52
@@ -84,12 +84,12 @@ error[E0491]: in type `&'a &'b usize`, reference has a longer lifetime than the 
 LL |     self , ... ,   self ,   self , ... ) where F : FnOnce ( & 'a & 'b usize ) {
    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-note: the pointer is valid for the lifetime `'a` as defined on the function body at 10:16
+note: the pointer is valid for the lifetime `'a` as defined here
   --> $DIR/issue-86053-1.rs:10:16
    |
 LL | fn ordering4 < 'a , 'b     > ( a :            ,   self , self ,   self ,
    |                ^^
-note: but the referenced data is only valid for the lifetime `'b` as defined on the function body at 10:21
+note: but the referenced data is only valid for the lifetime `'b` as defined here
   --> $DIR/issue-86053-1.rs:10:21
    |
 LL | fn ordering4 < 'a , 'b     > ( a :            ,   self , self ,   self ,

@@ -8,17 +8,19 @@ use rustc_ast as ast;
 use rustc_ast::token::{Nonterminal, Token, TokenKind};
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
 
+use std::borrow::Cow;
+
 pub fn nonterminal_to_string(nt: &Nonterminal) -> String {
     State::new().nonterminal_to_string(nt)
 }
 
 /// Print the token kind precisely, without converting `$crate` into its respective crate name.
-pub fn token_kind_to_string(tok: &TokenKind) -> String {
+pub fn token_kind_to_string(tok: &TokenKind) -> Cow<'static, str> {
     State::new().token_kind_to_string(tok)
 }
 
 /// Print the token precisely, without converting `$crate` into its respective crate name.
-pub fn token_to_string(token: &Token) -> String {
+pub fn token_to_string(token: &Token) -> Cow<'static, str> {
     State::new().token_to_string(token)
 }
 
@@ -72,4 +74,13 @@ pub fn attribute_to_string(attr: &ast::Attribute) -> String {
 
 pub fn to_string(f: impl FnOnce(&mut State<'_>)) -> String {
     State::new().to_string(f)
+}
+
+pub fn crate_to_string_for_macros(krate: &ast::Crate) -> String {
+    State::new().to_string(|s| {
+        s.print_inner_attributes(&krate.attrs);
+        for item in &krate.items {
+            s.print_item(item);
+        }
+    })
 }

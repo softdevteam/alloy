@@ -2,7 +2,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::middle::privacy::AccessLevels;
 use std::mem;
 
-use crate::clean::{self, GetDefId, Item, ItemIdSet};
+use crate::clean::{self, Item, ItemIdSet};
 use crate::fold::{strip_item, DocFolder};
 
 crate struct Stripper<'a> {
@@ -40,6 +40,7 @@ impl<'a> DocFolder for Stripper<'a> {
             | clean::UnionItem(..)
             | clean::AssocConstItem(..)
             | clean::TraitAliasItem(..)
+            | clean::MacroItem(..)
             | clean::ForeignTypeItem => {
                 if i.def_id.is_local() {
                     if !self.access_levels.is_exported(i.def_id.expect_def_id()) {
@@ -70,8 +71,8 @@ impl<'a> DocFolder for Stripper<'a> {
 
             clean::ImplItem(..) => {}
 
-            // tymethods/macros have no control over privacy
-            clean::MacroItem(..) | clean::TyMethodItem(..) => {}
+            // tymethods have no control over privacy
+            clean::TyMethodItem(..) => {}
 
             // Proc-macros are always public
             clean::ProcMacroItem(..) => {}
@@ -93,8 +94,8 @@ impl<'a> DocFolder for Stripper<'a> {
 
             // implementations of traits are always public.
             clean::ImplItem(ref imp) if imp.trait_.is_some() => true,
-            // Struct variant fields have inherited visibility
-            clean::VariantItem(clean::Variant::Struct(..)) => true,
+            // Variant fields have inherited visibility
+            clean::VariantItem(clean::Variant::Struct(..) | clean::Variant::Tuple(..)) => true,
             _ => false,
         };
 
@@ -126,14 +127,14 @@ impl<'a> DocFolder for ImplStripper<'a> {
             if imp.trait_.is_none() && imp.items.is_empty() {
                 return None;
             }
-            if let Some(did) = imp.for_.def_id() {
-                if did.is_local() && !imp.for_.is_generic() && !self.retained.contains(&did.into())
+            if let Some(did) = imp.for_.def_id_no_primitives() {
+                if did.is_local() && !imp.for_.is_assoc_ty() && !self.retained.contains(&did.into())
                 {
                     debug!("ImplStripper: impl item for stripped type; removing");
                     return None;
                 }
             }
-            if let Some(did) = imp.trait_.def_id() {
+            if let Some(did) = imp.trait_.as_ref().map(|t| t.def_id()) {
                 if did.is_local() && !self.retained.contains(&did.into()) {
                     debug!("ImplStripper: impl item for stripped trait; removing");
                     return None;
@@ -141,7 +142,7 @@ impl<'a> DocFolder for ImplStripper<'a> {
             }
             if let Some(generics) = imp.trait_.as_ref().and_then(|t| t.generics()) {
                 for typaram in generics {
-                    if let Some(did) = typaram.def_id() {
+                    if let Some(did) = typaram.def_id_no_primitives() {
                         if did.is_local() && !self.retained.contains(&did.into()) {
                             debug!(
                                 "ImplStripper: stripped item in trait's generics; removing impl"

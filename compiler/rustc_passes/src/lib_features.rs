@@ -6,7 +6,7 @@
 
 use rustc_ast::{Attribute, MetaItem, MetaItemKind};
 use rustc_errors::struct_span_err;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc_middle::hir::map::Map;
 use rustc_middle::middle::lib_features::LibFeatures;
 use rustc_middle::ty::query::Providers;
@@ -33,9 +33,7 @@ impl LibFeatureCollector<'tcx> {
 
         // Find a stability attribute (i.e., `#[stable (..)]`, `#[unstable (..)]`,
         // `#[rustc_const_unstable (..)]`).
-        if let Some(stab_attr) =
-            stab_attrs.iter().find(|stab_attr| self.tcx.sess.check_name(attr, **stab_attr))
-        {
+        if let Some(stab_attr) = stab_attrs.iter().find(|stab_attr| attr.has_name(**stab_attr)) {
             let meta_item = attr.meta();
             if let Some(MetaItem { kind: MetaItemKind::List(ref metas), .. }) = meta_item {
                 let mut feature = None;
@@ -126,16 +124,12 @@ impl Visitor<'tcx> for LibFeatureCollector<'tcx> {
     }
 }
 
-fn get_lib_features(tcx: TyCtxt<'_>, (): ()) -> LibFeatures {
+fn lib_features(tcx: TyCtxt<'_>, (): ()) -> LibFeatures {
     let mut collector = LibFeatureCollector::new(tcx);
-    let krate = tcx.hir().krate();
-    for attr in krate.non_exported_macro_attrs {
-        collector.visit_attribute(rustc_hir::CRATE_HIR_ID, attr);
-    }
-    intravisit::walk_crate(&mut collector, krate);
+    tcx.hir().walk_attributes(&mut collector);
     collector.lib_features
 }
 
 pub fn provide(providers: &mut Providers) {
-    providers.get_lib_features = get_lib_features;
+    providers.lib_features = lib_features;
 }

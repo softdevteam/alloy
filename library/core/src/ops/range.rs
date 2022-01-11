@@ -743,6 +743,7 @@ impl<T: Clone> Bound<&T> {
     /// assert_eq!((1..12).start_bound(), Included(&1));
     /// assert_eq!((1..12).start_bound().cloned(), Included(1));
     /// ```
+    #[must_use = "`self` will be dropped if the result is not used"]
     #[stable(feature = "bound_cloned", since = "1.55.0")]
     pub fn cloned(self) -> Bound<T> {
         match self {
@@ -812,12 +813,12 @@ pub trait RangeBounds<T: ?Sized> {
         U: ?Sized + PartialOrd<T>,
     {
         (match self.start_bound() {
-            Included(ref start) => *start <= item,
-            Excluded(ref start) => *start < item,
+            Included(start) => start <= item,
+            Excluded(start) => start < item,
             Unbounded => true,
         }) && (match self.end_bound() {
-            Included(ref end) => item <= *end,
-            Excluded(ref end) => item < *end,
+            Included(end) => item <= end,
+            Excluded(end) => item < end,
             Unbounded => true,
         })
     }
@@ -970,3 +971,21 @@ impl<T> RangeBounds<T> for RangeToInclusive<&T> {
         Included(self.end)
     }
 }
+
+/// `OneSidedRange` is implemented for built-in range types that are unbounded
+/// on one side. For example, `a..`, `..b` and `..=c` implement `OneSidedRange`,
+/// but `..`, `d..e`, and `f..=g` do not.
+///
+/// Types that implement `OneSidedRange<T>` must return `Bound::Unbounded`
+/// from one of `RangeBounds::start_bound` or `RangeBounds::end_bound`.
+#[unstable(feature = "one_sided_range", issue = "69780")]
+pub trait OneSidedRange<T: ?Sized>: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeTo<T> where Self: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeFrom<T> where Self: RangeBounds<T> {}
+
+#[unstable(feature = "one_sided_range", issue = "69780")]
+impl<T> OneSidedRange<T> for RangeToInclusive<T> where Self: RangeBounds<T> {}

@@ -1,5 +1,5 @@
 #![feature(allocator_api)]
-#![feature(arbitrary_self_types)]
+#![feature(assert_matches)]
 #![feature(box_syntax)]
 #![feature(cow_is_borrowed)]
 #![feature(const_cow_is_borrowed)]
@@ -9,7 +9,7 @@
 #![feature(new_uninit)]
 #![feature(pattern)]
 #![feature(trusted_len)]
-#![feature(try_reserve)]
+#![feature(try_reserve_kind)]
 #![feature(unboxed_closures)]
 #![feature(associated_type_bounds)]
 #![feature(binary_heap_into_iter_sorted)]
@@ -18,11 +18,15 @@
 #![feature(binary_heap_retain)]
 #![feature(binary_heap_as_slice)]
 #![feature(inplace_iteration)]
-#![feature(iter_map_while)]
+#![feature(iter_advance_by)]
 #![feature(slice_group_by)]
 #![feature(slice_partition_dedup)]
 #![feature(vec_spare_capacity)]
 #![feature(string_remove_matches)]
+#![feature(const_btree_new)]
+#![feature(const_default_impls)]
+#![feature(const_trait_impl)]
+#![feature(const_str_from_utf8)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -32,6 +36,7 @@ mod binary_heap;
 mod borrow;
 mod boxed;
 mod btree_set_hash;
+mod const_fns;
 mod cow_str;
 mod fmt;
 mod heap;

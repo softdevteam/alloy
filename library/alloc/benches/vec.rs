@@ -726,3 +726,24 @@ fn bench_dedup_old_100000(b: &mut Bencher) {
 fn bench_dedup_new_100000(b: &mut Bencher) {
     bench_vec_dedup_new(b, 100000);
 }
+
+#[bench]
+fn bench_flat_map_collect(b: &mut Bencher) {
+    let v = vec![777u32; 500000];
+    b.iter(|| v.iter().flat_map(|color| color.rotate_left(8).to_be_bytes()).collect::<Vec<_>>());
+}
+
+#[bench]
+fn bench_retain_100000(b: &mut Bencher) {
+    let v = (1..=100000).collect::<Vec<u32>>();
+    b.iter(|| {
+        let mut v = v.clone();
+        v.retain(|x| x & 1 == 0)
+    });
+}
+
+#[bench]
+fn bench_retain_whole_100000(b: &mut Bencher) {
+    let mut v = black_box(vec![826u32; 100000]);
+    b.iter(|| v.retain(|x| *x == 826u32));
+}
