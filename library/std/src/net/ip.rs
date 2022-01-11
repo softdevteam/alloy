@@ -1140,8 +1140,8 @@ impl From<Ipv4Addr> for u32 {
     /// ```
     /// use std::net::Ipv4Addr;
     ///
-    /// let addr = Ipv4Addr::new(0xca, 0xfe, 0xba, 0xbe);
-    /// assert_eq!(0xcafebabe, u32::from(addr));
+    /// let addr = Ipv4Addr::new(0x12, 0x34, 0x56, 0x78);
+    /// assert_eq!(0x12345678, u32::from(addr));
     /// ```
     #[inline]
     fn from(ip: Ipv4Addr) -> u32 {
@@ -1159,8 +1159,8 @@ impl From<u32> for Ipv4Addr {
     /// ```
     /// use std::net::Ipv4Addr;
     ///
-    /// let addr = Ipv4Addr::from(0xcafebabe);
-    /// assert_eq!(Ipv4Addr::new(0xca, 0xfe, 0xba, 0xbe), addr);
+    /// let addr = Ipv4Addr::from(0x12345678);
+    /// assert_eq!(Ipv4Addr::new(0x12, 0x34, 0x56, 0x78), addr);
     /// ```
     #[inline]
     fn from(ip: u32) -> Ipv4Addr {
@@ -1826,7 +1826,7 @@ impl fmt::Display for Ipv6Addr {
                 }
             }
         } else {
-            // Slow path: write the address to a local buffer, the use f.pad.
+            // Slow path: write the address to a local buffer, then use f.pad.
             // Defined recursively by using the fast path to write to the
             // buffer.
 

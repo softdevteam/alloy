@@ -508,7 +508,7 @@ struct GeneratorTypes<'tcx> {
 
 /// Given a `DefId` for an opaque type in return position, find its parent item's return
 /// expressions.
-fn get_owner_return_paths(
+fn get_owner_return_paths<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: LocalDefId,
 ) -> Option<(hir::HirId, ReturnsVisitor<'tcx>)> {
@@ -566,7 +566,7 @@ fn maybe_check_static_with_link_section(tcx: TyCtxt<'_>, id: LocalDefId, span: S
 
 fn report_forbidden_specialization(
     tcx: TyCtxt<'_>,
-    impl_item: &hir::ImplItem<'_>,
+    impl_item: &hir::ImplItemRef,
     parent_impl: DefId,
 ) {
     let mut err = struct_span_err!(
@@ -598,7 +598,7 @@ fn report_forbidden_specialization(
 fn missing_items_err(
     tcx: TyCtxt<'_>,
     impl_span: Span,
-    missing_items: &[ty::AssocItem],
+    missing_items: &[&ty::AssocItem],
     full_impl_span: Span,
 ) {
     let missing_items_msg = missing_items
@@ -906,7 +906,7 @@ struct CheckItemTypesVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
 }
 
-impl ItemLikeVisitor<'tcx> for CheckItemTypesVisitor<'tcx> {
+impl<'tcx> ItemLikeVisitor<'tcx> for CheckItemTypesVisitor<'tcx> {
     fn visit_item(&mut self, i: &'tcx hir::Item<'tcx>) {
         check_item_type(self.tcx, i);
     }

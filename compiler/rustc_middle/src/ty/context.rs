@@ -112,6 +112,7 @@ pub struct CtxtInterners<'tcx> {
     const_allocation: InternedSet<'tcx, Allocation>,
     bound_variable_kinds: InternedSet<'tcx, List<ty::BoundVariableKind>>,
     layout: InternedSet<'tcx, Layout>,
+    adt_def: InternedSet<'tcx, AdtDef>,
 }
 
 impl<'tcx> CtxtInterners<'tcx> {
@@ -132,6 +133,7 @@ impl<'tcx> CtxtInterners<'tcx> {
             const_allocation: Default::default(),
             bound_variable_kinds: Default::default(),
             layout: Default::default(),
+            adt_def: Default::default(),
         }
     }
 
@@ -824,7 +826,7 @@ pub struct CanonicalUserTypeAnnotation<'tcx> {
 /// Canonicalized user type annotation.
 pub type CanonicalUserType<'tcx> = Canonical<'tcx, UserType<'tcx>>;
 
-impl CanonicalUserType<'tcx> {
+impl<'tcx> CanonicalUserType<'tcx> {
     /// Returns `true` if this represents a substitution of the form `[?0, ?1, ?2]`,
     /// i.e., each thing is mapped to a canonical variable with the same index.
     pub fn is_identity(&self) -> bool {
@@ -1078,7 +1080,7 @@ impl<'tcx> TyCtxt<'tcx> {
         variants: IndexVec<VariantIdx, ty::VariantDef>,
         repr: ReprOptions,
     ) -> &'tcx ty::AdtDef {
-        self.arena.alloc(ty::AdtDef::new(self, did, kind, variants, repr))
+        self.intern_adt_def(ty::AdtDef::new(self, did, kind, variants, repr))
     }
 
     /// Allocates a read-only byte or string literal for `mir::interpret`.
@@ -1216,8 +1218,8 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn consider_optimizing<T: Fn() -> String>(self, msg: T) -> bool {
-        let cname = self.crate_name(LOCAL_CRATE).as_str();
-        self.sess.consider_optimizing(&cname, msg)
+        let cname = self.crate_name(LOCAL_CRATE);
+        self.sess.consider_optimizing(cname.as_str(), msg)
     }
 
     /// Obtain all lang items of this crate and all dependencies (recursively)
@@ -1481,40 +1483,8 @@ impl<'tcx> TyCtxt<'tcx> {
         scope_def_id: LocalDefId,
     ) -> Vec<&'tcx hir::Ty<'tcx>> {
         let hir_id = self.hir().local_def_id_to_hir_id(scope_def_id);
-        let hir_output = match self.hir().get(hir_id) {
-            Node::Item(hir::Item {
-                kind:
-                    ItemKind::Fn(
-                        hir::FnSig {
-                            decl: hir::FnDecl { output: hir::FnRetTy::Return(ty), .. },
-                            ..
-                        },
-                        ..,
-                    ),
-                ..
-            })
-            | Node::ImplItem(hir::ImplItem {
-                kind:
-                    hir::ImplItemKind::Fn(
-                        hir::FnSig {
-                            decl: hir::FnDecl { output: hir::FnRetTy::Return(ty), .. },
-                            ..
-                        },
-                        _,
-                    ),
-                ..
-            })
-            | Node::TraitItem(hir::TraitItem {
-                kind:
-                    hir::TraitItemKind::Fn(
-                        hir::FnSig {
-                            decl: hir::FnDecl { output: hir::FnRetTy::Return(ty), .. },
-                            ..
-                        },
-                        _,
-                    ),
-                ..
-            }) => ty,
+        let hir_output = match self.hir().fn_decl_by_hir_id(hir_id) {
+            Some(hir::FnDecl { output: hir::FnRetTy::Return(ty), .. }) => ty,
             _ => return vec![],
         };
 
@@ -1606,6 +1576,12 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn const_eval_limit(self) -> Limit {
         self.limits(()).const_eval_limit
+    }
+
+    pub fn all_traits(self) -> impl Iterator<Item = DefId> + 'tcx {
+        iter::once(LOCAL_CRATE)
+            .chain(self.crates(()).iter().copied())
+            .flat_map(move |cnum| self.traits_in_crate(cnum).iter().copied())
     }
 }
 
@@ -1925,7 +1901,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn debug_stats(self) -> impl std::fmt::Debug + 'tcx {
         struct DebugStats<'tcx>(TyCtxt<'tcx>);
 
-        impl std::fmt::Debug for DebugStats<'tcx> {
+        impl<'tcx> std::fmt::Debug for DebugStats<'tcx> {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 sty_debug_print!(
                     fmt,
@@ -2089,6 +2065,7 @@ direct_interners! {
     const_: mk_const(Const<'tcx>),
     const_allocation: intern_const_alloc(Allocation),
     layout: intern_layout(Layout),
+    adt_def: intern_adt_def(AdtDef),
 }
 
 macro_rules! slice_interners {
@@ -2743,7 +2720,7 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 }
 
-impl TyCtxtAt<'tcx> {
+impl<'tcx> TyCtxtAt<'tcx> {
     /// Constructs a `TyKind::Error` type and registers a `delay_span_bug` to ensure it gets used.
     #[track_caller]
     pub fn ty_error(self) -> Ty<'tcx> {
@@ -2843,7 +2820,8 @@ pub fn provide(providers: &mut ty::query::Providers) {
     providers.in_scope_traits_map =
         |tcx, id| tcx.hir_crate(()).owners[id].as_ref().map(|owner_info| &owner_info.trait_map);
     providers.resolutions = |tcx, ()| &tcx.untracked_resolutions;
-    providers.module_exports = |tcx, id| tcx.resolutions(()).export_map.get(&id).map(|v| &v[..]);
+    providers.module_reexports =
+        |tcx, id| tcx.resolutions(()).reexport_map.get(&id).map(|v| &v[..]);
     providers.crate_name = |tcx, id| {
         assert_eq!(id, LOCAL_CRATE);
         tcx.crate_name

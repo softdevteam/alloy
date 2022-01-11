@@ -49,13 +49,15 @@ pub(crate) fn codegen_fn<'tcx>(
         (0..mir.basic_blocks().len()).map(|_| bcx.create_block()).collect();
 
     // Make FunctionCx
-    let pointer_type = module.target_config().pointer_type();
+    let target_config = module.target_config();
+    let pointer_type = target_config.pointer_type();
     let clif_comments = crate::pretty_clif::CommentWriter::new(tcx, instance);
 
     let mut fx = FunctionCx {
         cx,
         module,
         tcx,
+        target_config,
         pointer_type,
         constants_cx: ConstantCx::new(),
 
@@ -72,8 +74,6 @@ pub(crate) fn codegen_fn<'tcx>(
         clif_comments,
         source_info_set: indexmap::IndexSet::new(),
         next_ssa_var: 0,
-
-        inline_asm_index: 0,
     };
 
     let arg_uninhabited = fx
@@ -204,7 +204,6 @@ pub(crate) fn verify_func(
                 tcx.sess.err(&format!("{:?}", err));
                 let pretty_error = cranelift_codegen::print_errors::pretty_verifier_error(
                     &func,
-                    None,
                     Some(Box::new(writer)),
                     err,
                 );
@@ -296,9 +295,7 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, '_>) {
                     AssertKind::BoundsCheck { ref len, ref index } => {
                         let len = codegen_operand(fx, len).load_scalar(fx);
                         let index = codegen_operand(fx, index).load_scalar(fx);
-                        let location = fx
-                            .get_caller_location(source_info.span)
-                            .load_scalar(fx);
+                        let location = fx.get_caller_location(source_info.span).load_scalar(fx);
 
                         codegen_panic_inner(
                             fx,
@@ -681,7 +678,7 @@ fn codegen_stmt<'tcx>(
                         // FIXME use emit_small_memset where possible
                         let addr = lval.to_ptr().get_addr(fx);
                         let val = operand.load_scalar(fx);
-                        fx.bcx.call_memset(fx.module.target_config(), addr, val, times);
+                        fx.bcx.call_memset(fx.target_config, addr, val, times);
                     } else {
                         let loop_block = fx.bcx.create_block();
                         let loop_block2 = fx.bcx.create_block();
@@ -718,36 +715,6 @@ fn codegen_stmt<'tcx>(
                     let operand = operand.load_scalar(fx);
                     lval.write_cvalue(fx, CValue::by_val(operand, box_layout));
                 }
-                Rvalue::NullaryOp(NullOp::Box, content_ty) => {
-                    let usize_type = fx.clif_type(fx.tcx.types.usize).unwrap();
-                    let content_ty = fx.monomorphize(content_ty);
-                    let layout = fx.layout_of(content_ty);
-                    let llsize = fx.bcx.ins().iconst(usize_type, layout.size.bytes() as i64);
-                    let llalign = fx.bcx.ins().iconst(usize_type, layout.align.abi.bytes() as i64);
-                    let box_layout = fx.layout_of(fx.tcx.mk_box(content_ty));
-
-                    let (bitmap, bitmap_size) =
-                        content_ty.gc_layout(fx.tcx, ty::ParamEnv::reveal_all());
-
-                    let llbitmap = fx.bcx.ins().iconst(usize_type, bitmap as i64);
-                    let llbitmap_size = fx.bcx.ins().iconst(usize_type, bitmap_size as i64);
-
-                    // Allocate space:
-                    let def_id =
-                        match fx.tcx.lang_items().require(rustc_hir::LangItem::ExchangeMalloc) {
-                            Ok(id) => id,
-                            Err(s) => {
-                                fx.tcx
-                                    .sess
-                                    .fatal(&format!("allocation of `{}` {}", box_layout.ty, s));
-                            }
-                        };
-                    let instance = ty::Instance::mono(fx.tcx, def_id).polymorphize(fx.tcx);
-                    let func_ref = fx.get_function_ref(instance);
-                    let call = fx.bcx.ins().call(func_ref, &[llsize, llalign, llbitmap, llbitmap_size]);
-                    let ptr = fx.bcx.inst_results(call)[0];
-                    lval.write_cvalue(fx, CValue::by_val(ptr, box_layout));
-                }
                 Rvalue::NullaryOp(null_op, ty) => {
                     assert!(
                         lval.layout()
@@ -758,10 +725,8 @@ fn codegen_stmt<'tcx>(
                     let val = match null_op {
                         NullOp::SizeOf => layout.size.bytes(),
                         NullOp::AlignOf => layout.align.abi.bytes(),
-                        NullOp::Box => unreachable!(),
                     };
-                    let val =
-                        CValue::const_val(fx, fx.layout_of(fx.tcx.types.usize), val.into());
+                    let val = CValue::const_val(fx, fx.layout_of(fx.tcx.types.usize), val.into());
                     lval.write_cvalue(fx, val);
                 }
                 Rvalue::Aggregate(ref kind, ref operands) => match kind.as_ref() {
@@ -809,7 +774,7 @@ fn codegen_stmt<'tcx>(
             let elem_size: u64 = pointee.size.bytes();
             let bytes =
                 if elem_size != 1 { fx.bcx.ins().imul_imm(count, elem_size as i64) } else { count };
-            fx.bcx.call_memcpy(fx.module.target_config(), dst, src, bytes);
+            fx.bcx.call_memcpy(fx.target_config, dst, src, bytes);
         }
     }
 }

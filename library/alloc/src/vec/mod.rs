@@ -149,7 +149,7 @@ use self::spec_extend::SpecExtend;
 #[cfg(not(no_global_oom_handling))]
 mod spec_extend;
 
-/// A contiguous growable array type, written as `Vec<T>` and pronounced 'vector'.
+/// A contiguous growable array type, written as `Vec<T>`, short for 'vector'.
 ///
 /// # Examples
 ///
@@ -822,7 +822,7 @@ impl<T, A: Allocator> Vec<T, A> {
     ///
     /// # Panics
     ///
-    /// Panics if the new capacity overflows `usize`.
+    /// Panics if the new capacity exceeds `isize::MAX` bytes.
     ///
     /// # Examples
     ///
@@ -1520,49 +1520,46 @@ impl<T, A: Allocator> Vec<T, A> {
 
         let mut g = BackshiftOnDrop { v: self, processed_len: 0, deleted_cnt: 0, original_len };
 
-        // process_one return a bool indicates whether the processing element should be retained.
-        #[inline(always)]
-        fn process_one<F, T, A: Allocator, const DELETED: bool>(
+        fn process_loop<F, T, A: Allocator, const DELETED: bool>(
+            original_len: usize,
             f: &mut F,
             g: &mut BackshiftOnDrop<'_, T, A>,
-        ) -> bool
-        where
+        ) where
             F: FnMut(&mut T) -> bool,
         {
-            // SAFETY: Unchecked element must be valid.
-            let cur = unsafe { &mut *g.v.as_mut_ptr().add(g.processed_len) };
-            if !f(cur) {
-                // Advance early to avoid double drop if `drop_in_place` panicked.
-                g.processed_len += 1;
-                g.deleted_cnt += 1;
-                // SAFETY: We never touch this element again after dropped.
-                unsafe { ptr::drop_in_place(cur) };
-                // We already advanced the counter.
-                return false;
-            }
-            if DELETED {
-                // SAFETY: `deleted_cnt` > 0, so the hole slot must not overlap with current element.
-                // We use copy for move, and never touch this element again.
-                unsafe {
-                    let hole_slot = g.v.as_mut_ptr().add(g.processed_len - g.deleted_cnt);
-                    ptr::copy_nonoverlapping(cur, hole_slot, 1);
+            while g.processed_len != original_len {
+                // SAFETY: Unchecked element must be valid.
+                let cur = unsafe { &mut *g.v.as_mut_ptr().add(g.processed_len) };
+                if !f(cur) {
+                    // Advance early to avoid double drop if `drop_in_place` panicked.
+                    g.processed_len += 1;
+                    g.deleted_cnt += 1;
+                    // SAFETY: We never touch this element again after dropped.
+                    unsafe { ptr::drop_in_place(cur) };
+                    // We already advanced the counter.
+                    if DELETED {
+                        continue;
+                    } else {
+                        break;
+                    }
                 }
+                if DELETED {
+                    // SAFETY: `deleted_cnt` > 0, so the hole slot must not overlap with current element.
+                    // We use copy for move, and never touch this element again.
+                    unsafe {
+                        let hole_slot = g.v.as_mut_ptr().add(g.processed_len - g.deleted_cnt);
+                        ptr::copy_nonoverlapping(cur, hole_slot, 1);
+                    }
+                }
+                g.processed_len += 1;
             }
-            g.processed_len += 1;
-            return true;
         }
 
         // Stage 1: Nothing was deleted.
-        while g.processed_len != original_len {
-            if !process_one::<F, T, A, false>(&mut f, &mut g) {
-                break;
-            }
-        }
+        process_loop::<F, T, A, false>(original_len, &mut f, &mut g);
 
         // Stage 2: Some elements were deleted.
-        while g.processed_len != original_len {
-            process_one::<F, T, A, true>(&mut f, &mut g);
-        }
+        process_loop::<F, T, A, true>(original_len, &mut f, &mut g);
 
         // All item are processed. This can be optimized to `set_len` by LLVM.
         drop(g);
@@ -1644,7 +1641,7 @@ impl<T, A: Allocator> Vec<T, A> {
                     let ptr = self.vec.as_mut_ptr();
                     let len = self.vec.len();
 
-                    /* How many items were left when `same_bucket` paniced.
+                    /* How many items were left when `same_bucket` panicked.
                      * Basically vec[read..].len() */
                     let items_left = len.wrapping_sub(self.read);
 
@@ -2046,7 +2043,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(vec_spare_capacity, maybe_uninit_extra)]
+    /// #![feature(vec_spare_capacity)]
     ///
     /// // Allocate vector big enough for 10 elements.
     /// let mut v = Vec::with_capacity(10);
@@ -2105,7 +2102,7 @@ impl<T, A: Allocator> Vec<T, A> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(vec_split_at_spare, maybe_uninit_extra)]
+    /// #![feature(vec_split_at_spare)]
     ///
     /// let mut v = vec![1, 1, 2];
     ///
@@ -2144,12 +2141,17 @@ impl<T, A: Allocator> Vec<T, A> {
     unsafe fn split_at_spare_mut_with_len(
         &mut self,
     ) -> (&mut [T], &mut [MaybeUninit<T>], &mut usize) {
-        let Range { start: ptr, end: spare_ptr } = self.as_mut_ptr_range();
+        let ptr = self.as_mut_ptr();
+        // SAFETY:
+        // - `ptr` is guaranteed to be valid for `self.len` elements
+        // - but the allocation extends out to `self.buf.capacity()` elements, possibly
+        // uninitialized
+        let spare_ptr = unsafe { ptr.add(self.len) };
         let spare_ptr = spare_ptr.cast::<MaybeUninit<T>>();
         let spare_len = self.buf.capacity() - self.len;
 
         // SAFETY:
-        // - `ptr` is guaranteed to be valid for `len` elements
+        // - `ptr` is guaranteed to be valid for `self.len` elements
         // - `spare_ptr` is pointing one element past the buffer, so it doesn't overlap with `initialized`
         unsafe {
             let initialized = slice::from_raw_parts_mut(ptr, self.len);
@@ -2199,7 +2201,7 @@ impl<T: Clone, A: Allocator> Vec<T, A> {
     /// Clones and appends all elements in a slice to the `Vec`.
     ///
     /// Iterates over the slice `other`, clones each element, and then appends
-    /// it to this `Vec`. The `other` vector is traversed in-order.
+    /// it to this `Vec`. The `other` slice is traversed in-order.
     ///
     /// Note that this function is same as [`extend`] except that it is
     /// specialized to work with slices instead. If and when Rust gets
@@ -2272,16 +2274,6 @@ impl<T: Clone> ExtendWith<T> for ExtendElement<T> {
     }
     fn last(self) -> T {
         self.0
-    }
-}
-
-struct ExtendDefault;
-impl<T: Default> ExtendWith<T> for ExtendDefault {
-    fn next(&mut self) -> T {
-        Default::default()
-    }
-    fn last(self) -> T {
-        Default::default()
     }
 }
 
@@ -2686,11 +2678,11 @@ impl<T, A: Allocator> Vec<T, A> {
     /// # Examples
     ///
     /// ```
-    /// let mut v = vec![1, 2, 3];
-    /// let new = [7, 8];
-    /// let u: Vec<_> = v.splice(..2, new).collect();
-    /// assert_eq!(v, &[7, 8, 3]);
-    /// assert_eq!(u, &[1, 2]);
+    /// let mut v = vec![1, 2, 3, 4];
+    /// let new = [7, 8, 9];
+    /// let u: Vec<_> = v.splice(1..3, new).collect();
+    /// assert_eq!(v, &[1, 7, 8, 9, 4]);
+    /// assert_eq!(u, &[2, 3]);
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline]
@@ -3018,14 +3010,12 @@ impl<T, A: Allocator, const N: usize> TryFrom<Vec<T, A>> for [T; N] {
     /// # Examples
     ///
     /// ```
-    /// use std::convert::TryInto;
     /// assert_eq!(vec![1, 2, 3].try_into(), Ok([1, 2, 3]));
     /// assert_eq!(<Vec<i32>>::new().try_into(), Ok([]));
     /// ```
     ///
     /// If the length doesn't match, the input comes back in `Err`:
     /// ```
-    /// use std::convert::TryInto;
     /// let r: Result<[i32; 4], _> = (0..10).collect::<Vec<_>>().try_into();
     /// assert_eq!(r, Err(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
     /// ```
@@ -3033,7 +3023,6 @@ impl<T, A: Allocator, const N: usize> TryFrom<Vec<T, A>> for [T; N] {
     /// If you're fine with just getting a prefix of the `Vec<T>`,
     /// you can call [`.truncate(N)`](Vec::truncate) first.
     /// ```
-    /// use std::convert::TryInto;
     /// let mut v = String::from("hello world").into_bytes();
     /// v.sort();
     /// v.truncate(2);

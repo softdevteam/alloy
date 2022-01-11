@@ -46,9 +46,9 @@ pub(crate) fn build_sysroot(
     // Build and copy cargo wrapper
     let mut build_cargo_wrapper_cmd = Command::new("rustc");
     build_cargo_wrapper_cmd
-        .arg("scripts/cargo.rs")
+        .arg("scripts/cargo-clif.rs")
         .arg("-o")
-        .arg(target_dir.join("cargo"))
+        .arg(target_dir.join("cargo-clif"))
         .arg("-g");
     spawn_and_wait(build_cargo_wrapper_cmd);
 
@@ -193,8 +193,7 @@ fn build_clif_sysroot_for_triple(
         "RUSTC",
         env::current_dir().unwrap().join(target_dir).join("bin").join("cg_clif_build_sysroot"),
     );
-    // FIXME Enable incremental again once rust-lang/rust#74946 is fixed
-    build_cmd.env("CARGO_INCREMENTAL", "0").env("__CARGO_DEFAULT_LIB_METADATA", "cg_clif");
+    build_cmd.env("__CARGO_DEFAULT_LIB_METADATA", "cg_clif");
     spawn_and_wait(build_cmd);
 
     // Copy all relevant files to the sysroot

@@ -689,11 +689,11 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
         hir_id: hir::HirId,
     ) {
         let name = match fk {
-            intravisit::FnKind::ItemFn(id, _, _, _) => id.as_str(),
-            intravisit::FnKind::Method(id, _, _) => id.as_str(),
-            intravisit::FnKind::Closure => Symbol::intern("closure").as_str(),
+            intravisit::FnKind::ItemFn(id, _, _, _) => id.name,
+            intravisit::FnKind::Method(id, _, _) => id.name,
+            intravisit::FnKind::Closure => sym::closure,
         };
-        let name: &str = &name;
+        let name = name.as_str();
         let span = span!(Level::DEBUG, "visit_fn", name);
         let _enter = span.enter();
         match fk {
@@ -968,7 +968,10 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                 let (generics, bounds) = match opaque_ty.kind {
                     // Named opaque `impl Trait` types are reached via `TyKind::Path`.
                     // This arm is for `impl Trait` in the types of statics, constants and locals.
-                    hir::ItemKind::OpaqueTy(hir::OpaqueTy { impl_trait_fn: None, .. }) => {
+                    hir::ItemKind::OpaqueTy(hir::OpaqueTy {
+                        origin: hir::OpaqueTyOrigin::TyAlias,
+                        ..
+                    }) => {
                         intravisit::walk_ty(self, ty);
 
                         // Elided lifetimes are not allowed in non-return
@@ -985,7 +988,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                     }
                     // RPIT (return position impl trait)
                     hir::ItemKind::OpaqueTy(hir::OpaqueTy {
-                        impl_trait_fn: Some(_),
+                        origin: hir::OpaqueTyOrigin::FnReturn(..) | hir::OpaqueTyOrigin::AsyncFn(..),
                         ref generics,
                         bounds,
                         ..
@@ -1695,7 +1698,11 @@ fn compute_object_lifetime_defaults(
         hir::ItemKind::Struct(_, ref generics)
         | hir::ItemKind::Union(_, ref generics)
         | hir::ItemKind::Enum(_, ref generics)
-        | hir::ItemKind::OpaqueTy(hir::OpaqueTy { ref generics, impl_trait_fn: None, .. })
+        | hir::ItemKind::OpaqueTy(hir::OpaqueTy {
+            ref generics,
+            origin: hir::OpaqueTyOrigin::TyAlias,
+            ..
+        })
         | hir::ItemKind::TyAlias(_, ref generics)
         | hir::ItemKind::Trait(_, _, ref generics, ..) => {
             let result = object_lifetime_defaults_for_item(tcx, generics);
@@ -2002,7 +2009,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             }
         };
 
-        let mut def_ids: Vec<_> = defined_by
+        let def_ids: Vec<_> = defined_by
             .values()
             .flat_map(|region| match region {
                 Region::EarlyBound(_, def_id, _)
@@ -2012,9 +2019,6 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 Region::LateBoundAnon(..) | Region::Static => None,
             })
             .collect();
-
-        // ensure that we issue lints in a repeatable order
-        def_ids.sort_by_cached_key(|&def_id| self.tcx.def_path_hash(def_id));
 
         'lifetimes: for def_id in def_ids {
             debug!("check_uses_for_lifetimes_defined_by_scope: def_id = {:?}", def_id);
@@ -2067,7 +2071,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                                     ..
                                 }) = self.tcx.hir().get(parent_hir_id)
                                 {
-                                    if opaque.origin != hir::OpaqueTyOrigin::AsyncFn {
+                                    if !matches!(opaque.origin, hir::OpaqueTyOrigin::AsyncFn(..)) {
                                         continue 'lifetimes;
                                     }
                                     // We want to do this only if the liftime identifier is already defined
@@ -2534,8 +2538,8 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                                 GenericParamDefKind::Type { object_lifetime_default, .. } => {
                                     Some(object_lifetime_default)
                                 }
-                                GenericParamDefKind::Lifetime
-                                | GenericParamDefKind::Const { .. } => None,
+                                GenericParamDefKind::Const { .. } => Some(Set1::Empty),
+                                GenericParamDefKind::Lifetime => None,
                             })
                             .collect()
                     })
@@ -2562,12 +2566,11 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                 }
                 GenericArg::Const(ct) => {
                     self.visit_anon_const(&ct.value);
+                    i += 1;
                 }
                 GenericArg::Infer(inf) => {
                     self.visit_id(inf.hir_id);
-                    if inf.kind.is_type() {
-                        i += 1;
-                    }
+                    i += 1;
                 }
             }
         }

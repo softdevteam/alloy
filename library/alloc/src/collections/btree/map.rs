@@ -16,7 +16,10 @@ use super::node::{self, marker, ForceResult::*, Handle, NodeRef, Root};
 use super::search::SearchResult::*;
 
 mod entry;
+
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use entry::{Entry, OccupiedEntry, OccupiedError, VacantEntry};
+
 use Entry::*;
 
 /// Minimum number of elements in a node that is not a root.
@@ -2107,10 +2110,11 @@ impl<K, V> BTreeMap<K, V> {
     /// ```
     /// use std::collections::BTreeMap;
     ///
-    /// let mut map = BTreeMap::new();
-    /// map.insert("a", 1);
-    /// map.insert("b", 2);
-    /// map.insert("c", 3);
+    /// let mut map = BTreeMap::from([
+    ///    ("a", 1),
+    ///    ("b", 2),
+    ///    ("c", 3),
+    /// ]);
     ///
     /// // add 10 to the value if the key isn't "a"
     /// for (key, value) in map.iter_mut() {

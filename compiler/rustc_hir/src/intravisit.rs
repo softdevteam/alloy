@@ -139,7 +139,7 @@ pub trait Map<'hir> {
 }
 
 // Used when no map is actually available, forcing manual implementation of nested visitors.
-impl Map<'hir> for ! {
+impl<'hir> Map<'hir> for ! {
     fn find(&self, _: HirId) -> Option<Node<'hir>> {
         unreachable!()
     }
@@ -383,11 +383,17 @@ pub trait Visitor<'v>: Sized {
     fn visit_pat(&mut self, p: &'v Pat<'v>) {
         walk_pat(self, p)
     }
+    fn visit_array_length(&mut self, len: &'v ArrayLen) {
+        walk_array_len(self, len)
+    }
     fn visit_anon_const(&mut self, c: &'v AnonConst) {
         walk_anon_const(self, c)
     }
     fn visit_expr(&mut self, ex: &'v Expr<'v>) {
         walk_expr(self, ex)
+    }
+    fn visit_let_expr(&mut self, lex: &'v Let<'v>) {
+        walk_let_expr(self, lex)
     }
     fn visit_ty(&mut self, t: &'v Ty<'v>) {
         walk_ty(self, t)
@@ -750,7 +756,7 @@ pub fn walk_ty<'v, V: Visitor<'v>>(visitor: &mut V, typ: &'v Ty<'v>) {
         }
         TyKind::Array(ref ty, ref length) => {
             visitor.visit_ty(ty);
-            visitor.visit_anon_const(length)
+            visitor.visit_array_length(length)
         }
         TyKind::TraitObject(bounds, ref lifetime, _syntax) => {
             for bound in bounds {
@@ -1121,9 +1127,24 @@ pub fn walk_stmt<'v, V: Visitor<'v>>(visitor: &mut V, statement: &'v Stmt<'v>) {
     }
 }
 
+pub fn walk_array_len<'v, V: Visitor<'v>>(visitor: &mut V, len: &'v ArrayLen) {
+    match len {
+        &ArrayLen::Infer(hir_id, _span) => visitor.visit_id(hir_id),
+        ArrayLen::Body(c) => visitor.visit_anon_const(c),
+    }
+}
+
 pub fn walk_anon_const<'v, V: Visitor<'v>>(visitor: &mut V, constant: &'v AnonConst) {
     visitor.visit_id(constant.hir_id);
     visitor.visit_nested_body(constant.body);
+}
+
+pub fn walk_let_expr<'v, V: Visitor<'v>>(visitor: &mut V, let_expr: &'v Let<'v>) {
+    // match the visit order in walk_local
+    visitor.visit_expr(let_expr.init);
+    visitor.visit_id(let_expr.hir_id);
+    visitor.visit_pat(let_expr.pat);
+    walk_list!(visitor, visit_ty, let_expr.ty);
 }
 
 pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr<'v>) {
@@ -1136,7 +1157,7 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr<'v>) 
         ExprKind::ConstBlock(ref anon_const) => visitor.visit_anon_const(anon_const),
         ExprKind::Repeat(ref element, ref count) => {
             visitor.visit_expr(element);
-            visitor.visit_anon_const(count)
+            visitor.visit_array_length(count)
         }
         ExprKind::Struct(ref qpath, fields, ref optional_base) => {
             visitor.visit_qpath(qpath, expression.hir_id, expression.span);
@@ -1172,10 +1193,7 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr<'v>) 
         ExprKind::DropTemps(ref subexpression) => {
             visitor.visit_expr(subexpression);
         }
-        ExprKind::Let(ref pat, ref expr, _) => {
-            visitor.visit_expr(expr);
-            visitor.visit_pat(pat);
-        }
+        ExprKind::Let(ref let_expr) => visitor.visit_let_expr(let_expr),
         ExprKind::If(ref cond, ref then, ref else_opt) => {
             visitor.visit_expr(cond);
             visitor.visit_expr(then);

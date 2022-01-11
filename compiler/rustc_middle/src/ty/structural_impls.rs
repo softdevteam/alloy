@@ -13,6 +13,7 @@ use rustc_hir::def_id::CRATE_DEF_INDEX;
 use rustc_index::vec::{Idx, IndexVec};
 
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -46,19 +47,19 @@ impl fmt::Debug for ty::UpvarId {
     }
 }
 
-impl fmt::Debug for ty::UpvarBorrow<'tcx> {
+impl<'tcx> fmt::Debug for ty::UpvarBorrow<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "UpvarBorrow({:?}, {:?})", self.kind, self.region)
     }
 }
 
-impl fmt::Debug for ty::ExistentialTraitRef<'tcx> {
+impl<'tcx> fmt::Debug for ty::ExistentialTraitRef<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         with_no_trimmed_paths(|| fmt::Display::fmt(self, f))
     }
 }
 
-impl fmt::Debug for ty::adjustment::Adjustment<'tcx> {
+impl<'tcx> fmt::Debug for ty::adjustment::Adjustment<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} -> {}", self.kind, self.target)
     }
@@ -110,7 +111,7 @@ impl fmt::Debug for ty::FreeRegion {
     }
 }
 
-impl fmt::Debug for ty::FnSig<'tcx> {
+impl<'tcx> fmt::Debug for ty::FnSig<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({:?}; c_variadic: {})->{:?}", self.inputs(), self.c_variadic, self.output())
     }
@@ -128,13 +129,13 @@ impl fmt::Debug for ty::RegionVid {
     }
 }
 
-impl fmt::Debug for ty::TraitRef<'tcx> {
+impl<'tcx> fmt::Debug for ty::TraitRef<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         with_no_trimmed_paths(|| fmt::Display::fmt(self, f))
     }
 }
 
-impl fmt::Debug for Ty<'tcx> {
+impl<'tcx> fmt::Debug for Ty<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         with_no_trimmed_paths(|| fmt::Display::fmt(self, f))
     }
@@ -152,7 +153,7 @@ impl fmt::Debug for ty::ParamConst {
     }
 }
 
-impl fmt::Debug for ty::TraitPredicate<'tcx> {
+impl<'tcx> fmt::Debug for ty::TraitPredicate<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let ty::BoundConstness::ConstIfConst = self.constness {
             write!(f, "~const ")?;
@@ -161,19 +162,19 @@ impl fmt::Debug for ty::TraitPredicate<'tcx> {
     }
 }
 
-impl fmt::Debug for ty::ProjectionPredicate<'tcx> {
+impl<'tcx> fmt::Debug for ty::ProjectionPredicate<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ProjectionPredicate({:?}, {:?})", self.projection_ty, self.ty)
     }
 }
 
-impl fmt::Debug for ty::Predicate<'tcx> {
+impl<'tcx> fmt::Debug for ty::Predicate<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.kind())
     }
 }
 
-impl fmt::Debug for ty::PredicateKind<'tcx> {
+impl<'tcx> fmt::Debug for ty::PredicateKind<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ty::PredicateKind::Trait(ref a) => a.fmt(f),
@@ -480,7 +481,7 @@ impl<'a, 'tcx> Lift<'tcx> for ty::ParamEnv<'a> {
     type Lifted = ty::ParamEnv<'tcx>;
     fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
         tcx.lift(self.caller_bounds())
-            .map(|caller_bounds| ty::ParamEnv::new(caller_bounds, self.reveal()))
+            .map(|caller_bounds| ty::ParamEnv::new(caller_bounds, self.reveal(), self.constness()))
     }
 }
 
@@ -732,11 +733,41 @@ EnumTypeFoldableImpl! {
 
 impl<'tcx, T: TypeFoldable<'tcx>> TypeFoldable<'tcx> for Rc<T> {
     fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
-        self,
+        mut self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        // FIXME: Reuse the `Rc` here.
-        (*self).clone().try_fold_with(folder).map(Rc::new)
+        // We merely want to replace the contained `T`, if at all possible,
+        // so that we don't needlessly allocate a new `Rc` or indeed clone
+        // the contained type.
+        unsafe {
+            // First step is to ensure that we have a unique reference to
+            // the contained type, which `Rc::make_mut` will accomplish (by
+            // allocating a new `Rc` and cloning the `T` only if required).
+            // This is done *before* casting to `Rc<ManuallyDrop<T>>` so that
+            // panicking during `make_mut` does not leak the `T`.
+            Rc::make_mut(&mut self);
+
+            // Casting to `Rc<ManuallyDrop<T>>` is safe because `ManuallyDrop`
+            // is `repr(transparent)`.
+            let ptr = Rc::into_raw(self).cast::<ManuallyDrop<T>>();
+            let mut unique = Rc::from_raw(ptr);
+
+            // Call to `Rc::make_mut` above guarantees that `unique` is the
+            // sole reference to the contained value, so we can avoid doing
+            // a checked `get_mut` here.
+            let slot = Rc::get_mut_unchecked(&mut unique);
+
+            // Semantically move the contained type out from `unique`, fold
+            // it, then move the folded value back into `unique`.  Should
+            // folding fail, `ManuallyDrop` ensures that the "moved-out"
+            // value is not re-dropped.
+            let owned = ManuallyDrop::take(slot);
+            let folded = owned.try_fold_with(folder)?;
+            *slot = ManuallyDrop::new(folded);
+
+            // Cast back to `Rc<T>`.
+            Ok(Rc::from_raw(Rc::into_raw(unique).cast()))
+        }
     }
 
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
@@ -746,11 +777,41 @@ impl<'tcx, T: TypeFoldable<'tcx>> TypeFoldable<'tcx> for Rc<T> {
 
 impl<'tcx, T: TypeFoldable<'tcx>> TypeFoldable<'tcx> for Arc<T> {
     fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
-        self,
+        mut self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        // FIXME: Reuse the `Arc` here.
-        (*self).clone().try_fold_with(folder).map(Arc::new)
+        // We merely want to replace the contained `T`, if at all possible,
+        // so that we don't needlessly allocate a new `Arc` or indeed clone
+        // the contained type.
+        unsafe {
+            // First step is to ensure that we have a unique reference to
+            // the contained type, which `Arc::make_mut` will accomplish (by
+            // allocating a new `Arc` and cloning the `T` only if required).
+            // This is done *before* casting to `Arc<ManuallyDrop<T>>` so that
+            // panicking during `make_mut` does not leak the `T`.
+            Arc::make_mut(&mut self);
+
+            // Casting to `Arc<ManuallyDrop<T>>` is safe because `ManuallyDrop`
+            // is `repr(transparent)`.
+            let ptr = Arc::into_raw(self).cast::<ManuallyDrop<T>>();
+            let mut unique = Arc::from_raw(ptr);
+
+            // Call to `Arc::make_mut` above guarantees that `unique` is the
+            // sole reference to the contained value, so we can avoid doing
+            // a checked `get_mut` here.
+            let slot = Arc::get_mut_unchecked(&mut unique);
+
+            // Semantically move the contained type out from `unique`, fold
+            // it, then move the folded value back into `unique`.  Should
+            // folding fail, `ManuallyDrop` ensures that the "moved-out"
+            // value is not re-dropped.
+            let owned = ManuallyDrop::take(slot);
+            let folded = owned.try_fold_with(folder)?;
+            *slot = ManuallyDrop::new(folded);
+
+            // Cast back to `Arc<T>`.
+            Ok(Arc::from_raw(Arc::into_raw(unique).cast()))
+        }
     }
 
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {

@@ -28,11 +28,22 @@ fn array_try_from() {
         ($($N:expr)+) => {
             $({
                 type Array = [u8; $N];
-                let array: Array = [0; $N];
+                let mut array: Array = [0; $N];
                 let slice: &[u8] = &array[..];
 
                 let result = <&Array>::try_from(slice);
                 assert_eq!(&array, result.unwrap());
+
+                let result = <Array>::try_from(slice);
+                assert_eq!(&array, &result.unwrap());
+
+                let mut_slice: &mut [u8] = &mut array[..];
+                let result = <&mut Array>::try_from(mut_slice);
+                assert_eq!(&[0; $N], result.unwrap());
+
+                let mut_slice: &mut [u8] = &mut array[..];
+                let result = <Array>::try_from(mut_slice);
+                assert_eq!(&array, &result.unwrap());
             })+
         }
     }
@@ -248,7 +259,7 @@ fn iterator_drops() {
 // This test does not work on targets without panic=unwind support.
 // To work around this problem, test is marked is should_panic, so it will
 // be automagically skipped on unsuitable targets, such as
-// wasm32-unknown-unkown.
+// wasm32-unknown-unknown.
 //
 // It means that we use panic for indicating success.
 #[test]
@@ -459,6 +470,23 @@ fn array_split_array_mut() {
     }
 }
 
+#[test]
+fn array_rsplit_array_mut() {
+    let mut v = [1, 2, 3, 4, 5, 6];
+
+    {
+        let (left, right) = v.rsplit_array_mut::<0>();
+        assert_eq!(left, &mut [1, 2, 3, 4, 5, 6]);
+        assert_eq!(right, &mut []);
+    }
+
+    {
+        let (left, right) = v.rsplit_array_mut::<6>();
+        assert_eq!(left, &mut []);
+        assert_eq!(right, &mut [1, 2, 3, 4, 5, 6]);
+    }
+}
+
 #[should_panic]
 #[test]
 fn array_split_array_ref_out_of_bounds() {
@@ -473,6 +501,22 @@ fn array_split_array_mut_out_of_bounds() {
     let mut v = [1, 2, 3, 4, 5, 6];
 
     v.split_array_mut::<7>();
+}
+
+#[should_panic]
+#[test]
+fn array_rsplit_array_ref_out_of_bounds() {
+    let v = [1, 2, 3, 4, 5, 6];
+
+    v.rsplit_array_ref::<7>();
+}
+
+#[should_panic]
+#[test]
+fn array_rsplit_array_mut_out_of_bounds() {
+    let mut v = [1, 2, 3, 4, 5, 6];
+
+    v.rsplit_array_mut::<7>();
 }
 
 #[test]
@@ -579,4 +623,48 @@ fn array_intoiter_advance_back_by() {
     assert_eq!(r, Err(0));
     assert_eq!(it.len(), 0);
     assert_eq!(counter.get(), 100);
+}
+
+#[test]
+fn array_mixed_equality_integers() {
+    let array3: [i32; 3] = [1, 2, 3];
+    let array3b: [i32; 3] = [3, 2, 1];
+    let array4: [i32; 4] = [1, 2, 3, 4];
+
+    let slice3: &[i32] = &{ array3 };
+    let slice3b: &[i32] = &{ array3b };
+    let slice4: &[i32] = &{ array4 };
+    assert!(array3 == slice3);
+    assert!(array3 != slice3b);
+    assert!(array3 != slice4);
+    assert!(slice3 == array3);
+    assert!(slice3b != array3);
+    assert!(slice4 != array3);
+
+    let mut3: &mut [i32] = &mut { array3 };
+    let mut3b: &mut [i32] = &mut { array3b };
+    let mut4: &mut [i32] = &mut { array4 };
+    assert!(array3 == mut3);
+    assert!(array3 != mut3b);
+    assert!(array3 != mut4);
+    assert!(mut3 == array3);
+    assert!(mut3b != array3);
+    assert!(mut4 != array3);
+}
+
+#[test]
+fn array_mixed_equality_nans() {
+    let array3: [f32; 3] = [1.0, std::f32::NAN, 3.0];
+
+    let slice3: &[f32] = &{ array3 };
+    assert!(!(array3 == slice3));
+    assert!(array3 != slice3);
+    assert!(!(slice3 == array3));
+    assert!(slice3 != array3);
+
+    let mut3: &mut [f32] = &mut { array3 };
+    assert!(!(array3 == mut3));
+    assert!(array3 != mut3);
+    assert!(!(mut3 == array3));
+    assert!(mut3 != array3);
 }

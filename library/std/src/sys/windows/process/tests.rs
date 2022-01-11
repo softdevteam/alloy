@@ -136,27 +136,32 @@ fn windows_exe_resolver() {
     use super::resolve_exe;
     use crate::io;
 
+    let env_paths = || env::var_os("PATH");
+
     // Test a full path, with and without the `exe` extension.
     let mut current_exe = env::current_exe().unwrap();
-    assert!(resolve_exe(current_exe.as_ref(), None).is_ok());
+    assert!(resolve_exe(current_exe.as_ref(), env_paths, None).is_ok());
     current_exe.set_extension("");
-    assert!(resolve_exe(current_exe.as_ref(), None).is_ok());
+    assert!(resolve_exe(current_exe.as_ref(), env_paths, None).is_ok());
 
     // Test lone file names.
-    assert!(resolve_exe(OsStr::new("cmd"), None).is_ok());
-    assert!(resolve_exe(OsStr::new("cmd.exe"), None).is_ok());
-    assert!(resolve_exe(OsStr::new("cmd.EXE"), None).is_ok());
-    assert!(resolve_exe(OsStr::new("fc"), None).is_ok());
+    assert!(resolve_exe(OsStr::new("cmd"), env_paths, None).is_ok());
+    assert!(resolve_exe(OsStr::new("cmd.exe"), env_paths, None).is_ok());
+    assert!(resolve_exe(OsStr::new("cmd.EXE"), env_paths, None).is_ok());
+    assert!(resolve_exe(OsStr::new("fc"), env_paths, None).is_ok());
 
     // Invalid file names should return InvalidInput.
-    assert_eq!(resolve_exe(OsStr::new(""), None).unwrap_err().kind(), io::ErrorKind::InvalidInput);
     assert_eq!(
-        resolve_exe(OsStr::new("\0"), None).unwrap_err().kind(),
+        resolve_exe(OsStr::new(""), env_paths, None).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        resolve_exe(OsStr::new("\0"), env_paths, None).unwrap_err().kind(),
         io::ErrorKind::InvalidInput
     );
     // Trailing slash, therefore there's no file name component.
     assert_eq!(
-        resolve_exe(OsStr::new(r"C:\Path\to\"), None).unwrap_err().kind(),
+        resolve_exe(OsStr::new(r"C:\Path\to\"), env_paths, None).unwrap_err().kind(),
         io::ErrorKind::InvalidInput
     );
 
@@ -165,18 +170,12 @@ fn windows_exe_resolver() {
     changing the behaviour of `resolve_exe`.
     */
 
-    let paths = env::var_os("PATH").unwrap();
-    env::set_var("PATH", "");
-
-    assert_eq!(resolve_exe(OsStr::new("rustc"), None).unwrap_err().kind(), io::ErrorKind::NotFound);
-
-    let child_paths = Some(paths.as_os_str());
-    assert!(resolve_exe(OsStr::new("rustc"), child_paths).is_ok());
+    let empty_paths = || None;
 
     // The resolver looks in system directories even when `PATH` is empty.
-    assert!(resolve_exe(OsStr::new("cmd.exe"), None).is_ok());
+    assert!(resolve_exe(OsStr::new("cmd.exe"), empty_paths, None).is_ok());
 
     // The application's directory is also searched.
     let current_exe = env::current_exe().unwrap();
-    assert!(resolve_exe(current_exe.file_name().unwrap().as_ref(), None).is_ok());
+    assert!(resolve_exe(current_exe.file_name().unwrap().as_ref(), empty_paths, None).is_ok());
 }

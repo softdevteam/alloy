@@ -393,6 +393,13 @@ impl Iterator for ToLowercase {
     }
 }
 
+#[stable(feature = "case_mapping_double_ended", since = "1.59.0")]
+impl DoubleEndedIterator for ToLowercase {
+    fn next_back(&mut self) -> Option<char> {
+        self.0.next_back()
+    }
+}
+
 #[stable(feature = "fused", since = "1.26.0")]
 impl FusedIterator for ToLowercase {}
 
@@ -417,6 +424,13 @@ impl Iterator for ToUppercase {
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
+    }
+}
+
+#[stable(feature = "case_mapping_double_ended", since = "1.59.0")]
+impl DoubleEndedIterator for ToUppercase {
+    fn next_back(&mut self) -> Option<char> {
+        self.0.next_back()
     }
 }
 
@@ -479,6 +493,26 @@ impl Iterator for CaseMappingIter {
     }
 }
 
+impl DoubleEndedIterator for CaseMappingIter {
+    fn next_back(&mut self) -> Option<char> {
+        match *self {
+            CaseMappingIter::Three(a, b, c) => {
+                *self = CaseMappingIter::Two(a, b);
+                Some(c)
+            }
+            CaseMappingIter::Two(b, c) => {
+                *self = CaseMappingIter::One(b);
+                Some(c)
+            }
+            CaseMappingIter::One(c) => {
+                *self = CaseMappingIter::Zero;
+                Some(c)
+            }
+            CaseMappingIter::Zero => None,
+        }
+    }
+}
+
 impl fmt::Display for CaseMappingIter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -508,5 +542,17 @@ impl fmt::Display for ToLowercase {
 impl fmt::Display for ToUppercase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// The error type returned when a checked char conversion fails.
+#[stable(feature = "u8_from_char", since = "1.59.0")]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TryFromCharError(pub(crate) ());
+
+#[stable(feature = "u8_from_char", since = "1.59.0")]
+impl fmt::Display for TryFromCharError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        "unicode code point out of range".fmt(fmt)
     }
 }

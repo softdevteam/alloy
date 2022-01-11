@@ -35,8 +35,8 @@
 //! development you may want to press the `[-]` button near the top of the
 //! page to collapse it into a more skimmable view.
 //!
-//! While you are looking at that `[-]` button also notice the `[src]`
-//! button. Rust's API documentation comes with the source code and you are
+//! While you are looking at that `[-]` button also notice the `source`
+//! link. Rust's API documentation comes with the source code and you are
 //! encouraged to read it. The standard library source is generally high
 //! quality and a peek behind the curtains is often enlightening.
 //!
@@ -233,7 +233,6 @@
 #![feature(allow_internal_unstable)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
-#![feature(asm)]
 #![feature(assert_matches)]
 #![feature(associated_type_bounds)]
 #![feature(async_stream)]
@@ -252,7 +251,6 @@
 #![feature(char_internals)]
 #![cfg_attr(not(bootstrap), feature(concat_bytes))]
 #![feature(concat_idents)]
-#![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(const_fn_trait_bound)]
@@ -288,14 +286,12 @@
 #![feature(gen_future)]
 #![feature(generator_trait)]
 #![feature(get_mut_unchecked)]
-#![feature(global_asm)]
 #![feature(hashmap_internals)]
 #![feature(int_error_internals)]
 #![feature(integer_atomics)]
 #![feature(int_log)]
 #![feature(into_future)]
 #![feature(intra_doc_pointers)]
-#![feature(iter_zip)]
 #![feature(lang_items)]
 #![feature(linkage)]
 #![feature(llvm_asm)]
@@ -563,6 +559,7 @@ pub use std_detect::*;
 pub use std_detect::{
     is_aarch64_feature_detected, is_arm_feature_detected, is_mips64_feature_detected,
     is_mips_feature_detected, is_powerpc64_feature_detected, is_powerpc_feature_detected,
+    is_riscv_feature_detected,
 };
 
 // Re-export macros defined in libcore.

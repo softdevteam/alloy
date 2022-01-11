@@ -97,7 +97,7 @@ impl<T: ?Sized> Unique<T> {
 
     /// Creates a new `Unique` if `ptr` is non-null.
     #[inline]
-    pub fn new(ptr: *mut T) -> Option<Self> {
+    pub const fn new(ptr: *mut T) -> Option<Self> {
         if !ptr.is_null() {
             // SAFETY: The pointer has already been checked and is not null.
             Some(unsafe { Unique { pointer: ptr as _, _marker: PhantomData } })
@@ -120,7 +120,7 @@ impl<T: ?Sized> Unique<T> {
     /// (unbound) lifetime is needed, use `&*my_ptr.as_ptr()`.
     #[must_use]
     #[inline]
-    pub unsafe fn as_ref(&self) -> &T {
+    pub const unsafe fn as_ref(&self) -> &T {
         // SAFETY: the caller must guarantee that `self` meets all the
         // requirements for a reference.
         unsafe { &*self.as_ptr() }
@@ -133,7 +133,7 @@ impl<T: ?Sized> Unique<T> {
     /// (unbound) lifetime is needed, use `&mut *my_ptr.as_ptr()`.
     #[must_use]
     #[inline]
-    pub unsafe fn as_mut(&mut self) -> &mut T {
+    pub const unsafe fn as_mut(&mut self) -> &mut T {
         // SAFETY: the caller must guarantee that `self` meets all the
         // requirements for a mutable reference.
         unsafe { &mut *self.as_ptr() }

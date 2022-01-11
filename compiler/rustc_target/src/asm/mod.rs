@@ -298,43 +298,43 @@ impl InlineAsmReg {
         let name = name.as_str();
         Ok(match arch {
             InlineAsmArch::X86 | InlineAsmArch::X86_64 => {
-                Self::X86(X86InlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::X86(X86InlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Arm => {
-                Self::Arm(ArmInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Arm(ArmInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::AArch64 => {
-                Self::AArch64(AArch64InlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::AArch64(AArch64InlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {
-                Self::RiscV(RiscVInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::RiscV(RiscVInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Nvptx64 => {
-                Self::Nvptx(NvptxInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Nvptx(NvptxInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {
-                Self::PowerPC(PowerPCInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::PowerPC(PowerPCInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Hexagon => {
-                Self::Hexagon(HexagonInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Hexagon(HexagonInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Mips | InlineAsmArch::Mips64 => {
-                Self::Mips(MipsInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Mips(MipsInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::S390x => {
-                Self::S390x(S390xInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::S390x(S390xInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::SpirV => {
-                Self::SpirV(SpirVInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::SpirV(SpirVInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Wasm32 | InlineAsmArch::Wasm64 => {
-                Self::Wasm(WasmInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Wasm(WasmInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Bpf => {
-                Self::Bpf(BpfInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Bpf(BpfInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
             InlineAsmArch::Avr => {
-                Self::Avr(AvrInlineAsmReg::parse(arch, has_feature, target, &name)?)
+                Self::Avr(AvrInlineAsmReg::parse(arch, has_feature, target, name)?)
             }
         })
     }
@@ -785,6 +785,7 @@ pub enum InlineAsmClobberAbi {
     X86_64SysV,
     Arm,
     AArch64,
+    AArch64NoX18,
     RiscV,
 }
 
@@ -793,10 +794,11 @@ impl InlineAsmClobberAbi {
     /// clobber ABIs for the target.
     pub fn parse(
         arch: InlineAsmArch,
+        has_feature: impl FnMut(&str) -> bool,
         target: &Target,
         name: Symbol,
     ) -> Result<Self, &'static [&'static str]> {
-        let name = &*name.as_str();
+        let name = name.as_str();
         match arch {
             InlineAsmArch::X86 => match name {
                 "C" | "system" | "efiapi" | "cdecl" | "stdcall" | "fastcall" => {
@@ -816,7 +818,13 @@ impl InlineAsmClobberAbi {
                 _ => Err(&["C", "system", "efiapi", "aapcs"]),
             },
             InlineAsmArch::AArch64 => match name {
-                "C" | "system" | "efiapi" => Ok(InlineAsmClobberAbi::AArch64),
+                "C" | "system" | "efiapi" => {
+                    Ok(if aarch64::reserved_x18(arch, has_feature, target).is_err() {
+                        InlineAsmClobberAbi::AArch64NoX18
+                    } else {
+                        InlineAsmClobberAbi::AArch64
+                    })
+                }
                 _ => Err(&["C", "system", "efiapi"]),
             },
             InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => match name {
@@ -891,8 +899,25 @@ impl InlineAsmClobberAbi {
                 AArch64 AArch64InlineAsmReg {
                     x0, x1, x2, x3, x4, x5, x6, x7,
                     x8, x9, x10, x11, x12, x13, x14, x15,
-                    // x18 is platform-reserved or temporary, but we exclude it
-                    // here since it is a reserved register.
+                    x16, x17, x18, x30,
+
+                    // Technically the low 64 bits of v8-v15 are preserved, but
+                    // we have no way of expressing this using clobbers.
+                    v0, v1, v2, v3, v4, v5, v6, v7,
+                    v8, v9, v10, v11, v12, v13, v14, v15,
+                    v16, v17, v18, v19, v20, v21, v22, v23,
+                    v24, v25, v26, v27, v28, v29, v30, v31,
+
+                    p0, p1, p2, p3, p4, p5, p6, p7,
+                    p8, p9, p10, p11, p12, p13, p14, p15,
+                    ffr,
+
+                }
+            },
+            InlineAsmClobberAbi::AArch64NoX18 => clobbered_regs! {
+                AArch64 AArch64InlineAsmReg {
+                    x0, x1, x2, x3, x4, x5, x6, x7,
+                    x8, x9, x10, x11, x12, x13, x14, x15,
                     x16, x17, x30,
 
                     // Technically the low 64 bits of v8-v15 are preserved, but
@@ -910,7 +935,8 @@ impl InlineAsmClobberAbi {
             },
             InlineAsmClobberAbi::Arm => clobbered_regs! {
                 Arm ArmInlineAsmReg {
-                    // r9 is platform-reserved and is treated as callee-saved.
+                    // r9 is either platform-reserved or callee-saved. Either
+                    // way we don't need to clobber it.
                     r0, r1, r2, r3, r12, r14,
 
                     // The finest-grained register variant is used here so that

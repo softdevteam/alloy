@@ -199,9 +199,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             Aggregate(ref kind, ref operands) => {
                 // active_field_index is for union initialization.
                 let (dest, active_field_index) = match **kind {
-                    mir::AggregateKind::Adt(adt_def, variant_index, _, _, active_field_index) => {
+                    mir::AggregateKind::Adt(adt_did, variant_index, _, _, active_field_index) => {
                         self.write_discriminant(variant_index, &dest)?;
-                        if adt_def.is_enum() {
+                        if self.tcx.adt_def(adt_did).is_enum() {
                             assert!(active_field_index.is_none());
                             (self.place_downcast(&dest, variant_index)?, None)
                         } else {
@@ -271,10 +271,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_immediate(place.to_ref(self), &dest)?;
             }
 
-            NullaryOp(mir::NullOp::Box, _) => {
-                M::box_alloc(self, &dest)?;
-            }
-
             NullaryOp(null_op, ty) => {
                 let ty = self.subst_from_current_frame_and_normalize_erasing_regions(ty)?;
                 let layout = self.layout_of(ty)?;
@@ -289,7 +285,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let val = match null_op {
                     mir::NullOp::SizeOf => layout.size.bytes(),
                     mir::NullOp::AlignOf => layout.align.abi.bytes(),
-                    mir::NullOp::Box => unreachable!(),
                 };
                 self.write_scalar(Scalar::from_machine_usize(val, self), &dest)?;
             }

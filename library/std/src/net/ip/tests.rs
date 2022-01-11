@@ -77,10 +77,10 @@ fn test_from_str_ipv4_in_ipv6() {
     let none: Option<Ipv4Addr> = "::127.0.0.1:".parse().ok();
     assert_eq!(None, none);
     // not enough groups
-    let none: Option<Ipv6Addr> = "1.2.3.4.5:127.0.0.1".parse().ok();
+    let none: Option<Ipv6Addr> = "1:2:3:4:5:127.0.0.1".parse().ok();
     assert_eq!(None, none);
     // too many groups
-    let none: Option<Ipv6Addr> = "1.2.3.4.5:6:7:127.0.0.1".parse().ok();
+    let none: Option<Ipv6Addr> = "1:2:3:4:5:6:7:127.0.0.1".parse().ok();
     assert_eq!(None, none);
 }
 
@@ -749,7 +749,7 @@ fn ipv4_from_constructors() {
 }
 
 #[test]
-fn ipv6_from_contructors() {
+fn ipv6_from_constructors() {
     assert_eq!(Ipv6Addr::LOCALHOST, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
     assert!(Ipv6Addr::LOCALHOST.is_loopback());
     assert_eq!(Ipv6Addr::UNSPECIFIED, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));

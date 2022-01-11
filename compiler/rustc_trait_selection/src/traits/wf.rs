@@ -1,12 +1,11 @@
 use crate::infer::InferCtxt;
 use crate::opaque_types::required_region_bounds;
 use crate::traits;
-use rustc_data_structures::sync::Lrc;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind, SubstsRef};
-use rustc_middle::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
+use rustc_middle::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable};
 use rustc_span::Span;
 
 use std::iter;
@@ -198,14 +197,13 @@ fn extend_cause_with_original_assoc_item_obligation<'tcx>(
     item: Option<&hir::Item<'tcx>>,
     cause: &mut traits::ObligationCause<'tcx>,
     pred: &ty::Predicate<'tcx>,
-    mut trait_assoc_items: impl Iterator<Item = &'tcx ty::AssocItem>,
 ) {
     debug!(
         "extended_cause_with_original_assoc_item_obligation {:?} {:?} {:?} {:?}",
         trait_ref, item, cause, pred
     );
-    let items = match item {
-        Some(hir::Item { kind: hir::ItemKind::Impl(impl_), .. }) => impl_.items,
+    let (items, impl_def_id) = match item {
+        Some(hir::Item { kind: hir::ItemKind::Impl(impl_), def_id, .. }) => (impl_.items, *def_id),
         _ => return,
     };
     let fix_span =
@@ -223,11 +221,16 @@ fn extend_cause_with_original_assoc_item_obligation<'tcx>(
             // `src/test/ui/associated-types/point-at-type-on-obligation-failure.rs` and
             // `traits-assoc-type-in-supertrait-bad.rs`.
             if let ty::Projection(projection_ty) = proj.ty.kind() {
-                let trait_assoc_item = tcx.associated_item(projection_ty.item_def_id);
-                if let Some(impl_item_span) =
-                    items.iter().find(|item| item.ident == trait_assoc_item.ident).map(fix_span)
+                if let Some(&impl_item_id) =
+                    tcx.impl_item_implementor_ids(impl_def_id).get(&projection_ty.item_def_id)
                 {
-                    cause.make_mut().span = impl_item_span;
+                    if let Some(impl_item_span) = items
+                        .iter()
+                        .find(|item| item.id.def_id.to_def_id() == impl_item_id)
+                        .map(fix_span)
+                    {
+                        cause.span = impl_item_span;
+                    }
                 }
             }
         }
@@ -236,13 +239,16 @@ fn extend_cause_with_original_assoc_item_obligation<'tcx>(
             // can be seen in `ui/associated-types/point-at-type-on-obligation-failure-2.rs`.
             debug!("extended_cause_with_original_assoc_item_obligation trait proj {:?}", pred);
             if let ty::Projection(ty::ProjectionTy { item_def_id, .. }) = *pred.self_ty().kind() {
-                if let Some(impl_item_span) = trait_assoc_items
-                    .find(|i| i.def_id == item_def_id)
-                    .and_then(|trait_assoc_item| {
-                        items.iter().find(|i| i.ident == trait_assoc_item.ident).map(fix_span)
-                    })
+                if let Some(&impl_item_id) =
+                    tcx.impl_item_implementor_ids(impl_def_id).get(&item_def_id)
                 {
-                    cause.make_mut().span = impl_item_span;
+                    if let Some(impl_item_span) = items
+                        .iter()
+                        .find(|item| item.id.def_id.to_def_id() == impl_item_id)
+                        .map(fix_span)
+                    {
+                        cause.span = impl_item_span;
+                    }
                 }
             }
         }
@@ -298,12 +304,13 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
 
         let extend = |obligation: traits::PredicateObligation<'tcx>| {
             let mut cause = cause.clone();
-            if let Some(parent_trait_ref) = obligation.predicate.to_opt_poly_trait_ref() {
+            if let Some(parent_trait_ref) = obligation.predicate.to_opt_poly_trait_pred() {
                 let derived_cause = traits::DerivedObligationCause {
-                    parent_trait_ref: parent_trait_ref.value,
-                    parent_code: Lrc::new(obligation.cause.code.clone()),
+                    // FIXME(fee1-dead): when improving error messages, change this to PolyTraitPredicate
+                    parent_trait_ref: parent_trait_ref.map_bound(|t| t.trait_ref),
+                    parent_code: obligation.cause.clone_code(),
                 };
-                cause.make_mut().code =
+                *cause.make_mut_code() =
                     traits::ObligationCauseCode::DerivedObligation(derived_cause);
             }
             extend_cause_with_original_assoc_item_obligation(
@@ -312,7 +319,6 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                 item,
                 &mut cause,
                 &obligation.predicate,
-                tcx.associated_items(trait_ref.def_id).in_definition_order(),
             );
             traits::Obligation::with_depth(cause, depth, param_env, obligation.predicate)
         };
@@ -342,7 +348,7 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                         if let Some(hir::ItemKind::Impl(hir::Impl { self_ty, .. })) =
                             item.map(|i| &i.kind)
                         {
-                            new_cause.make_mut().span = self_ty.span;
+                            new_cause.span = self_ty.span;
                         }
                     }
                     traits::Obligation::with_depth(

@@ -498,7 +498,7 @@ fn record_accesses<'a, 'tcx: 'a>(
 /// the user's terminal with thousands of lines of type-name.
 ///
 /// If the type name is longer than before+after, it will be written to a file.
-fn shrunk_instance_name(
+fn shrunk_instance_name<'tcx>(
     tcx: TyCtxt<'tcx>,
     instance: &Instance<'tcx>,
     before: usize,
@@ -686,24 +686,6 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
                         }
                     }
                     _ => bug!(),
-                }
-            }
-            mir::Rvalue::NullaryOp(mir::NullOp::Box, ty) => {
-                let tcx = self.tcx;
-                let source_ty = self.monomorphize(ty);
-                let mut alloc_kind = LangItem::ExchangeMalloc;
-                if tcx.sess.opts.cg.gc_precise_marking {
-                    alloc_kind =
-                        if source_ty.is_no_trace(tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
-                            LangItem::ExchangeMallocUntraceable
-                        } else {
-                            LangItem::ExchangeMallocConservative
-                        };
-                }
-                let exchange_malloc_fn_def_id = tcx.require_lang_item(alloc_kind, None);
-                let instance = Instance::mono(tcx, exchange_malloc_fn_def_id);
-                if should_codegen_locally(tcx, &instance) {
-                    self.output.push(create_fn_mono_item(self.tcx, instance, span));
                 }
             }
             mir::Rvalue::ThreadLocalRef(def_id) => {
@@ -1154,7 +1136,7 @@ struct RootCollector<'a, 'tcx> {
     entry_fn: Option<(DefId, EntryFnType)>,
 }
 
-impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
+impl<'v> ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
     fn visit_item(&mut self, item: &'v hir::Item<'v>) {
         match item.kind {
             hir::ItemKind::ExternCrate(..)
@@ -1234,7 +1216,7 @@ impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
     fn visit_foreign_item(&mut self, _foreign_item: &'v hir::ForeignItem<'v>) {}
 }
 
-impl RootCollector<'_, 'v> {
+impl<'v> RootCollector<'_, 'v> {
     fn is_root(&self, def_id: LocalDefId) -> bool {
         !item_requires_monomorphization(self.tcx, def_id)
             && match self.mode {
@@ -1328,10 +1310,9 @@ fn create_mono_items_for_default_impls<'tcx>(
             if let Some(trait_ref) = tcx.impl_trait_ref(item.def_id) {
                 let param_env = ty::ParamEnv::reveal_all();
                 let trait_ref = tcx.normalize_erasing_regions(param_env, trait_ref);
-                let overridden_methods: FxHashSet<_> =
-                    impl_.items.iter().map(|iiref| iiref.ident.normalize_to_macros_2_0()).collect();
+                let overridden_methods = tcx.impl_item_implementor_ids(item.def_id);
                 for method in tcx.provided_trait_methods(trait_ref.def_id) {
-                    if overridden_methods.contains(&method.ident.normalize_to_macros_2_0()) {
+                    if overridden_methods.contains_key(&method.def_id) {
                         continue;
                     }
 

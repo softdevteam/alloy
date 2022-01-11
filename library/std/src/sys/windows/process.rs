@@ -268,7 +268,7 @@ impl Command {
         } else {
             None
         };
-        let program = resolve_exe(&self.program, child_paths)?;
+        let program = resolve_exe(&self.program, || env::var_os("PATH"), child_paths)?;
         let mut cmd_str =
             make_command_line(program.as_os_str(), &self.args, self.force_quotes_enabled)?;
         cmd_str.push(0); // add null terminator
@@ -362,7 +362,11 @@ impl fmt::Debug for Command {
 // Therefore this functions first assumes `.exe` was intended.
 // It falls back to the plain file name if a full path is given and the extension is omitted
 // or if only a file name is given and it already contains an extension.
-fn resolve_exe<'a>(exe_path: &'a OsStr, child_paths: Option<&OsStr>) -> io::Result<PathBuf> {
+fn resolve_exe<'a>(
+    exe_path: &'a OsStr,
+    parent_paths: impl FnOnce() -> Option<OsString>,
+    child_paths: Option<&OsStr>,
+) -> io::Result<PathBuf> {
     // Early return if there is no filename.
     if exe_path.is_empty() || path::has_trailing_slash(exe_path) {
         return Err(io::Error::new_const(
@@ -406,7 +410,7 @@ fn resolve_exe<'a>(exe_path: &'a OsStr, child_paths: Option<&OsStr>) -> io::Resu
         let has_extension = exe_path.bytes().contains(&b'.');
 
         // Search the directories given by `search_paths`.
-        let result = search_paths(child_paths, |mut path| {
+        let result = search_paths(parent_paths, child_paths, |mut path| {
             path.push(&exe_path);
             if !has_extension {
                 path.set_extension(EXE_EXTENSION);
@@ -423,15 +427,20 @@ fn resolve_exe<'a>(exe_path: &'a OsStr, child_paths: Option<&OsStr>) -> io::Resu
 
 // Calls `f` for every path that should be used to find an executable.
 // Returns once `f` returns the path to an executable or all paths have been searched.
-fn search_paths<F>(child_paths: Option<&OsStr>, mut f: F) -> Option<PathBuf>
+fn search_paths<Paths, Exists>(
+    parent_paths: Paths,
+    child_paths: Option<&OsStr>,
+    mut exists: Exists,
+) -> Option<PathBuf>
 where
-    F: FnMut(PathBuf) -> Option<PathBuf>,
+    Paths: FnOnce() -> Option<OsString>,
+    Exists: FnMut(PathBuf) -> Option<PathBuf>,
 {
     // 1. Child paths
     // This is for consistency with Rust's historic behaviour.
     if let Some(paths) = child_paths {
         for path in env::split_paths(paths).filter(|p| !p.as_os_str().is_empty()) {
-            if let Some(path) = f(path) {
+            if let Some(path) = exists(path) {
                 return Some(path);
             }
         }
@@ -440,7 +449,7 @@ where
     // 2. Application path
     if let Ok(mut app_path) = env::current_exe() {
         app_path.pop();
-        if let Some(path) = f(app_path) {
+        if let Some(path) = exists(app_path) {
             return Some(path);
         }
     }
@@ -450,7 +459,7 @@ where
     unsafe {
         if let Ok(Some(path)) = super::fill_utf16_buf(
             |buf, size| c::GetSystemDirectoryW(buf, size),
-            |buf| f(PathBuf::from(OsString::from_wide(buf))),
+            |buf| exists(PathBuf::from(OsString::from_wide(buf))),
         ) {
             return Some(path);
         }
@@ -458,7 +467,7 @@ where
         {
             if let Ok(Some(path)) = super::fill_utf16_buf(
                 |buf, size| c::GetWindowsDirectoryW(buf, size),
-                |buf| f(PathBuf::from(OsString::from_wide(buf))),
+                |buf| exists(PathBuf::from(OsString::from_wide(buf))),
             ) {
                 return Some(path);
             }
@@ -466,9 +475,9 @@ where
     }
 
     // 5. Parent paths
-    if let Some(parent_paths) = env::var_os("PATH") {
+    if let Some(parent_paths) = parent_paths() {
         for path in env::split_paths(&parent_paths).filter(|p| !p.as_os_str().is_empty()) {
-            if let Some(path) = f(path) {
+            if let Some(path) = exists(path) {
                 return Some(path);
             }
         }
@@ -704,6 +713,19 @@ fn make_command_line(prog: &OsStr, args: &[Arg], force_quotes: bool) -> io::Resu
     // Encode the command and arguments in a command line string such
     // that the spawned process may recover them using CommandLineToArgvW.
     let mut cmd: Vec<u16> = Vec::new();
+
+    // CreateFileW has special handling for .bat and .cmd files, which means we
+    // need to add an extra pair of quotes surrounding the whole command line
+    // so they are properly passed on to the script.
+    // See issue #91991.
+    let is_batch_file = Path::new(prog)
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false);
+    if is_batch_file {
+        cmd.push(b'"' as u16);
+    }
+
     // Always quote the program name so CreateProcess doesn't interpret args as
     // part of the name if the binary wasn't found first time.
     append_arg(&mut cmd, prog, Quote::Always)?;
@@ -714,6 +736,9 @@ fn make_command_line(prog: &OsStr, args: &[Arg], force_quotes: bool) -> io::Resu
             Arg::Raw(arg) => (arg, Quote::Never),
         };
         append_arg(&mut cmd, arg, quote)?;
+    }
+    if is_batch_file {
+        cmd.push(b'"' as u16);
     }
     return Ok(cmd);
 

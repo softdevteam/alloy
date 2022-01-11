@@ -316,7 +316,7 @@ impl<'a> State<'a> {
             }
             hir::TyKind::Tup(ref elts) => {
                 self.popen();
-                self.commasep(Inconsistent, &elts[..], |s, ty| s.print_type(&ty));
+                self.commasep(Inconsistent, &elts, |s, ty| s.print_type(&ty));
                 if elts.len() == 1 {
                     self.word(",");
                 }
@@ -358,7 +358,7 @@ impl<'a> State<'a> {
                 self.word("[");
                 self.print_type(&ty);
                 self.word("; ");
-                self.print_anon_const(length);
+                self.print_array_length(length);
                 self.word("]");
             }
             hir::TyKind::Typeof(ref e) => {
@@ -1065,6 +1065,13 @@ impl<'a> State<'a> {
         self.print_else(elseopt)
     }
 
+    pub fn print_array_length(&mut self, len: &hir::ArrayLen) {
+        match len {
+            hir::ArrayLen::Infer(_, _) => self.word("_"),
+            hir::ArrayLen::Body(ct) => self.print_anon_const(ct),
+        }
+    }
+
     pub fn print_anon_const(&mut self, constant: &hir::AnonConst) {
         self.ann.nested(self, Nested::Body(constant.body))
     }
@@ -1101,13 +1108,17 @@ impl<'a> State<'a> {
     }
 
     /// Print a `let pat = expr` expression.
-    fn print_let(&mut self, pat: &hir::Pat<'_>, expr: &hir::Expr<'_>) {
-        self.word("let ");
+    fn print_let(&mut self, pat: &hir::Pat<'_>, ty: Option<&hir::Ty<'_>>, init: &hir::Expr<'_>) {
+        self.word_space("let");
         self.print_pat(pat);
+        if let Some(ty) = ty {
+            self.word_space(":");
+            self.print_type(ty);
+        }
         self.space();
         self.word_space("=");
-        let npals = || parser::needs_par_as_let_scrutinee(expr.precedence().order());
-        self.print_expr_cond_paren(expr, Self::cond_needs_par(expr) || npals())
+        let npals = || parser::needs_par_as_let_scrutinee(init.precedence().order());
+        self.print_expr_cond_paren(init, Self::cond_needs_par(init) || npals())
     }
 
     // Does `expr` need parentheses when printed in a condition position?
@@ -1136,12 +1147,12 @@ impl<'a> State<'a> {
         self.end()
     }
 
-    fn print_expr_repeat(&mut self, element: &hir::Expr<'_>, count: &hir::AnonConst) {
+    fn print_expr_repeat(&mut self, element: &hir::Expr<'_>, count: &hir::ArrayLen) {
         self.ibox(INDENT_UNIT);
         self.word("[");
         self.print_expr(element);
         self.word_space(";");
-        self.print_anon_const(count);
+        self.print_array_length(count);
         self.word("]");
         self.end()
     }
@@ -1462,8 +1473,8 @@ impl<'a> State<'a> {
                 // Print `}`:
                 self.bclose_maybe_open(expr.span, true);
             }
-            hir::ExprKind::Let(ref pat, ref scrutinee, _) => {
-                self.print_let(pat, scrutinee);
+            hir::ExprKind::Let(hir::Let { pat, ty, init, .. }) => {
+                self.print_let(pat, *ty, init);
             }
             hir::ExprKind::If(ref test, ref blk, ref elseopt) => {
                 self.print_if(&test, &blk, elseopt.as_ref().map(|e| &**e));
@@ -1731,7 +1742,7 @@ impl<'a> State<'a> {
                     colons_before_params,
                 )
             }
-            hir::QPath::LangItem(lang_item, span) => {
+            hir::QPath::LangItem(lang_item, span, _) => {
                 self.word("#[lang = \"");
                 self.print_ident(Ident::new(lang_item.name(), span));
                 self.word("\"]");
@@ -1860,7 +1871,7 @@ impl<'a> State<'a> {
                         self.commasep(Inconsistent, &elts[ddpos..], |s, p| s.print_pat(&p));
                     }
                 } else {
-                    self.commasep(Inconsistent, &elts[..], |s, p| s.print_pat(&p));
+                    self.commasep(Inconsistent, &elts, |s, p| s.print_pat(&p));
                 }
                 self.pclose();
             }
@@ -1870,10 +1881,14 @@ impl<'a> State<'a> {
             PatKind::Struct(ref qpath, ref fields, etc) => {
                 self.print_qpath(qpath, true);
                 self.nbsp();
-                self.word_space("{");
+                self.word("{");
+                let empty = fields.is_empty() && !etc;
+                if !empty {
+                    self.space();
+                }
                 self.commasep_cmnt(
                     Consistent,
-                    &fields[..],
+                    &fields,
                     |s, f| {
                         s.cbox(INDENT_UNIT);
                         if !f.is_shorthand {
@@ -1891,11 +1906,13 @@ impl<'a> State<'a> {
                     }
                     self.word("..");
                 }
-                self.space();
+                if !empty {
+                    self.space();
+                }
                 self.word("}");
             }
             PatKind::Or(ref pats) => {
-                self.strsep("|", true, Inconsistent, &pats[..], |s, p| s.print_pat(&p));
+                self.strsep("|", true, Inconsistent, &pats, |s, p| s.print_pat(&p));
             }
             PatKind::Tuple(ref elts, ddpos) => {
                 self.popen();
@@ -1944,7 +1961,6 @@ impl<'a> State<'a> {
             PatKind::Range(ref begin, ref end, ref end_kind) => {
                 if let Some(expr) = begin {
                     self.print_expr(expr);
-                    self.space();
                 }
                 match *end_kind {
                     RangeEnd::Included => self.word("..."),
@@ -1956,7 +1972,7 @@ impl<'a> State<'a> {
             }
             PatKind::Slice(ref before, ref slice, ref after) => {
                 self.word("[");
-                self.commasep(Inconsistent, &before[..], |s, p| s.print_pat(&p));
+                self.commasep(Inconsistent, &before, |s, p| s.print_pat(&p));
                 if let Some(ref p) = *slice {
                     if !before.is_empty() {
                         self.word_space(",");
@@ -1971,7 +1987,7 @@ impl<'a> State<'a> {
                         self.word_space(",");
                     }
                 }
-                self.commasep(Inconsistent, &after[..], |s, p| s.print_pat(&p));
+                self.commasep(Inconsistent, &after, |s, p| s.print_pat(&p));
                 self.word("]");
             }
         }
@@ -2323,10 +2339,7 @@ impl<'a> State<'a> {
         arg_names: &[Ident],
     ) {
         self.ibox(INDENT_UNIT);
-        if !generic_params.is_empty() {
-            self.word("for");
-            self.print_generic_params(generic_params);
-        }
+        self.print_formal_generic_params(generic_params);
         let generics = hir::Generics {
             params: &[],
             where_clause: hir::WhereClause { predicates: &[], span: rustc_span::DUMMY_SP },

@@ -2,21 +2,25 @@
 #![feature(array_chunks)]
 #![feature(array_methods)]
 #![feature(array_windows)]
+#![feature(bench_black_box)]
 #![feature(bool_to_option)]
 #![feature(box_syntax)]
 #![feature(cell_update)]
 #![feature(cfg_panic)]
 #![feature(cfg_target_has_atomic)]
 #![feature(const_assume)]
+#![feature(const_black_box)]
+#![feature(const_bool_to_option)]
 #![feature(const_cell_into_inner)]
 #![feature(const_convert)]
 #![feature(const_maybe_uninit_as_mut_ptr)]
 #![feature(const_maybe_uninit_assume_init)]
+#![feature(const_num_from_num)]
 #![feature(const_ptr_read)]
 #![feature(const_ptr_write)]
 #![feature(const_ptr_offset)]
 #![feature(const_trait_impl)]
-#![feature(const_num_from_num)]
+#![feature(const_likely)]
 #![feature(core_intrinsics)]
 #![feature(core_private_bignum)]
 #![feature(core_private_diy_float)]
@@ -34,6 +38,7 @@
 #![feature(array_from_fn)]
 #![feature(hashmap_internals)]
 #![feature(try_find)]
+#![feature(inline_const)]
 #![feature(is_sorted)]
 #![feature(pattern)]
 #![feature(sort_internals)]
@@ -49,6 +54,7 @@
 #![feature(str_internals)]
 #![feature(test)]
 #![feature(trusted_len)]
+#![feature(try_blocks)]
 #![feature(try_trait_v2)]
 #![feature(slice_internals)]
 #![feature(slice_partition_dedup)]
@@ -68,8 +74,10 @@
 #![feature(portable_simd)]
 #![feature(ptr_metadata)]
 #![feature(once_cell)]
+#![feature(option_result_contains)]
 #![feature(unsized_tuple_coercion)]
 #![feature(const_option)]
+#![feature(const_option_ext)]
 #![feature(const_result)]
 #![feature(integer_atomics)]
 #![feature(int_roundings)]
@@ -95,6 +103,7 @@ mod char;
 mod clone;
 mod cmp;
 mod const_ptr;
+mod convert;
 mod fmt;
 mod future;
 mod hash;

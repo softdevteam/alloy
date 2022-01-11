@@ -13,7 +13,45 @@ import sys
 import tarfile
 import tempfile
 
-from time import time
+from time import time, sleep
+
+# Acquire a lock on the build directory to make sure that
+# we don't cause a race condition while building
+# Lock is created in `build_dir/lock.db`
+def acquire_lock(build_dir):
+    try:
+        import sqlite3
+
+        path = os.path.join(build_dir, "lock.db")
+        try:
+            con = sqlite3.Connection(path, timeout=0)
+            curs = con.cursor()
+            curs.execute("BEGIN EXCLUSIVE")
+            # The lock is released when the cursor is dropped
+            return curs
+        # If the database is busy then lock has already been acquired
+        # so we wait for the lock.
+        # We retry every quarter second so that execution is passed back to python
+        # so that it can handle signals
+        except sqlite3.OperationalError:
+            del con
+            del curs
+            print("Waiting for lock on build directory")
+            con = sqlite3.Connection(path, timeout=0.25)
+            curs = con.cursor()
+            while True:
+                try:
+                    curs.execute("BEGIN EXCLUSIVE")
+                    break
+                except sqlite3.OperationalError:
+                    pass
+                sleep(0.25)
+            return curs
+    except ImportError:
+        print("warning: sqlite3 not available in python, skipping build directory lock")
+        print("please file an issue on rust-lang/rust")
+        print("this is not a problem for non-concurrent x.py invocations")
+        return None
 
 def support_xz():
     try:
@@ -189,11 +227,11 @@ def default_build_triple(verbose):
         host = next(x for x in version.split('\n') if x.startswith("host: "))
         triple = host.split("host: ")[1]
         if verbose:
-            print("detected default triple {}".format(triple))
+            print("detected default triple {} from pre-installed rustc".format(triple))
         return triple
     except Exception as e:
         if verbose:
-            print("rustup not detected: {}".format(e))
+            print("pre-installed rustc not detected: {}".format(e))
             print("falling back to auto-detect")
 
     required = sys.platform != 'win32'
@@ -726,12 +764,15 @@ class RustBuild(object):
         status = subprocess.call(["git", "diff-index", "--quiet", commit, "--", compiler, library])
         if status != 0:
             if download_rustc == "if-unchanged":
+                if self.verbose:
+                    print("warning: saw changes to compiler/ or library/ since {}; " \
+                          "ignoring `download-rustc`".format(commit))
                 return None
-            print("warning: `download-rustc` is enabled, but there are changes to \
-                   compiler/ or library/")
+            print("warning: `download-rustc` is enabled, but there are changes to " \
+                  "compiler/ or library/")
 
         if self.verbose:
-            print("using downloaded stage1 artifacts from CI (commit {})".format(commit))
+            print("using downloaded stage2 artifacts from CI (commit {})".format(commit))
         self.rustc_commit = commit
         # FIXME: support downloading artifacts from the beta channel
         self.download_toolchain(False, "nightly")
@@ -935,6 +976,7 @@ class RustBuild(object):
 
     def build_bootstrap(self):
         """Build bootstrap"""
+        print("Building rustbuild")
         build_dir = os.path.join(self.build_dir, "bootstrap")
         if self.clean and os.path.exists(build_dir):
             shutil.rmtree(build_dir)
@@ -1094,7 +1136,7 @@ class RustBuild(object):
             recorded_submodules[data[3]] = data[2]
         for module in filtered_submodules:
             self.update_submodule(module[0], module[1], recorded_submodules)
-        print("Submodules updated in %.2f seconds" % (time() - start_time))
+        print("  Submodules updated in %.2f seconds" % (time() - start_time))
 
     def set_dist_environment(self, url):
         """Set download URL for normal environment"""
@@ -1225,6 +1267,12 @@ def bootstrap(help_triggered):
     build.set_dist_environment(data["dist_server"])
 
     build.build = args.build or build.build_triple()
+
+    # Acquire the lock before doing any build actions
+    # The lock is released when `lock` is dropped
+    if not os.path.exists(build.build_dir):
+        os.makedirs(build.build_dir)
+    lock = acquire_lock(build.build_dir)
     build.update_submodules()
 
     # Fetch/build the bootstrap

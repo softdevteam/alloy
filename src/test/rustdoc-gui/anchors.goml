@@ -12,9 +12,11 @@ reload:
 
 assert-css: ("#toggle-all-docs", {"color": "rgb(0, 0, 0)"})
 assert-css: (".fqn .in-band a:nth-of-type(1)", {"color": "rgb(0, 0, 0)"})
-assert-css: (".fqn .in-band a:nth-of-type(2)", {"color": "rgb(173, 68, 142)"})
-assert-css: (".srclink", {"color": "rgb(0, 0, 0)"})
-assert-css: (".srclink", {"color": "rgb(0, 0, 0)"})
+assert-css: (".fqn .in-band a:nth-of-type(2)", {"color": "rgb(173, 55, 138)"})
+assert-css: (".srclink", {"color": "rgb(56, 115, 173)"})
+
+move-cursor-to: ".main-heading .srclink"
+assert-css: (".srclink", {"text-decoration": "underline solid rgb(56, 115, 173)"})
 
 assert-css: ("#top-doc-prose-title", {"color": "rgb(0, 0, 0)"})
 
@@ -34,7 +36,7 @@ assert-css: ("#impl a.anchor", {"color": "rgb(0, 0, 0)"})
 move-cursor-to: ".top-doc .docblock .section-header:first-child"
 assert-css: (
     ".top-doc .docblock .section-header:first-child > a::before",
-    {"left": "-10px", "padding-right": "10px"}
+    {"left": "-10px", "padding-right": "10px"},
 )
 // We also check that the heading itself has a different indent.
 assert-css: (".top-doc .docblock .section-header:first-child", {"margin-left": "15px"})
@@ -42,7 +44,7 @@ assert-css: (".top-doc .docblock .section-header:first-child", {"margin-left": "
 move-cursor-to: ".top-doc .docblock .section-header:not(:first-child)"
 assert-css: (
     ".top-doc .docblock .section-header:not(:first-child) > a::before",
-    {"left": "-25px", "padding-right": "10px"}
+    {"left": "-25px", "padding-right": "10px"},
 )
 assert-css: (".top-doc .docblock .section-header:not(:first-child)", {"margin-left": "0px"})
 
@@ -51,14 +53,14 @@ assert-css: (".top-doc .docblock .section-header:not(:first-child)", {"margin-le
 move-cursor-to: "#title-for-struct-impl-doc"
 assert-css: (
     "#title-for-struct-impl-doc > a::before",
-    {"left": "-25px", "padding-right": "10px"}
+    {"left": "-25px", "padding-right": "10px"},
 )
 assert-css: ("#title-for-struct-impl-doc", {"margin-left": "0px"})
 // Now a method docs.
 move-cursor-to: "#title-for-struct-impl-item-doc"
 assert-css: (
     "#title-for-struct-impl-item-doc > a::before",
-    {"left": "-25px", "padding-right": "10px"}
+    {"left": "-25px", "padding-right": "10px"},
 )
 assert-css: ("#title-for-struct-impl-item-doc", {"margin-left": "0px"})
 
@@ -69,6 +71,6 @@ goto: file://|DOC_PATH|/test_docs/enum.WhoLetTheDogOut.html
 move-cursor-to: ".top-doc .docblock .section-header"
 assert-css: (
     ".top-doc .docblock .section-header > a::before",
-    {"left": "-25px", "padding-right": "10px"}
+    {"left": "-25px", "padding-right": "10px"},
 )
 assert-css: (".top-doc .docblock .section-header", {"margin-left": "0px"})

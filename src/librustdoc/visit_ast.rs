@@ -5,6 +5,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
+use rustc_hir::definitions::DefPathData;
 use rustc_hir::Node;
 use rustc_hir::CRATE_HIR_ID;
 use rustc_middle::middle::privacy::AccessLevel;
@@ -31,8 +32,8 @@ crate struct Module<'hir> {
     crate foreigns: Vec<(&'hir hir::ForeignItem<'hir>, Option<Symbol>)>,
 }
 
-impl Module<'hir> {
-    crate fn new(name: Symbol, id: hir::HirId, where_inner: Span) -> Module<'hir> {
+impl Module<'_> {
+    crate fn new(name: Symbol, id: hir::HirId, where_inner: Span) -> Self {
         Module { name, id, where_inner, mods: Vec::new(), items: Vec::new(), foreigns: Vec::new() }
     }
 
@@ -45,9 +46,8 @@ impl Module<'hir> {
 fn def_id_to_path(tcx: TyCtxt<'_>, did: DefId) -> Vec<String> {
     let crate_name = tcx.crate_name(did.krate).to_string();
     let relative = tcx.def_path(did).data.into_iter().filter_map(|elem| {
-        // extern blocks have an empty name
-        let s = elem.data.to_string();
-        if !s.is_empty() { Some(s) } else { None }
+        // Filter out extern blocks
+        (elem.data != DefPathData::ForeignMod).then(|| elem.data.to_string())
     });
     std::iter::once(crate_name).chain(relative).collect()
 }
@@ -112,7 +112,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         // is declared but also a reexport of itself producing two exports of the same
         // macro in the same module.
         let mut inserted = FxHashSet::default();
-        for export in self.cx.tcx.module_exports(CRATE_DEF_ID).unwrap_or(&[]) {
+        for export in self.cx.tcx.module_reexports(CRATE_DEF_ID).unwrap_or(&[]) {
             if let Res::Def(DefKind::Macro(_), def_id) = export.res {
                 if let Some(local_def_id) = def_id.as_local() {
                     if self.cx.tcx.has_attr(def_id, sym::macro_export) {

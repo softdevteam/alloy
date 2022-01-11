@@ -583,9 +583,12 @@ impl<'tcx> Cx<'tcx> {
                 ExprKind::ConstBlock { value }
             }
             // Now comes the rote stuff:
-            hir::ExprKind::Repeat(ref v, ref count) => {
-                let count_def_id = self.tcx.hir().local_def_id(count.hir_id);
-                let count = ty::Const::from_anon_const(self.tcx, count_def_id);
+            hir::ExprKind::Repeat(ref v, _) => {
+                let ty = self.typeck_results().expr_ty(expr);
+                let count = match ty.kind() {
+                    ty::Array(_, ct) => ct,
+                    _ => span_bug!(expr.span, "unexpected repeat expr ty: {:?}", ty),
+                };
 
                 ExprKind::Repeat { value: self.mirror_expr(v), count }
             }
@@ -605,9 +608,10 @@ impl<'tcx> Cx<'tcx> {
                 },
                 Err(err) => bug!("invalid loop id for continue: {}", err),
             },
-            hir::ExprKind::Let(ref pat, ref expr, _) => {
-                ExprKind::Let { expr: self.mirror_expr(expr), pat: self.pattern_from_hir(pat) }
-            }
+            hir::ExprKind::Let(let_expr) => ExprKind::Let {
+                expr: self.mirror_expr(let_expr.init),
+                pat: self.pattern_from_hir(let_expr.pat),
+            },
             hir::ExprKind::If(cond, then, else_opt) => ExprKind::If {
                 if_then_scope: region::Scope {
                     id: then.hir_id.local_id,

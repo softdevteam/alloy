@@ -351,7 +351,6 @@ pub enum Kind {
     Check,
     Clippy,
     Fix,
-    Format,
     Test,
     Bench,
     Dist,
@@ -399,7 +398,7 @@ impl<'a> Builder<'a> {
                 native::Lld,
                 native::CrtBeginEnd
             ),
-            Kind::Check | Kind::Clippy { .. } | Kind::Fix | Kind::Format => describe!(
+            Kind::Check | Kind::Clippy { .. } | Kind::Fix => describe!(
                 check::Std,
                 check::Rustc,
                 check::Rustdoc,
@@ -989,10 +988,20 @@ impl<'a> Builder<'a> {
             }
         };
 
-        if use_new_symbol_mangling {
-            rustflags.arg("-Zsymbol-mangling-version=v0");
+        // cfg(bootstrap) -- drop the compiler.stage == 0 branch.
+        if compiler.stage == 0 {
+            if use_new_symbol_mangling {
+                rustflags.arg("-Zsymbol-mangling-version=v0");
+            } else {
+                rustflags.arg("-Zsymbol-mangling-version=legacy");
+            }
         } else {
-            rustflags.arg("-Zsymbol-mangling-version=legacy");
+            if use_new_symbol_mangling {
+                rustflags.arg("-Csymbol-mangling-version=v0");
+            } else {
+                rustflags.arg("-Csymbol-mangling-version=legacy");
+                rustflags.arg("-Zunstable-options");
+            }
         }
 
         // FIXME: It might be better to use the same value for both `RUSTFLAGS` and `RUSTDOCFLAGS`,
@@ -1176,6 +1185,7 @@ impl<'a> Builder<'a> {
                 rustflags.arg("-Zosx-rpath-install-name");
                 Some("-Wl,-rpath,@loader_path/../lib")
             } else if !target.contains("windows") {
+                rustflags.arg("-Clink-args=-Wl,-z,origin");
                 Some("-Wl,-rpath,$ORIGIN/../lib")
             } else {
                 None
@@ -1578,11 +1588,11 @@ impl<'a> Builder<'a> {
                 panic!("{}", out);
             }
             if let Some(out) = self.cache.get(&step) {
-                self.verbose(&format!("{}c {:?}", "  ".repeat(stack.len()), step));
+                self.verbose_than(1, &format!("{}c {:?}", "  ".repeat(stack.len()), step));
 
                 return out;
             }
-            self.verbose(&format!("{}> {:?}", "  ".repeat(stack.len()), step));
+            self.verbose_than(1, &format!("{}> {:?}", "  ".repeat(stack.len()), step));
             stack.push(Box::new(step.clone()));
         }
 
@@ -1605,7 +1615,7 @@ impl<'a> Builder<'a> {
             let cur_step = stack.pop().expect("step stack empty");
             assert_eq!(cur_step.downcast_ref(), Some(&step));
         }
-        self.verbose(&format!("{}< {:?}", "  ".repeat(self.stack.borrow().len()), step));
+        self.verbose_than(1, &format!("{}< {:?}", "  ".repeat(self.stack.borrow().len()), step));
         self.cache.put(step, out.clone());
         out
     }

@@ -144,7 +144,7 @@ line. (You can swap `clippy::all` with the specific lint category you are target
 ## Configuration
 
 Some lints can be configured in a TOML file named `clippy.toml` or `.clippy.toml`. It contains a basic `variable =
-value` mapping eg.
+value` mapping e.g.
 
 ```toml
 avoid-breaking-exported-api = false
@@ -155,6 +155,10 @@ cognitive-complexity-threshold = 30
 See the [list of lints](https://rust-lang.github.io/rust-clippy/master/index.html) for more information about which
 lints can be configured and the meaning of the variables.
 
+Note that configuration changes will not apply for code that has already been compiled and cached under `./target/`;
+for example, adding a new string to `doc-valid-idents` may still result in Clippy flagging that string. To be sure that
+any configuration changes are applied, you may want to run `cargo clean` and re-compile your crate from scratch.
+
 To deactivate the “for further information visit *lint-link*” message you can
 define the `CLIPPY_DISABLE_DOCS_LINKS` environment variable.
 
@@ -162,7 +166,8 @@ define the `CLIPPY_DISABLE_DOCS_LINKS` environment variable.
 
 You can add options to your code to `allow`/`warn`/`deny` Clippy lints:
 
-*   the whole set of `Warn` lints using the `clippy` lint group (`#![deny(clippy::all)]`)
+*   the whole set of `Warn` lints using the `clippy` lint group (`#![deny(clippy::all)]`).
+    Note that `rustc` has additional [lint groups](https://doc.rust-lang.org/rustc/lints/groups.html).
 
 *   all lints using both the `clippy` and `clippy::pedantic` lint groups (`#![deny(clippy::all)]`,
     `#![deny(clippy::pedantic)]`). Note that `clippy::pedantic` contains some very aggressive
@@ -192,7 +197,7 @@ And to warn on `lint_name`, run
 cargo clippy -- -W clippy::lint_name
 ```
 
-This also works with lint groups. For example you
+This also works with lint groups. For example, you
 can run Clippy with warnings for all lints enabled:
 ```terminal
 cargo clippy -- -W clippy::pedantic
@@ -227,7 +232,7 @@ fn main() {
 You can also omit the patch version when specifying the MSRV, so `msrv = 1.30`
 is equivalent to `msrv = 1.30.0`.
 
-Note: `custom_inner_attributes` is an unstable feature so it has to be enabled explicitly.
+Note: `custom_inner_attributes` is an unstable feature, so it has to be enabled explicitly.
 
 Lints that recognize this configuration option can be found [here](https://rust-lang.github.io/rust-clippy/master/index.html#msrv)
 

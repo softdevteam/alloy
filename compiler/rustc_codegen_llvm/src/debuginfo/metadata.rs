@@ -18,6 +18,7 @@ use crate::llvm::debuginfo::{
 use crate::value::Value;
 
 use cstr::cstr;
+use rustc_codegen_ssa::debuginfo::type_names::cpp_like_debuginfo;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
@@ -155,7 +156,7 @@ pub struct TypeMap<'ll, 'tcx> {
     type_to_unique_id: FxHashMap<Ty<'tcx>, UniqueTypeId>,
 }
 
-impl TypeMap<'ll, 'tcx> {
+impl<'ll, 'tcx> TypeMap<'ll, 'tcx> {
     /// Adds a Ty to metadata mapping to the TypeMap. The method will fail if
     /// the mapping already exists.
     fn register_type_with_metadata(&mut self, type_: Ty<'tcx>, metadata: &'ll DIType) {
@@ -291,7 +292,7 @@ enum RecursiveTypeDescription<'ll, 'tcx> {
     FinalMetadata(&'ll DICompositeType),
 }
 
-fn create_and_register_recursive_type_forward_declaration(
+fn create_and_register_recursive_type_forward_declaration<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     unfinished_type: Ty<'tcx>,
     unique_type_id: UniqueTypeId,
@@ -313,7 +314,7 @@ fn create_and_register_recursive_type_forward_declaration(
     }
 }
 
-impl RecursiveTypeDescription<'ll, 'tcx> {
+impl<'ll, 'tcx> RecursiveTypeDescription<'ll, 'tcx> {
     /// Finishes up the description of the type in question (mostly by providing
     /// descriptions of the fields of the given type) and returns the final type
     /// metadata.
@@ -375,7 +376,7 @@ macro_rules! return_if_metadata_created_in_meantime {
     };
 }
 
-fn fixed_vec_metadata(
+fn fixed_vec_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     unique_type_id: UniqueTypeId,
     array_or_slice_type: Ty<'tcx>,
@@ -410,7 +411,7 @@ fn fixed_vec_metadata(
     MetadataCreationResult::new(metadata, false)
 }
 
-fn vec_slice_metadata(
+fn vec_slice_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     slice_ptr_type: Ty<'tcx>,
     element_type: Ty<'tcx>,
@@ -456,7 +457,7 @@ fn vec_slice_metadata(
     let metadata = composite_type_metadata(
         cx,
         slice_ptr_type,
-        &slice_type_name[..],
+        &slice_type_name,
         unique_type_id,
         member_descriptions,
         NO_SCOPE_METADATA,
@@ -466,7 +467,7 @@ fn vec_slice_metadata(
     MetadataCreationResult::new(metadata, false)
 }
 
-fn subroutine_type_metadata(
+fn subroutine_type_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     unique_type_id: UniqueTypeId,
     signature: ty::PolyFnSig<'tcx>,
@@ -507,7 +508,7 @@ fn subroutine_type_metadata(
 // `trait_type` should be the actual trait (e.g., `Trait`). Where the trait is part
 // of a DST struct, there is no `trait_object_type` and the results of this
 // function will be a little bit weird.
-fn trait_pointer_metadata(
+fn trait_pointer_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     trait_type: Ty<'tcx>,
     trait_object_type: Option<Ty<'tcx>>,
@@ -579,7 +580,7 @@ fn trait_pointer_metadata(
     composite_type_metadata(
         cx,
         trait_object_type.unwrap_or(trait_type),
-        &trait_type_name[..],
+        &trait_type_name,
         unique_type_id,
         member_descriptions,
         containing_scope,
@@ -588,7 +589,11 @@ fn trait_pointer_metadata(
     )
 }
 
-pub fn type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>, usage_site_span: Span) -> &'ll DIType {
+pub fn type_metadata<'ll, 'tcx>(
+    cx: &CodegenCx<'ll, 'tcx>,
+    t: Ty<'tcx>,
+    usage_site_span: Span,
+) -> &'ll DIType {
     // Get the unique type ID of this type.
     let unique_type_id = {
         let mut type_map = debug_context(cx).type_map.borrow_mut();
@@ -812,7 +817,7 @@ fn hex_encode(data: &[u8]) -> String {
     hex_string
 }
 
-pub fn file_metadata(cx: &CodegenCx<'ll, '_>, source_file: &SourceFile) -> &'ll DIFile {
+pub fn file_metadata<'ll>(cx: &CodegenCx<'ll, '_>, source_file: &SourceFile) -> &'ll DIFile {
     debug!("file_metadata: file_name: {:?}", source_file.name);
 
     let hash = Some(&source_file.src_hash);
@@ -833,11 +838,11 @@ pub fn file_metadata(cx: &CodegenCx<'ll, '_>, source_file: &SourceFile) -> &'ll 
     file_metadata_raw(cx, file_name, directory, hash)
 }
 
-pub fn unknown_file_metadata(cx: &CodegenCx<'ll, '_>) -> &'ll DIFile {
+pub fn unknown_file_metadata<'ll>(cx: &CodegenCx<'ll, '_>) -> &'ll DIFile {
     file_metadata_raw(cx, None, None, None)
 }
 
-fn file_metadata_raw(
+fn file_metadata_raw<'ll>(
     cx: &CodegenCx<'ll, '_>,
     file_name: Option<String>,
     directory: Option<String>,
@@ -924,21 +929,21 @@ impl MsvcBasicName for ty::FloatTy {
     }
 }
 
-fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
+fn basic_type_metadata<'ll, 'tcx>(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
     debug!("basic_type_metadata: {:?}", t);
 
     // When targeting MSVC, emit MSVC style type names for compatibility with
     // .natvis visualizers (and perhaps other existing native debuggers?)
-    let msvc_like_names = cx.tcx.sess.target.is_like_msvc;
+    let cpp_like_debuginfo = cpp_like_debuginfo(cx.tcx);
 
     let (name, encoding) = match t.kind() {
         ty::Never => ("!", DW_ATE_unsigned),
         ty::Tuple(elements) if elements.is_empty() => ("()", DW_ATE_unsigned),
         ty::Bool => ("bool", DW_ATE_boolean),
         ty::Char => ("char", DW_ATE_unsigned_char),
-        ty::Int(int_ty) if msvc_like_names => (int_ty.msvc_basic_name(), DW_ATE_signed),
-        ty::Uint(uint_ty) if msvc_like_names => (uint_ty.msvc_basic_name(), DW_ATE_unsigned),
-        ty::Float(float_ty) if msvc_like_names => (float_ty.msvc_basic_name(), DW_ATE_float),
+        ty::Int(int_ty) if cpp_like_debuginfo => (int_ty.msvc_basic_name(), DW_ATE_signed),
+        ty::Uint(uint_ty) if cpp_like_debuginfo => (uint_ty.msvc_basic_name(), DW_ATE_unsigned),
+        ty::Float(float_ty) if cpp_like_debuginfo => (float_ty.msvc_basic_name(), DW_ATE_float),
         ty::Int(int_ty) => (int_ty.name_str(), DW_ATE_signed),
         ty::Uint(uint_ty) => (uint_ty.name_str(), DW_ATE_unsigned),
         ty::Float(float_ty) => (float_ty.name_str(), DW_ATE_float),
@@ -955,7 +960,7 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
         )
     };
 
-    if !msvc_like_names {
+    if !cpp_like_debuginfo {
         return ty_metadata;
     }
 
@@ -981,7 +986,7 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
     typedef_metadata
 }
 
-fn foreign_type_metadata(
+fn foreign_type_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     t: Ty<'tcx>,
     unique_type_id: UniqueTypeId,
@@ -992,7 +997,7 @@ fn foreign_type_metadata(
     create_struct_stub(cx, t, &name, unique_type_id, NO_SCOPE_METADATA, DIFlags::FlagZero)
 }
 
-fn pointer_type_metadata(
+fn pointer_type_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     pointer_type: Ty<'tcx>,
     pointee_type_metadata: &'ll DIType,
@@ -1012,7 +1017,7 @@ fn pointer_type_metadata(
     }
 }
 
-fn param_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
+fn param_type_metadata<'ll, 'tcx>(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
     debug!("param_type_metadata: {:?}", t);
     let name = format!("{:?}", t);
     unsafe {
@@ -1026,24 +1031,35 @@ fn param_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
     }
 }
 
-pub fn compile_unit_metadata(
-    tcx: TyCtxt<'_>,
+pub fn compile_unit_metadata<'ll, 'tcx>(
+    tcx: TyCtxt<'tcx>,
     codegen_unit_name: &str,
-    debug_context: &CrateDebugContext<'ll, '_>,
+    debug_context: &CrateDebugContext<'ll, 'tcx>,
 ) -> &'ll DIDescriptor {
     let mut name_in_debuginfo = match tcx.sess.local_crate_source_file {
         Some(ref path) => path.clone(),
-        None => PathBuf::from(&*tcx.crate_name(LOCAL_CRATE).as_str()),
+        None => PathBuf::from(tcx.crate_name(LOCAL_CRATE).as_str()),
     };
 
-    // The OSX linker has an idiosyncrasy where it will ignore some debuginfo
-    // if multiple object files with the same `DW_AT_name` are linked together.
-    // As a workaround we generate unique names for each object file. Those do
-    // not correspond to an actual source file but that is harmless.
-    if tcx.sess.target.is_like_osx {
-        name_in_debuginfo.push("@");
-        name_in_debuginfo.push(codegen_unit_name);
-    }
+    // To avoid breaking split DWARF, we need to ensure that each codegen unit
+    // has a unique `DW_AT_name`. This is because there's a remote chance that
+    // different codegen units for the same module will have entirely
+    // identical DWARF entries for the purpose of the DWO ID, which would
+    // violate Appendix F ("Split Dwarf Object Files") of the DWARF 5
+    // specification. LLVM uses the algorithm specified in section 7.32 "Type
+    // Signature Computation" to compute the DWO ID, which does not include
+    // any fields that would distinguish compilation units. So we must embed
+    // the codegen unit name into the `DW_AT_name`. (Issue #88521.)
+    //
+    // Additionally, the OSX linker has an idiosyncrasy where it will ignore
+    // some debuginfo if multiple object files with the same `DW_AT_name` are
+    // linked together.
+    //
+    // As a workaround for these two issues, we generate unique names for each
+    // object file. Those do not correspond to an actual source file but that
+    // is harmless.
+    name_in_debuginfo.push("@");
+    name_in_debuginfo.push(codegen_unit_name);
 
     debug!("compile_unit_metadata: {:?}", name_in_debuginfo);
     let rustc_producer =
@@ -1055,11 +1071,15 @@ pub fn compile_unit_metadata(
     let work_dir = tcx.sess.opts.working_dir.to_string_lossy(FileNameDisplayPreference::Remapped);
     let flags = "\0";
     let output_filenames = tcx.output_filenames(());
-    let out_dir = &output_filenames.out_directory;
     let split_name = if tcx.sess.target_can_use_split_dwarf() {
         output_filenames
-            .split_dwarf_path(tcx.sess.split_debuginfo(), Some(codegen_unit_name))
-            .map(|f| out_dir.join(f))
+            .split_dwarf_path(
+                tcx.sess.split_debuginfo(),
+                tcx.sess.opts.debugging_opts.split_dwarf_kind,
+                Some(codegen_unit_name),
+            )
+            // We get a path relative to the working directory from split_dwarf_path
+            .map(|f| tcx.sess.source_map().path_mapping().map_prefix(f).0)
     } else {
         None
     }
@@ -1159,7 +1179,7 @@ pub fn compile_unit_metadata(
         return unit_metadata;
     };
 
-    fn path_to_mdstring(llcx: &'ll llvm::Context, path: &Path) -> &'ll Value {
+    fn path_to_mdstring<'ll>(llcx: &'ll llvm::Context, path: &Path) -> &'ll Value {
         let path_str = path_to_c_string(path);
         unsafe {
             llvm::LLVMMDStringInContext(
@@ -1176,7 +1196,7 @@ struct MetadataCreationResult<'ll> {
     already_stored_in_typemap: bool,
 }
 
-impl MetadataCreationResult<'ll> {
+impl<'ll> MetadataCreationResult<'ll> {
     fn new(metadata: &'ll DIType, already_stored_in_typemap: bool) -> Self {
         MetadataCreationResult { metadata, already_stored_in_typemap }
     }
@@ -1243,7 +1263,7 @@ enum MemberDescriptionFactory<'ll, 'tcx> {
     VariantMDF(VariantMemberDescriptionFactory<'tcx>),
 }
 
-impl MemberDescriptionFactory<'ll, 'tcx> {
+impl<'ll, 'tcx> MemberDescriptionFactory<'ll, 'tcx> {
     fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
         match *self {
             StructMDF(ref this) => this.create_member_descriptions(cx),
@@ -1267,7 +1287,10 @@ struct StructMemberDescriptionFactory<'tcx> {
 }
 
 impl<'tcx> StructMemberDescriptionFactory<'tcx> {
-    fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
+    fn create_member_descriptions<'ll>(
+        &self,
+        cx: &CodegenCx<'ll, 'tcx>,
+    ) -> Vec<MemberDescription<'ll>> {
         let layout = cx.layout_of(self.ty);
         self.variant
             .fields
@@ -1295,7 +1318,7 @@ impl<'tcx> StructMemberDescriptionFactory<'tcx> {
     }
 }
 
-fn prepare_struct_metadata(
+fn prepare_struct_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     struct_type: Ty<'tcx>,
     unique_type_id: UniqueTypeId,
@@ -1338,7 +1361,7 @@ fn prepare_struct_metadata(
 /// Here are some examples:
 ///  - `name__field1__field2` when the upvar is captured by value.
 ///  - `_ref__name__field` when the upvar is captured by reference.
-fn closure_saved_names_of_captured_variables(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<String> {
+fn closure_saved_names_of_captured_variables(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<String> {
     let body = tcx.optimized_mir(def_id);
 
     body.var_debug_info
@@ -1353,7 +1376,7 @@ fn closure_saved_names_of_captured_variables(tcx: TyCtxt<'tcx>, def_id: DefId) -
                 _ => return None,
             };
             let prefix = if is_ref { "_ref__" } else { "" };
-            Some(prefix.to_owned() + &var.name.as_str())
+            Some(prefix.to_owned() + var.name.as_str())
         })
         .collect::<Vec<_>>()
 }
@@ -1366,7 +1389,10 @@ struct TupleMemberDescriptionFactory<'tcx> {
 }
 
 impl<'tcx> TupleMemberDescriptionFactory<'tcx> {
-    fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
+    fn create_member_descriptions<'ll>(
+        &self,
+        cx: &CodegenCx<'ll, 'tcx>,
+    ) -> Vec<MemberDescription<'ll>> {
         let mut capture_names = match *self.ty.kind() {
             ty::Generator(def_id, ..) | ty::Closure(def_id, ..) => {
                 Some(closure_saved_names_of_captured_variables(cx.tcx, def_id).into_iter())
@@ -1399,7 +1425,7 @@ impl<'tcx> TupleMemberDescriptionFactory<'tcx> {
     }
 }
 
-fn prepare_tuple_metadata(
+fn prepare_tuple_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     tuple_type: Ty<'tcx>,
     component_types: &[Ty<'tcx>],
@@ -1443,7 +1469,10 @@ struct UnionMemberDescriptionFactory<'tcx> {
 }
 
 impl<'tcx> UnionMemberDescriptionFactory<'tcx> {
-    fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
+    fn create_member_descriptions<'ll>(
+        &self,
+        cx: &CodegenCx<'ll, 'tcx>,
+    ) -> Vec<MemberDescription<'ll>> {
         self.variant
             .fields
             .iter()
@@ -1465,7 +1494,7 @@ impl<'tcx> UnionMemberDescriptionFactory<'tcx> {
     }
 }
 
-fn prepare_union_metadata(
+fn prepare_union_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     union_type: Ty<'tcx>,
     unique_type_id: UniqueTypeId,
@@ -1497,16 +1526,9 @@ fn prepare_union_metadata(
 // Enums
 //=-----------------------------------------------------------------------------
 
-/// DWARF variant support is only available starting in LLVM 8, but
-/// on MSVC we have to use the fallback mode, because LLVM doesn't
-/// lower variant parts to PDB.
-fn use_enum_fallback(cx: &CodegenCx<'_, '_>) -> bool {
-    cx.sess().target.is_like_msvc
-}
-
 // FIXME(eddyb) maybe precompute this? Right now it's computed once
 // per generator monomorphization, but it doesn't depend on substs.
-fn generator_layout_and_saved_local_names(
+fn generator_layout_and_saved_local_names<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
 ) -> (&'tcx GeneratorLayout<'tcx>, IndexVec<mir::GeneratorSavedLocal, Option<Symbol>>) {
@@ -1554,7 +1576,7 @@ struct EnumMemberDescriptionFactory<'ll, 'tcx> {
     span: Span,
 }
 
-impl EnumMemberDescriptionFactory<'ll, 'tcx> {
+impl<'ll, 'tcx> EnumMemberDescriptionFactory<'ll, 'tcx> {
     fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
         let generator_variant_info_data = match *self.enum_type.kind() {
             ty::Generator(def_id, ..) => {
@@ -1578,7 +1600,10 @@ impl EnumMemberDescriptionFactory<'ll, 'tcx> {
             _ => bug!(),
         };
 
-        let fallback = use_enum_fallback(cx);
+        // While LLVM supports generating debuginfo for variant types (enums), it doesn't support
+        // lowering that debuginfo to CodeView records for msvc targets. So if we are targeting
+        // msvc, then we need to use a different, fallback encoding of the debuginfo.
+        let fallback = cpp_like_debuginfo(cx.tcx);
         // This will always find the metadata in the type map.
         let self_metadata = type_metadata(cx, self.enum_type, self.span);
 
@@ -1886,8 +1911,11 @@ struct VariantMemberDescriptionFactory<'tcx> {
     span: Span,
 }
 
-impl VariantMemberDescriptionFactory<'tcx> {
-    fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
+impl<'tcx> VariantMemberDescriptionFactory<'tcx> {
+    fn create_member_descriptions<'ll>(
+        &self,
+        cx: &CodegenCx<'ll, 'tcx>,
+    ) -> Vec<MemberDescription<'ll>> {
         self.args
             .iter()
             .enumerate()
@@ -1922,7 +1950,7 @@ enum VariantInfo<'a, 'tcx> {
 impl<'tcx> VariantInfo<'_, 'tcx> {
     fn map_struct_name<R>(&self, f: impl FnOnce(&str) -> R) -> R {
         match self {
-            VariantInfo::Adt(variant) => f(&variant.ident.as_str()),
+            VariantInfo::Adt(variant) => f(variant.ident.as_str()),
             VariantInfo::Generator { variant_index, .. } => {
                 f(&GeneratorSubsts::variant_name(*variant_index))
             }
@@ -1961,7 +1989,7 @@ impl<'tcx> VariantInfo<'_, 'tcx> {
         field_name.map(|name| name.to_string()).unwrap_or_else(|| format!("__{}", i))
     }
 
-    fn source_info(&self, cx: &CodegenCx<'ll, 'tcx>) -> Option<SourceInfo<'ll>> {
+    fn source_info<'ll>(&self, cx: &CodegenCx<'ll, 'tcx>) -> Option<SourceInfo<'ll>> {
         if let VariantInfo::Generator { def_id, variant_index, .. } = self {
             let span =
                 cx.tcx.generator_layout(*def_id).unwrap().variant_source_info[*variant_index].span;
@@ -1978,7 +2006,7 @@ impl<'tcx> VariantInfo<'_, 'tcx> {
 /// `MemberDescriptionFactory` for producing the descriptions of the
 /// fields of the variant. This is a rudimentary version of a full
 /// `RecursiveTypeDescription`.
-fn describe_enum_variant(
+fn describe_enum_variant<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     layout: layout::TyAndLayout<'tcx>,
     variant: VariantInfo<'_, 'tcx>,
@@ -2011,7 +2039,7 @@ fn describe_enum_variant(
     (metadata_stub, member_description_factory)
 }
 
-fn prepare_enum_metadata(
+fn prepare_enum_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     enum_type: Ty<'tcx>,
     enum_def_id: DefId,
@@ -2087,8 +2115,8 @@ fn prepare_enum_metadata(
                 let item_name;
                 let discriminant_name = match enum_type.kind() {
                     ty::Adt(..) => {
-                        item_name = tcx.item_name(enum_def_id).as_str();
-                        &*item_name
+                        item_name = tcx.item_name(enum_def_id);
+                        item_name.as_str()
                     }
                     ty::Generator(..) => enum_name.as_str(),
                     _ => bug!(),
@@ -2128,7 +2156,10 @@ fn prepare_enum_metadata(
         return FinalMetadata(discriminant_type_metadata(tag.value));
     }
 
-    if use_enum_fallback(cx) {
+    // While LLVM supports generating debuginfo for variant types (enums), it doesn't support
+    // lowering that debuginfo to CodeView records for msvc targets. So if we are targeting
+    // msvc, then we need to use a different encoding of the debuginfo.
+    if cpp_like_debuginfo(tcx) {
         let discriminant_type_metadata = match layout.variants {
             Variants::Single { .. } => None,
             Variants::Multiple { tag_encoding: TagEncoding::Niche { .. }, tag, .. }
@@ -2330,7 +2361,7 @@ fn prepare_enum_metadata(
 /// results in a LLVM struct.
 ///
 /// Examples of Rust types to use this are: structs, tuples, boxes, vecs, and enums.
-fn composite_type_metadata(
+fn composite_type_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     composite_type: Ty<'tcx>,
     composite_type_name: &str,
@@ -2364,7 +2395,7 @@ fn composite_type_metadata(
     composite_type_metadata
 }
 
-fn set_members_of_composite_type(
+fn set_members_of_composite_type<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     composite_type: Ty<'tcx>,
     composite_type_metadata: &'ll DICompositeType,
@@ -2398,7 +2429,7 @@ fn set_members_of_composite_type(
 
     let type_params = compute_type_parameters(cx, composite_type);
     unsafe {
-        let type_array = create_DIArray(DIB(cx), &member_metadata[..]);
+        let type_array = create_DIArray(DIB(cx), &member_metadata);
         llvm::LLVMRustDICompositeTypeReplaceArrays(
             DIB(cx),
             composite_type_metadata,
@@ -2409,7 +2440,7 @@ fn set_members_of_composite_type(
 }
 
 /// Computes the type parameters for a type, if any, for the given metadata.
-fn compute_type_parameters(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> &'ll DIArray {
+fn compute_type_parameters<'ll, 'tcx>(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> &'ll DIArray {
     if let ty::Adt(def, substs) = *ty.kind() {
         if substs.types().next().is_some() {
             let generics = cx.tcx.generics_of(def.did);
@@ -2421,7 +2452,7 @@ fn compute_type_parameters(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> &'ll DIAr
                             cx.tcx.normalize_erasing_regions(ParamEnv::reveal_all(), ty);
                         let actual_type_metadata =
                             type_metadata(cx, actual_type, rustc_span::DUMMY_SP);
-                        let name = &name.as_str();
+                        let name = name.as_str();
                         Some(unsafe {
                             Some(llvm::LLVMRustDIBuilderCreateTemplateTypeParameter(
                                 DIB(cx),
@@ -2437,7 +2468,7 @@ fn compute_type_parameters(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> &'ll DIAr
                 })
                 .collect();
 
-            return create_DIArray(DIB(cx), &template_params[..]);
+            return create_DIArray(DIB(cx), &template_params);
         }
     }
     return create_DIArray(DIB(cx), &[]);
@@ -2454,7 +2485,7 @@ fn compute_type_parameters(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> &'ll DIAr
 /// A convenience wrapper around `LLVMRustDIBuilderCreateStructType()`. Does not do
 /// any caching, does not add any fields to the struct. This can be done later
 /// with `set_members_of_composite_type()`.
-fn create_struct_stub(
+fn create_struct_stub<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     struct_type: Ty<'tcx>,
     struct_type_name: &str,
@@ -2495,7 +2526,7 @@ fn create_struct_stub(
     metadata_stub
 }
 
-fn create_union_stub(
+fn create_union_stub<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     union_type: Ty<'tcx>,
     union_type_name: &str,
@@ -2536,7 +2567,7 @@ fn create_union_stub(
 /// Creates debug information for the given global variable.
 ///
 /// Adds the created metadata nodes directly to the crate's IR.
-pub fn create_global_var_metadata(cx: &CodegenCx<'ll, '_>, def_id: DefId, global: &'ll Value) {
+pub fn create_global_var_metadata<'ll>(cx: &CodegenCx<'ll, '_>, def_id: DefId, global: &'ll Value) {
     if cx.dbg_cx.is_none() {
         return;
     }
@@ -2563,7 +2594,8 @@ pub fn create_global_var_metadata(cx: &CodegenCx<'ll, '_>, def_id: DefId, global
     let is_local_to_unit = is_node_local_to_unit(cx, def_id);
     let variable_type = Instance::mono(cx.tcx, def_id).ty(cx.tcx, ty::ParamEnv::reveal_all());
     let type_metadata = type_metadata(cx, variable_type, span);
-    let var_name = tcx.item_name(def_id).as_str();
+    let var_name = tcx.item_name(def_id);
+    let var_name = var_name.as_str();
     let linkage_name = mangled_name_of_instance(cx, Instance::mono(tcx, def_id)).name;
     // When empty, linkage_name field is omitted,
     // which is what we want for no_mangle statics
@@ -2591,7 +2623,7 @@ pub fn create_global_var_metadata(cx: &CodegenCx<'ll, '_>, def_id: DefId, global
 }
 
 /// Generates LLVM debuginfo for a vtable.
-fn vtable_type_metadata(
+fn vtable_type_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     ty: Ty<'tcx>,
     poly_trait_ref: Option<ty::PolyExistentialTraitRef<'tcx>>,
@@ -2623,7 +2655,7 @@ fn vtable_type_metadata(
 /// given type.
 ///
 /// Adds the created metadata nodes directly to the crate's IR.
-pub fn create_vtable_metadata(
+pub fn create_vtable_metadata<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     ty: Ty<'tcx>,
     poly_trait_ref: Option<ty::PolyExistentialTraitRef<'tcx>>,
@@ -2662,7 +2694,7 @@ pub fn create_vtable_metadata(
 }
 
 /// Creates an "extension" of an existing `DIScope` into another file.
-pub fn extend_scope_to_file(
+pub fn extend_scope_to_file<'ll>(
     cx: &CodegenCx<'ll, '_>,
     scope_metadata: &'ll DIScope,
     file: &SourceFile,

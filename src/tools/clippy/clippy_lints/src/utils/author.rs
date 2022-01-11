@@ -6,7 +6,7 @@ use rustc_ast::ast::{LitFloatType, LitKind};
 use rustc_ast::LitIntType;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
-use rustc_hir::{ExprKind, FnRetTy, HirId, Lit, PatKind, QPath, StmtKind, TyKind};
+use rustc_hir::{ArrayLen, ExprKind, FnRetTy, HirId, Lit, PatKind, QPath, StmtKind, TyKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::{Ident, Symbol};
@@ -260,7 +260,7 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
     }
 
     fn qpath(&self, qpath: &Binding<&QPath<'_>>) {
-        if let QPath::LangItem(lang_item, _) = *qpath.value {
+        if let QPath::LangItem(lang_item, ..) = *qpath.value {
             out!("if matches!({qpath}, QPath::LangItem(LangItem::{lang_item:?}, _));");
         } else {
             out!("if match_qpath({qpath}, &[{}]);", path_to_string(qpath.value));
@@ -373,11 +373,18 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
         }
 
         match expr.value.kind {
-            ExprKind::Let(pat, expr, _) => {
-                bind!(self, pat, expr);
-                kind!("Let({pat}, {expr}, _)");
-                self.pat(pat);
-                self.expr(expr);
+            ExprKind::Let(let_expr) => {
+                bind!(self, let_expr);
+                kind!("Let({let_expr})");
+                self.pat(field!(let_expr.pat));
+                // Does what ExprKind::Cast does, only adds a clause for the type
+                // if it's a path
+                if let Some(TyKind::Path(ref qpath)) = let_expr.value.ty.as_ref().map(|ty| &ty.kind) {
+                    bind!(self, qpath);
+                    out!("if let TyKind::Path(ref {qpath}) = {let_expr}.ty.kind;");
+                    self.qpath(qpath);
+                }
+                self.expr(field!(let_expr.init));
             },
             ExprKind::Box(inner) => {
                 bind!(self, inner);
@@ -560,7 +567,14 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 bind!(self, value, length);
                 kind!("Repeat({value}, {length})");
                 self.expr(value);
-                self.body(field!(length.body));
+                match length.value {
+                    ArrayLen::Infer(..) => out!("if let ArrayLen::Infer(..) = length;"),
+                    ArrayLen::Body(anon_const) => {
+                        bind!(self, anon_const);
+                        out!("if let ArrayLen::Body({anon_const}) = {length};");
+                        self.body(field!(anon_const.body));
+                    }
+                }
             },
             ExprKind::Err => kind!("Err"),
             ExprKind::DropTemps(expr) => {

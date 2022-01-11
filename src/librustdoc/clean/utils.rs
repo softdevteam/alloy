@@ -10,6 +10,7 @@ use crate::visit_lib::LibEmbargoVisitor;
 
 use rustc_ast as ast;
 use rustc_ast::tokenstream::TokenTree;
+use rustc_data_structures::thin_vec::ThinVec;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
@@ -72,7 +73,7 @@ crate fn krate(cx: &mut DocContext<'_>) -> Crate {
         }));
     }
 
-    Crate { module, primitives, external_traits: cx.external_traits.clone(), collapsed: false }
+    Crate { module, primitives, external_traits: cx.external_traits.clone() }
 }
 
 fn external_generic_args(
@@ -108,7 +109,7 @@ fn external_generic_args(
     if cx.tcx.fn_trait_kind_from_lang_item(did).is_some() {
         let inputs = match ty_kind.unwrap() {
             ty::Tuple(tys) => tys.iter().map(|t| t.expect_ty().clean(cx)).collect(),
-            _ => return GenericArgs::AngleBracketed { args, bindings },
+            _ => return GenericArgs::AngleBracketed { args, bindings: bindings.into() },
         };
         let output = None;
         // FIXME(#20299) return type comes from a projection now
@@ -118,7 +119,7 @@ fn external_generic_args(
         // };
         GenericArgs::Parenthesized { inputs, output }
     } else {
-        GenericArgs::AngleBracketed { args, bindings }
+        GenericArgs::AngleBracketed { args, bindings: bindings.into() }
     }
 }
 
@@ -141,17 +142,12 @@ pub(super) fn external_path(
 }
 
 /// Remove the generic arguments from a path.
-crate fn strip_path_generics(path: Path) -> Path {
-    let segments = path
-        .segments
-        .iter()
-        .map(|s| PathSegment {
-            name: s.name,
-            args: GenericArgs::AngleBracketed { args: vec![], bindings: vec![] },
-        })
-        .collect();
+crate fn strip_path_generics(mut path: Path) -> Path {
+    for ps in path.segments.iter_mut() {
+        ps.args = GenericArgs::AngleBracketed { args: vec![], bindings: ThinVec::new() }
+    }
 
-    Path { res: path.res, segments }
+    path
 }
 
 crate fn qpath_to_string(p: &hir::QPath<'_>) -> String {
@@ -167,7 +163,7 @@ crate fn qpath_to_string(p: &hir::QPath<'_>) -> String {
             s.push_str("::");
         }
         if seg.ident.name != kw::PathRoot {
-            s.push_str(&seg.ident.as_str());
+            s.push_str(seg.ident.as_str());
         }
     }
     s
@@ -183,6 +179,7 @@ crate fn build_deref_target_impls(cx: &mut DocContext<'_>, items: &[Item], ret: 
         };
 
         if let Some(prim) = target.primitive_type() {
+            let _prof_timer = cx.tcx.sess.prof.generic_activity("build_primitive_inherent_impls");
             for &did in prim.impls(tcx).iter().filter(|did| !did.is_local()) {
                 inline::build_impl(cx, None, did, None, ret);
             }
@@ -228,7 +225,7 @@ crate fn name_from_pat(p: &hir::Pat<'_>) -> Symbol {
     })
 }
 
-crate fn print_const(cx: &DocContext<'_>, n: &'tcx ty::Const<'_>) -> String {
+crate fn print_const(cx: &DocContext<'_>, n: &ty::Const<'_>) -> String {
     match n.val {
         ty::ConstKind::Unevaluated(ty::Unevaluated { def, substs_: _, promoted }) => {
             let mut s = if let Some(def) = def.as_local() {
@@ -299,7 +296,7 @@ fn format_integer_with_underscore_sep(num: &str) -> String {
         .collect()
 }
 
-fn print_const_with_custom_print_scalar(tcx: TyCtxt<'_>, ct: &'tcx ty::Const<'tcx>) -> String {
+fn print_const_with_custom_print_scalar(tcx: TyCtxt<'_>, ct: &ty::Const<'_>) -> String {
     // Use a slightly different format for integer types which always shows the actual value.
     // For all other types, fallback to the original `pretty_print_const`.
     match (ct.val, ct.ty.kind()) {
@@ -367,7 +364,7 @@ crate fn resolve_type(cx: &mut DocContext<'_>, path: Path) -> Type {
 }
 
 crate fn get_auto_trait_and_blanket_impls(
-    cx: &mut DocContext<'tcx>,
+    cx: &mut DocContext<'_>,
     item_def_id: DefId,
 ) -> impl Iterator<Item = Item> {
     let auto_impls = cx

@@ -1,3 +1,6 @@
+//! Collects trait impls for each item in the crate. For example, if a crate
+//! defines a struct that implements a trait, this pass will note that the
+//! struct implements that trait.
 use super::Pass;
 use crate::clean::*;
 use crate::core::DocContext;
@@ -31,26 +34,28 @@ crate fn collect_trait_impls(mut krate: Crate, cx: &mut DocContext<'_>) -> Crate
 
     let mut new_items = Vec::new();
 
-    for &cnum in cx.tcx.crates(()).iter() {
-        for &(did, _) in cx.tcx.all_trait_implementations(cnum).iter() {
-            inline::build_impl(cx, None, did, None, &mut new_items);
+    // External trait impls.
+    cx.with_all_trait_impls(|cx, all_trait_impls| {
+        let _prof_timer = cx.tcx.sess.prof.generic_activity("build_extern_trait_impls");
+        for &impl_def_id in all_trait_impls.iter().skip_while(|def_id| def_id.is_local()) {
+            inline::build_impl(cx, None, impl_def_id, None, &mut new_items);
         }
-    }
+    });
 
     // Also try to inline primitive impls from other crates.
-    for &def_id in PrimitiveType::all_impls(cx.tcx).values().flatten() {
-        if !def_id.is_local() {
-            cx.tcx.sess.prof.generic_activity("build_primitive_trait_impls").run(|| {
+    cx.tcx.sess.prof.generic_activity("build_primitive_trait_impls").run(|| {
+        for &def_id in PrimitiveType::all_impls(cx.tcx).values().flatten() {
+            if !def_id.is_local() {
                 inline::build_impl(cx, None, def_id, None, &mut new_items);
 
                 // FIXME(eddyb) is this `doc(hidden)` check needed?
-                if !cx.tcx.get_attrs(def_id).lists(sym::doc).has_word(sym::hidden) {
+                if !cx.tcx.is_doc_hidden(def_id) {
                     let impls = get_auto_trait_and_blanket_impls(cx, def_id);
                     new_items.extend(impls.filter(|i| cx.inlined.insert(i.def_id)));
                 }
-            });
+            }
         }
-    }
+    });
 
     let mut cleaner = BadImplStripper { prims, items: crate_items };
     let mut type_did_to_deref_target: FxHashMap<DefId, &Type> = FxHashMap::default();
@@ -123,36 +128,33 @@ crate fn collect_trait_impls(mut krate: Crate, cx: &mut DocContext<'_>) -> Crate
         }
     });
 
-    // `tcx.crates(())` doesn't include the local crate, and `tcx.all_trait_implementations`
-    // doesn't work with it anyway, so pull them from the HIR map instead
-    let mut extra_attrs = Vec::new();
-    for &trait_did in cx.tcx.all_traits(()).iter() {
-        for &impl_did in cx.tcx.hir().trait_impls(trait_did) {
-            let impl_did = impl_did.to_def_id();
-            cx.tcx.sess.prof.generic_activity("build_local_trait_impl").run(|| {
-                let mut parent = cx.tcx.parent(impl_did);
-                while let Some(did) = parent {
-                    extra_attrs.extend(
-                        cx.tcx
-                            .get_attrs(did)
-                            .iter()
-                            .filter(|attr| attr.has_name(sym::doc))
-                            .filter(|attr| {
-                                if let Some([attr]) = attr.meta_item_list().as_deref() {
-                                    attr.has_name(sym::cfg)
-                                } else {
-                                    false
-                                }
-                            })
-                            .cloned(),
-                    );
-                    parent = cx.tcx.parent(did);
-                }
-                inline::build_impl(cx, None, impl_did, Some(&extra_attrs), &mut new_items);
-                extra_attrs.clear();
-            });
+    // Local trait impls.
+    cx.with_all_trait_impls(|cx, all_trait_impls| {
+        let _prof_timer = cx.tcx.sess.prof.generic_activity("build_local_trait_impls");
+        let mut attr_buf = Vec::new();
+        for &impl_def_id in all_trait_impls.iter().take_while(|def_id| def_id.is_local()) {
+            let mut parent = cx.tcx.parent(impl_def_id);
+            while let Some(did) = parent {
+                attr_buf.extend(
+                    cx.tcx
+                        .get_attrs(did)
+                        .iter()
+                        .filter(|attr| attr.has_name(sym::doc))
+                        .filter(|attr| {
+                            if let Some([attr]) = attr.meta_item_list().as_deref() {
+                                attr.has_name(sym::cfg)
+                            } else {
+                                false
+                            }
+                        })
+                        .cloned(),
+                );
+                parent = cx.tcx.parent(did);
+            }
+            inline::build_impl(cx, None, impl_def_id, Some(&attr_buf), &mut new_items);
+            attr_buf.clear();
         }
-    }
+    });
 
     if let ModuleItem(Module { items, .. }) = &mut *krate.module.kind {
         items.extend(synth_impls);
@@ -173,13 +175,7 @@ impl<'a, 'tcx> DocVisitor for SyntheticImplCollector<'a, 'tcx> {
     fn visit_item(&mut self, i: &Item) {
         if i.is_struct() || i.is_enum() || i.is_union() {
             // FIXME(eddyb) is this `doc(hidden)` check needed?
-            if !self
-                .cx
-                .tcx
-                .get_attrs(i.def_id.expect_def_id())
-                .lists(sym::doc)
-                .has_word(sym::hidden)
-            {
+            if !self.cx.tcx.is_doc_hidden(i.def_id.expect_def_id()) {
                 self.impls
                     .extend(get_auto_trait_and_blanket_impls(self.cx, i.def_id.expect_def_id()));
             }

@@ -42,6 +42,7 @@ pub mod hygiene;
 use hygiene::Transparency;
 pub use hygiene::{DesugaringKind, ExpnKind, MacroKind};
 pub use hygiene::{ExpnData, ExpnHash, ExpnId, LocalExpnId, SyntaxContext};
+use rustc_data_structures::stable_hasher::HashingControls;
 pub mod def_id;
 use def_id::{CrateNum, DefId, DefPathHash, LocalDefId, LOCAL_CRATE};
 pub mod lev_distance;
@@ -424,7 +425,7 @@ impl FileName {
 /// `SpanData` is public because `Span` uses a thread-local interner and can't be
 /// sent to other threads, but some pieces of performance infra run in a separate thread.
 /// Using `Span` is generally preferred.
-#[derive(Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SpanData {
     pub lo: BytePos,
     pub hi: BytePos,
@@ -432,6 +433,36 @@ pub struct SpanData {
     /// code was created by a macro expansion.
     pub ctxt: SyntaxContext,
     pub parent: Option<LocalDefId>,
+}
+
+// Order spans by position in the file.
+impl Ord for SpanData {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let SpanData {
+            lo: s_lo,
+            hi: s_hi,
+            ctxt: s_ctxt,
+            // `LocalDefId` does not implement `Ord`.
+            // The other fields are enough to determine in-file order.
+            parent: _,
+        } = self;
+        let SpanData {
+            lo: o_lo,
+            hi: o_hi,
+            ctxt: o_ctxt,
+            // `LocalDefId` does not implement `Ord`.
+            // The other fields are enough to determine in-file order.
+            parent: _,
+        } = other;
+
+        (s_lo, s_hi, s_ctxt).cmp(&(o_lo, o_hi, o_ctxt))
+    }
+}
+
+impl PartialOrd for SpanData {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl SpanData {
@@ -1383,7 +1414,7 @@ impl<S: Encoder> Encodable<S> for SourceFile {
                     // Encode the first element.
                     lines[0].encode(s)?;
 
-                    let diff_iter = lines[..].array_windows().map(|&[fst, snd]| snd - fst);
+                    let diff_iter = lines.array_windows().map(|&[fst, snd]| snd - fst);
 
                     match bytes_per_diff {
                         1 => {
@@ -1506,7 +1537,7 @@ impl SourceFile {
         assert!(end_pos <= u32::MAX as usize);
 
         let (lines, multibyte_chars, non_narrow_chars) =
-            analyze_source_file::analyze_source_file(&src[..], start_pos);
+            analyze_source_file::analyze_source_file(&src, start_pos);
 
         SourceFile {
             name,
@@ -2027,11 +2058,15 @@ impl InnerSpan {
 pub trait HashStableContext {
     fn def_path_hash(&self, def_id: DefId) -> DefPathHash;
     fn hash_spans(&self) -> bool;
+    /// Accesses `sess.opts.debugging_opts.incremental_ignore_spans` since
+    /// we don't have easy access to a `Session`
+    fn debug_opts_incremental_ignore_spans(&self) -> bool;
     fn def_span(&self, def_id: LocalDefId) -> Span;
     fn span_data_to_lines_and_cols(
         &mut self,
         span: &SpanData,
     ) -> Option<(Lrc<SourceFile>, usize, BytePos, usize, BytePos)>;
+    fn hashing_controls(&self) -> HashingControls;
 }
 
 impl<CTX> HashStable<CTX> for Span

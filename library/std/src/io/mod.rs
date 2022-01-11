@@ -261,31 +261,24 @@ use crate::str;
 use crate::sys;
 use crate::sys_common::memchr;
 
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::buffered::IntoInnerError;
 #[stable(feature = "bufwriter_into_parts", since = "1.56.0")]
 pub use self::buffered::WriterPanicked;
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::buffered::{BufReader, BufWriter, LineWriter};
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::copy::copy;
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::cursor::Cursor;
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::error::{Error, ErrorKind, Result};
 #[unstable(feature = "internal_output_capture", issue = "none")]
 #[doc(no_inline, hidden)]
 pub use self::stdio::set_output_capture;
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::stdio::{stderr, stdin, stdout, Stderr, Stdin, Stdout};
+#[unstable(feature = "print_internals", issue = "none")]
+pub use self::stdio::{_eprint, _print};
 #[unstable(feature = "stdio_locked", issue = "86845")]
 pub use self::stdio::{stderr_locked, stdin_locked, stdout_locked};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use self::stdio::{StderrLock, StdinLock, StdoutLock};
-#[unstable(feature = "print_internals", issue = "none")]
-pub use self::stdio::{_eprint, _print};
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use self::util::{empty, repeat, sink, Empty, Repeat, Sink};
+pub use self::{
+    buffered::{BufReader, BufWriter, IntoInnerError, LineWriter},
+    copy::copy,
+    cursor::Cursor,
+    error::{Error, ErrorKind, Result},
+    stdio::{stderr, stdin, stdout, Stderr, StderrLock, Stdin, StdinLock, Stdout, StdoutLock},
+    util::{empty, repeat, sink, Empty, Repeat, Sink},
+};
 
 #[unstable(feature = "read_buf", issue = "78485")]
 pub use self::readbuf::ReadBuf;
@@ -362,7 +355,7 @@ pub(crate) fn default_read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>
     let start_len = buf.len();
     let start_cap = buf.capacity();
 
-    let mut initialized = 0; // Extra initalized bytes from previous loop iteration
+    let mut initialized = 0; // Extra initialized bytes from previous loop iteration
     loop {
         if buf.len() == buf.capacity() {
             buf.reserve(32); // buf is full, need more space
@@ -370,7 +363,7 @@ pub(crate) fn default_read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>
 
         let mut read_buf = ReadBuf::uninit(buf.spare_capacity_mut());
 
-        // SAFETY: These bytes were initalized but not filled in the previous loop
+        // SAFETY: These bytes were initialized but not filled in the previous loop
         unsafe {
             read_buf.assume_init(initialized);
         }

@@ -11,7 +11,6 @@
 #![feature(box_patterns)]
 #![feature(crate_visibility_modifier)]
 #![feature(if_let_guard)]
-#![feature(iter_zip)]
 #![feature(label_break_value)]
 #![feature(nll)]
 #![feature(min_specialization)]
@@ -42,7 +41,7 @@ pub mod tokenstream;
 pub mod visit;
 
 pub use self::ast::*;
-pub use self::ast_like::AstLike;
+pub use self::ast_like::{AstLike, AstLikeWrapper};
 
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 

@@ -6,7 +6,7 @@
 
 use crate::mir::interpret::{get_slice_bytes, ConstValue, GlobalAlloc, Scalar};
 use crate::ty::error::{ExpectedFound, TypeError};
-use crate::ty::subst::{GenericArg, GenericArgKind, SubstsRef};
+use crate::ty::subst::{GenericArg, GenericArgKind, Subst, SubstsRef};
 use crate::ty::{self, Ty, TyCtxt, TypeFoldable};
 use rustc_hir as ast;
 use rustc_hir::def_id::DefId;
@@ -59,8 +59,9 @@ pub trait TypeRelation<'tcx>: Sized {
             item_def_id, a_subst, b_subst
         );
 
-        let opt_variances = self.tcx().variances_of(item_def_id);
-        relate_substs(self, Some(opt_variances), a_subst, b_subst)
+        let tcx = self.tcx();
+        let opt_variances = tcx.variances_of(item_def_id);
+        relate_substs(self, Some((item_def_id, opt_variances)), a_subst, b_subst)
     }
 
     /// Switch variance for the purpose of relating `a` and `b`.
@@ -116,7 +117,7 @@ pub fn relate_type_and_mut<'tcx, R: TypeRelation<'tcx>>(
     relation: &mut R,
     a: ty::TypeAndMut<'tcx>,
     b: ty::TypeAndMut<'tcx>,
-    kind: ty::VarianceDiagMutKind,
+    base_ty: Ty<'tcx>,
 ) -> RelateResult<'tcx, ty::TypeAndMut<'tcx>> {
     debug!("{}.mts({:?}, {:?})", relation.tag(), a, b);
     if a.mutbl != b.mutbl {
@@ -125,24 +126,40 @@ pub fn relate_type_and_mut<'tcx, R: TypeRelation<'tcx>>(
         let mutbl = a.mutbl;
         let (variance, info) = match mutbl {
             ast::Mutability::Not => (ty::Covariant, ty::VarianceDiagInfo::None),
-            ast::Mutability::Mut => (ty::Invariant, ty::VarianceDiagInfo::Mut { kind, ty: a.ty }),
+            ast::Mutability::Mut => {
+                (ty::Invariant, ty::VarianceDiagInfo::Invariant { ty: base_ty, param_index: 0 })
+            }
         };
         let ty = relation.relate_with_variance(variance, info, a.ty, b.ty)?;
         Ok(ty::TypeAndMut { ty, mutbl })
     }
 }
 
-pub fn relate_substs<R: TypeRelation<'tcx>>(
+pub fn relate_substs<'tcx, R: TypeRelation<'tcx>>(
     relation: &mut R,
-    variances: Option<&[ty::Variance]>,
+    variances: Option<(DefId, &[ty::Variance])>,
     a_subst: SubstsRef<'tcx>,
     b_subst: SubstsRef<'tcx>,
 ) -> RelateResult<'tcx, SubstsRef<'tcx>> {
     let tcx = relation.tcx();
+    let mut cached_ty = None;
 
     let params = iter::zip(a_subst, b_subst).enumerate().map(|(i, (a, b))| {
-        let variance = variances.map_or(ty::Invariant, |v| v[i]);
-        relation.relate_with_variance(variance, ty::VarianceDiagInfo::default(), a, b)
+        let (variance, variance_info) = match variances {
+            Some((ty_def_id, variances)) => {
+                let variance = variances[i];
+                let variance_info = if variance == ty::Invariant {
+                    let ty =
+                        cached_ty.get_or_insert_with(|| tcx.type_of(ty_def_id).subst(tcx, a_subst));
+                    ty::VarianceDiagInfo::Invariant { ty, param_index: i.try_into().unwrap() }
+                } else {
+                    ty::VarianceDiagInfo::default()
+                };
+                (variance, variance_info)
+            }
+            None => (ty::Invariant, ty::VarianceDiagInfo::default()),
+        };
+        relation.relate_with_variance(variance, variance_info, a, b)
     });
 
     tcx.mk_substs(params)
@@ -215,19 +232,6 @@ impl<'tcx> Relate<'tcx> for ty::BoundConstness {
         } else {
             Ok(a)
         }
-    }
-}
-
-impl<'tcx, T: Relate<'tcx>> Relate<'tcx> for ty::ConstnessAnd<T> {
-    fn relate<R: TypeRelation<'tcx>>(
-        relation: &mut R,
-        a: ty::ConstnessAnd<T>,
-        b: ty::ConstnessAnd<T>,
-    ) -> RelateResult<'tcx, ty::ConstnessAnd<T>> {
-        Ok(ty::ConstnessAnd {
-            constness: relation.relate(a.constness, b.constness)?,
-            value: relation.relate(a.value, b.value)?,
-        })
     }
 }
 
@@ -366,7 +370,7 @@ impl<'tcx> Relate<'tcx> for Ty<'tcx> {
 /// The main "type relation" routine. Note that this does not handle
 /// inference artifacts, so you should filter those out before calling
 /// it.
-pub fn super_relate_tys<R: TypeRelation<'tcx>>(
+pub fn super_relate_tys<'tcx, R: TypeRelation<'tcx>>(
     relation: &mut R,
     a: Ty<'tcx>,
     b: Ty<'tcx>,
@@ -449,7 +453,7 @@ pub fn super_relate_tys<R: TypeRelation<'tcx>>(
         }
 
         (&ty::RawPtr(a_mt), &ty::RawPtr(b_mt)) => {
-            let mt = relate_type_and_mut(relation, a_mt, b_mt, ty::VarianceDiagMutKind::RawPtr)?;
+            let mt = relate_type_and_mut(relation, a_mt, b_mt, a)?;
             Ok(tcx.mk_ptr(mt))
         }
 
@@ -462,7 +466,7 @@ pub fn super_relate_tys<R: TypeRelation<'tcx>>(
             )?;
             let a_mt = ty::TypeAndMut { ty: a_ty, mutbl: a_mutbl };
             let b_mt = ty::TypeAndMut { ty: b_ty, mutbl: b_mutbl };
-            let mt = relate_type_and_mut(relation, a_mt, b_mt, ty::VarianceDiagMutKind::Ref)?;
+            let mt = relate_type_and_mut(relation, a_mt, b_mt, a)?;
             Ok(tcx.mk_ref(r, mt))
         }
 
@@ -539,7 +543,7 @@ pub fn super_relate_tys<R: TypeRelation<'tcx>>(
 /// The main "const relation" routine. Note that this does not handle
 /// inference artifacts, so you should filter those out before calling
 /// it.
-pub fn super_relate_consts<R: TypeRelation<'tcx>>(
+pub fn super_relate_consts<'tcx, R: TypeRelation<'tcx>>(
     relation: &mut R,
     a: &'tcx ty::Const<'tcx>,
     b: &'tcx ty::Const<'tcx>,
@@ -612,7 +616,7 @@ pub fn super_relate_consts<R: TypeRelation<'tcx>>(
     if is_match { Ok(a) } else { Err(TypeError::ConstMismatch(expected_found(relation, a, b))) }
 }
 
-fn check_const_value_eq<R: TypeRelation<'tcx>>(
+fn check_const_value_eq<'tcx, R: TypeRelation<'tcx>>(
     relation: &mut R,
     a_val: ConstValue<'tcx>,
     b_val: ConstValue<'tcx>,
@@ -845,17 +849,9 @@ impl<'tcx> Relate<'tcx> for ty::ProjectionPredicate<'tcx> {
 ///////////////////////////////////////////////////////////////////////////
 // Error handling
 
-pub fn expected_found<R, T>(relation: &mut R, a: T, b: T) -> ExpectedFound<T>
+pub fn expected_found<'tcx, R, T>(relation: &mut R, a: T, b: T) -> ExpectedFound<T>
 where
     R: TypeRelation<'tcx>,
 {
-    expected_found_bool(relation.a_is_expected(), a, b)
-}
-
-pub fn expected_found_bool<T>(a_is_expected: bool, a: T, b: T) -> ExpectedFound<T> {
-    if a_is_expected {
-        ExpectedFound { expected: a, found: b }
-    } else {
-        ExpectedFound { expected: b, found: a }
-    }
+    ExpectedFound::new(relation.a_is_expected(), a, b)
 }

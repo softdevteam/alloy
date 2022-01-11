@@ -167,7 +167,7 @@ pub trait Machine<'mir, 'tcx>: Sized {
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(&PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
         unwind: StackPopUnwind,
-    ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>>;
+    ) -> InterpResult<'tcx, Option<(&'mir mir::Body<'tcx>, ty::Instance<'tcx>)>>;
 
     /// Execute `fn_val`.  It is the hook's responsibility to advance the instruction
     /// pointer as appropriate.
@@ -211,12 +211,6 @@ pub trait Machine<'mir, 'tcx>: Sized {
         left: &ImmTy<'tcx, Self::PointerTag>,
         right: &ImmTy<'tcx, Self::PointerTag>,
     ) -> InterpResult<'tcx, (Scalar<Self::PointerTag>, bool, Ty<'tcx>)>;
-
-    /// Heap allocations via the `box` keyword.
-    fn box_alloc(
-        ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        dest: &PlaceTy<'tcx, Self::PointerTag>,
-    ) -> InterpResult<'tcx>;
 
     /// Called to read the specified `local` from the `frame`.
     /// Since reading a ZST is not actually accessing memory or locals, this is never invoked
@@ -374,12 +368,12 @@ pub trait Machine<'mir, 'tcx>: Sized {
     ) -> InterpResult<'tcx, Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>>;
 
     /// Borrow the current thread's stack.
-    fn stack(
+    fn stack<'a>(
         ecx: &'a InterpCx<'mir, 'tcx, Self>,
     ) -> &'a [Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>];
 
     /// Mutably borrow the current thread's stack.
-    fn stack_mut(
+    fn stack_mut<'a>(
         ecx: &'a mut InterpCx<'mir, 'tcx, Self>,
     ) -> &'a mut Vec<Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>>;
 
