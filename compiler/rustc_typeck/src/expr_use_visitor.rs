@@ -229,8 +229,8 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                 }
             }
 
-            hir::ExprKind::Let(pat, ref expr, _) => {
-                self.walk_local(expr, pat, |t| t.borrow_expr(expr, ty::ImmBorrow));
+            hir::ExprKind::Let(hir::Let { pat, init, .. }) => {
+                self.walk_local(init, pat, |t| t.borrow_expr(init, ty::ImmBorrow));
             }
 
             hir::ExprKind::Match(ref discr, arms, _) => {
@@ -482,7 +482,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
         }
     }
 
-    fn walk_struct_expr(
+    fn walk_struct_expr<'hir>(
         &mut self,
         fields: &[hir::ExprField<'_>],
         opt_with: &Option<&'hir hir::Expr<'_>>,
@@ -705,7 +705,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
     /// - When reporting the Place back to the Delegate, ensure that the UpvarId uses the enclosing
     /// closure as the DefId.
     fn walk_captures(&mut self, closure_expr: &hir::Expr<'_>) {
-        fn upvar_is_local_variable(
+        fn upvar_is_local_variable<'tcx>(
             upvars: Option<&'tcx FxIndexMap<hir::HirId, hir::Upvar>>,
             upvar_id: &hir::HirId,
             body_owner_is_closure: bool,
@@ -715,13 +715,14 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
 
         debug!("walk_captures({:?})", closure_expr);
 
-        let closure_def_id = self.tcx().hir().local_def_id(closure_expr.hir_id).to_def_id();
-        let upvars = self.tcx().upvars_mentioned(self.body_owner);
+        let tcx = self.tcx();
+        let closure_def_id = tcx.hir().local_def_id(closure_expr.hir_id).to_def_id();
+        let upvars = tcx.upvars_mentioned(self.body_owner);
 
         // For purposes of this function, generator and closures are equivalent.
         let body_owner_is_closure = matches!(
-            self.tcx().type_of(self.body_owner.to_def_id()).kind(),
-            ty::Closure(..) | ty::Generator(..)
+            tcx.hir().body_owner_kind(tcx.hir().local_def_id_to_hir_id(self.body_owner)),
+            hir::BodyOwnerKind::Closure,
         );
 
         // If we have a nested closure, we want to include the fake reads present in the nested closure.
@@ -846,7 +847,7 @@ fn delegate_consume<'a, 'tcx>(
     }
 }
 
-fn is_multivariant_adt(ty: Ty<'tcx>) -> bool {
+fn is_multivariant_adt(ty: Ty<'_>) -> bool {
     if let ty::Adt(def, _) = ty.kind() {
         // Note that if a non-exhaustive SingleVariant is defined in another crate, we need
         // to assume that more cases will be added to the variant in the future. This mean

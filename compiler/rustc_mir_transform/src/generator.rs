@@ -243,7 +243,7 @@ impl<'tcx> TransformVisitor<'tcx> {
         val: Operand<'tcx>,
         source_info: SourceInfo,
     ) -> impl Iterator<Item = Statement<'tcx>> {
-        let kind = AggregateKind::Adt(self.state_adt_ref, idx, self.state_substs, None, None);
+        let kind = AggregateKind::Adt(self.state_adt_ref.did, idx, self.state_substs, None, None);
         assert_eq!(self.state_adt_ref.variants[idx].fields.len(), 1);
         let ty = self
             .tcx
@@ -726,9 +726,13 @@ fn sanitize_witness<'tcx>(
     saved_locals: &GeneratorSavedLocals,
 ) {
     let did = body.source.def_id();
-    let allowed_upvars = tcx.erase_regions(upvars);
+    let param_env = tcx.param_env(did);
+
+    let allowed_upvars = tcx.normalize_erasing_regions(param_env, upvars);
     let allowed = match witness.kind() {
-        &ty::GeneratorWitness(s) => tcx.erase_late_bound_regions(s),
+        &ty::GeneratorWitness(interior_tys) => {
+            tcx.normalize_erasing_late_bound_regions(param_env, interior_tys)
+        }
         _ => {
             tcx.sess.delay_span_bug(
                 body.span,
@@ -737,8 +741,6 @@ fn sanitize_witness<'tcx>(
             return;
         }
     };
-
-    let param_env = tcx.param_env(did);
 
     for (local, decl) in body.local_decls.iter_enumerated() {
         // Ignore locals which are internal or not saved between yields.

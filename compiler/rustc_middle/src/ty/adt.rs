@@ -4,6 +4,7 @@ use crate::ty::util::{Discr, IntTypeExt};
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::stable_hasher::HashingControls;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
@@ -11,7 +12,6 @@ use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_query_system::ich::StableHashingContext;
-use rustc_serialize::{self, Encodable, Encoder};
 use rustc_session::DataTypeKind;
 use rustc_span::symbol::sym;
 use rustc_target::abi::VariantIdx;
@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::{ptr, str};
+use std::str;
 
 use super::{
     Destructor, FieldDef, GenericPredicates, ReprOptions, Ty, TyCtxt, VariantDef, VariantDiscr,
@@ -30,7 +30,7 @@ use super::{
 pub struct AdtSizedConstraint<'tcx>(pub &'tcx [Ty<'tcx>]);
 
 bitflags! {
-    #[derive(HashStable)]
+    #[derive(HashStable, TyEncodable, TyDecodable)]
     pub struct AdtFlags: u32 {
         const NO_ADT_FLAGS        = 0;
         /// Indicates whether the ADT is an enum.
@@ -88,6 +88,7 @@ bitflags! {
 ///
 /// where `x` here represents the `DefId` of `S.x`. Then, the `DefId`
 /// can be used with [`TyCtxt::type_of()`] to get the type of the field.
+#[derive(TyEncodable, TyDecodable)]
 pub struct AdtDef {
     /// The `DefId` of the struct, enum or union item.
     pub did: DefId,
@@ -113,38 +114,36 @@ impl Ord for AdtDef {
     }
 }
 
+/// There should be only one AdtDef for each `did`, therefore
+/// it is fine to implement `PartialEq` only based on `did`.
 impl PartialEq for AdtDef {
-    // `AdtDef`s are always interned, and this is part of `TyS` equality.
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        ptr::eq(self, other)
+        self.did == other.did
     }
 }
 
 impl Eq for AdtDef {}
 
+/// There should be only one AdtDef for each `did`, therefore
+/// it is fine to implement `Hash` only based on `did`.
 impl Hash for AdtDef {
     #[inline]
     fn hash<H: Hasher>(&self, s: &mut H) {
-        (self as *const AdtDef).hash(s)
-    }
-}
-
-impl<S: Encoder> Encodable<S> for AdtDef {
-    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
-        self.did.encode(s)
+        self.did.hash(s)
     }
 }
 
 impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         thread_local! {
-            static CACHE: RefCell<FxHashMap<usize, Fingerprint>> = Default::default();
+            static CACHE: RefCell<FxHashMap<(usize, HashingControls), Fingerprint>> = Default::default();
         }
 
         let hash: Fingerprint = CACHE.with(|cache| {
             let addr = self as *const AdtDef as usize;
-            *cache.borrow_mut().entry(addr).or_insert_with(|| {
+            let hashing_controls = hcx.hashing_controls();
+            *cache.borrow_mut().entry((addr, hashing_controls)).or_insert_with(|| {
                 let ty::AdtDef { did, ref variants, ref flags, ref repr } = *self;
 
                 let mut hasher = StableHasher::new();
@@ -161,7 +160,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, TyEncodable, TyDecodable)]
 pub enum AdtKind {
     Struct,
     Union,

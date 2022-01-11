@@ -219,7 +219,7 @@ impl<'tcx> AutoTraitFinder<'tcx> {
     }
 }
 
-impl AutoTraitFinder<'tcx> {
+impl<'tcx> AutoTraitFinder<'tcx> {
     /// The core logic responsible for computing the bounds for our synthesized impl.
     ///
     /// To calculate the bounds, we call `SelectionContext.select` in a loop. Like
@@ -370,12 +370,17 @@ impl AutoTraitFinder<'tcx> {
                 computed_preds.clone().chain(user_computed_preds.iter().cloned()),
             )
             .map(|o| o.predicate);
-            new_env = ty::ParamEnv::new(tcx.mk_predicates(normalized_preds), param_env.reveal());
+            new_env = ty::ParamEnv::new(
+                tcx.mk_predicates(normalized_preds),
+                param_env.reveal(),
+                param_env.constness(),
+            );
         }
 
         let final_user_env = ty::ParamEnv::new(
             tcx.mk_predicates(user_computed_preds.into_iter()),
             user_env.reveal(),
+            user_env.constness(),
         );
         debug!(
             "evaluate_nested_obligations(ty={:?}, trait_did={:?}): succeeded with '{:?}' \
@@ -834,7 +839,17 @@ impl AutoTraitFinder<'tcx> {
                         _ => return false,
                     }
                 }
-                _ => panic!("Unexpected predicate {:?} {:?}", ty, predicate),
+                // There's not really much we can do with these predicates -
+                // we start out with a `ParamEnv` with no inference variables,
+                // and these don't correspond to adding any new bounds to
+                // the `ParamEnv`.
+                ty::PredicateKind::WellFormed(..)
+                | ty::PredicateKind::ObjectSafe(..)
+                | ty::PredicateKind::ClosureKind(..)
+                | ty::PredicateKind::Subtype(..)
+                | ty::PredicateKind::ConstEvaluatable(..)
+                | ty::PredicateKind::Coerce(..)
+                | ty::PredicateKind::TypeWellFormedFromEnv(..) => {}
             };
         }
         true

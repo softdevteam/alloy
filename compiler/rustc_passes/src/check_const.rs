@@ -78,7 +78,7 @@ impl<'tcx> CheckConstTraitVisitor<'tcx> {
 impl<'tcx> hir::itemlikevisit::ItemLikeVisitor<'tcx> for CheckConstTraitVisitor<'tcx> {
     /// check for const trait impls, and errors if the impl uses provided/default functions
     /// of the trait being implemented; as those provided functions can be non-const.
-    fn visit_item(&mut self, item: &'hir hir::Item<'hir>) {
+    fn visit_item<'hir>(&mut self, item: &'hir hir::Item<'hir>) {
         let _: Option<_> = try {
             if let hir::ItemKind::Impl(ref imp) = item.kind {
                 if let hir::Constness::Const = imp.constness {
@@ -93,26 +93,29 @@ impl<'tcx> hir::itemlikevisit::ItemLikeVisitor<'tcx> for CheckConstTraitVisitor<
                     for trait_item in self.tcx.associated_items(trait_def_id).in_definition_order()
                     {
                         if let ty::AssocItem {
-                            kind: ty::AssocKind::Fn, ident, defaultness, ..
-                        } = trait_item
+                            kind: ty::AssocKind::Fn,
+                            defaultness,
+                            def_id: trait_item_id,
+                            ..
+                        } = *trait_item
                         {
                             // we can ignore functions that do not have default bodies:
                             // if those are unimplemented it will be catched by typeck.
                             if !defaultness.has_value()
                                 || self
                                     .tcx
-                                    .has_attr(trait_item.def_id, sym::default_method_body_is_const)
+                                    .has_attr(trait_item_id, sym::default_method_body_is_const)
                             {
                                 continue;
                             }
 
                             let is_implemented = ancestors
-                                .leaf_def(self.tcx, trait_item.ident, trait_item.kind)
+                                .leaf_def(self.tcx, trait_item_id)
                                 .map(|node_item| !node_item.defining_node.is_from_trait())
                                 .unwrap_or(false);
 
                             if !is_implemented {
-                                to_implement.push(ident.to_string());
+                                to_implement.push(self.tcx.item_name(trait_item_id).to_string());
                             }
                         }
                     }
@@ -134,11 +137,11 @@ impl<'tcx> hir::itemlikevisit::ItemLikeVisitor<'tcx> for CheckConstTraitVisitor<
         };
     }
 
-    fn visit_trait_item(&mut self, _: &'hir hir::TraitItem<'hir>) {}
+    fn visit_trait_item<'hir>(&mut self, _: &'hir hir::TraitItem<'hir>) {}
 
-    fn visit_impl_item(&mut self, _: &'hir hir::ImplItem<'hir>) {}
+    fn visit_impl_item<'hir>(&mut self, _: &'hir hir::ImplItem<'hir>) {}
 
-    fn visit_foreign_item(&mut self, _: &'hir hir::ForeignItem<'hir>) {}
+    fn visit_foreign_item<'hir>(&mut self, _: &'hir hir::ForeignItem<'hir>) {}
 }
 
 #[derive(Copy, Clone)]

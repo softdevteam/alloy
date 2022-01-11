@@ -20,7 +20,6 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
-extern crate rustc_symbol_mangling;
 extern crate rustc_target;
 
 // This prevents duplicating functions and statics that are already part of the host rustc process.
@@ -91,12 +90,10 @@ impl CodegenBackend for GccCodegenBackend {
         let target_cpu = target_cpu(tcx.sess);
         let res = codegen_crate(self.clone(), tcx, target_cpu.to_string(), metadata, need_metadata_module);
 
-        rustc_symbol_mangling::test::report_symbol_names(tcx);
-
         Box::new(res)
     }
 
-    fn join_codegen(&self, ongoing_codegen: Box<dyn Any>, sess: &Session) -> Result<(CodegenResults, FxHashMap<WorkProductId, WorkProduct>), ErrorReported> {
+    fn join_codegen(&self, ongoing_codegen: Box<dyn Any>, sess: &Session, _outputs: &OutputFilenames) -> Result<(CodegenResults, FxHashMap<WorkProductId, WorkProduct>), ErrorReported> {
         let (codegen_results, work_products) = ongoing_codegen
             .downcast::<rustc_codegen_ssa::back::write::OngoingCodegen<GccCodegenBackend>>()
             .expect("Expected GccCodegenBackend's OngoingCodegen, found Box<Any>")

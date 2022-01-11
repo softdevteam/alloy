@@ -8,7 +8,6 @@ use crate::traits::*;
 use crate::MemFlags;
 
 use rustc_apfloat::{ieee, Float, Round, Status};
-use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir;
 use rustc_middle::ty::cast::{CastTy, IntTy};
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf};
@@ -112,9 +111,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
             mir::Rvalue::Aggregate(ref kind, ref operands) => {
                 let (dest, active_field_index) = match **kind {
-                    mir::AggregateKind::Adt(adt_def, variant_index, _, _, active_field_index) => {
+                    mir::AggregateKind::Adt(adt_did, variant_index, _, _, active_field_index) => {
                         dest.codegen_set_discr(&mut bx, variant_index);
-                        if adt_def.is_enum() {
+                        if bx.tcx().adt_def(adt_did).is_enum() {
                             (dest.project_downcast(&mut bx, variant_index), active_field_index)
                         } else {
                             (dest, active_field_index)
@@ -485,42 +484,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     },
                 )
             }
-
-            mir::Rvalue::NullaryOp(mir::NullOp::Box, content_ty) => {
-                let content_ty = self.monomorphize(content_ty);
-                let content_layout = bx.cx().layout_of(content_ty);
-                let llsize = bx.cx().const_usize(content_layout.size.bytes());
-                let llalign = bx.cx().const_usize(content_layout.align.abi.bytes());
-                let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
-                let llty_ptr = bx.cx().backend_type(box_layout);
-
-                // Allocate space:
-                let mut alloc_kind = LangItem::ExchangeMalloc;
-                if bx.tcx().sess.opts.cg.gc_precise_marking {
-                    alloc_kind = if content_ty
-                        .is_no_trace(bx.tcx().at(rustc_span::DUMMY_SP), ty::ParamEnv::reveal_all())
-                    {
-                        LangItem::ExchangeMallocUntraceable
-                    } else {
-                        LangItem::ExchangeMallocConservative
-                    };
-                }
-                let def_id = match bx.tcx().lang_items().require(alloc_kind) {
-                    Ok(id) => id,
-                    Err(s) => {
-                        bx.cx().sess().fatal(&format!("allocation of `{}` {}", box_layout.ty, s));
-                    }
-                };
-                let instance = ty::Instance::mono(bx.tcx(), def_id);
-                let r = bx.cx().get_fn_addr(instance);
-                let ty = bx.type_func(&[bx.type_isize(), bx.type_isize()], bx.type_i8p());
-                let call = bx.call(ty, r, &[llsize, llalign], None);
-                let val = bx.pointercast(call, llty_ptr);
-
-                let operand = OperandRef { val: OperandValue::Immediate(val), layout: box_layout };
-                (bx, operand)
-            }
-
             mir::Rvalue::NullaryOp(null_op, ty) => {
                 let ty = self.monomorphize(ty);
                 assert!(bx.cx().type_is_sized(ty));
@@ -528,7 +491,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let val = match null_op {
                     mir::NullOp::SizeOf => layout.size.bytes(),
                     mir::NullOp::AlignOf => layout.align.abi.bytes(),
-                    mir::NullOp::Box => unreachable!(),
                 };
                 let val = bx.cx().const_usize(val);
                 let tcx = self.cx.tcx();

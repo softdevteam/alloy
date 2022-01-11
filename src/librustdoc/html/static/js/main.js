@@ -289,8 +289,8 @@ function hideThemeButtonState() {
             var params = searchState.getQueryStringParams();
             if (params.search !== undefined) {
                 var search = searchState.outputElement();
-                search.innerHTML = "<h3 style=\"text-align: center;\">" +
-                   searchState.loadingText + "</h3>";
+                search.innerHTML = "<h3 class=\"search-loading\">" +
+                    searchState.loadingText + "</h3>";
                 searchState.showResults(search);
                 loadSearch();
             }
@@ -420,6 +420,13 @@ function hideThemeButtonState() {
         return document.getElementById("help");
     }
 
+    /**
+     * Show the help popup.
+     *
+     * @param {boolean} display    - Whether to show or hide the popup
+     * @param {Event}   ev         - The event that triggered this call
+     * @param {Element} [help]     - The help element if it already exists
+     */
     function displayHelp(display, ev, help) {
         if (display) {
             help = help ? help : getHelpElement(true);

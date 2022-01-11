@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::thin_vec::ThinVec;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
+use rustc_hir::definitions::DefPathData;
 use rustc_hir::Mutability;
 use rustc_metadata::creader::{CStore, LoadedMacro};
 use rustc_middle::ty::{self, TyCtxt};
@@ -16,7 +18,7 @@ use rustc_span::symbol::{kw, sym, Symbol};
 
 use crate::clean::{
     self, clean_fn_decl_from_did_and_sig, clean_ty_generics, utils, Attributes, AttributesExt,
-    Clean, ImplKind, ItemId, NestedAttributesExt, Type, Visibility,
+    Clean, ImplKind, ItemId, Type, Visibility,
 };
 use crate::core::DocContext;
 use crate::formats::item_type::ItemType;
@@ -165,9 +167,8 @@ crate fn record_extern_fqn(cx: &mut DocContext<'_>, did: DefId, kind: ItemType) 
     let crate_name = cx.tcx.crate_name(did.krate).to_string();
 
     let relative = cx.tcx.def_path(did).data.into_iter().filter_map(|elem| {
-        // extern blocks have an empty name
-        let s = elem.data.to_string();
-        if !s.is_empty() { Some(s) } else { None }
+        // Filter out extern blocks
+        (elem.data != DefPathData::ForeignMod).then(|| elem.data.to_string())
     });
     let fqn = if let ItemType::Macro = kind {
         // Check to see if it is a macro 2.0 or built-in macro
@@ -290,6 +291,7 @@ crate fn build_impls(
     attrs: Option<Attrs<'_>>,
     ret: &mut Vec<clean::Item>,
 ) {
+    let _prof_timer = cx.tcx.sess.prof.generic_activity("build_inherent_impls");
     let tcx = cx.tcx;
 
     // for each implementation of an item represented by `did`, build the clean::Item for that impl
@@ -337,7 +339,7 @@ crate fn build_impl(
         return;
     }
 
-    let _prof_timer = cx.tcx.sess.prof.generic_activity("build_extern_trait_impl");
+    let _prof_timer = cx.tcx.sess.prof.generic_activity("build_impl");
 
     let tcx = cx.tcx;
     let associated_trait = tcx.impl_trait_ref(did);
@@ -421,7 +423,7 @@ crate fn build_impl(
                                 associated_trait.def_id,
                             )
                             .unwrap(); // SAFETY: For all impl items there exists trait item that has the same name.
-                        !tcx.get_attrs(trait_item.def_id).lists(sym::doc).has_word(sym::hidden)
+                        !tcx.is_doc_hidden(trait_item.def_id)
                     } else {
                         true
                     }
@@ -456,7 +458,7 @@ crate fn build_impl(
     let mut stack: Vec<&Type> = vec![&for_];
 
     if let Some(did) = trait_.as_ref().map(|t| t.def_id()) {
-        if tcx.get_attrs(did).lists(sym::doc).has_word(sym::hidden) {
+        if tcx.is_doc_hidden(did) {
             return;
         }
     }
@@ -466,7 +468,7 @@ crate fn build_impl(
 
     while let Some(ty) = stack.pop() {
         if let Some(did) = ty.def_id(&cx.cache) {
-            if tcx.get_attrs(did).lists(sym::doc).has_word(sym::hidden) {
+            if tcx.is_doc_hidden(did) {
                 return;
             }
         }
@@ -515,7 +517,7 @@ fn build_module(
     // If we're re-exporting a re-export it may actually re-export something in
     // two namespaces, so the target may be listed twice. Make sure we only
     // visit each node at most once.
-    for &item in cx.tcx.item_children(did).iter() {
+    for &item in cx.tcx.module_children(did).iter() {
         if item.vis.is_public() {
             let res = item.res.expect_non_local();
             if let Some(def_id) = res.mod_def_id() {
@@ -540,7 +542,7 @@ fn build_module(
                                     name: prim_ty.as_sym(),
                                     args: clean::GenericArgs::AngleBracketed {
                                         args: Vec::new(),
-                                        bindings: Vec::new(),
+                                        bindings: ThinVec::new(),
                                     },
                                 }],
                             },

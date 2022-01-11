@@ -426,8 +426,6 @@ pub trait TryInto<T>: Sized {
 /// `TryFrom<T>` can be implemented as follows:
 ///
 /// ```
-/// use std::convert::TryFrom;
-///
 /// struct GreaterThanZero(i32);
 ///
 /// impl TryFrom<i32> for GreaterThanZero {
@@ -448,8 +446,6 @@ pub trait TryInto<T>: Sized {
 /// As described, [`i32`] implements `TryFrom<`[`i64`]`>`:
 ///
 /// ```
-/// use std::convert::TryFrom;
-///
 /// let big_number = 1_000_000_000_000i64;
 /// // Silently truncates `big_number`, requires detecting
 /// // and handling the truncation after the fact.
@@ -534,9 +530,10 @@ where
 
 // From implies Into
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T, U> Into<U> for T
+#[rustc_const_unstable(feature = "const_convert", issue = "88674")]
+impl<T, U> const Into<U> for T
 where
-    U: From<T>,
+    U: ~const From<T>,
 {
     fn into(self) -> U {
         U::from(self)

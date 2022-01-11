@@ -655,7 +655,7 @@ impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
     // stable (assuming they have not inherited instability from their parent).
 }
 
-fn stability_index(tcx: TyCtxt<'tcx>, (): ()) -> Index<'tcx> {
+fn stability_index<'tcx>(tcx: TyCtxt<'tcx>, (): ()) -> Index<'tcx> {
     let is_staged_api =
         tcx.sess.opts.debugging_opts.force_unstable_if_unmarked || tcx.features().staged_api;
     let mut staged_api = FxHashMap::default();
@@ -737,7 +737,7 @@ struct Checker<'tcx> {
     tcx: TyCtxt<'tcx>,
 }
 
-impl Visitor<'tcx> for Checker<'tcx> {
+impl<'tcx> Visitor<'tcx> for Checker<'tcx> {
     type Map = Map<'tcx>;
 
     /// Because stability levels are scoped lexically, we want to walk
@@ -794,19 +794,12 @@ impl Visitor<'tcx> for Checker<'tcx> {
                     }
                 }
 
-                if let Res::Def(DefKind::Trait, trait_did) = t.path.res {
-                    for impl_item_ref in items {
-                        let impl_item = self.tcx.hir().impl_item(impl_item_ref.id);
-                        let trait_item_def_id = self
-                            .tcx
-                            .associated_items(trait_did)
-                            .filter_by_name_unhygienic(impl_item.ident.name)
-                            .next()
-                            .map(|item| item.def_id);
-                        if let Some(def_id) = trait_item_def_id {
-                            // Pass `None` to skip deprecation warnings.
-                            self.tcx.check_stability(def_id, None, impl_item.span, None);
-                        }
+                for impl_item_ref in items {
+                    let impl_item = self.tcx.associated_item(impl_item_ref.id.def_id);
+
+                    if let Some(def_id) = impl_item.trait_item_def_id {
+                        // Pass `None` to skip deprecation warnings.
+                        self.tcx.check_stability(def_id, None, impl_item_ref.span, None);
                     }
                 }
             }
@@ -866,7 +859,7 @@ struct CheckTraitImplStable<'tcx> {
     fully_stable: bool,
 }
 
-impl Visitor<'tcx> for CheckTraitImplStable<'tcx> {
+impl<'tcx> Visitor<'tcx> for CheckTraitImplStable<'tcx> {
     type Map = Map<'tcx>;
 
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {

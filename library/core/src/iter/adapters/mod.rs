@@ -24,6 +24,7 @@ mod take;
 mod take_while;
 mod zip;
 
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::{
     chain::Chain, cycle::Cycle, enumerate::Enumerate, filter::Filter, filter_map::FilterMap,
     flatten::FlatMap, fuse::Fuse, inspect::Inspect, map::Map, peekable::Peekable, rev::Rev,
@@ -54,7 +55,7 @@ pub use self::zip::TrustedRandomAccess;
 #[unstable(feature = "trusted_random_access", issue = "none")]
 pub use self::zip::TrustedRandomAccessNoCoerce;
 
-#[unstable(feature = "iter_zip", issue = "83574")]
+#[stable(feature = "iter_zip", since = "1.59.0")]
 pub use self::zip::zip;
 
 /// This trait provides transitive access to source-stage in an iterator-adapter pipeline

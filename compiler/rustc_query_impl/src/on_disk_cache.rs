@@ -158,7 +158,7 @@ impl<'sess> rustc_middle::ty::OnDiskCache<'sess> for OnDiskCache<'sess> {
 
         // Wrap in a scope so we can borrow `data`.
         let footer: Footer = {
-            let mut decoder = opaque::Decoder::new(&data[..], start_pos);
+            let mut decoder = opaque::Decoder::new(&data, start_pos);
 
             // Decode the *position* of the footer, which can be found in the
             // last 8 bytes of the file.
@@ -212,7 +212,7 @@ impl<'sess> rustc_middle::ty::OnDiskCache<'sess> for OnDiskCache<'sess> {
     /// Cache promotions require invoking queries, which needs to read the serialized data.
     /// In order to serialize the new on-disk cache, the former on-disk cache file needs to be
     /// deleted, hence we won't be able to refer to its memmapped data.
-    fn drop_serialized_data(&self, tcx: TyCtxt<'tcx>) {
+    fn drop_serialized_data(&self, tcx: TyCtxt<'_>) {
         // Load everything into memory so we can write it out to the on-disk
         // cache. The vast majority of cacheable query results should already
         // be in memory, so this should be a cheap operation.
@@ -495,6 +495,20 @@ impl<'a, 'tcx> CacheDecoder<'a, 'tcx> {
             .entry(index)
             .or_insert_with(|| {
                 let stable_id = file_index_to_stable_id[&index].translate(tcx);
+
+                // If this `SourceFile` is from a foreign crate, then make sure
+                // that we've imported all of the source files from that crate.
+                // This has usually already been done during macro invocation.
+                // However, when encoding query results like `TypeckResults`,
+                // we might encode an `AdtDef` for a foreign type (because it
+                // was referenced in the body of the function). There is no guarantee
+                // that we will load the source files from that crate during macro
+                // expansion, so we use `import_source_files` to ensure that the foreign
+                // source files are actually imported before we call `source_file_by_stable_id`.
+                if stable_id.cnum != LOCAL_CRATE {
+                    self.tcx.cstore_untracked().import_source_files(self.tcx.sess, stable_id.cnum);
+                }
+
                 source_map
                     .source_file_by_stable_id(stable_id)
                     .expect("failed to lookup `SourceFile` in new context")

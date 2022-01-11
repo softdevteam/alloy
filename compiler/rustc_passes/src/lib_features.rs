@@ -4,7 +4,7 @@
 // and `#[unstable (..)]`), but are not declared in one single location
 // (unlike lang features), which means we need to collect them instead.
 
-use rustc_ast::{Attribute, MetaItem, MetaItemKind};
+use rustc_ast::{Attribute, MetaItemKind};
 use rustc_errors::struct_span_err;
 use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc_middle::hir::map::Map;
@@ -23,7 +23,7 @@ pub struct LibFeatureCollector<'tcx> {
     lib_features: LibFeatures,
 }
 
-impl LibFeatureCollector<'tcx> {
+impl<'tcx> LibFeatureCollector<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> LibFeatureCollector<'tcx> {
         LibFeatureCollector { tcx, lib_features: new_lib_features() }
     }
@@ -34,8 +34,8 @@ impl LibFeatureCollector<'tcx> {
         // Find a stability attribute (i.e., `#[stable (..)]`, `#[unstable (..)]`,
         // `#[rustc_const_unstable (..)]`).
         if let Some(stab_attr) = stab_attrs.iter().find(|stab_attr| attr.has_name(**stab_attr)) {
-            let meta_item = attr.meta();
-            if let Some(MetaItem { kind: MetaItemKind::List(ref metas), .. }) = meta_item {
+            let meta_kind = attr.meta_kind();
+            if let Some(MetaItemKind::List(ref metas)) = meta_kind {
                 let mut feature = None;
                 let mut since = None;
                 for meta in metas {
@@ -110,7 +110,7 @@ impl LibFeatureCollector<'tcx> {
     }
 }
 
-impl Visitor<'tcx> for LibFeatureCollector<'tcx> {
+impl<'tcx> Visitor<'tcx> for LibFeatureCollector<'tcx> {
     type Map = Map<'tcx>;
 
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {

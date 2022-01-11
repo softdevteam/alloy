@@ -332,10 +332,7 @@ pub type GenericBounds = Vec<GenericBound>;
 pub enum ParamKindOrd {
     Lifetime,
     Type,
-    // `unordered` is only `true` if `sess.unordered_const_ty_params()`
-    // returns true. Specifically, if it's only `min_const_generics`, it will still require
-    // ordering consts after types.
-    Const { unordered: bool },
+    Const,
     // `Infer` is not actually constructed directly from the AST, but is implicitly constructed
     // during HIR lowering, and `ParamKindOrd` will implicitly order inferred variables last.
     Infer,
@@ -346,11 +343,7 @@ impl Ord for ParamKindOrd {
         use ParamKindOrd::*;
         let to_int = |v| match v {
             Lifetime => 0,
-            Infer | Type | Const { unordered: true } => 1,
-            // technically both consts should be ordered equally,
-            // but only one is ever encountered at a time, so this is
-            // fine.
-            Const { unordered: false } => 2,
+            Infer | Type | Const => 1,
         };
 
         to_int(*self).cmp(&to_int(*other))
@@ -517,8 +510,10 @@ pub struct Crate {
     pub attrs: Vec<Attribute>,
     pub items: Vec<P<Item>>,
     pub span: Span,
-    // Placeholder ID if the crate node is a macro placeholder.
-    pub is_placeholder: Option<NodeId>,
+    /// Must be equal to `CRATE_NODE_ID` after the crate root is expanded, but may hold
+    /// expansion placeholders or an unassigned value (`DUMMY_NODE_ID`) before that.
+    pub id: NodeId,
+    pub is_placeholder: bool,
 }
 
 /// Possible values inside of compile-time attribute lists.

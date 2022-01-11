@@ -4,7 +4,7 @@ use clippy_utils::consts::{
 };
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::higher;
-use clippy_utils::{eq_expr_value, get_parent_expr, in_constant, numeric_literal, sugg};
+use clippy_utils::{eq_expr_value, get_parent_expr, in_constant, numeric_literal, peel_blocks, sugg};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{BinOpKind, Expr, ExprKind, PathSegment, UnOp};
@@ -356,7 +356,7 @@ fn detect_hypot(cx: &LateContext<'_>, args: &[Expr<'_>]) -> Option<String> {
             if eq_expr_value(cx, lmul_lhs, lmul_rhs);
             if eq_expr_value(cx, rmul_lhs, rmul_rhs);
             then {
-                return Some(format!("{}.hypot({})", Sugg::hir(cx, lmul_lhs, ".."), Sugg::hir(cx, rmul_lhs, "..")));
+                return Some(format!("{}.hypot({})", Sugg::hir(cx, lmul_lhs, "..").maybe_par(), Sugg::hir(cx, rmul_lhs, "..")));
             }
         }
 
@@ -379,7 +379,7 @@ fn detect_hypot(cx: &LateContext<'_>, args: &[Expr<'_>]) -> Option<String> {
             if let Some((rvalue, _)) = constant(cx, cx.typeck_results(), rargs_1);
             if Int(2) == lvalue && Int(2) == rvalue;
             then {
-                return Some(format!("{}.hypot({})", Sugg::hir(cx, largs_0, ".."), Sugg::hir(cx, rargs_0, "..")));
+                return Some(format!("{}.hypot({})", Sugg::hir(cx, largs_0, "..").maybe_par(), Sugg::hir(cx, rargs_0, "..")));
             }
         }
     }
@@ -546,13 +546,9 @@ fn are_negated<'a>(cx: &LateContext<'_>, expr1: &'a Expr<'a>, expr2: &'a Expr<'a
 
 fn check_custom_abs(cx: &LateContext<'_>, expr: &Expr<'_>) {
     if_chain! {
-        if let Some(higher::If { cond, then, r#else }) = higher::If::hir(expr);
-        if let ExprKind::Block(block, _) = then.kind;
-        if block.stmts.is_empty();
-        if let Some(if_body_expr) = block.expr;
-        if let Some(ExprKind::Block(else_block, _)) = r#else.map(|el| &el.kind);
-        if else_block.stmts.is_empty();
-        if let Some(else_body_expr) = else_block.expr;
+        if let Some(higher::If { cond, then, r#else: Some(r#else) }) = higher::If::hir(expr);
+        let if_body_expr = peel_blocks(then);
+        let else_body_expr = peel_blocks(r#else);
         if let Some((if_expr_positive, body)) = are_negated(cx, if_body_expr, else_body_expr);
         then {
             let positive_abs_sugg = (
@@ -599,7 +595,7 @@ fn are_same_base_logs(cx: &LateContext<'_>, expr_a: &Expr<'_>, expr_b: &Expr<'_>
             return method_name_a.as_str() == method_name_b.as_str() &&
                 args_a.len() == args_b.len() &&
                 (
-                    ["ln", "log2", "log10"].contains(&&*method_name_a.as_str()) ||
+                    ["ln", "log2", "log10"].contains(&method_name_a.as_str()) ||
                     method_name_a.as_str() == "log" && args_a.len() == 2 && eq_expr_value(cx, &args_a[1], &args_b[1])
                 );
         }
@@ -658,26 +654,52 @@ fn check_radians(cx: &LateContext<'_>, expr: &Expr<'_>) {
             if (F32(f32_consts::PI) == rvalue || F64(f64_consts::PI) == rvalue) &&
                (F32(180_f32) == lvalue || F64(180_f64) == lvalue)
             {
+                let mut proposal = format!("{}.to_degrees()", Sugg::hir(cx, mul_lhs, ".."));
+                if_chain! {
+                    if let ExprKind::Lit(ref literal) = mul_lhs.kind;
+                    if let ast::LitKind::Float(ref value, float_type) = literal.node;
+                    if float_type == ast::LitFloatType::Unsuffixed;
+                    then {
+                        if value.as_str().ends_with('.') {
+                            proposal = format!("{}0_f64.to_degrees()", Sugg::hir(cx, mul_lhs, ".."));
+                        } else {
+                            proposal = format!("{}_f64.to_degrees()", Sugg::hir(cx, mul_lhs, ".."));
+                        }
+                    }
+                }
                 span_lint_and_sugg(
                     cx,
                     SUBOPTIMAL_FLOPS,
                     expr.span,
                     "conversion to degrees can be done more accurately",
                     "consider using",
-                    format!("{}.to_degrees()", Sugg::hir(cx, mul_lhs, "..")),
+                    proposal,
                     Applicability::MachineApplicable,
                 );
             } else if
                 (F32(180_f32) == rvalue || F64(180_f64) == rvalue) &&
                 (F32(f32_consts::PI) == lvalue || F64(f64_consts::PI) == lvalue)
             {
+                let mut proposal = format!("{}.to_radians()", Sugg::hir(cx, mul_lhs, ".."));
+                if_chain! {
+                    if let ExprKind::Lit(ref literal) = mul_lhs.kind;
+                    if let ast::LitKind::Float(ref value, float_type) = literal.node;
+                    if float_type == ast::LitFloatType::Unsuffixed;
+                    then {
+                        if value.as_str().ends_with('.') {
+                            proposal = format!("{}0_f64.to_radians()", Sugg::hir(cx, mul_lhs, ".."));
+                        } else {
+                            proposal = format!("{}_f64.to_radians()", Sugg::hir(cx, mul_lhs, ".."));
+                        }
+                    }
+                }
                 span_lint_and_sugg(
                     cx,
                     SUBOPTIMAL_FLOPS,
                     expr.span,
                     "conversion to radians can be done more accurately",
                     "consider using",
-                    format!("{}.to_radians()", Sugg::hir(cx, mul_lhs, "..")),
+                    proposal,
                     Applicability::MachineApplicable,
                 );
             }
@@ -696,7 +718,7 @@ impl<'tcx> LateLintPass<'tcx> for FloatingPointArithmetic {
             let recv_ty = cx.typeck_results().expr_ty(&args[0]);
 
             if recv_ty.is_floating_point() {
-                match &*path.ident.name.as_str() {
+                match path.ident.name.as_str() {
                     "ln" => check_ln1p(cx, expr, args),
                     "log" => check_log_base(cx, expr, args),
                     "powf" => check_powf(cx, expr, args),

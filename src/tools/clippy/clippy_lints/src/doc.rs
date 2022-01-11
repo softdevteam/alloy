@@ -437,7 +437,7 @@ fn check_attrs<'a>(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, attrs
 
     for attr in attrs {
         if let AttrKind::DocComment(comment_kind, comment) = attr.kind {
-            let (comment, current_spans) = strip_doc_comment_decoration(&comment.as_str(), comment_kind, attr.span);
+            let (comment, current_spans) = strip_doc_comment_decoration(comment.as_str(), comment_kind, attr.span);
             spans.extend_from_slice(&current_spans);
             doc.push_str(&comment);
         } else if attr.has_name(sym::doc) {
@@ -542,16 +542,16 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
             },
             Start(Link(_, url, _)) => in_link = Some(url),
             End(Link(..)) => in_link = None,
-            Start(Heading(_) | Paragraph | Item) => {
-                if let Start(Heading(_)) = event {
+            Start(Heading(_, _, _) | Paragraph | Item) => {
+                if let Start(Heading(_, _, _)) = event {
                     in_heading = true;
                 }
                 ticks_unbalanced = false;
                 let (_, span) = get_current_span(spans, range.start);
                 paragraph_span = first_line_of_span(cx, span);
             },
-            End(Heading(_) | Paragraph | Item) => {
-                if let End(Heading(_)) = event {
+            End(Heading(_, _, _) | Paragraph | Item) => {
+                if let End(Heading(_, _, _)) = event {
                     in_heading = false;
                 }
                 if ticks_unbalanced {

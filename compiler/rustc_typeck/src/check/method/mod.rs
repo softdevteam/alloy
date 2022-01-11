@@ -7,7 +7,7 @@ mod prelude2021;
 pub mod probe;
 mod suggest;
 
-pub use self::suggest::{SelfSource, TraitInfo};
+pub use self::suggest::SelfSource;
 pub use self::CandidateSource::*;
 pub use self::MethodError::*;
 
@@ -22,7 +22,7 @@ use rustc_infer::infer::{self, InferOk};
 use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::subst::{InternalSubsts, SubstsRef};
 use rustc_middle::ty::GenericParamDefKind;
-use rustc_middle::ty::{self, ToPredicate, Ty, TypeFoldable, WithConstness};
+use rustc_middle::ty::{self, ToPredicate, Ty, TypeFoldable};
 use rustc_span::symbol::Ident;
 use rustc_span::Span;
 use rustc_trait_selection::traits;
@@ -31,7 +31,6 @@ use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use self::probe::{IsSuggestion, ProbeScope};
 
 pub fn provide(providers: &mut ty::query::Providers) {
-    suggest::provide(providers);
     probe::provide(providers);
 }
 

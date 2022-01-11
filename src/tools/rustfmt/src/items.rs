@@ -616,10 +616,10 @@ impl<'a> FmtVisitor<'a> {
                 (TyAlias(lty), TyAlias(rty))
                     if both_type(&lty.ty, &rty.ty) || both_opaque(&lty.ty, &rty.ty) =>
                 {
-                    a.ident.as_str().cmp(&b.ident.as_str())
+                    a.ident.as_str().cmp(b.ident.as_str())
                 }
                 (Const(..), Const(..)) | (MacCall(..), MacCall(..)) => {
-                    a.ident.as_str().cmp(&b.ident.as_str())
+                    a.ident.as_str().cmp(b.ident.as_str())
                 }
                 (Fn(..), Fn(..)) => a.span.lo().cmp(&b.span.lo()),
                 (TyAlias(ty), _) if is_type(&ty.ty) => Ordering::Less,
@@ -1029,7 +1029,7 @@ pub(crate) fn format_trait(
         if !bounds.is_empty() {
             let ident_hi = context
                 .snippet_provider
-                .span_after(item.span, &item.ident.as_str());
+                .span_after(item.span, item.ident.as_str());
             let bound_hi = bounds.last().unwrap().span().hi();
             let snippet = context.snippet(mk_sp(ident_hi, bound_hi));
             if contains_comment(snippet) {
@@ -1535,7 +1535,7 @@ pub(crate) fn rewrite_type_alias<'a, 'b>(
     // https://rustc-dev-guide.rust-lang.org/opaque-types-type-alias-impl-trait.html
     // https://github.com/rust-dev-tools/fmt-rfcs/blob/master/guide/items.md#type-aliases
     match (visitor_kind, &op_ty) {
-        (Item(_) | AssocTraitItem(_) | ForeignItem(_), Some(ref op_bounds)) => {
+        (Item(_) | AssocTraitItem(_) | ForeignItem(_), Some(op_bounds)) => {
             let op = OpaqueType { bounds: op_bounds };
             rewrite_ty(rw_info, Some(bounds), Some(&op), vis)
         }
@@ -1543,7 +1543,7 @@ pub(crate) fn rewrite_type_alias<'a, 'b>(
             rewrite_ty(rw_info, Some(bounds), ty_opt, vis)
         }
         (AssocImplItem(_), _) => {
-            let result = if let Some(ref op_bounds) = op_ty {
+            let result = if let Some(op_bounds) = op_ty {
                 let op = OpaqueType { bounds: op_bounds };
                 rewrite_ty(rw_info, Some(bounds), Some(&op), &DEFAULT_VISIBILITY)
             } else {
@@ -3124,7 +3124,7 @@ impl Rewrite for ast::ForeignItem {
                     let inner_attrs = inner_attributes(&self.attrs);
                     let fn_ctxt = visit::FnCtxt::Foreign;
                     visitor.visit_fn(
-                        visit::FnKind::Fn(fn_ctxt, self.ident, &sig, &self.vis, Some(body)),
+                        visit::FnKind::Fn(fn_ctxt, self.ident, sig, &self.vis, Some(body)),
                         generics,
                         &sig.decl,
                         self.span,
@@ -3137,7 +3137,7 @@ impl Rewrite for ast::ForeignItem {
                         context,
                         shape.indent,
                         self.ident,
-                        &FnSig::from_method_sig(&sig, generics, &self.vis),
+                        &FnSig::from_method_sig(sig, generics, &self.vis),
                         span,
                         FnBraceStyle::None,
                     )
@@ -3166,7 +3166,7 @@ impl Rewrite for ast::ForeignItem {
                 .map(|s| s + ";")
             }
             ast::ForeignItemKind::TyAlias(ref ty_alias) => {
-                let (kind, span) = (&ItemVisitorKind::ForeignItem(&self), self.span);
+                let (kind, span) = (&ItemVisitorKind::ForeignItem(self), self.span);
                 rewrite_type_alias(ty_alias, context, shape.indent, kind, span)
             }
             ast::ForeignItemKind::MacCall(ref mac) => {

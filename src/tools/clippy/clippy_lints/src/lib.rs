@@ -1,14 +1,15 @@
 // error-pattern:cargo-clippy
 
+#![feature(binary_heap_into_iter_sorted)]
 #![feature(box_patterns)]
+#![feature(control_flow_enum)]
 #![feature(drain_filter)]
 #![feature(in_band_lifetimes)]
-#![feature(iter_zip)]
+#![feature(iter_intersperse)]
+#![feature(let_else)]
 #![feature(once_cell)]
 #![feature(rustc_private)]
 #![feature(stmt_expr_attributes)]
-#![feature(control_flow_enum)]
-#![feature(let_else)]
 #![recursion_limit = "512"]
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![allow(clippy::missing_docs_in_private_items, clippy::must_use_candidate)]
@@ -243,6 +244,7 @@ mod indexing_slicing;
 mod infinite_iter;
 mod inherent_impl;
 mod inherent_to_string;
+mod init_numbered_fields;
 mod inline_fn_without_body;
 mod int_plus_one;
 mod integer_division;
@@ -341,6 +343,7 @@ mod ref_option_ref;
 mod reference;
 mod regex;
 mod repeat_once;
+mod return_self_not_must_use;
 mod returns;
 mod same_name_method;
 mod self_assignment;
@@ -853,6 +856,8 @@ pub fn register_plugins(store: &mut rustc_lint::LintStore, sess: &Session, conf:
     store.register_late_pass(|| Box::new(trailing_empty_array::TrailingEmptyArray));
     store.register_early_pass(|| Box::new(octal_escapes::OctalEscapes));
     store.register_late_pass(|| Box::new(needless_late_init::NeedlessLateInit));
+    store.register_late_pass(|| Box::new(return_self_not_must_use::ReturnSelfNotMustUse));
+    store.register_late_pass(|| Box::new(init_numbered_fields::NumberedFields));
     // add lints here, do not remove this comment, it's used in `new_lint`
 }
 

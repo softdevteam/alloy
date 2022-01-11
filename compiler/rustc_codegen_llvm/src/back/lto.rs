@@ -3,7 +3,7 @@ use crate::back::write::{
 };
 use crate::llvm::archive_ro::ArchiveRO;
 use crate::llvm::{self, build_string, False, True};
-use crate::{LlvmCodegenBackend, ModuleLlvm};
+use crate::{llvm_util, LlvmCodegenBackend, ModuleLlvm};
 use rustc_codegen_ssa::back::lto::{LtoModuleCodegen, SerializedModule, ThinModule, ThinShared};
 use rustc_codegen_ssa::back::symbol_export;
 use rustc_codegen_ssa::back::write::{
@@ -363,7 +363,7 @@ fn fat_lto(
 
 crate struct Linker<'a>(&'a mut llvm::Linker<'a>);
 
-impl Linker<'a> {
+impl<'a> Linker<'a> {
     crate fn new(llmod: &'a llvm::Module) -> Self {
         unsafe { Linker(llvm::LLVMRustLinkerNew(llmod)) }
     }
@@ -383,7 +383,7 @@ impl Linker<'a> {
     }
 }
 
-impl Drop for Linker<'a> {
+impl Drop for Linker<'_> {
     fn drop(&mut self) {
         unsafe {
             llvm::LLVMRustLinkerFree(&mut *(self.0 as *mut _));
@@ -587,7 +587,7 @@ pub(crate) fn run_pass_manager(
     config: &ModuleConfig,
     thin: bool,
 ) -> Result<(), FatalError> {
-    let _timer = cgcx.prof.extra_verbose_generic_activity("LLVM_lto_optimize", &module.name[..]);
+    let _timer = cgcx.prof.extra_verbose_generic_activity("LLVM_lto_optimize", &*module.name);
 
     // Now we have one massive module inside of llmod. Time to run the
     // LTO-specific optimization passes that LLVM provides.
@@ -596,7 +596,10 @@ pub(crate) fn run_pass_manager(
     //      tools/lto/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     unsafe {
-        if write::should_use_new_llvm_pass_manager(cgcx, config) {
+        if llvm_util::should_use_new_llvm_pass_manager(
+            &config.new_llvm_pass_manager,
+            &cgcx.target_arch,
+        ) {
             let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
             let opt_level = config.opt_level.unwrap_or(config::OptLevel::No);
             write::optimize_with_new_llvm_pass_manager(

@@ -24,6 +24,7 @@ use rustc_feature::find_gated_cfg;
 use rustc_interface::util::{self, collect_crate_types, get_codegen_backend};
 use rustc_interface::{interface, Queries};
 use rustc_lint::LintStore;
+use rustc_log::stdout_isatty;
 use rustc_metadata::locator;
 use rustc_save_analysis as save;
 use rustc_save_analysis::DumpHandler;
@@ -514,14 +515,6 @@ impl Compilation {
 #[derive(Copy, Clone)]
 pub struct RustcDefaultCalls;
 
-fn stdout_isatty() -> bool {
-    atty::is(atty::Stream::Stdout)
-}
-
-fn stderr_isatty() -> bool {
-    atty::is(atty::Stream::Stderr)
-}
-
 fn handle_explain(registry: Registry, code: &str, output: ErrorOutputType) {
     let upper_cased_code = code.to_ascii_uppercase();
     let normalised = if upper_cased_code.starts_with('E') {
@@ -872,7 +865,7 @@ Available lint options:
 
     let print_lints = |lints: Vec<&Lint>| {
         for lint in lints {
-            let name = lint.name_lower().replace("_", "-");
+            let name = lint.name_lower().replace('_', "-");
             println!(
                 "    {}  {:7.7}  {}",
                 padded(&name),
@@ -908,10 +901,10 @@ Available lint options:
 
     let print_lint_groups = |lints: Vec<(&'static str, Vec<LintId>)>| {
         for (name, to) in lints {
-            let name = name.to_lowercase().replace("_", "-");
+            let name = name.to_lowercase().replace('_', "-");
             let desc = to
                 .into_iter()
-                .map(|x| x.to_string().replace("_", "-"))
+                .map(|x| x.to_string().replace('_', "-"))
                 .collect::<Vec<String>>()
                 .join(", ");
             println!("    {}  {}", padded(&name), desc);
@@ -960,7 +953,7 @@ fn print_flag_list<T>(
         println!(
             "    {} {:>width$}=val -- {}",
             cmdline_opt,
-            name.replace("_", "-"),
+            name.replace('_', "-"),
             desc,
             width = max_len
         );
@@ -1015,7 +1008,7 @@ pub fn handle_options(args: &[String]) -> Option<getopts::Matches> {
                 .iter()
                 .map(|&(name, ..)| ('C', name))
                 .chain(DB_OPTIONS.iter().map(|&(name, ..)| ('Z', name)))
-                .find(|&(_, name)| *opt == name.replace("_", "-"))
+                .find(|&(_, name)| *opt == name.replace('_', "-"))
                 .map(|(flag, _)| format!("{}. Did you mean `-{} {}`?", e, flag, opt)),
             _ => None,
         };
@@ -1047,7 +1040,7 @@ pub fn handle_options(args: &[String]) -> Option<getopts::Matches> {
     let wall = matches.opt_strs("W");
     if wall.iter().any(|x| *x == "all") {
         print_wall_help();
-        return None;
+        rustc_errors::FatalError.raise();
     }
 
     // Don't handle -W help here, because we might first load plugins.
@@ -1254,54 +1247,18 @@ pub fn install_ice_hook() {
 /// This allows tools to enable rust logging without having to magically match rustc's
 /// tracing crate version.
 pub fn init_rustc_env_logger() {
-    init_env_logger("RUSTC_LOG")
+    if let Err(error) = rustc_log::init_rustc_env_logger() {
+        early_error(ErrorOutputType::default(), &error.to_string());
+    }
 }
 
 /// This allows tools to enable rust logging without having to magically match rustc's
 /// tracing crate version. In contrast to `init_rustc_env_logger` it allows you to choose an env var
 /// other than `RUSTC_LOG`.
 pub fn init_env_logger(env: &str) {
-    use tracing_subscriber::{
-        filter::{self, EnvFilter, LevelFilter},
-        layer::SubscriberExt,
-    };
-
-    let filter = match std::env::var(env) {
-        Ok(env) => EnvFilter::new(env),
-        _ => EnvFilter::default().add_directive(filter::Directive::from(LevelFilter::WARN)),
-    };
-
-    let color_logs = match std::env::var(String::from(env) + "_COLOR") {
-        Ok(value) => match value.as_ref() {
-            "always" => true,
-            "never" => false,
-            "auto" => stderr_isatty(),
-            _ => early_error(
-                ErrorOutputType::default(),
-                &format!(
-                    "invalid log color value '{}': expected one of always, never, or auto",
-                    value
-                ),
-            ),
-        },
-        Err(std::env::VarError::NotPresent) => stderr_isatty(),
-        Err(std::env::VarError::NotUnicode(_value)) => early_error(
-            ErrorOutputType::default(),
-            "non-Unicode log color value: expected one of always, never, or auto",
-        ),
-    };
-
-    let layer = tracing_tree::HierarchicalLayer::default()
-        .with_writer(io::stderr)
-        .with_indent_lines(true)
-        .with_ansi(color_logs)
-        .with_targets(true)
-        .with_indent_amount(2);
-    #[cfg(parallel_compiler)]
-    let layer = layer.with_thread_ids(true).with_thread_names(true);
-
-    let subscriber = tracing_subscriber::Registry::default().with(filter).with(layer);
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    if let Err(error) = rustc_log::init_env_logger(env) {
+        early_error(ErrorOutputType::default(), &error.to_string());
+    }
 }
 
 #[cfg(all(unix, any(target_env = "gnu", target_os = "macos")))]

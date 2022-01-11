@@ -10,7 +10,6 @@
 use crate::check_attr::target_from_impl_item;
 use crate::weak_lang_items;
 
-use rustc_ast::Attribute;
 use rustc_errors::{pluralize, struct_span_err};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -28,7 +27,7 @@ struct LanguageItemCollector<'tcx> {
     tcx: TyCtxt<'tcx>,
 }
 
-impl ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
+impl<'v, 'tcx> ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
     fn visit_item(&mut self, item: &hir::Item<'_>) {
         self.check_for_lang(Target::from_item(item), item.hir_id());
 
@@ -50,15 +49,14 @@ impl ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
     fn visit_foreign_item(&mut self, _: &hir::ForeignItem<'_>) {}
 }
 
-impl LanguageItemCollector<'tcx> {
+impl<'tcx> LanguageItemCollector<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> LanguageItemCollector<'tcx> {
         LanguageItemCollector { tcx, items: LanguageItems::new() }
     }
 
     fn check_for_lang(&mut self, actual_target: Target, hir_id: HirId) {
         let attrs = self.tcx.hir().attrs(hir_id);
-        let check_name = |attr: &Attribute, sym| attr.has_name(sym);
-        if let Some((value, span)) = extract(check_name, &attrs) {
+        if let Some((value, span)) = extract(&attrs) {
             match ITEM_REFS.get(&value).cloned() {
                 // Known lang item with attribute on correct target.
                 Some((item_index, expected_target)) if actual_target == expected_target => {

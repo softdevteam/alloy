@@ -193,7 +193,6 @@ fn check_rvalue(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, def_id: DefId, rvalue: &Rv
             }
         },
         Rvalue::NullaryOp(NullOp::SizeOf | NullOp::AlignOf, _) | Rvalue::ShallowInitBox(_, _) => Ok(()),
-        Rvalue::NullaryOp(NullOp::Box, _) => Err((span, "heap allocations are not allowed in const fn".into())),
         Rvalue::UnaryOp(_, operand) => {
             let ty = operand.ty(body, tcx);
             if ty.is_integral() || ty.is_bool() {
@@ -372,7 +371,7 @@ fn is_const_fn(tcx: TyCtxt<'_>, def_id: DefId, msrv: Option<&RustcVersion>) -> b
                 // as a part of an unimplemented MSRV check https://github.com/rust-lang/rust/issues/65262.
                 crate::meets_msrv(
                     msrv,
-                    &RustcVersion::parse(&since.as_str())
+                    &RustcVersion::parse(since.as_str())
                         .expect("`rustc_attr::StabilityLevel::Stable::since` is ill-formatted"),
                 )
             } else {

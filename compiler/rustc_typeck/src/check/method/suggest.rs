@@ -5,14 +5,14 @@ use crate::check::FnCtxt;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
-use rustc_hir::def::{DefKind, Namespace, Res};
-use rustc_hir::def_id::{DefId, LocalDefId, CRATE_DEF_INDEX};
+use rustc_hir::def::Namespace;
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::lang_items::LangItem;
 use rustc_hir::{ExprKind, Node, QPath};
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
-use rustc_middle::ty::fast_reject::simplify_type;
+use rustc_middle::ty::fast_reject::{simplify_type, SimplifyParams, StripReferences};
 use rustc_middle::ty::print::with_crate_prefix;
-use rustc_middle::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
+use rustc_middle::ty::{self, DefIdTree, ToPredicate, Ty, TyCtxt, TypeFoldable};
 use rustc_span::lev_distance;
 use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::{source_map, FileName, MultiSpan, Span, Symbol};
@@ -832,7 +832,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     for (data, p, parent_p) in unsatisfied_predicates
                         .iter()
                         .filter_map(|(p, parent, c)| c.as_ref().map(|c| (p, parent, c)))
-                        .filter_map(|(p, parent, c)| match c.code {
+                        .filter_map(|(p, parent, c)| match c.code() {
                             ObligationCauseCode::ImplDerivedObligation(ref data) => {
                                 Some((data, p, parent))
                             }
@@ -1195,11 +1195,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn suggest_derive(
         &self,
         err: &mut DiagnosticBuilder<'_>,
-        unsatisfied_predicates: &Vec<(
+        unsatisfied_predicates: &[(
             ty::Predicate<'tcx>,
             Option<ty::Predicate<'tcx>>,
             Option<ObligationCause<'tcx>>,
-        )>,
+        )],
     ) {
         let mut derives = Vec::<(String, Span, String)>::new();
         let mut traits = Vec::<Span>::new();
@@ -1236,22 +1236,23 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 traits.push(self.tcx.def_span(trait_pred.def_id()));
             }
         }
-        derives.sort();
-        let derives_grouped = derives.into_iter().fold(
-            Vec::<(String, Span, String)>::new(),
-            |mut acc, (self_name, self_span, trait_name)| {
-                if let Some((acc_self_name, _, ref mut traits)) = acc.last_mut() {
-                    if acc_self_name == &self_name {
-                        traits.push_str(format!(", {}", trait_name).as_str());
-                        return acc;
-                    }
-                }
-                acc.push((self_name, self_span, trait_name));
-                acc
-            },
-        );
         traits.sort();
         traits.dedup();
+
+        derives.sort();
+        derives.dedup();
+
+        let mut derives_grouped = Vec::<(String, Span, String)>::new();
+        for (self_name, self_span, trait_name) in derives.into_iter() {
+            if let Some((last_self_name, _, ref mut last_trait_names)) = derives_grouped.last_mut()
+            {
+                if last_self_name == &self_name {
+                    last_trait_names.push_str(format!(", {}", trait_name).as_str());
+                    continue;
+                }
+            }
+            derives_grouped.push((self_name, self_span, trait_name));
+        }
 
         let len = traits.len();
         if len > 0 {
@@ -1310,25 +1311,66 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         mut msg: String,
         candidates: Vec<DefId>,
     ) {
+        let parent_map = self.tcx.visible_parent_map(());
+
+        // Separate out candidates that must be imported with a glob, because they are named `_`
+        // and cannot be referred with their identifier.
+        let (candidates, globs): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|trait_did| {
+            if let Some(parent_did) = parent_map.get(trait_did) {
+                // If the item is re-exported as `_`, we should suggest a glob-import instead.
+                if Some(*parent_did) != self.tcx.parent(*trait_did)
+                    && self
+                        .tcx
+                        .module_children(*parent_did)
+                        .iter()
+                        .filter(|child| child.res.opt_def_id() == Some(*trait_did))
+                        .all(|child| child.ident.name == kw::Underscore)
+                {
+                    return false;
+                }
+            }
+
+            true
+        });
+
         let module_did = self.tcx.parent_module(self.body_id);
         let (span, found_use) = find_use_placement(self.tcx, module_did);
         if let Some(span) = span {
-            let path_strings = candidates.iter().map(|did| {
+            let path_strings = candidates.iter().map(|trait_did| {
                 // Produce an additional newline to separate the new use statement
                 // from the directly following item.
                 let additional_newline = if found_use { "" } else { "\n" };
                 format!(
                     "use {};\n{}",
-                    with_crate_prefix(|| self.tcx.def_path_str(*did)),
+                    with_crate_prefix(|| self.tcx.def_path_str(*trait_did)),
                     additional_newline
                 )
             });
 
-            err.span_suggestions(span, &msg, path_strings, Applicability::MaybeIncorrect);
+            let glob_path_strings = globs.iter().map(|trait_did| {
+                let parent_did = parent_map.get(trait_did).unwrap();
+
+                // Produce an additional newline to separate the new use statement
+                // from the directly following item.
+                let additional_newline = if found_use { "" } else { "\n" };
+                format!(
+                    "use {}::*; // trait {}\n{}",
+                    with_crate_prefix(|| self.tcx.def_path_str(*parent_did)),
+                    self.tcx.item_name(*trait_did),
+                    additional_newline
+                )
+            });
+
+            err.span_suggestions(
+                span,
+                &msg,
+                path_strings.chain(glob_path_strings),
+                Applicability::MaybeIncorrect,
+            );
         } else {
-            let limit = if candidates.len() == 5 { 5 } else { 4 };
+            let limit = if candidates.len() + globs.len() == 5 { 5 } else { 4 };
             for (i, trait_did) in candidates.iter().take(limit).enumerate() {
-                if candidates.len() > 1 {
+                if candidates.len() + globs.len() > 1 {
                     msg.push_str(&format!(
                         "\ncandidate #{}: `use {};`",
                         i + 1,
@@ -1341,10 +1383,30 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     ));
                 }
             }
-            if candidates.len() > limit {
-                msg.push_str(&format!("\nand {} others", candidates.len() - limit));
+            for (i, trait_did) in
+                globs.iter().take(limit.saturating_sub(candidates.len())).enumerate()
+            {
+                let parent_did = parent_map.get(trait_did).unwrap();
+
+                if candidates.len() + globs.len() > 1 {
+                    msg.push_str(&format!(
+                        "\ncandidate #{}: `use {}::*; // trait {}`",
+                        candidates.len() + i + 1,
+                        with_crate_prefix(|| self.tcx.def_path_str(*parent_did)),
+                        self.tcx.item_name(*trait_did),
+                    ));
+                } else {
+                    msg.push_str(&format!(
+                        "\n`use {}::*; // trait {}`",
+                        with_crate_prefix(|| self.tcx.def_path_str(*parent_did)),
+                        self.tcx.item_name(*trait_did),
+                    ));
+                }
             }
-            err.note(&msg[..]);
+            if candidates.len() > limit {
+                msg.push_str(&format!("\nand {} others", candidates.len() + globs.len() - limit));
+            }
+            err.note(&msg);
         }
     }
 
@@ -1703,7 +1765,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // FIXME: Even though negative bounds are not implemented, we could maybe handle
                 // cases where a positive bound implies a negative impl.
                 (candidates, Vec::new())
-            } else if let Some(simp_rcvr_ty) = simplify_type(self.tcx, rcvr_ty, true) {
+            } else if let Some(simp_rcvr_ty) =
+                simplify_type(self.tcx, rcvr_ty, SimplifyParams::Yes, StripReferences::No)
+            {
                 let mut potential_candidates = Vec::new();
                 let mut explicitly_negative = Vec::new();
                 for candidate in candidates {
@@ -1716,7 +1780,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         })
                         .any(|imp_did| {
                             let imp = self.tcx.impl_trait_ref(imp_did).unwrap();
-                            let imp_simp = simplify_type(self.tcx, imp.self_ty(), true);
+                            let imp_simp = simplify_type(
+                                self.tcx,
+                                imp.self_ty(),
+                                SimplifyParams::Yes,
+                                StripReferences::No,
+                            );
                             imp_simp.map_or(false, |s| s == simp_rcvr_ty)
                         })
                     {
@@ -1853,76 +1922,10 @@ impl Ord for TraitInfo {
     }
 }
 
-/// Retrieves all traits in this crate and any dependent crates.
+/// Retrieves all traits in this crate and any dependent crates,
+/// and wraps them into `TraitInfo` for custom sorting.
 pub fn all_traits(tcx: TyCtxt<'_>) -> Vec<TraitInfo> {
-    tcx.all_traits(()).iter().map(|&def_id| TraitInfo { def_id }).collect()
-}
-
-/// Computes all traits in this crate and any dependent crates.
-fn compute_all_traits(tcx: TyCtxt<'_>, (): ()) -> &[DefId] {
-    use hir::itemlikevisit;
-
-    let mut traits = vec![];
-
-    // Crate-local:
-
-    struct Visitor<'a> {
-        traits: &'a mut Vec<DefId>,
-    }
-
-    impl<'v, 'a> itemlikevisit::ItemLikeVisitor<'v> for Visitor<'a> {
-        fn visit_item(&mut self, i: &'v hir::Item<'v>) {
-            match i.kind {
-                hir::ItemKind::Trait(..) | hir::ItemKind::TraitAlias(..) => {
-                    self.traits.push(i.def_id.to_def_id());
-                }
-                _ => (),
-            }
-        }
-
-        fn visit_trait_item(&mut self, _trait_item: &hir::TraitItem<'_>) {}
-
-        fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem<'_>) {}
-
-        fn visit_foreign_item(&mut self, _foreign_item: &hir::ForeignItem<'_>) {}
-    }
-
-    tcx.hir().visit_all_item_likes(&mut Visitor { traits: &mut traits });
-
-    // Cross-crate:
-
-    let mut external_mods = FxHashSet::default();
-    fn handle_external_res(
-        tcx: TyCtxt<'_>,
-        traits: &mut Vec<DefId>,
-        external_mods: &mut FxHashSet<DefId>,
-        res: Res<!>,
-    ) {
-        match res {
-            Res::Def(DefKind::Trait | DefKind::TraitAlias, def_id) => {
-                traits.push(def_id);
-            }
-            Res::Def(DefKind::Mod, def_id) => {
-                if !external_mods.insert(def_id) {
-                    return;
-                }
-                for child in tcx.item_children(def_id).iter() {
-                    handle_external_res(tcx, traits, external_mods, child.res)
-                }
-            }
-            _ => {}
-        }
-    }
-    for &cnum in tcx.crates(()).iter() {
-        let def_id = DefId { krate: cnum, index: CRATE_DEF_INDEX };
-        handle_external_res(tcx, &mut traits, &mut external_mods, Res::Def(DefKind::Mod, def_id));
-    }
-
-    tcx.arena.alloc_from_iter(traits)
-}
-
-pub fn provide(providers: &mut ty::query::Providers) {
-    providers.all_traits = compute_all_traits;
+    tcx.all_traits().map(|def_id| TraitInfo { def_id }).collect()
 }
 
 fn find_use_placement<'tcx>(tcx: TyCtxt<'tcx>, target_module: LocalDefId) -> (Option<Span>, bool) {
@@ -1968,7 +1971,7 @@ fn find_use_placement<'tcx>(tcx: TyCtxt<'tcx>, target_module: LocalDefId) -> (Op
     (span, found_use)
 }
 
-fn print_disambiguation_help(
+fn print_disambiguation_help<'tcx>(
     item_name: Ident,
     args: Option<&'tcx [hir::Expr<'tcx>]>,
     err: &mut DiagnosticBuilder<'_>,

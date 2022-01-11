@@ -142,9 +142,12 @@ fn print_expr(cx: &LateContext<'_>, expr: &hir::Expr<'_>, indent: usize) {
                 print_expr(cx, arg, indent + 1);
             }
         },
-        hir::ExprKind::Let(pat, expr, _) => {
+        hir::ExprKind::Let(hir::Let { pat, init, ty, .. }) => {
             print_pat(cx, pat, indent + 1);
-            print_expr(cx, expr, indent + 1);
+            if let Some(ty) = ty {
+                println!("{}  type annotation: {:?}", ind, ty);
+            }
+            print_expr(cx, init, indent + 1);
         },
         hir::ExprKind::MethodCall(path, _, args, _) => {
             println!("{}MethodCall", ind);
@@ -331,12 +334,17 @@ fn print_expr(cx: &LateContext<'_>, expr: &hir::Expr<'_>, indent: usize) {
             println!("{}anon_const:", ind);
             print_expr(cx, &cx.tcx.hir().body(anon_const.body).value, indent + 1);
         },
-        hir::ExprKind::Repeat(val, ref anon_const) => {
+        hir::ExprKind::Repeat(val, length) => {
             println!("{}Repeat", ind);
             println!("{}value:", ind);
             print_expr(cx, val, indent + 1);
             println!("{}repeat count:", ind);
-            print_expr(cx, &cx.tcx.hir().body(anon_const.body).value, indent + 1);
+            match length {
+                hir::ArrayLen::Infer(_, _) => println!("{}repeat count: _", ind),
+                hir::ArrayLen::Body(anon_const) => {
+                    print_expr(cx, &cx.tcx.hir().body(anon_const.body).value, indent + 1)
+                }
+            }
         },
         hir::ExprKind::Err => {
             println!("{}Err", ind);

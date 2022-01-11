@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::ptr;
 
 use rustc_ast::{self as ast, Path};
@@ -784,7 +783,7 @@ impl<'a> Resolver<'a> {
         });
 
         // Make sure error reporting is deterministic.
-        suggestions.sort_by_cached_key(|suggestion| suggestion.candidate.as_str());
+        suggestions.sort_by(|a, b| a.candidate.as_str().partial_cmp(b.candidate.as_str()).unwrap());
 
         match find_best_match_for_name(
             &suggestions.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),
@@ -896,8 +895,11 @@ impl<'a> Resolver<'a> {
                             // a note about editions
                             let note = if let Some(did) = did {
                                 let requires_note = !did.is_local()
-                                    && this.cstore().item_attrs(did, this.session).iter().any(
-                                        |attr| {
+                                    && this
+                                        .cstore()
+                                        .item_attrs_untracked(did, this.session)
+                                        .iter()
+                                        .any(|attr| {
                                             if attr.has_name(sym::rustc_diagnostic_item) {
                                                 [sym::TryInto, sym::TryFrom, sym::FromIterator]
                                                     .map(|x| Some(x))
@@ -905,8 +907,7 @@ impl<'a> Resolver<'a> {
                                             } else {
                                                 false
                                             }
-                                        },
-                                    );
+                                        });
 
                                 requires_note.then(|| {
                                     format!(
@@ -1186,7 +1187,7 @@ impl<'a> Resolver<'a> {
                 ("", " from prelude")
             } else if b.is_extern_crate()
                 && !b.is_import()
-                && self.session.opts.externs.get(&ident.as_str()).is_some()
+                && self.session.opts.externs.get(ident.as_str()).is_some()
             {
                 ("", " passed with `--extern`")
             } else if add_built_in {
@@ -1481,12 +1482,12 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
             return None;
         }
 
-        // Sort extern crate names in reverse order to get
+        // Sort extern crate names in *reverse* order to get
         // 1) some consistent ordering for emitted diagnostics, and
         // 2) `std` suggestions before `core` suggestions.
         let mut extern_crate_names =
             self.r.extern_prelude.iter().map(|(ident, _)| ident.name).collect::<Vec<_>>();
-        extern_crate_names.sort_by_key(|name| Reverse(name.as_str()));
+        extern_crate_names.sort_by(|a, b| b.as_str().partial_cmp(a.as_str()).unwrap());
 
         for name in extern_crate_names.into_iter() {
             // Replace first ident with a crate name and check if that is valid.
