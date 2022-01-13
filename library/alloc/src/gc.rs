@@ -46,6 +46,7 @@ static ALLOCATOR: GcAllocator = GcAllocator;
 /// will always implement `Send` because it requires `T` to implement `Send`.
 /// This is because if `T` has a finalizer, it will be run on a seperate thread.
 #[unstable(feature = "gc", issue = "none")]
+#[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
 #[derive(PartialEq, Eq)]
 pub struct Gc<T: ?Sized + Send> {
     ptr: NonNull<GcBox<T>>,

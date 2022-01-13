@@ -218,7 +218,7 @@ language_item_table! {
 
     NoTrace,                 sym::notrace,             no_trace_trait,             Target::Trait,          GenericRequirement::None;
     Conservative,            sym::conservative,        conservative_trait,         Target::Trait,          GenericRequirement::None;
-    GcSmartPointer,          sym::gcsp,                gc_smart_pointer_trait,     Target::Trait,          GenericRequirement::None;
+    Gc,                      sym::gc,                  gc_type,                    Target::Struct,         GenericRequirement::Exact(1);
 
     CoerceUnsized,           sym::coerce_unsized,      coerce_unsized_trait,       Target::Trait,          GenericRequirement::Minimum(1);
     DispatchFromDyn,         sym::dispatch_from_dyn,   dispatch_from_dyn_trait,    Target::Trait,          GenericRequirement::Minimum(1);
