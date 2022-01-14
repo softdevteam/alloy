@@ -1,4 +1,4 @@
-// ignore-test
+// run-pass
 // ignore-tidy-linelength
 #![feature(gc)]
 
@@ -32,6 +32,7 @@ const CONST_U8: bool = mem::needs_finalizer::<u8>();
 const CONST_STRING: bool = mem::needs_finalizer::<String>();
 const CONST_FINALIZABLE: bool = mem::needs_finalizer::<HasDrop>();
 const CONST_UNFINALIZABLE: bool = mem::needs_finalizer::<HasDropNoFinalize>();
+const CONST_TUPLE_UNFINALIZABLE: bool = mem::needs_finalizer::<(HasDropNoFinalize,)>();
 
 static STATIC_U8: bool = mem::needs_finalizer::<u8>();
 static STATIC_STRING: bool = mem::needs_finalizer::<String>();
@@ -67,6 +68,7 @@ fn main() {
     assert!(!CONST_STRING);
     assert!(CONST_FINALIZABLE);
     assert!(!CONST_UNFINALIZABLE);
+    assert!(!CONST_TUPLE_UNFINALIZABLE);
 
     assert!(!STATIC_U8);
     assert!(!STATIC_STRING);

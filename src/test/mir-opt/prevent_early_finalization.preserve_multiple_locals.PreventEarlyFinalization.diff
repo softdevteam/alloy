@@ -2,8 +2,8 @@
 + // MIR for `preserve_multiple_locals` after PreventEarlyFinalization
   
   | User Type Annotations
-  | 0: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[ed55]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[ed55]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:19:15: 19:22
-  | 1: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[ed55]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[ed55]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:20:15: 20:22
+  | 0: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[4b18]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[4b18]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:19:15: 19:22
+  | 1: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[4b18]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[4b18]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:20:15: 20:22
   |
   fn preserve_multiple_locals() -> () {
       let mut _0: ();                      // return place in scope 0 at $DIR/prevent_early_finalization.rs:18:31: 18:31

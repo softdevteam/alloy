@@ -20,6 +20,7 @@ mod assoc;
 mod common_traits;
 pub mod instance;
 mod needs_drop;
+mod needs_finalizer;
 pub mod representability;
 mod ty;
 
@@ -27,6 +28,7 @@ pub fn provide(providers: &mut Providers) {
     assoc::provide(providers);
     common_traits::provide(providers);
     needs_drop::provide(providers);
+    needs_finalizer::provide(providers);
     ty::provide(providers);
     instance::provide(providers);
 }

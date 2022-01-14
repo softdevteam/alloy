@@ -2,7 +2,7 @@
 + // MIR for `preserve_args_inner` after PreventEarlyFinalization
   
   | User Type Annotations
-  | 0: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[ed55]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[ed55]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:30:5: 30:12
+  | 0: Canonical { max_universe: U0, variables: [CanonicalVarInfo { kind: Ty(General(U0)) }, CanonicalVarInfo { kind: Ty(General(U0)) }], value: TypeOf(DefId(5:4632 ~ alloc[4b18]::gc::{impl#5}::new), UserSubsts { substs: [^0], user_self_ty: Some(UserSelfTy { impl_def_id: DefId(5:4630 ~ alloc[4b18]::gc::{impl#5}), self_ty: std::gc::Gc<^1> }) }) } at $DIR/prevent_early_finalization.rs:30:5: 30:12
   |
   fn preserve_args_inner(_1: Gc<NeedsFinalize>, _2: Gc<NeedsFinalize>) -> Gc<NeedsFinalize> {
       debug x => _1;                       // in scope 0 at $DIR/prevent_early_finalization.rs:29:24: 29:25
