@@ -3,7 +3,7 @@ use rustc_ast::{LlvmAsmDialect, StrStyle};
 use rustc_hir as hir;
 use rustc_middle::mir::patch::MirPatch;
 use rustc_middle::mir::*;
-use rustc_middle::ty::{ParamEnv, TyCtxt};
+use rustc_middle::ty::{self, ParamEnv, TyCtxt};
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::DUMMY_SP;
 
@@ -12,7 +12,7 @@ pub struct PreventEarlyFinalization;
 
 impl<'tcx> MirPass<'tcx> for PreventEarlyFinalization {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-        if tcx.lang_items().gc_smart_pointer_trait().is_none() {
+        if tcx.lang_items().gc_type().is_none() {
             return;
         }
         let barrier = build_asm_barrier();
@@ -70,9 +70,23 @@ fn needs_barrier<'tcx>(
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
 ) -> bool {
-    local.is_user_variable()
-        && !local.ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), param_env)
-        && local.ty.is_gc_smart_pointer(tcx.at(DUMMY_SP), param_env)
+    if !local.is_user_variable() {
+        return false;
+    }
+
+    if let ty::Adt(def, ..) = local.ty.kind() {
+        if def.did != tcx.lang_items().gc_type().unwrap() {
+            return false;
+        }
+
+        if local.ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), param_env) {
+            return false;
+        }
+
+        return true;
+    }
+
+    return false;
 }
 
 fn build_asm_barrier<'tcx>() -> Box<LlvmInlineAsm<'tcx>> {

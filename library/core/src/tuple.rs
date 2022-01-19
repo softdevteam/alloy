@@ -2,6 +2,7 @@
 
 use crate::cmp::Ordering::*;
 use crate::cmp::*;
+use crate::gc::NoFinalize;
 
 // macro for implementing n-ary tuple functions and operations
 macro_rules! tuple_impls {
@@ -66,6 +67,9 @@ macro_rules! tuple_impls {
                     ($({ let x: $T = Default::default(); x},)+)
                 }
             }
+
+            #[stable(feature = "rust1", since = "1.0.0")]
+            unsafe impl<$($T:NoFinalize),+> NoFinalize for ($($T,)+) {}
         )+
     }
 }

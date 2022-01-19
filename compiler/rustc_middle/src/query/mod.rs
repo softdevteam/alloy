@@ -1172,10 +1172,6 @@ rustc_queries! {
     query is_conservative_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` is `Conservative`", env.value }
     }
-    /// Query backing `TyS::is_gc_smart_pointer`.
-    query is_gc_smart_pointer_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-        desc { "computing whether `{}` is `GcSmartPointer`", env.value }
-    }
     /// Query backing `TyS::needs_drop`.
     query needs_drop_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` needs drop", env.value }
@@ -1214,7 +1210,7 @@ rustc_queries! {
     /// GC if and only if any of those types require finalization. If the
     /// ADT is known to always need finalization then
     /// `Err(AlwaysRequiresDrop)` is returned.
-    query adt_finalize_tys(def_id: DefId) -> Result<&'tcx ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
+    query adt_finalizer_tys(def_id: DefId) -> Result<&'tcx ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
         desc { |tcx| "computing when `{}` needs finalize", tcx.def_path_str(def_id) }
         cache_on_disk_if { true }
     }
