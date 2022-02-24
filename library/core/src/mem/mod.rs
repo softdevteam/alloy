@@ -603,6 +603,17 @@ pub const fn needs_finalizer<T>() -> bool {
     intrinsics::needs_finalizer::<T>()
 }
 
+#[inline]
+#[unstable(feature = "gc", issue = "none")]
+#[cfg(not(bootstrap))]
+#[allow(missing_docs)]
+#[cfg_attr(not(bootstrap), lang = "make_collectable_lang")]
+pub unsafe fn make_collectable<T>(value: &T) {
+    // SAFETY: the caller must guarantee that `value` doesn't contain heap
+    // allocations accessed outside `Gc` which are hidden from the collector.
+    unsafe { intrinsics::make_collectable::<T>(value) }
+}
+
 /// Returns the value of type `T` represented by the all-zero byte-pattern.
 ///
 /// This means that, for example, the padding byte in `(u8, u16)` is not

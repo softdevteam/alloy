@@ -202,6 +202,7 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
                 Vec::new(),
                 tcx.mk_imm_ref(tcx.mk_region(ty::ReStatic), tcx.mk_slice(tcx.types.u64)),
             ),
+            sym::make_collectable => (1, vec![tcx.mk_imm_ptr(param(0))], tcx.types.unit),
             sym::type_name => (1, Vec::new(), tcx.mk_static_str()),
             sym::type_id => (1, Vec::new(), tcx.types.u64),
             sym::offset | sym::arith_offset => (
