@@ -334,6 +334,10 @@ impl<'ll, 'tcx> IntrinsicCallMethods<'tcx> for Builder<'_, 'll, 'tcx> {
                 }
             }
 
+            sym::make_collectable => {
+                todo!();
+            }
+
             sym::black_box => {
                 args[0].val.store(self, result);
 

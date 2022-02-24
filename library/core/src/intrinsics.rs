@@ -1165,6 +1165,10 @@ extern "rust-intrinsic" {
     #[cfg(not(bootstrap))]
     pub fn gc_layout<T>() -> &'static [u64];
 
+    #[unstable(feature = "gc", issue = "none")]
+    #[cfg(not(bootstrap))]
+    pub fn make_collectable<T>(value: *const T);
+
     #[rustc_const_unstable(feature = "gc", issue = "none")]
     #[cfg(not(bootstrap))]
     pub fn needs_tracing<T>() -> bool;
