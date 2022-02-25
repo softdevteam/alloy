@@ -193,6 +193,13 @@ pub unsafe fn alloc_precise(layout: Layout, bitmap: usize, bitmap_size: usize) -
     unsafe { __rust_alloc_precise(layout.size(), layout.align(), bitmap, bitmap_size) }
 }
 
+#[stable(feature = "global_alloc", since = "1.28.0")]
+#[allow(missing_docs)]
+#[no_mangle]
+pub unsafe fn set_managed(ptr: *mut u8) {
+    boehm::GcAllocator::set_managed(ptr)
+}
+
 #[cfg(not(test))]
 impl Global {
     #[inline]

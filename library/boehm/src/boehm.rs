@@ -38,6 +38,10 @@ extern "C" {
 
     pub(crate) fn GC_free(dead: *mut u8);
 
+    pub fn GC_set_managed(ptr: *mut u8);
+
+    pub(crate) fn GC_is_managed(ptr: *const u8) -> bool;
+
     pub(crate) fn GC_register_finalizer(
         ptr: *mut u8,
         finalizer: Option<unsafe extern "C" fn(*mut u8, *mut u8)>,
