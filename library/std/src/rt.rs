@@ -86,6 +86,10 @@ unsafe fn init(argc: isize, argv: *const *const u8) {
         // handler next time. The is not true in the reverse case.
         GcAllocator::init();
 
+        // Boehm GC prints OOM warnings which are useful for debugging, but
+        // annoying when building the compiler in release mode.
+        GcAllocator::suppress_warnings();
+
         sys::init(argc, argv);
 
         let main_guard = sys::thread::guard::init();
