@@ -149,4 +149,12 @@ impl GcAllocator {
     pub fn allow_register_threads() {
         unsafe { boehm::GC_allow_register_threads() }
     }
+
+    pub fn set_managed(ptr: *mut u8) {
+        unsafe { boehm::GC_set_managed(ptr) }
+    }
+
+    pub fn is_managed<T>(ptr: *const T) -> bool {
+        unsafe { boehm::GC_is_managed(ptr as *const u8) }
+    }
 }
