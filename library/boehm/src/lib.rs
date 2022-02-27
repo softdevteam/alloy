@@ -157,4 +157,8 @@ impl GcAllocator {
     pub fn is_managed<T>(ptr: *const T) -> bool {
         unsafe { boehm::GC_is_managed(ptr as *const u8) }
     }
+
+    pub fn suppress_warnings() {
+        unsafe { boehm::GC_set_warn_proc(&boehm::GC_ignore_warn_proc as *const _ as *mut u8) };
+    }
 }
