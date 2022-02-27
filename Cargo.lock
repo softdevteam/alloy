@@ -170,6 +170,7 @@ dependencies = [
 name = "boehm"
 version = "0.1.0"
 dependencies = [
+ "cmake",
  "compiler_builtins",
  "core",
 ]
