@@ -44,6 +44,8 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use tracing::{debug, trace};
 
+use rustc_monomorphize::collectable_trait::is_collectable_trait_method;
+
 pub(super) struct EncodeContext<'a, 'tcx> {
     opaque: opaque::Encoder,
     tcx: TyCtxt<'tcx>,
@@ -882,7 +884,10 @@ fn should_encode_mir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> (bool, bool) {
             let is_const_fn = tcx.is_const_fn_raw(def_id.to_def_id())
                 || tcx.has_attr(def_id.to_def_id(), sym::default_method_body_is_const);
             let always_encode_mir = tcx.sess.opts.debugging_opts.always_encode_mir;
-            (is_const_fn, needs_inline || always_encode_mir)
+
+            let col_trait = is_collectable_trait_method(tcx, def_id.to_def_id());
+
+            (is_const_fn, needs_inline || always_encode_mir || col_trait)
         }
         // Closures can't be const fn.
         DefKind::Closure => {

@@ -335,7 +335,9 @@ impl<'ll, 'tcx> IntrinsicCallMethods<'tcx> for Builder<'_, 'll, 'tcx> {
             }
 
             sym::make_collectable => {
-                todo!();
+                // FIXME: Not yet implemented, but can't panic because this
+                // intrinsic is called during the mono tests.
+                self.const_bool(true)
             }
 
             sym::black_box => {
