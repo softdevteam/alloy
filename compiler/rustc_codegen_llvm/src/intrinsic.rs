@@ -22,6 +22,8 @@ use rustc_span::{sym, symbol::kw, Span, Symbol};
 use rustc_target::abi::{self, Align, HasDataLayout, Primitive};
 use rustc_target::spec::{HasTargetSpec, PanicStrategy};
 
+use crate::intrinsic_util::codegen_collectable_calls;
+
 use std::cmp::Ordering;
 use std::iter;
 
@@ -335,9 +337,8 @@ impl<'ll, 'tcx> IntrinsicCallMethods<'tcx> for Builder<'_, 'll, 'tcx> {
             }
 
             sym::make_collectable => {
-                // FIXME: Not yet implemented, but can't panic because this
-                // intrinsic is called during the mono tests.
-                self.const_bool(true)
+                codegen_collectable_calls(self, args[0], substs);
+                self.const_null(self.type_i8p())
             }
 
             sym::black_box => {
