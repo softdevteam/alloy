@@ -609,9 +609,7 @@ pub const fn needs_finalizer<T>() -> bool {
 #[allow(missing_docs)]
 #[cfg_attr(not(bootstrap), lang = "make_collectable_lang")]
 pub unsafe fn make_collectable<T>(value: &T) {
-    // SAFETY: the caller must guarantee that `value` doesn't contain heap
-    // allocations accessed outside `Gc` which are hidden from the collector.
-    unsafe { intrinsics::make_collectable::<T>(value) }
+    intrinsics::make_collectable::<T>(value)
 }
 
 /// Returns the value of type `T` represented by the all-zero byte-pattern.

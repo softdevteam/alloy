@@ -44,9 +44,11 @@ pub(crate) fn collect_mono<'a, 'tcx>(
                 output.push(crate::collector::create_fn_mono_item(tcx, f, DUMMY_SP));
             }
 
-            for v in adt_def.variants.iter() {
-                for f in v.fields.iter() {
-                    collect_mono(tcx, f.ty(tcx, substs), substs, output);
+            if adt_def.is_enum() {
+                for v in adt_def.variants.iter() {
+                    for f in v.fields.iter() {
+                        collect_mono(tcx, f.ty(tcx, substs), substs, output);
+                    }
                 }
             }
 
