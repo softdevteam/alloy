@@ -102,6 +102,40 @@ fn codegen_collectable_calls_for_value<'ll, 'tcx>(
                     codegen_collectable_calls_for_value(builder, field, substs);
                 }
         }
+        ty::Dynamic(..) => {
+            // It's only possible to generate calls to `set_collectable` if the
+            // trait object itself implements `Collectable`. This is because the
+            // trait object's concrete type value may or may not implement
+            // `Collectable`, but there's no way to know at compile-time or even
+            // run-time what that type is.
+            //
+            // This means that trait objects have to be treated opaquely, where,
+            // similar to untagged unions, it's up to the user to specify what
+            // happens when one is encountered in the `Collectable` impl on the
+            // trait object.
+            //
+            // This is very dangerous, because it means that the trait object's
+            // `Collectable` impl must work for all concrete values that are
+            // used to make a trait object. In other words, every concrete value
+            // used as a trait object must have the same memory layout,
+            // otherwise, memory leaks can occur, or worse, undefined behaviour
+            // can happen by memory operations on invalid pointers.
+            //
+            // Typically, trait objects made from concrete values which contain
+            // heap allocations are not ideal candidates for finalizer elision
+            // because of how dangerous this is. Instead, the preferred use case
+            // is to implement `Collectable` with empty methods on the trait
+            // object to signal to rustc that the trait object contains no heap
+            // allocations and it is safe to remove the call to a finalizer.
+            if ty.is_collectable(builder.tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
+                let mono_ty = builder.tcx.mk_substs(std::iter::once::<GenericArg<'tcx>>(ty.into()));
+                let def_id = langcall(builder.tcx, None, "", LangItem::SetCollectable);
+                let inst = ty::Instance::resolve_for_fn_ptr(builder.tcx, ty::ParamEnv::reveal_all(), def_id, mono_ty).unwrap();
+                let f = builder.cx().get_fn_addr(inst);
+                let fn_ty = builder.type_func(&[builder.val_ty(place.llval)], builder.type_void());
+                builder.call(fn_ty, f, &[place.llval], None);
+            }
+        }
         _ => todo!(),
     }
 }

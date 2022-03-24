@@ -256,4 +256,34 @@ fn test_adt() {
         assert!(GcAllocator::is_managed(test[0].as_ref()));
         assert!(GcAllocator::is_managed(test[1].as_ref()));
     }
+
+    // Test a trait object
+    {
+
+        struct Concrete(Box<usize>);
+
+        trait Virtual {
+            fn get_underlying_heap_addr(&self) -> *const u8;
+        }
+
+        impl Virtual for Concrete {
+            fn get_underlying_heap_addr(&self) -> *const u8 {
+                self.0.as_ref() as *const _ as *const u8
+            }
+        }
+
+        unsafe impl<'a> std::gc::Collectable for dyn Virtual + 'a {
+            unsafe fn set_collectable(&self) {
+                std::alloc::set_managed(self.get_underlying_heap_addr() as *mut u8)
+            }
+        }
+
+        let test = &Concrete(Box::new(123)) as &dyn Virtual;
+
+        assert!(!GcAllocator::is_managed(test.get_underlying_heap_addr()));
+
+        unsafe { make_collectable(&test) };
+
+        assert!(GcAllocator::is_managed(test.get_underlying_heap_addr()));
+    }
 }
