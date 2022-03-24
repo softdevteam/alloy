@@ -1,6 +1,7 @@
 use rustc_codegen_ssa::mir::operand::OperandRef;
 use rustc_codegen_ssa::mir::operand::OperandValue;
 use rustc_codegen_ssa::mir::place::PlaceRef;
+use rustc_codegen_ssa::common::langcall;
 use rustc_codegen_ssa::traits::{BaseTypeMethods, BuilderMethods, MiscMethods};
 use rustc_hir::LangItem;
 use rustc_middle::ty;
@@ -61,16 +62,12 @@ fn codegen_collectable_calls_for_value<'ll, 'tcx>(
                 codegen_collectable_calls_for_value(builder, place, substs)
             },
             ty::Adt(adt_def, substs) => {
-                let set_col_did = match builder.tcx.lang_items().require(LangItem::SetCollectable) {
-                    Ok(id) => id,
-                    Err(err) => builder.tcx.sess.fatal(&err),
-                };
-
                 // First, add a call to the current ADT's collectable trait if
                 // it exists.
                 if ty.is_collectable(builder.tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
                     let mono_ty = builder.tcx.mk_substs(std::iter::once::<GenericArg<'tcx>>(ty.into()));
-                    let inst = ty::Instance::resolve(builder.tcx, ty::ParamEnv::reveal_all(), set_col_did, mono_ty).unwrap().unwrap();
+                    let def_id = langcall(builder.tcx, None, "", LangItem::SetCollectable);
+                    let inst = ty::Instance::resolve(builder.tcx, ty::ParamEnv::reveal_all(), def_id, mono_ty).unwrap().unwrap();
                     let f = builder.cx().get_fn_addr(inst);
                     let fn_ty = builder.type_func(&[builder.val_ty(place.llval)], builder.type_void());
                     builder.call(fn_ty, f, &[place.llval], None);
