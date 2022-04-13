@@ -176,6 +176,10 @@ top_level_options!(
         incremental: Option<PathBuf> [UNTRACKED],
         assert_incr_state: Option<IncrementalStateAssertion> [UNTRACKED],
 
+        // Attempts to remove finalizers for GC'd values where dropping is not
+        // necessary.
+        gc_optimize_finalizers: bool [TRACKED],
+
         debugging_opts: DebuggingOptions [SUBSTRUCT],
         prints: Vec<PrintRequest> [UNTRACKED],
         /// Determines which borrow checker(s) to run. This is the parsed, sanitized

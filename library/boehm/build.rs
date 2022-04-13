@@ -37,6 +37,7 @@ fn main() {
     cmake::Config::new(&boehm_src)
         .pic(true)
         .define("BUILD_SHARED_LIBS", "OFF")
+        .define("enable_allocation_switching", "ON")
         .cflag("-DGC_IGNORE_WARN")
         .cflag("-DGC_ALWAYS_MULTITHREADED")
         .build();
