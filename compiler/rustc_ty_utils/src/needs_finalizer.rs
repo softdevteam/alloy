@@ -14,8 +14,9 @@ fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<
     if !tcx.sess.opts.gc_optimize_finalizers {
         return tcx.needs_drop_raw(query);
     }
-    let finalizer_fields =
-        move |adt_def: &ty::AdtDef| tcx.adt_finalizer_tys(adt_def.did).map(|tys| tys.iter());
+    let finalizer_fields = move |adt_def: &ty::AdtDef, _must_recurse: bool| {
+        tcx.adt_finalizer_tys(adt_def.did).map(|tys| tys.iter())
+    };
     let res =
         NeedsDropTypes::new(tcx, query.param_env, query.value, finalizer_fields).next().is_some();
     debug!("needs_finalize_raw({:?}) = {:?}", query, res);
@@ -59,7 +60,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
 
 impl<'tcx, F, I> Iterator for NeedsDropTypes<'tcx, F>
 where
-    F: Fn(&ty::AdtDef) -> NeedsDropResult<I>,
+    F: Fn(&ty::AdtDef, bool) -> NeedsDropResult<I>,
     I: Iterator<Item = Ty<'tcx>>,
 {
     type Item = NeedsDropResult<Ty<'tcx>>;
@@ -76,10 +77,6 @@ where
                 return Some(Err(AlwaysRequiresDrop));
             }
 
-            if ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), self.param_env) {
-                return None;
-            }
-
             let components = match needs_drop_components(ty, &tcx.data_layout) {
                 Err(e) => return Some(Err(e)),
                 Ok(components) => components,
@@ -94,7 +91,14 @@ where
 
             for component in components {
                 match *component.kind() {
-                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env) => (),
+                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env)
+                        && !component.must_check_component_tys_for_finalizer(
+                            tcx.at(DUMMY_SP),
+                            self.param_env,
+                        ) =>
+                    {
+                        ()
+                    }
 
                     ty::Closure(_, substs) => {
                         queue_type(self, substs.as_closure().tupled_upvars_ty());
@@ -125,7 +129,22 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, substs) => {
-                        let tys = match (self.adt_components)(adt_def) {
+                        if ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), self.param_env) {
+                            continue;
+                        }
+
+                        let must_recurse = component.must_check_component_tys_for_finalizer(
+                            tcx.at(DUMMY_SP),
+                            self.param_env,
+                        );
+
+                        if must_recurse {
+                            for subst_ty in substs.types() {
+                                queue_type(self, subst_ty);
+                            }
+                        }
+
+                        let tys = match (self.adt_components)(adt_def, must_recurse) {
                             Err(e) => return Some(Err(e)),
                             Ok(tys) => tys,
                         };
@@ -166,11 +185,11 @@ fn adt_finalizer_tys(
     def_id: DefId,
 ) -> Result<&ty::List<Ty<'_>>, AlwaysRequiresDrop> {
     let adt_has_dtor = |adt_def: &ty::AdtDef| adt_def.destructor(tcx).is_some();
-    let adt_components = move |adt_def: &ty::AdtDef| {
+    let adt_components = move |adt_def: &ty::AdtDef, must_recurse: bool| {
         if adt_def.is_manually_drop() {
             debug!("dt_finalizer_tys: `{:?}` is manually drop", adt_def);
             return Ok(Vec::new().into_iter());
-        } else if adt_has_dtor(adt_def) {
+        } else if adt_has_dtor(adt_def) && !must_recurse {
             debug!("adt_finalizer_tys: `{:?}` implements `Drop`", adt_def);
             // Special case tuples
             return Err(AlwaysRequiresDrop);

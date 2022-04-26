@@ -26,6 +26,16 @@ pub trait Conservative {}
 #[cfg_attr(not(bootstrap), lang = "no_finalize")]
 pub unsafe trait NoFinalize {}
 
+#[cfg_attr(not(bootstrap), lang = "flz_comps")]
+/// Prevents a type from being finalized by GC if none of the component types
+/// need dropping. This can be thought of as a weaker version of `NoFinalize`.
+///
+/// # Safety
+///
+/// Unsafe because this should be used with care. Preventing drop from
+/// running can lead to surprising behaviour.
+pub unsafe trait OnlyFinalizeComponents {}
+
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(not(bootstrap), lang = "notrace")]
 pub auto trait NoTrace {}

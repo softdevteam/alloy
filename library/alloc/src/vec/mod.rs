@@ -58,7 +58,7 @@ use core::cmp;
 use core::cmp::Ordering;
 use core::convert::TryFrom;
 use core::fmt;
-use core::gc::NoFinalize;
+use core::gc::{NoFinalize, OnlyFinalizeComponents};
 use core::hash::{Hash, Hasher};
 use core::intrinsics::{arith_offset, assume};
 use core::iter;
@@ -2805,6 +2805,12 @@ unsafe impl<T: NoFinalize, A: Allocator> NoFinalize for Vec<T, A> {}
 
 #[unstable(feature = "gc", issue = "none")]
 unsafe impl<T: NoFinalize> NoFinalize for Vec<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T> OnlyFinalizeComponents for Vec<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, A: Allocator> OnlyFinalizeComponents for Vec<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for Vec<T, A> {

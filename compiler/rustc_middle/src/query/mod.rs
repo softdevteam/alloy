@@ -1176,6 +1176,10 @@ rustc_queries! {
     query is_collectable_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` is `Collectable`", env.value }
     }
+    /// Query backing `TyS::must_check_component_tys_for_finalizer`.
+    query must_check_component_tys_for_finalizer_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` contains types which might need finalizing", env.value }
+    }
     /// Query backing `TyS::needs_drop`.
     query needs_drop_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` needs drop", env.value }
