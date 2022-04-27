@@ -11,7 +11,7 @@ use core::{
     ptr::{null_mut, NonNull},
 };
 
-use core::gc::NoTrace;
+use core::gc::{NoFinalize, NoTrace};
 
 use boehm::GcAllocator;
 
@@ -57,6 +57,8 @@ unsafe impl<T: Send> Send for Gc<T> {}
 unsafe impl<T: Sync + Send> Sync for Gc<T> {}
 
 impl<T: ?Sized> !NoTrace for Gc<T> {}
+
+unsafe impl<T: ?Sized + Send> NoFinalize for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc<T> {}
