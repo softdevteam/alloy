@@ -215,6 +215,7 @@ language_item_table! {
 
     Drop,                    sym::drop,                drop_trait,                 Target::Trait,          GenericRequirement::None;
     NoFinalize,              sym::no_finalize,         no_finalize_trait,          Target::Trait,          GenericRequirement::None;
+    FlzComps,                sym::flz_comps,           flz_comps_trait,            Target::Trait,          GenericRequirement::None;
 
     NoTrace,                 sym::notrace,             no_trace_trait,             Target::Trait,          GenericRequirement::None;
     Conservative,            sym::conservative,        conservative_trait,         Target::Trait,          GenericRequirement::None;

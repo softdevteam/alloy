@@ -21,6 +21,9 @@ struct FinalizedContainer<T>(T);
 struct MaybeFinalize<T>(T);
 struct ExplicitNoFinalize;
 
+// This struct doesn't need finalizing, but it's not annoted as such.
+struct NonAnnotated(usize);
+
 unsafe impl NoFinalize for ExplicitNoFinalize {}
 unsafe impl NoFinalize for HasDropNoFinalize {}
 
@@ -63,6 +66,9 @@ static OUTER_NEEDS_FINALIZING: bool = mem::needs_finalizer::<FinalizedContainer<
 static STATIC_MAYBE_FINALIZE_NO_COMPONENTS: bool = mem::needs_finalizer::<MaybeFinalize<ExplicitNoFinalize>>();
 static STATIC_MAYBE_FINALIZE_DROP_COMPONENTS: bool = mem::needs_finalizer::<MaybeFinalize<HasDrop>>();
 
+static VEC_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Vec<NonAnnotated>>();
+static BOX_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Box<NonAnnotated>>();
+
 fn main() {
     assert!(!CONST_U8);
     assert!(!CONST_STRING);
@@ -98,4 +104,7 @@ fn main() {
 
     assert!(!STATIC_MAYBE_FINALIZE_NO_COMPONENTS);
     assert!(STATIC_MAYBE_FINALIZE_DROP_COMPONENTS);
+
+    assert!(!VEC_COLLECTABLE_NO_DROP_ELEMENT);
+    assert!(!BOX_COLLECTABLE_NO_DROP_ELEMENT);
 }
