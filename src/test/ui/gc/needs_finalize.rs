@@ -3,7 +3,7 @@
 #![feature(gc)]
 
 use std::mem;
-use std::gc::NoFinalize;
+use std::gc::{Gc, NoFinalize};
 
 struct HasDrop;
 
@@ -69,6 +69,8 @@ static STATIC_MAYBE_FINALIZE_DROP_COMPONENTS: bool = mem::needs_finalizer::<Mayb
 static VEC_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Vec<NonAnnotated>>();
 static BOX_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Box<NonAnnotated>>();
 
+static NESTED_GC_NO_FINALIZE: bool = mem::needs_finalizer::<Box<Gc<NonAnnotated>>>();
+
 fn main() {
     assert!(!CONST_U8);
     assert!(!CONST_STRING);
@@ -107,4 +109,5 @@ fn main() {
 
     assert!(!VEC_COLLECTABLE_NO_DROP_ELEMENT);
     assert!(!BOX_COLLECTABLE_NO_DROP_ELEMENT);
+    assert!(!NESTED_GC_NO_FINALIZE);
 }
