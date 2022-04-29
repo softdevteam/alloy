@@ -176,10 +176,6 @@ top_level_options!(
         incremental: Option<PathBuf> [UNTRACKED],
         assert_incr_state: Option<IncrementalStateAssertion> [UNTRACKED],
 
-        // Attempts to remove finalizers for GC'd values where dropping is not
-        // necessary.
-        gc_optimize_finalizers: bool [TRACKED],
-
         debugging_opts: DebuggingOptions [SUBSTRUCT],
         prints: Vec<PrintRequest> [UNTRACKED],
         /// Determines which borrow checker(s) to run. This is the parsed, sanitized
@@ -1212,6 +1208,8 @@ options! {
         "whether each function should go in its own section"),
     future_incompat_test: bool = (false, parse_bool, [UNTRACKED],
         "forces all lints to be future incompatible, used for internal testing (default: no)"),
+    gc_optimize_finalizers: bool = (true, parse_bool, [UNTRACKED],
+        "attempts to remove finalizers for GC'd values where dropping is not necessary (default: yes)"),
     gcc_ld: Option<LdImpl> = (None, parse_gcc_ld, [TRACKED], "implementation of ld used by cc"),
     graphviz_dark_mode: bool = (false, parse_bool, [UNTRACKED],
         "use dark-themed colors in graphviz output (default: no)"),

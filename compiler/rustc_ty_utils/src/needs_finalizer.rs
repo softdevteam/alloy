@@ -11,9 +11,6 @@ use rustc_span::DUMMY_SP;
 type NeedsDropResult<T> = Result<T, AlwaysRequiresDrop>;
 
 fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-    if !tcx.sess.opts.gc_optimize_finalizers {
-        return tcx.needs_drop_raw(query);
-    }
     let finalizer_fields = move |adt_def: &ty::AdtDef, _must_recurse: bool| {
         tcx.adt_finalizer_tys(adt_def.did).map(|tys| tys.iter())
     };
