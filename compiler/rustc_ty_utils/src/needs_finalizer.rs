@@ -88,11 +88,7 @@ where
 
             for component in components {
                 match *component.kind() {
-                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env)
-                        && !component.must_check_component_tys_for_finalizer(
-                            tcx.at(DUMMY_SP),
-                            self.param_env,
-                        ) =>
+                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env) =>
                     {
                         ()
                     }
