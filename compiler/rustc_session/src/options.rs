@@ -1208,6 +1208,8 @@ options! {
         "whether each function should go in its own section"),
     future_incompat_test: bool = (false, parse_bool, [UNTRACKED],
         "forces all lints to be future incompatible, used for internal testing (default: no)"),
+    gc_disable_finalizers: bool = (false, parse_bool, [UNTRACKED],
+        "prevent the collector from running any finalizers (default: no)"),
     gc_optimize_finalizers: bool = (true, parse_bool, [UNTRACKED],
         "attempts to remove finalizers for GC'd values where dropping is not necessary (default: yes)"),
     gcc_ld: Option<LdImpl> = (None, parse_gcc_ld, [TRACKED], "implementation of ld used by cc"),
