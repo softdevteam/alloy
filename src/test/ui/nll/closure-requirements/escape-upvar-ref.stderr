@@ -2,7 +2,7 @@ note: external requirements
   --> $DIR/escape-upvar-ref.rs:23:27
    |
 LL |         let mut closure = || p = &y;
-   |                           ^^^^^^^^^
+   |                           ^^
    |
    = note: defining type: test::{closure#0} with closure substs [
                i16,
@@ -36,7 +36,7 @@ LL |         let mut closure = || p = &y;
 ...
 LL |     }
    |     - `y` dropped here while still borrowed
-LL | 
+LL |
 LL |     deref(p);
    |           - borrow later used here
 

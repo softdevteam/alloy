@@ -1,14 +1,14 @@
 use crate::cell::UnsafeCell;
-use crate::sys::condvar::Condvar;
-use crate::sys::mutex::Mutex;
+use crate::sys::locks::{MovableCondvar, Mutex};
+use crate::sys_common::lazy_box::{LazyBox, LazyInit};
 
-pub struct RWLock {
+pub struct RwLock {
     lock: Mutex,
-    cond: Condvar,
+    cond: MovableCondvar,
     state: UnsafeCell<State>,
 }
 
-pub type MovableRWLock = RWLock;
+pub type MovableRwLock = RwLock;
 
 enum State {
     Unlocked,
@@ -16,8 +16,8 @@ enum State {
     Writing,
 }
 
-unsafe impl Send for RWLock {}
-unsafe impl Sync for RWLock {}
+unsafe impl Send for RwLock {}
+unsafe impl Sync for RwLock {}
 
 // This rwlock implementation is a relatively simple implementation which has a
 // condition variable for readers/writers as well as a mutex protecting the
@@ -27,9 +27,13 @@ unsafe impl Sync for RWLock {}
 // hopefully correct this implementation is very likely to want to be changed in
 // the future.
 
-impl RWLock {
-    pub const fn new() -> RWLock {
-        RWLock { lock: Mutex::new(), cond: Condvar::new(), state: UnsafeCell::new(State::Unlocked) }
+impl RwLock {
+    pub const fn new() -> RwLock {
+        RwLock {
+            lock: Mutex::new(),
+            cond: MovableCondvar::new(),
+            state: UnsafeCell::new(State::Unlocked),
+        }
     }
 
     #[inline]
@@ -84,12 +88,6 @@ impl RWLock {
         self.lock.unlock();
         // FIXME: should only wake up one of these some of the time
         self.cond.notify_all();
-    }
-
-    #[inline]
-    pub unsafe fn destroy(&self) {
-        self.lock.destroy();
-        self.cond.destroy();
     }
 }
 

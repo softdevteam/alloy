@@ -4,7 +4,8 @@ use clippy_utils::ty::implements_trait;
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{Expr, ExprKind, Pat, PatKind};
-use rustc_lint::{LateContext, LateLintPass};
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty::Ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
@@ -26,7 +27,7 @@ declare_clippy_lint! {
     ///     do_thing();
     /// }
     /// ```
-    /// Should be written
+    /// Use instead:
     /// ```rust,ignore
     /// if x == Some(2) {
     ///     do_thing();
@@ -56,7 +57,7 @@ fn unary_pattern(pat: &Pat<'_>) -> bool {
     }
 }
 
-fn is_structural_partial_eq(cx: &LateContext<'tcx>, ty: Ty<'tcx>, other: Ty<'tcx>) -> bool {
+fn is_structural_partial_eq<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>, other: Ty<'tcx>) -> bool {
     if let Some(def_id) = cx.tcx.lang_items().eq_trait() {
         implements_trait(cx, ty, def_id, &[other.into()])
     } else {
@@ -67,6 +68,7 @@ fn is_structural_partial_eq(cx: &LateContext<'tcx>, ty: Ty<'tcx>, other: Ty<'tcx
 impl<'tcx> LateLintPass<'tcx> for PatternEquality {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
         if_chain! {
+            if !in_external_macro(cx.sess(), expr.span);
             if let ExprKind::Let(let_expr) = expr.kind;
             if unary_pattern(let_expr.pat);
             let exp_ty = cx.typeck_results().expr_ty(let_expr.init);

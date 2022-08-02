@@ -52,9 +52,9 @@ ENV \
     CFLAGS_x86_64_fortanix_unknown_sgx="-D__ELF__ -isystem/usr/include/x86_64-linux-gnu -mlvi-hardening -mllvm -x86-experimental-lvi-inline-asm-hardening" \
     CXX_x86_64_fortanix_unknown_sgx=clang++-11 \
     CXXFLAGS_x86_64_fortanix_unknown_sgx="-D__ELF__ -isystem/usr/include/x86_64-linux-gnu -mlvi-hardening -mllvm -x86-experimental-lvi-inline-asm-hardening" \
-    AR_i686_unknown_freebsd=i686-unknown-freebsd11-ar \
-    CC_i686_unknown_freebsd=i686-unknown-freebsd11-clang \
-    CXX_i686_unknown_freebsd=i686-unknown-freebsd11-clang++ \
+    AR_i686_unknown_freebsd=i686-unknown-freebsd12-ar \
+    CC_i686_unknown_freebsd=i686-unknown-freebsd12-clang \
+    CXX_i686_unknown_freebsd=i686-unknown-freebsd12-clang++ \
     CC=gcc-8 \
     CXX=g++-8
 
@@ -111,6 +111,7 @@ ENV TARGETS=$TARGETS,nvptx64-nvidia-cuda
 ENV TARGETS=$TARGETS,armv7-unknown-linux-gnueabi
 ENV TARGETS=$TARGETS,armv7-unknown-linux-musleabi
 ENV TARGETS=$TARGETS,i686-unknown-freebsd
+ENV TARGETS=$TARGETS,x86_64-unknown-none
 
 # As per https://bugs.launchpad.net/ubuntu/+source/gcc-defaults/+bug/1300211
 # we need asm in the search path for gcc-8 (for gnux32) but not in the search path of the

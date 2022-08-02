@@ -1,4 +1,6 @@
 use core::cell::RefCell;
+use core::mem::{self, MaybeUninit};
+use core::num::NonZeroUsize;
 use core::ptr;
 use core::ptr::*;
 use std::fmt::{Debug, Display};
@@ -17,6 +19,7 @@ fn test_const_from_raw_parts() {
 #[test]
 fn test() {
     unsafe {
+        #[repr(C)]
         struct Pair {
             fst: isize,
             snd: isize,
@@ -92,6 +95,15 @@ fn test_is_null() {
 
     let nmi: *mut dyn ToString = null_mut::<isize>();
     assert!(nmi.is_null());
+
+    extern "C" {
+        type Extern;
+    }
+    let ec: *const Extern = null::<Extern>();
+    assert!(ec.is_null());
+
+    let em: *mut Extern = null_mut::<Extern>();
+    assert!(em.is_null());
 }
 
 #[test]
@@ -251,7 +263,6 @@ fn test_set_memory() {
 }
 
 #[test]
-#[cfg(not(bootstrap))]
 fn test_set_memory_const() {
     const XS: [u8; 20] = {
         let mut xs = [0u8; 20];
@@ -275,16 +286,33 @@ fn test_unsized_nonnull() {
 }
 
 #[test]
-#[allow(warnings)]
-// Have a symbol for the test below. It doesn’t need to be an actual variadic function, match the
-// ABI, or even point to an actual executable code, because the function itself is never invoked.
-#[no_mangle]
+fn test_const_nonnull_new() {
+    const {
+        assert!(NonNull::new(core::ptr::null_mut::<()>()).is_none());
+
+        let value = &mut 0u32;
+        let mut ptr = NonNull::new(value).unwrap();
+        unsafe { *ptr.as_mut() = 42 };
+
+        let reference = unsafe { &*ptr.as_ref() };
+        assert!(*reference == *value);
+        assert!(*reference == 42);
+    };
+}
+
+#[test]
+#[cfg(unix)] // printf may not be available on other platforms
+#[allow(deprecated)] // For SipHasher
 pub fn test_variadic_fnptr() {
+    use core::ffi;
     use core::hash::{Hash, SipHasher};
     extern "C" {
-        fn test_variadic_fnptr(_: u64, ...) -> f64;
+        // This needs to use the correct function signature even though it isn't called as some
+        // codegen backends make it UB to declare a function with multiple conflicting signatures
+        // (like LLVM) while others straight up return an error (like Cranelift).
+        fn printf(_: *const ffi::c_char, ...) -> ffi::c_int;
     }
-    let p: unsafe extern "C" fn(u64, ...) -> f64 = test_variadic_fnptr;
+    let p: unsafe extern "C" fn(*const ffi::c_char, ...) -> ffi::c_int = printf;
     let q = p.clone();
     assert_eq!(p, q);
     assert!(!(p < q));
@@ -322,16 +350,16 @@ fn align_offset_zst() {
     // all, because no amount of elements will align the pointer.
     let mut p = 1;
     while p < 1024 {
-        assert_eq!((p as *const ()).align_offset(p), 0);
+        assert_eq!(ptr::invalid::<()>(p).align_offset(p), 0);
         if p != 1 {
-            assert_eq!(((p + 1) as *const ()).align_offset(p), !0);
+            assert_eq!(ptr::invalid::<()>(p + 1).align_offset(p), !0);
         }
         p = (p + 1).next_power_of_two();
     }
 }
 
 #[test]
-fn align_offset_stride1() {
+fn align_offset_stride_one() {
     // For pointers of stride = 1, the pointer can always be aligned. The offset is equal to
     // number of bytes.
     let mut align = 1;
@@ -340,7 +368,7 @@ fn align_offset_stride1() {
             let expected = ptr % align;
             let offset = if expected == 0 { 0 } else { align - expected };
             assert_eq!(
-                (ptr as *const u8).align_offset(align),
+                ptr::invalid::<u8>(ptr).align_offset(align),
                 offset,
                 "ptr = {}, align = {}, size = 1",
                 ptr,
@@ -352,24 +380,8 @@ fn align_offset_stride1() {
 }
 
 #[test]
-fn align_offset_weird_strides() {
-    #[repr(packed)]
-    struct A3(u16, u8);
-    struct A4(u32);
-    #[repr(packed)]
-    struct A5(u32, u8);
-    #[repr(packed)]
-    struct A6(u32, u16);
-    #[repr(packed)]
-    struct A7(u32, u16, u8);
-    #[repr(packed)]
-    struct A8(u32, u32);
-    #[repr(packed)]
-    struct A9(u32, u32, u8);
-    #[repr(packed)]
-    struct A10(u32, u32, u16);
-
-    unsafe fn test_weird_stride<T>(ptr: *const T, align: usize) -> bool {
+fn align_offset_various_strides() {
+    unsafe fn test_stride<T>(ptr: *const T, align: usize) -> bool {
         let numptr = ptr as usize;
         let mut expected = usize::MAX;
         // Naive but definitely correct way to find the *first* aligned element of stride::<T>.
@@ -403,14 +415,39 @@ fn align_offset_weird_strides() {
     while align < limit {
         for ptr in 1usize..4 * align {
             unsafe {
-                x |= test_weird_stride::<A3>(ptr as *const A3, align);
-                x |= test_weird_stride::<A4>(ptr as *const A4, align);
-                x |= test_weird_stride::<A5>(ptr as *const A5, align);
-                x |= test_weird_stride::<A6>(ptr as *const A6, align);
-                x |= test_weird_stride::<A7>(ptr as *const A7, align);
-                x |= test_weird_stride::<A8>(ptr as *const A8, align);
-                x |= test_weird_stride::<A9>(ptr as *const A9, align);
-                x |= test_weird_stride::<A10>(ptr as *const A10, align);
+                #[repr(packed)]
+                struct A3(u16, u8);
+                x |= test_stride::<A3>(ptr::invalid::<A3>(ptr), align);
+
+                struct A4(u32);
+                x |= test_stride::<A4>(ptr::invalid::<A4>(ptr), align);
+
+                #[repr(packed)]
+                struct A5(u32, u8);
+                x |= test_stride::<A5>(ptr::invalid::<A5>(ptr), align);
+
+                #[repr(packed)]
+                struct A6(u32, u16);
+                x |= test_stride::<A6>(ptr::invalid::<A6>(ptr), align);
+
+                #[repr(packed)]
+                struct A7(u32, u16, u8);
+                x |= test_stride::<A7>(ptr::invalid::<A7>(ptr), align);
+
+                #[repr(packed)]
+                struct A8(u32, u32);
+                x |= test_stride::<A8>(ptr::invalid::<A8>(ptr), align);
+
+                #[repr(packed)]
+                struct A9(u32, u32, u8);
+                x |= test_stride::<A9>(ptr::invalid::<A9>(ptr), align);
+
+                #[repr(packed)]
+                struct A10(u32, u32, u16);
+                x |= test_stride::<A10>(ptr::invalid::<A10>(ptr), align);
+
+                x |= test_stride::<u32>(ptr::invalid::<u32>(ptr), align);
+                x |= test_stride::<u128>(ptr::invalid::<u128>(ptr), align);
             }
         }
         align = (align + 1).next_power_of_two();
@@ -448,8 +485,8 @@ fn ptr_metadata() {
     let () = metadata(&[4, 7]);
     let () = metadata(&(4, String::new()));
     let () = metadata(&Pair(4, String::new()));
-    let () = metadata(0 as *const Extern);
-    let () = metadata(0 as *const <&u32 as std::ops::Deref>::Target);
+    let () = metadata(ptr::null::<()>() as *const Extern);
+    let () = metadata(ptr::null::<()>() as *const <&u32 as std::ops::Deref>::Target);
 
     assert_eq!(metadata("foo"), 3_usize);
     assert_eq!(metadata(&[4, 7][..]), 2_usize);
@@ -474,11 +511,11 @@ fn ptr_metadata() {
     let vtable_5: DynMetadata<dyn Display> =
         metadata(&Pair(true, 7_u32) as &Pair<bool, dyn Display>);
     unsafe {
-        let address_1: usize = std::mem::transmute(vtable_1);
-        let address_2: usize = std::mem::transmute(vtable_2);
-        let address_3: usize = std::mem::transmute(vtable_3);
-        let address_4: usize = std::mem::transmute(vtable_4);
-        let address_5: usize = std::mem::transmute(vtable_5);
+        let address_1: *const () = std::mem::transmute(vtable_1);
+        let address_2: *const () = std::mem::transmute(vtable_2);
+        let address_3: *const () = std::mem::transmute(vtable_3);
+        let address_4: *const () = std::mem::transmute(vtable_4);
+        let address_5: *const () = std::mem::transmute(vtable_5);
         // Different trait => different vtable pointer
         assert_ne!(address_1, address_2);
         // Different erased type => different vtable pointer
@@ -536,7 +573,7 @@ fn dyn_metadata() {
     assert_eq!(meta.align_of(), std::mem::align_of::<Something>());
     assert_eq!(meta.layout(), std::alloc::Layout::new::<Something>());
 
-    assert!(format!("{:?}", meta).starts_with("DynMetadata(0x"));
+    assert!(format!("{meta:?}").starts_with("DynMetadata(0x"));
 }
 
 #[test]
@@ -674,4 +711,145 @@ fn thin_box() {
             }
         }
     }
+}
+
+#[test]
+fn nonnull_tagged_pointer_with_provenance() {
+    let raw_pointer = Box::into_raw(Box::new(10));
+
+    let mut p = TaggedPointer::new(raw_pointer).unwrap();
+    assert_eq!(p.tag(), 0);
+
+    p.set_tag(1);
+    assert_eq!(p.tag(), 1);
+    assert_eq!(unsafe { *p.pointer().as_ptr() }, 10);
+
+    p.set_tag(3);
+    assert_eq!(p.tag(), 3);
+    assert_eq!(unsafe { *p.pointer().as_ptr() }, 10);
+
+    unsafe { Box::from_raw(p.pointer().as_ptr()) };
+
+    /// A non-null pointer type which carries several bits of metadata and maintains provenance.
+    #[repr(transparent)]
+    pub struct TaggedPointer<T>(NonNull<T>);
+
+    impl<T> Clone for TaggedPointer<T> {
+        fn clone(&self) -> Self {
+            Self(self.0)
+        }
+    }
+
+    impl<T> Copy for TaggedPointer<T> {}
+
+    impl<T> TaggedPointer<T> {
+        /// The ABI-required minimum alignment of the `P` type.
+        pub const ALIGNMENT: usize = core::mem::align_of::<T>();
+        /// A mask for data-carrying bits of the address.
+        pub const DATA_MASK: usize = !Self::ADDRESS_MASK;
+        /// Number of available bits of storage in the address.
+        pub const NUM_BITS: u32 = Self::ALIGNMENT.trailing_zeros();
+        /// A mask for the non-data-carrying bits of the address.
+        pub const ADDRESS_MASK: usize = usize::MAX << Self::NUM_BITS;
+
+        /// Create a new tagged pointer from a possibly null pointer.
+        pub fn new(pointer: *mut T) -> Option<TaggedPointer<T>> {
+            Some(TaggedPointer(NonNull::new(pointer)?))
+        }
+
+        /// Consume this tagged pointer and produce a raw mutable pointer to the
+        /// memory location.
+        pub fn pointer(self) -> NonNull<T> {
+            // SAFETY: The `addr` guaranteed to have bits set in the Self::ADDRESS_MASK, so the result will be non-null.
+            self.0.map_addr(|addr| unsafe {
+                NonZeroUsize::new_unchecked(addr.get() & Self::ADDRESS_MASK)
+            })
+        }
+
+        /// Consume this tagged pointer and produce the data it carries.
+        pub fn tag(&self) -> usize {
+            self.0.addr().get() & Self::DATA_MASK
+        }
+
+        /// Update the data this tagged pointer carries to a new value.
+        pub fn set_tag(&mut self, data: usize) {
+            assert_eq!(
+                data & Self::ADDRESS_MASK,
+                0,
+                "cannot set more data beyond the lowest NUM_BITS"
+            );
+            let data = data & Self::DATA_MASK;
+
+            // SAFETY: This value will always be non-zero because the upper bits (from
+            // ADDRESS_MASK) will always be non-zero. This a property of the type and its
+            // construction.
+            self.0 = self.0.map_addr(|addr| unsafe {
+                NonZeroUsize::new_unchecked((addr.get() & Self::ADDRESS_MASK) | data)
+            })
+        }
+    }
+}
+
+#[test]
+fn swap_copy_untyped() {
+    // We call `{swap,copy}{,_nonoverlapping}` at `bool` type on data that is not a valid bool.
+    // These should all do untyped copies, so this should work fine.
+    let mut x = 5u8;
+    let mut y = 6u8;
+
+    let ptr1 = &mut x as *mut u8 as *mut bool;
+    let ptr2 = &mut y as *mut u8 as *mut bool;
+
+    unsafe {
+        ptr::swap(ptr1, ptr2);
+        ptr::swap_nonoverlapping(ptr1, ptr2, 1);
+    }
+    assert_eq!(x, 5);
+    assert_eq!(y, 6);
+
+    unsafe {
+        ptr::copy(ptr1, ptr2, 1);
+        ptr::copy_nonoverlapping(ptr1, ptr2, 1);
+    }
+    assert_eq!(x, 5);
+    assert_eq!(y, 5);
+}
+
+#[test]
+fn test_const_copy() {
+    const {
+        let ptr1 = &1;
+        let mut ptr2 = &666;
+
+        // Copy ptr1 to ptr2, bytewise.
+        unsafe {
+            ptr::copy(
+                &ptr1 as *const _ as *const MaybeUninit<u8>,
+                &mut ptr2 as *mut _ as *mut MaybeUninit<u8>,
+                mem::size_of::<&i32>(),
+            );
+        }
+
+        // Make sure they still work.
+        assert!(*ptr1 == 1);
+        assert!(*ptr2 == 1);
+    };
+
+    const {
+        let ptr1 = &1;
+        let mut ptr2 = &666;
+
+        // Copy ptr1 to ptr2, bytewise.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &ptr1 as *const _ as *const MaybeUninit<u8>,
+                &mut ptr2 as *mut _ as *mut MaybeUninit<u8>,
+                mem::size_of::<&i32>(),
+            );
+        }
+
+        // Make sure they still work.
+        assert!(*ptr1 == 1);
+        assert!(*ptr2 == 1);
+    };
 }

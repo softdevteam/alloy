@@ -275,19 +275,68 @@ mod prim_bool {}
 mod prim_never {}
 
 #[doc(primitive = "char")]
+#[allow(rustdoc::invalid_rust_codeblocks)]
 /// A character type.
 ///
 /// The `char` type represents a single character. More specifically, since
 /// 'character' isn't a well-defined concept in Unicode, `char` is a '[Unicode
-/// scalar value]', which is similar to, but not the same as, a '[Unicode code
-/// point]'.
-///
-/// [Unicode scalar value]: https://www.unicode.org/glossary/#unicode_scalar_value
-/// [Unicode code point]: https://www.unicode.org/glossary/#code_point
+/// scalar value]'.
 ///
 /// This documentation describes a number of methods and trait implementations on the
 /// `char` type. For technical reasons, there is additional, separate
 /// documentation in [the `std::char` module](char/index.html) as well.
+///
+/// # Validity
+///
+/// A `char` is a '[Unicode scalar value]', which is any '[Unicode code point]'
+/// other than a [surrogate code point]. This has a fixed numerical definition:
+/// code points are in the range 0 to 0x10FFFF, inclusive.
+/// Surrogate code points, used by UTF-16, are in the range 0xD800 to 0xDFFF.
+///
+/// No `char` may be constructed, whether as a literal or at runtime, that is not a
+/// Unicode scalar value:
+///
+/// ```compile_fail
+/// // Each of these is a compiler error
+/// ['\u{D800}', '\u{DFFF}', '\u{110000}'];
+/// ```
+///
+/// ```should_panic
+/// // Panics; from_u32 returns None.
+/// char::from_u32(0xDE01).unwrap();
+/// ```
+///
+/// ```no_run
+/// // Undefined behaviour
+/// unsafe { char::from_u32_unchecked(0x110000) };
+/// ```
+///
+/// USVs are also the exact set of values that may be encoded in UTF-8. Because
+/// `char` values are USVs and `str` values are valid UTF-8, it is safe to store
+/// any `char` in a `str` or read any character from a `str` as a `char`.
+///
+/// The gap in valid `char` values is understood by the compiler, so in the
+/// below example the two ranges are understood to cover the whole range of
+/// possible `char` values and there is no error for a [non-exhaustive match].
+///
+/// ```
+/// let c: char = 'a';
+/// match c {
+///     '\0' ..= '\u{D7FF}' => false,
+///     '\u{E000}' ..= '\u{10FFFF}' => true,
+/// };
+/// ```
+///
+/// All USVs are valid `char` values, but not all of them represent a real
+/// character. Many USVs are not currently assigned to a character, but may be
+/// in the future ("reserved"); some will never be a character
+/// ("noncharacters"); and some may be given different meanings by different
+/// users ("private use").
+///
+/// [Unicode code point]: https://www.unicode.org/glossary/#code_point
+/// [Unicode scalar value]: https://www.unicode.org/glossary/#unicode_scalar_value
+/// [non-exhaustive match]: ../book/ch06-02-match.html#matches-are-exhaustive
+/// [surrogate code point]: https://www.unicode.org/glossary/#surrogate_code_point
 ///
 /// # Representation
 ///
@@ -389,6 +438,27 @@ mod prim_char {}
 ///
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_unit {}
+
+// Required to make auto trait impls render.
+// See src/librustdoc/passes/collect_trait_impls.rs:collect_trait_impls
+#[doc(hidden)]
+impl () {}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+impl Clone for () {
+    fn clone(&self) -> Self {
+        loop {}
+    }
+}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+impl Copy for () {
+    // empty
+}
 
 #[doc(primitive = "pointer")]
 #[doc(alias = "ptr")]
@@ -558,7 +628,7 @@ mod prim_pointer {}
 ///
 /// // This loop prints: 0 1 2
 /// for x in array {
-///     print!("{} ", x);
+///     print!("{x} ");
 /// }
 /// ```
 ///
@@ -597,19 +667,19 @@ mod prim_pointer {}
 /// // This creates a slice iterator, producing references to each value.
 /// for item in array.into_iter().enumerate() {
 ///     let (i, x): (usize, &i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 ///
 /// // The `array_into_iter` lint suggests this change for future compatibility:
 /// for item in array.iter().enumerate() {
 ///     let (i, x): (usize, &i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 ///
 /// // You can explicitly iterate an array by value using `IntoIterator::into_iter`
 /// for item in IntoIterator::into_iter(array).enumerate() {
 ///     let (i, x): (usize, i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 /// ```
 ///
@@ -624,13 +694,13 @@ mod prim_pointer {}
 /// // This iterates by reference:
 /// for item in array.iter().enumerate() {
 ///     let (i, x): (usize, &i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 ///
 /// // This iterates by value:
 /// for item in array.into_iter().enumerate() {
 ///     let (i, x): (usize, i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 /// ```
 ///
@@ -653,26 +723,26 @@ mod prim_pointer {}
 /// // This iterates by reference:
 /// for item in array.iter() {
 ///     let x: &i32 = item;
-///     println!("{}", x);
+///     println!("{x}");
 /// }
 ///
 /// // This iterates by value:
 /// for item in IntoIterator::into_iter(array) {
 ///     let x: i32 = item;
-///     println!("{}", x);
+///     println!("{x}");
 /// }
 ///
 /// // This iterates by value:
 /// for item in array {
 ///     let x: i32 = item;
-///     println!("{}", x);
+///     println!("{x}");
 /// }
 ///
 /// // IntoIter can also start a chain.
 /// // This iterates by value:
 /// for item in IntoIterator::into_iter(array).enumerate() {
 ///     let (i, x): (usize, i32) = item;
-///     println!("array[{}] = {}", i, x);
+///     println!("array[{i}] = {x}");
 /// }
 /// ```
 ///
@@ -844,13 +914,18 @@ mod prim_str {}
 ///
 /// For more about tuples, see [the book](../book/ch03-02-data-types.html#the-tuple-type).
 ///
+// Hardcoded anchor in src/librustdoc/html/format.rs
+// linked to as `#trait-implementations-1`
 /// # Trait implementations
 ///
-/// If every type inside a tuple implements one of the following traits, then a
-/// tuple itself also implements it.
+/// In this documentation the shorthand `(T₁, T₂, …, Tₙ)` is used to represent tuples of varying
+/// length. When that is used, any trait bound expressed on `T` applies to each element of the
+/// tuple independently. Note that this is a convenience notation to avoid repetitive
+/// documentation, not valid Rust syntax.
 ///
-/// * [`Clone`]
-/// * [`Copy`]
+/// Due to a temporary restriction in Rust’s type system, the following traits are only
+/// implemented on tuples of arity 12 or less. In the future, this may change:
+///
 /// * [`PartialEq`]
 /// * [`Eq`]
 /// * [`PartialOrd`]
@@ -862,8 +937,21 @@ mod prim_str {}
 /// [`Debug`]: fmt::Debug
 /// [`Hash`]: hash::Hash
 ///
-/// Due to a temporary restriction in Rust's type system, these traits are only
-/// implemented on tuples of arity 12 or less. In the future, this may change.
+/// The following traits are implemented for tuples of any length. These traits have
+/// implementations that are automatically generated by the compiler, so are not limited by
+/// missing language features.
+///
+/// * [`Clone`]
+/// * [`Copy`]
+/// * [`Send`]
+/// * [`Sync`]
+/// * [`Unpin`]
+/// * [`UnwindSafe`]
+/// * [`RefUnwindSafe`]
+///
+/// [`Unpin`]: marker::Unpin
+/// [`UnwindSafe`]: panic::UnwindSafe
+/// [`RefUnwindSafe`]: panic::RefUnwindSafe
 ///
 /// # Examples
 ///
@@ -900,6 +988,31 @@ mod prim_str {}
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_tuple {}
 
+// Required to make auto trait impls render.
+// See src/librustdoc/passes/collect_trait_impls.rs:collect_trait_impls
+#[doc(hidden)]
+impl<T> (T,) {}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(bootstrap), doc(fake_variadic))]
+/// This trait is implemented on arbitrary-length tuples.
+impl<T: Clone> Clone for (T,) {
+    fn clone(&self) -> Self {
+        loop {}
+    }
+}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(bootstrap), doc(fake_variadic))]
+/// This trait is implemented on arbitrary-length tuples.
+impl<T: Copy> Copy for (T,) {
+    // empty
+}
+
 #[doc(primitive = "f32")]
 /// A 32-bit floating point type (specifically, the "binary32" type defined in IEEE 754-2008).
 ///
@@ -928,10 +1041,35 @@ mod prim_tuple {}
 ///   like `1.0 / 0.0`.
 /// - [NaN (not a number)](#associatedconstant.NAN): this value results from
 ///   calculations like `(-1.0).sqrt()`. NaN has some potentially unexpected
-///   behavior: it is unequal to any float, including itself! It is also neither
-///   smaller nor greater than any float, making it impossible to sort. Lastly,
-///   it is considered infectious as almost all calculations where one of the
-///   operands is NaN will also result in NaN.
+///   behavior:
+///   - It is unequal to any float, including itself! This is the reason `f32`
+///     doesn't implement the `Eq` trait.
+///   - It is also neither smaller nor greater than any float, making it
+///     impossible to sort by the default comparison operation, which is the
+///     reason `f32` doesn't implement the `Ord` trait.
+///   - It is also considered *infectious* as almost all calculations where one
+///     of the operands is NaN will also result in NaN. The explanations on this
+///     page only explicitly document behavior on NaN operands if this default
+///     is deviated from.
+///   - Lastly, there are multiple bit patterns that are considered NaN.
+///     Rust does not currently guarantee that the bit patterns of NaN are
+///     preserved over arithmetic operations, and they are not guaranteed to be
+///     portable or even fully deterministic! This means that there may be some
+///     surprising results upon inspecting the bit patterns,
+///     as the same calculations might produce NaNs with different bit patterns.
+///
+/// When the number resulting from a primitive operation (addition,
+/// subtraction, multiplication, or division) on this type is not exactly
+/// representable as `f32`, it is rounded according to the roundTiesToEven
+/// direction defined in IEEE 754-2008. That means:
+///
+/// - The result is the representable value closest to the true value, if there
+///   is a unique closest representable value.
+/// - If the true value is exactly half-way between two representable values,
+///   the result is the one with an even least-significant binary digit.
+/// - If the true value's magnitude is ≥ `f32::MAX` + 2<sup>(`f32::MAX_EXP` −
+///   `f32::MANTISSA_DIGITS` − 1)</sup>, the result is ∞ or −∞ (preserving the
+///   true value's sign).
 ///
 /// For more information on floating point numbers, see [Wikipedia][wikipedia].
 ///
@@ -1277,11 +1415,42 @@ mod prim_ref {}
 /// is a reference to the function-specific ZST. `&bar` is basically never what you
 /// want when `bar` is a function.
 ///
-/// ### Traits
+/// ### Casting to and from integers
 ///
-/// Function pointers implement the following traits:
+/// You cast function pointers directly to integers:
 ///
-/// * [`Clone`]
+/// ```rust
+/// let fnptr: fn(i32) -> i32 = |x| x+2;
+/// let fnptr_addr = fnptr as usize;
+/// ```
+///
+/// However, a direct cast back is not possible. You need to use `transmute`:
+///
+/// ```rust
+/// # let fnptr: fn(i32) -> i32 = |x| x+2;
+/// # let fnptr_addr = fnptr as usize;
+/// let fnptr = fnptr_addr as *const ();
+/// let fnptr: fn(i32) -> i32 = unsafe { std::mem::transmute(fnptr) };
+/// assert_eq!(fnptr(40), 42);
+/// ```
+///
+/// Crucially, we `as`-cast to a raw pointer before `transmute`ing to a function pointer.
+/// This avoids an integer-to-pointer `transmute`, which can be problematic.
+/// Transmuting between raw pointers and function pointers (i.e., two pointer types) is fine.
+///
+/// Note that all of this is not portable to platforms where function pointers and data pointers
+/// have different sizes.
+///
+/// ### Trait implementations
+///
+/// In this documentation the shorthand `fn (T₁, T₂, …, Tₙ)` is used to represent non-variadic
+/// function pointers of varying length. Note that this is a convenience notation to avoid
+/// repetitive documentation, not valid Rust syntax.
+///
+/// Due to a temporary restriction in Rust's type system, these traits are only implemented on
+/// functions that take 12 arguments or less, with the `"Rust"` and `"C"` ABIs. In the future, this
+/// may change:
+///
 /// * [`PartialEq`]
 /// * [`Eq`]
 /// * [`PartialOrd`]
@@ -1290,15 +1459,50 @@ mod prim_ref {}
 /// * [`Pointer`]
 /// * [`Debug`]
 ///
+/// The following traits are implemented for function pointers with any number of arguments and
+/// any ABI. These traits have implementations that are automatically generated by the compiler,
+/// so are not limited by missing language features:
+///
+/// * [`Clone`]
+/// * [`Copy`]
+/// * [`Send`]
+/// * [`Sync`]
+/// * [`Unpin`]
+/// * [`UnwindSafe`]
+/// * [`RefUnwindSafe`]
+///
 /// [`Hash`]: hash::Hash
 /// [`Pointer`]: fmt::Pointer
+/// [`UnwindSafe`]: panic::UnwindSafe
+/// [`RefUnwindSafe`]: panic::RefUnwindSafe
 ///
-/// Due to a temporary restriction in Rust's type system, these traits are only implemented on
-/// functions that take 12 arguments or less, with the `"Rust"` and `"C"` ABIs. In the future, this
-/// may change.
-///
-/// In addition, function pointers of *any* signature, ABI, or safety are [`Copy`], and all *safe*
-/// function pointers implement [`Fn`], [`FnMut`], and [`FnOnce`]. This works because these traits
-/// are specially known to the compiler.
+/// In addition, all *safe* function pointers implement [`Fn`], [`FnMut`], and [`FnOnce`], because
+/// these traits are specially known to the compiler.
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_fn {}
+
+// Required to make auto trait impls render.
+// See src/librustdoc/passes/collect_trait_impls.rs:collect_trait_impls
+#[doc(hidden)]
+#[cfg(not(bootstrap))]
+impl<Ret, T> fn(T) -> Ret {}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(bootstrap), doc(fake_variadic))]
+/// This trait is implemented on function pointers with any number of arguments.
+impl<Ret, T> Clone for fn(T) -> Ret {
+    fn clone(&self) -> Self {
+        loop {}
+    }
+}
+
+// Fake impl that's only really used for docs.
+#[cfg(doc)]
+#[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(bootstrap), doc(fake_variadic))]
+/// This trait is implemented on function pointers with any number of arguments.
+impl<Ret, T> Copy for fn(T) -> Ret {
+    // empty
+}

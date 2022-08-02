@@ -16,7 +16,6 @@
 #![doc(issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
 #![feature(core_intrinsics)]
 #![feature(lang_items)]
-#![feature(nll)]
 #![feature(panic_unwind)]
 #![feature(staged_api)]
 #![feature(std_internals)]
@@ -38,6 +37,10 @@ cfg_if::cfg_if! {
         mod real_imp;
     } else if #[cfg(target_os = "hermit")] {
         #[path = "hermit.rs"]
+        mod real_imp;
+    } else if #[cfg(target_os = "l4re")] {
+        // L4Re is unix family but does not yet support unwinding.
+        #[path = "dummy.rs"]
         mod real_imp;
     } else if #[cfg(target_env = "msvc")] {
         #[path = "seh.rs"]
@@ -100,7 +103,7 @@ pub unsafe extern "C" fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any
 // Entry point for raising an exception, just delegates to the platform-specific
 // implementation.
 #[rustc_std_internal_symbol]
-pub unsafe extern "C-unwind" fn __rust_start_panic(payload: *mut &mut dyn BoxMeUp) -> u32 {
+pub unsafe fn __rust_start_panic(payload: *mut &mut dyn BoxMeUp) -> u32 {
     let payload = Box::from_raw((*payload).take_box());
 
     imp::panic(payload)

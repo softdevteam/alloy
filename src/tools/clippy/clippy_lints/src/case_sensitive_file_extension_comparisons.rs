@@ -24,7 +24,10 @@ declare_clippy_lint! {
     /// Use instead:
     /// ```rust
     /// fn is_rust_file(filename: &str) -> bool {
-    ///     filename.rsplit('.').next().map(|ext| ext.eq_ignore_ascii_case("rs")) == Some(true)
+    ///     let filename = std::path::Path::new(filename);
+    ///     filename.extension()
+    ///         .map(|ext| ext.eq_ignore_ascii_case("rs"))
+    ///         .unwrap_or(false)
     /// }
     /// ```
     #[clippy::version = "1.51.0"]
@@ -37,17 +40,17 @@ declare_lint_pass!(CaseSensitiveFileExtensionComparisons => [CASE_SENSITIVE_FILE
 
 fn check_case_sensitive_file_extension_comparison(ctx: &LateContext<'_>, expr: &Expr<'_>) -> Option<Span> {
     if_chain! {
-        if let ExprKind::MethodCall(PathSegment { ident, .. }, _, [obj, extension, ..], span) = expr.kind;
+        if let ExprKind::MethodCall(PathSegment { ident, .. }, [obj, extension, ..], span) = expr.kind;
         if ident.as_str() == "ends_with";
         if let ExprKind::Lit(Spanned { node: LitKind::Str(ext_literal, ..), ..}) = extension.kind;
         if (2..=6).contains(&ext_literal.as_str().len());
         if ext_literal.as_str().starts_with('.');
-        if ext_literal.as_str().chars().skip(1).all(|c| c.is_uppercase() || c.is_digit(10))
-            || ext_literal.as_str().chars().skip(1).all(|c| c.is_lowercase() || c.is_digit(10));
+        if ext_literal.as_str().chars().skip(1).all(|c| c.is_uppercase() || c.is_ascii_digit())
+            || ext_literal.as_str().chars().skip(1).all(|c| c.is_lowercase() || c.is_ascii_digit());
         then {
             let mut ty = ctx.typeck_results().expr_ty(obj);
             ty = match ty.kind() {
-                ty::Ref(_, ty, ..) => ty,
+                ty::Ref(_, ty, ..) => *ty,
                 _ => ty
             };
 
@@ -55,8 +58,8 @@ fn check_case_sensitive_file_extension_comparison(ctx: &LateContext<'_>, expr: &
                 ty::Str => {
                     return Some(span);
                 },
-                ty::Adt(&ty::AdtDef { did, .. }, _) => {
-                    if ctx.tcx.is_diagnostic_item(sym::String, did) {
+                ty::Adt(def, _) => {
+                    if ctx.tcx.is_diagnostic_item(sym::String, def.did()) {
                         return Some(span);
                     }
                 },
@@ -67,7 +70,7 @@ fn check_case_sensitive_file_extension_comparison(ctx: &LateContext<'_>, expr: &
     None
 }
 
-impl LateLintPass<'tcx> for CaseSensitiveFileExtensionComparisons {
+impl<'tcx> LateLintPass<'tcx> for CaseSensitiveFileExtensionComparisons {
     fn check_expr(&mut self, ctx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
         if let Some(span) = check_case_sensitive_file_extension_comparison(ctx, expr) {
             span_lint_and_help(

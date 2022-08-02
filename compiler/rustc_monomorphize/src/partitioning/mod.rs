@@ -98,6 +98,7 @@ mod merging;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync;
 use rustc_hir::def_id::DefIdSet;
+use rustc_middle::mir;
 use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::mir::mono::{CodegenUnit, Linkage};
 use rustc_middle::ty::print::with_no_trimmed_paths;
@@ -141,7 +142,7 @@ trait Partitioner<'tcx> {
 }
 
 fn get_partitioner<'tcx>(tcx: TyCtxt<'tcx>) -> Box<dyn Partitioner<'tcx>> {
-    let strategy = match &tcx.sess.opts.debugging_opts.cgu_partitioning_strategy {
+    let strategy = match &tcx.sess.opts.unstable_opts.cgu_partitioning_strategy {
         None => "default",
         Some(s) => &s[..],
     };
@@ -199,6 +200,38 @@ pub fn partition<'tcx>(
     if !tcx.sess.link_dead_code() {
         let _prof_timer = tcx.prof.generic_activity("cgu_partitioning_internalize_symbols");
         partitioner.internalize_symbols(cx, &mut post_inlining);
+    }
+
+    let instrument_dead_code =
+        tcx.sess.instrument_coverage() && !tcx.sess.instrument_coverage_except_unused_functions();
+
+    if instrument_dead_code {
+        assert!(
+            post_inlining.codegen_units.len() > 0,
+            "There must be at least one CGU that code coverage data can be generated in."
+        );
+
+        // Find the smallest CGU that has exported symbols and put the dead
+        // function stubs in that CGU. We look for exported symbols to increase
+        // the likelihood the linker won't throw away the dead functions.
+        // FIXME(#92165): In order to truly resolve this, we need to make sure
+        // the object file (CGU) containing the dead function stubs is included
+        // in the final binary. This will probably require forcing these
+        // function symbols to be included via `-u` or `/include` linker args.
+        let mut cgus: Vec<_> = post_inlining.codegen_units.iter_mut().collect();
+        cgus.sort_by_key(|cgu| cgu.size_estimate());
+
+        let dead_code_cgu =
+            if let Some(cgu) = cgus.into_iter().rev().find(|cgu| {
+                cgu.items().iter().any(|(_, (linkage, _))| *linkage == Linkage::External)
+            }) {
+                cgu
+            } else {
+                // If there are no CGUs that have externally linked items,
+                // then we just pick the first CGU as a fallback.
+                &mut post_inlining.codegen_units[0]
+            };
+        dead_code_cgu.make_code_coverage_dead_code_cgu();
     }
 
     // Finally, sort by codegen unit name, so that we get deterministic results.
@@ -313,7 +346,7 @@ fn collect_and_partition_mono_items<'tcx>(
     tcx: TyCtxt<'tcx>,
     (): (),
 ) -> (&'tcx DefIdSet, &'tcx [CodegenUnit<'tcx>]) {
-    let collection_mode = match tcx.sess.opts.debugging_opts.print_mono_items {
+    let collection_mode = match tcx.sess.opts.unstable_opts.print_mono_items {
         Some(ref s) => {
             let mode_string = s.to_lowercase();
             let mode_string = mode_string.trim();
@@ -381,7 +414,7 @@ fn collect_and_partition_mono_items<'tcx>(
         })
         .collect();
 
-    if tcx.sess.opts.debugging_opts.print_mono_items.is_some() {
+    if tcx.sess.opts.unstable_opts.print_mono_items.is_some() {
         let mut item_to_cgus: FxHashMap<_, Vec<_>> = Default::default();
 
         for cgu in codegen_units {
@@ -393,7 +426,7 @@ fn collect_and_partition_mono_items<'tcx>(
         let mut item_keys: Vec<_> = items
             .iter()
             .map(|i| {
-                let mut output = with_no_trimmed_paths(|| i.to_string());
+                let mut output = with_no_trimmed_paths!(i.to_string());
                 output.push_str(" @@");
                 let mut empty = Vec::new();
                 let cgus = item_to_cgus.get_mut(i).unwrap_or(&mut empty);
@@ -447,9 +480,14 @@ fn codegened_and_inlined_items<'tcx>(tcx: TyCtxt<'tcx>, (): ()) -> &'tcx DefIdSe
                 if !visited.insert(did) {
                     continue;
                 }
-                for scope in &tcx.instance_mir(instance.def).source_scopes {
-                    if let Some((ref inlined, _)) = scope.inlined {
-                        result.insert(inlined.def_id());
+                let body = tcx.instance_mir(instance.def);
+                for block in body.basic_blocks() {
+                    for statement in &block.statements {
+                        let mir::StatementKind::Coverage(_) = statement.kind else { continue };
+                        let scope = statement.source_info.scope;
+                        if let Some(inlined) = scope.inlined_instance(&body.source_scopes) {
+                            result.insert(inlined.def_id());
+                        }
                     }
                 }
             }

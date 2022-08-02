@@ -30,10 +30,10 @@ pub const unwinder_private_data_size: usize = 5;
 #[cfg(target_arch = "x86_64")]
 pub const unwinder_private_data_size: usize = 6;
 
-#[cfg(all(target_arch = "arm", not(target_os = "ios")))]
+#[cfg(all(target_arch = "arm", not(any(target_os = "ios", target_os = "watchos"))))]
 pub const unwinder_private_data_size: usize = 20;
 
-#[cfg(all(target_arch = "arm", target_os = "ios"))]
+#[cfg(all(target_arch = "arm", any(target_os = "ios", target_os = "watchos")))]
 pub const unwinder_private_data_size: usize = 5;
 
 #[cfg(all(target_arch = "aarch64", target_pointer_width = "64"))]
@@ -41,6 +41,9 @@ pub const unwinder_private_data_size: usize = 2;
 
 #[cfg(all(target_arch = "aarch64", target_pointer_width = "32"))]
 pub const unwinder_private_data_size: usize = 5;
+
+#[cfg(target_arch = "m68k")]
+pub const unwinder_private_data_size: usize = 2;
 
 #[cfg(target_arch = "mips")]
 pub const unwinder_private_data_size: usize = 2;
@@ -102,7 +105,7 @@ extern "C" {
 }
 
 cfg_if::cfg_if! {
-if #[cfg(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm")))] {
+if #[cfg(any(target_os = "ios", target_os = "watchos", target_os = "netbsd", not(target_arch = "arm")))] {
     // Not ARM EHABI
     #[repr(C)]
     #[derive(Copy, Clone, PartialEq)]
@@ -246,6 +249,10 @@ if #[cfg(not(all(target_os = "ios", target_arch = "arm")))] {
     extern "C-unwind" {
         pub fn _Unwind_RaiseException(exception: *mut _Unwind_Exception) -> _Unwind_Reason_Code;
     }
+    #[cfg_attr(
+        all(feature = "llvm-libunwind", any(target_os = "fuchsia", target_os = "linux")),
+        link(name = "unwind", kind = "static", modifiers = "-bundle")
+    )]
     extern "C" {
         pub fn _Unwind_Backtrace(trace: _Unwind_Trace_Fn,
                                  trace_argument: *mut c_void)
@@ -257,10 +264,7 @@ if #[cfg(not(all(target_os = "ios", target_arch = "arm")))] {
         pub fn _Unwind_SjLj_RaiseException(e: *mut _Unwind_Exception) -> _Unwind_Reason_Code;
     }
 
-    #[inline]
-    pub unsafe fn _Unwind_RaiseException(exc: *mut _Unwind_Exception) -> _Unwind_Reason_Code {
-        _Unwind_SjLj_RaiseException(exc)
-    }
+    pub use _Unwind_SjLj_RaiseException as _Unwind_RaiseException;
 }
 } // cfg_if!
 

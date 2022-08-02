@@ -25,16 +25,17 @@
 //!
 //! This API is completely unstable and subject to change.
 
+#![allow(rustc::potential_query_instability)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(array_windows)]
-#![feature(bool_to_option)]
 #![feature(box_patterns)]
-#![feature(crate_visibility_modifier)]
+#![feature(control_flow_enum)]
+#![feature(if_let_guard)]
+#![feature(iter_intersperse)]
 #![feature(iter_order_by)]
+#![cfg_attr(bootstrap, feature(let_chains))]
 #![feature(let_else)]
 #![feature(never_type)]
-#![feature(nll)]
-#![feature(control_flow_enum)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -47,6 +48,7 @@ pub mod builtin;
 mod context;
 mod early;
 mod enum_intrinsics_non_enums;
+mod expect;
 mod gc;
 pub mod hidden_unicode_codepoints;
 mod internal;
@@ -57,6 +59,7 @@ mod non_ascii_idents;
 mod non_fmt_panic;
 mod nonstandard_style;
 mod noop_method_call;
+mod pass_by_value;
 mod passes;
 mod redundant_semicolon;
 mod traits;
@@ -73,7 +76,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_session::lint::builtin::{
     BARE_TRAIT_OBJECTS, ELIDED_LIFETIMES_IN_PATHS, EXPLICIT_OUTLIVES_REQUIREMENTS,
 };
-use rustc_span::symbol::{Ident, Symbol};
+use rustc_span::symbol::Ident;
 use rustc_span::Span;
 
 use array_into_iter::ArrayIntoIter;
@@ -87,6 +90,7 @@ use non_ascii_idents::*;
 use non_fmt_panic::NonPanicFmt;
 use nonstandard_style::*;
 use noop_method_call::*;
+use pass_by_value::*;
 use redundant_semicolon::*;
 use traits::*;
 use types::*;
@@ -96,8 +100,8 @@ use unused::*;
 pub use builtin::SoftLints;
 pub use context::{CheckLintNameResult, FindLintError, LintStore};
 pub use context::{EarlyContext, LateContext, LintContext};
-pub use early::check_ast_crate;
-pub use late::check_crate;
+pub use early::{check_ast_node, EarlyCheckNode};
+pub use late::{check_crate, unerased_lint_store};
 pub use passes::{EarlyLintPass, LateLintPass};
 pub use rustc_session::lint::Level::{self, *};
 pub use rustc_session::lint::{BufferedEarlyLint, FutureIncompatibleInfo, Lint, LintId};
@@ -105,6 +109,7 @@ pub use rustc_session::lint::{LintArray, LintPass};
 
 pub fn provide(providers: &mut Providers) {
     levels::provide(providers);
+    expect::provide(providers);
     *providers = Providers { lint_mod, ..*providers };
 }
 
@@ -156,29 +161,17 @@ macro_rules! late_lint_passes {
         $macro!(
             $args,
             [
-                // FIXME: Look into regression when this is used as a module lint
-                // May Depend on constants elsewhere
-                UnusedBrokenConst: UnusedBrokenConst,
-                // Needs to run after UnusedAttributes as it marks all `feature` attributes as used.
-                UnstableFeatures: UnstableFeatures,
                 // Tracks state across modules
                 UnnameableTestItems: UnnameableTestItems::new(),
                 MisalignedGcPointers: MisalignedGcPointers,
                 // Tracks attributes of parents
                 MissingDoc: MissingDoc::new(),
-                // Depends on access levels
+                // Builds a global list of all impls of `Debug`.
                 // FIXME: Turn the computation of types which implement Debug into a query
                 // and change this to a module lint pass
                 MissingDebugImplementations: MissingDebugImplementations::default(),
-                ArrayIntoIter: ArrayIntoIter::default(),
+                // Keeps a global list of foreign declarations.
                 ClashingExternDeclarations: ClashingExternDeclarations::new(),
-                DropTraitConstraints: DropTraitConstraints,
-                TemporaryCStringAsPtr: TemporaryCStringAsPtr,
-                NonPanicFmt: NonPanicFmt,
-                NoopMethodCall: NoopMethodCall,
-                EnumIntrinsicsNonEnums: EnumIntrinsicsNonEnums,
-                InvalidAtomicOrdering: InvalidAtomicOrdering,
-                NamedAsmLabels: NamedAsmLabels,
             ]
         );
     };
@@ -214,6 +207,17 @@ macro_rules! late_lint_mod_passes {
                 ExplicitOutlivesRequirements: ExplicitOutlivesRequirements,
                 InvalidValue: InvalidValue,
                 DerefNullPtr: DerefNullPtr,
+                // May Depend on constants elsewhere
+                UnusedBrokenConst: UnusedBrokenConst,
+                UnstableFeatures: UnstableFeatures,
+                ArrayIntoIter: ArrayIntoIter::default(),
+                DropTraitConstraints: DropTraitConstraints,
+                TemporaryCStringAsPtr: TemporaryCStringAsPtr,
+                NonPanicFmt: NonPanicFmt,
+                NoopMethodCall: NoopMethodCall,
+                EnumIntrinsicsNonEnums: EnumIntrinsicsNonEnums,
+                InvalidAtomicOrdering: InvalidAtomicOrdering,
+                NamedAsmLabels: NamedAsmLabels,
             ]
         );
     };
@@ -299,6 +303,7 @@ fn register_builtins(store: &mut LintStore, no_interleave_lints: bool) {
         PATH_STATEMENTS,
         UNUSED_ATTRIBUTES,
         UNUSED_MACROS,
+        UNUSED_MACRO_RULES,
         UNUSED_ALLOCATION,
         UNUSED_DOC_COMMENTS,
         UNUSED_EXTERN_CRATES,
@@ -482,6 +487,16 @@ fn register_builtins(store: &mut LintStore, no_interleave_lints: bool) {
          <https://github.com/rust-lang/rust/issues/59014> for more information",
     );
     store.register_removed("plugin_as_library", "plugins have been deprecated and retired");
+    store.register_removed(
+        "unsupported_naked_functions",
+        "converted into hard error, see RFC 2972 \
+         <https://github.com/rust-lang/rfcs/blob/master/text/2972-constrained-naked.md> for more information",
+    );
+    store.register_removed(
+        "mutable_borrow_reservation_conflict",
+        "now allowed, see issue #59159 \
+         <https://github.com/rust-lang/rust/issues/59159> for more information",
+    );
 }
 
 fn register_internals(store: &mut LintStore) {
@@ -489,21 +504,35 @@ fn register_internals(store: &mut LintStore) {
     store.register_early_pass(|| Box::new(LintPassImpl));
     store.register_lints(&DefaultHashTypes::get_lints());
     store.register_late_pass(|| Box::new(DefaultHashTypes));
+    store.register_lints(&QueryStability::get_lints());
+    store.register_late_pass(|| Box::new(QueryStability));
     store.register_lints(&ExistingDocKeyword::get_lints());
     store.register_late_pass(|| Box::new(ExistingDocKeyword));
     store.register_lints(&TyTyKind::get_lints());
     store.register_late_pass(|| Box::new(TyTyKind));
+    store.register_lints(&Diagnostics::get_lints());
+    store.register_late_pass(|| Box::new(Diagnostics));
+    store.register_lints(&BadOptAccess::get_lints());
+    store.register_late_pass(|| Box::new(BadOptAccess));
+    store.register_lints(&PassByValue::get_lints());
+    store.register_late_pass(|| Box::new(PassByValue));
+    // FIXME(davidtwco): deliberately do not include `UNTRANSLATABLE_DIAGNOSTIC` and
+    // `DIAGNOSTIC_OUTSIDE_OF_IMPL` here because `-Wrustc::internal` is provided to every crate and
+    // these lints will trigger all of the time - change this once migration to diagnostic structs
+    // and translation is completed
     store.register_group(
         false,
         "rustc::internal",
         None,
         vec![
             LintId::of(DEFAULT_HASH_TYPES),
+            LintId::of(POTENTIAL_QUERY_INSTABILITY),
             LintId::of(USAGE_OF_TY_TYKIND),
+            LintId::of(PASS_BY_VALUE),
             LintId::of(LINT_PASS_IMPL_WITHOUT_MACRO),
-            LintId::of(TY_PASS_BY_REFERENCE),
             LintId::of(USAGE_OF_QUALIFIED_TY),
             LintId::of(EXISTING_DOC_KEYWORD),
+            LintId::of(BAD_OPT_ACCESS),
         ],
     );
 }

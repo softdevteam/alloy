@@ -4,7 +4,6 @@
 #![allow(path_statements)]
 #![allow(clippy::deref_addrof)]
 #![allow(clippy::redundant_field_names)]
-#![feature(untagged_unions)]
 
 struct Unit;
 struct Tuple(i32);
@@ -78,7 +77,7 @@ impl FnOnce<(&str,)> for GreetStruct2 {
     }
 }
 
-struct GreetStruct3 {}
+struct GreetStruct3;
 
 impl FnOnce<(&str,)> for GreetStruct3 {
     type Output = ();

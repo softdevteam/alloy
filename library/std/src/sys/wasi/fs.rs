@@ -16,7 +16,7 @@ use crate::sys::time::SystemTime;
 use crate::sys::unsupported;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 
-pub use crate::sys_common::fs::{remove_dir_all, try_exists};
+pub use crate::sys_common::fs::try_exists;
 
 pub struct File {
     fd: WasiFd,
@@ -61,6 +61,12 @@ pub struct OpenOptions {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FilePermissions {
     readonly: bool,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct FileTimes {
+    accessed: Option<wasi::Timestamp>,
+    modified: Option<wasi::Timestamp>,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
@@ -112,6 +118,16 @@ impl FilePermissions {
     }
 }
 
+impl FileTimes {
+    pub fn set_accessed(&mut self, t: SystemTime) {
+        self.accessed = Some(t.to_wasi_timestamp_or_panic());
+    }
+
+    pub fn set_modified(&mut self, t: SystemTime) {
+        self.modified = Some(t.to_wasi_timestamp_or_panic());
+    }
+}
+
 impl FileType {
     pub fn is_dir(&self) -> bool {
         self.bits == wasi::FILETYPE_DIRECTORY
@@ -127,6 +143,18 @@ impl FileType {
 
     pub fn bits(&self) -> wasi::Filetype {
         self.bits
+    }
+}
+
+impl ReadDir {
+    fn new(dir: File, root: PathBuf) -> ReadDir {
+        ReadDir {
+            cookie: Some(0),
+            buf: vec![0; 128],
+            offset: 0,
+            cap: 0,
+            inner: Arc::new(ReadDirInner { dir, root }),
+        }
     }
 }
 
@@ -447,6 +475,15 @@ impl File {
         unsupported()
     }
 
+    pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+        self.fd.filestat_set_times(
+            times.accessed.unwrap_or(0),
+            times.modified.unwrap_or(0),
+            times.accessed.map_or(0, |_| wasi::FSTFLAGS_ATIM)
+                | times.modified.map_or(0, |_| wasi::FSTFLAGS_MTIM),
+        )
+    }
+
     pub fn read_link(&self, file: &Path) -> io::Result<PathBuf> {
         read_link(&self.fd, file)
     }
@@ -516,13 +553,7 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     opts.directory(true);
     opts.read(true);
     let dir = File::open(p, &opts)?;
-    Ok(ReadDir {
-        cookie: Some(0),
-        buf: vec![0; 128],
-        offset: 0,
-        cap: 0,
-        inner: Arc::new(ReadDirInner { dir, root: p.to_path_buf() }),
-    })
+    Ok(ReadDir::new(dir, p.to_path_buf()))
 }
 
 pub fn unlink(p: &Path) -> io::Result<()> {
@@ -705,7 +736,7 @@ fn open_parent(p: &Path) -> io::Result<(ManuallyDrop<WasiFd>, PathBuf)> {
 
 pub fn osstr2str(f: &OsStr) -> io::Result<&str> {
     f.to_str()
-        .ok_or_else(|| io::Error::new_const(io::ErrorKind::Uncategorized, &"input must be utf-8"))
+        .ok_or_else(|| io::const_io_error!(io::ErrorKind::Uncategorized, "input must be utf-8"))
 }
 
 pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
@@ -715,4 +746,53 @@ pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
     let mut writer = File::create(to)?;
 
     io::copy(&mut reader, &mut writer)
+}
+
+pub fn remove_dir_all(path: &Path) -> io::Result<()> {
+    let (parent, path) = open_parent(path)?;
+    remove_dir_all_recursive(&parent, &path)
+}
+
+fn remove_dir_all_recursive(parent: &WasiFd, path: &Path) -> io::Result<()> {
+    // Open up a file descriptor for the directory itself. Note that we don't
+    // follow symlinks here and we specifically open directories.
+    //
+    // At the root invocation of this function this will correctly handle
+    // symlinks passed to the top-level `remove_dir_all`. At the recursive
+    // level this will double-check that after the `readdir` call deduced this
+    // was a directory it's still a directory by the time we open it up.
+    //
+    // If the opened file was actually a symlink then the symlink is deleted,
+    // not the directory recursively.
+    let mut opts = OpenOptions::new();
+    opts.lookup_flags(0);
+    opts.directory(true);
+    opts.read(true);
+    let fd = open_at(parent, path, &opts)?;
+    if fd.file_attr()?.file_type().is_symlink() {
+        return parent.unlink_file(osstr2str(path.as_ref())?);
+    }
+
+    // this "root" is only used by `DirEntry::path` which we don't use below so
+    // it's ok for this to be a bogus value
+    let dummy_root = PathBuf::new();
+
+    // Iterate over all the entries in this directory, and travel recursively if
+    // necessary
+    for entry in ReadDir::new(fd, dummy_root) {
+        let entry = entry?;
+        let path = crate::str::from_utf8(&entry.name).map_err(|_| {
+            io::const_io_error!(io::ErrorKind::Uncategorized, "invalid utf-8 file name found")
+        })?;
+
+        if entry.file_type()?.is_dir() {
+            remove_dir_all_recursive(&entry.inner.dir.fd, path.as_ref())?;
+        } else {
+            entry.inner.dir.fd.unlink_file(path)?;
+        }
+    }
+
+    // Once all this directory's contents are deleted it should be safe to
+    // delete the directory tiself.
+    parent.remove_directory(osstr2str(path.as_ref())?)
 }

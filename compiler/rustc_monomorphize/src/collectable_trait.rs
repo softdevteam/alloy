@@ -1,9 +1,10 @@
 use rustc_hir::LangItem;
-use rustc_middle::mir::mono::MonoItem;
+// use rustc_middle::mir::mono::MonoItem;
 use rustc_middle::ty::subst::GenericArg;
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, Ty, TyCtxt};
-use rustc_span::source_map::Spanned;
+// use rustc_span::source_map::Spanned;
+use crate::collector::MonoItems;
 use rustc_span::DUMMY_SP;
 
 use rustc_hir::def_id::DefId;
@@ -15,7 +16,7 @@ pub(crate) fn collect_mono<'a, 'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
     substs: SubstsRef<'tcx>,
-    output: &'a mut Vec<Spanned<MonoItem<'tcx>>>,
+    output: &'a mut MonoItems<'tcx>,
 ) {
     let set_col_did =
         tcx.lang_items().require(LangItem::SetCollectable).unwrap_or_else(|e| tcx.sess.fatal(&e));
@@ -34,7 +35,7 @@ pub(crate) fn collect_mono<'a, 'tcx>(
         | ty::Str => return,
 
         ty::RawPtr(raw) => collect_mono(tcx, raw.ty, substs, output),
-        ty::Ref(_, refty, ..) => collect_mono(tcx, refty, substs, output),
+        ty::Ref(_, refty, ..) => collect_mono(tcx, *refty, substs, output),
         ty::Adt(adt_def, ..) => {
             if ty.is_collectable(tcx.at(DUMMY_SP), ty::ParamEnv::reveal_all()) {
                 let subs = tcx.mk_substs(std::iter::once::<GenericArg<'tcx>>(ty.into()));
@@ -45,7 +46,7 @@ pub(crate) fn collect_mono<'a, 'tcx>(
             }
 
             if adt_def.is_enum() {
-                for v in adt_def.variants.iter() {
+                for v in adt_def.variants().iter() {
                     for f in v.fields.iter() {
                         collect_mono(tcx, f.ty(tcx, substs), substs, output);
                     }
@@ -57,13 +58,13 @@ pub(crate) fn collect_mono<'a, 'tcx>(
                 collect_mono(tcx, field_ty, substs, output);
             }
         }
-        ty::Tuple(substs) => {
+        ty::Tuple(_) => {
             for f in ty.tuple_fields() {
                 collect_mono(tcx, f, substs, output);
             }
         }
-        ty::Array(aty, ..) => collect_mono(tcx, aty, substs, output),
-        ty::Slice(sty) => collect_mono(tcx, sty, substs, output),
+        ty::Array(aty, ..) => collect_mono(tcx, *aty, substs, output),
+        ty::Slice(sty) => collect_mono(tcx, *sty, substs, output),
         _ => return,
     }
 }

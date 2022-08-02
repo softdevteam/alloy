@@ -1,5 +1,5 @@
 use clippy_utils::diagnostics::span_lint_and_help;
-use rustc_hir::{CaptureBy, Expr, ExprKind, PatKind};
+use rustc_hir::{CaptureBy, Closure, Expr, ExprKind, PatKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
@@ -113,16 +113,23 @@ impl<'tcx> LateLintPass<'tcx> for MapErrIgnore {
         }
 
         // check if this is a method call (e.g. x.foo())
-        if let ExprKind::MethodCall(method, _t_span, args, _) = e.kind {
+        if let ExprKind::MethodCall(method, args, _) = e.kind {
             // only work if the method name is `map_err` and there are only 2 arguments (e.g. x.map_err(|_|[1]
             // Enum::Variant[2]))
             if method.ident.as_str() == "map_err" && args.len() == 2 {
-                // make sure the first argument is a closure, and grab the CaptureRef, body_id, and body_span fields
-                if let ExprKind::Closure(capture, _, body_id, body_span, _) = args[1].kind {
+                // make sure the first argument is a closure, and grab the CaptureRef, BodyId, and fn_decl_span
+                // fields
+                if let ExprKind::Closure(&Closure {
+                    capture_clause,
+                    body,
+                    fn_decl_span,
+                    ..
+                }) = args[1].kind
+                {
                     // check if this is by Reference (meaning there's no move statement)
-                    if capture == CaptureBy::Ref {
+                    if capture_clause == CaptureBy::Ref {
                         // Get the closure body to check the parameters and values
-                        let closure_body = cx.tcx.hir().body(body_id);
+                        let closure_body = cx.tcx.hir().body(body);
                         // make sure there's only one parameter (`|_|`)
                         if closure_body.params.len() == 1 {
                             // make sure that parameter is the wild token (`_`)
@@ -132,7 +139,7 @@ impl<'tcx> LateLintPass<'tcx> for MapErrIgnore {
                                 span_lint_and_help(
                                     cx,
                                     MAP_ERR_IGNORE,
-                                    body_span,
+                                    fn_decl_span,
                                     "`map_err(|_|...` wildcard pattern discards the original error",
                                     None,
                                     "consider storing the original error as a source in the new error, or silence this warning using an ignored identifier (`.map_err(|_foo| ...`)",

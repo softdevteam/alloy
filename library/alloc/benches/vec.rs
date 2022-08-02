@@ -476,7 +476,7 @@ fn bench_in_place_recycle(b: &mut Bencher) {
 #[bench]
 fn bench_in_place_zip_recycle(b: &mut Bencher) {
     let mut data = vec![0u8; 1000];
-    let mut rng = rand::thread_rng();
+    let mut rng = crate::bench_rng();
     let mut subst = vec![0u8; 1000];
     rng.fill_bytes(&mut subst[..]);
 
@@ -495,7 +495,7 @@ fn bench_in_place_zip_recycle(b: &mut Bencher) {
 #[bench]
 fn bench_in_place_zip_iter_mut(b: &mut Bencher) {
     let mut data = vec![0u8; 256];
-    let mut rng = rand::thread_rng();
+    let mut rng = crate::bench_rng();
     let mut subst = vec![0u8; 1000];
     rng.fill_bytes(&mut subst[..]);
 
@@ -627,10 +627,10 @@ fn bench_map_regular(b: &mut Bencher) {
 fn bench_map_fast(b: &mut Bencher) {
     let data = black_box([(0, 0); LEN]);
     b.iter(|| {
-        let mut result = Vec::with_capacity(data.len());
+        let mut result: Vec<u32> = Vec::with_capacity(data.len());
         for i in 0..data.len() {
             unsafe {
-                *result.get_unchecked_mut(i) = data[i].0;
+                *result.as_mut_ptr().add(i) = data[i].0;
                 result.set_len(i);
             }
         }
@@ -761,4 +761,24 @@ fn bench_retain_100000(b: &mut Bencher) {
 fn bench_retain_whole_100000(b: &mut Bencher) {
     let mut v = black_box(vec![826u32; 100000]);
     b.iter(|| v.retain(|x| *x == 826u32));
+}
+
+#[bench]
+fn bench_next_chunk(b: &mut Bencher) {
+    let v = vec![13u8; 2048];
+
+    b.iter(|| {
+        const CHUNK: usize = 8;
+
+        let mut sum = [0u32; CHUNK];
+        let mut iter = black_box(v.clone()).into_iter();
+
+        while let Ok(chunk) = iter.next_chunk::<CHUNK>() {
+            for i in 0..CHUNK {
+                sum[i] += chunk[i] as u32;
+            }
+        }
+
+        sum
+    })
 }

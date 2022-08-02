@@ -16,21 +16,24 @@
 
 use super::validity::RefTracking;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_errors::ErrorReported;
+use rustc_errors::ErrorGuaranteed;
 use rustc_hir as hir;
 use rustc_middle::mir::interpret::InterpResult;
 use rustc_middle::ty::{self, layout::TyAndLayout, Ty};
 
 use rustc_ast::Mutability;
 
-use super::{AllocId, Allocation, InterpCx, MPlaceTy, Machine, MemoryKind, PlaceTy, ValueVisitor};
+use super::{
+    AllocId, Allocation, ConstAllocation, InterpCx, MPlaceTy, Machine, MemoryKind, PlaceTy,
+    ValueVisitor,
+};
 use crate::const_eval;
 
 pub trait CompileTimeMachine<'mir, 'tcx, T> = Machine<
     'mir,
     'tcx,
     MemoryKind = T,
-    PointerTag = AllocId,
+    Provenance = AllocId,
     ExtraFnVal = !,
     FrameExtra = (),
     AllocExtra = (),
@@ -70,7 +73,7 @@ struct IsStaticOrFn;
 
 /// Intern an allocation without looking at its children.
 /// `mode` is the mode of the environment where we found this pointer.
-/// `mutablity` is the mutability of the place to be interned; even if that says
+/// `mutability` is the mutability of the place to be interned; even if that says
 /// `immutable` things might become mutable if `ty` is not frozen.
 /// `ty` can be `None` if there is no potential interior mutability
 /// to account for (e.g. for vtables).
@@ -84,22 +87,19 @@ fn intern_shallow<'rt, 'mir, 'tcx, M: CompileTimeMachine<'mir, 'tcx, const_eval:
     trace!("intern_shallow {:?} with {:?}", alloc_id, mode);
     // remove allocation
     let tcx = ecx.tcx;
-    let (kind, mut alloc) = match ecx.memory.alloc_map.remove(&alloc_id) {
-        Some(entry) => entry,
-        None => {
-            // Pointer not found in local memory map. It is either a pointer to the global
-            // map, or dangling.
-            // If the pointer is dangling (neither in local nor global memory), we leave it
-            // to validation to error -- it has the much better error messages, pointing out where
-            // in the value the dangling reference lies.
-            // The `delay_span_bug` ensures that we don't forget such a check in validation.
-            if tcx.get_global_alloc(alloc_id).is_none() {
-                tcx.sess.delay_span_bug(ecx.tcx.span, "tried to intern dangling pointer");
-            }
-            // treat dangling pointers like other statics
-            // just to stop trying to recurse into them
-            return Some(IsStaticOrFn);
+    let Some((kind, mut alloc)) = ecx.memory.alloc_map.remove(&alloc_id) else {
+        // Pointer not found in local memory map. It is either a pointer to the global
+        // map, or dangling.
+        // If the pointer is dangling (neither in local nor global memory), we leave it
+        // to validation to error -- it has the much better error messages, pointing out where
+        // in the value the dangling reference lies.
+        // The `delay_span_bug` ensures that we don't forget such a check in validation.
+        if tcx.try_get_global_alloc(alloc_id).is_none() {
+            tcx.sess.delay_span_bug(ecx.tcx.span, "tried to intern dangling pointer");
         }
+        // treat dangling pointers like other statics
+        // just to stop trying to recurse into them
+        return Some(IsStaticOrFn);
     };
     // This match is just a canary for future changes to `MemoryKind`, which most likely need
     // changes in this function.
@@ -134,8 +134,8 @@ fn intern_shallow<'rt, 'mir, 'tcx, M: CompileTimeMachine<'mir, 'tcx, const_eval:
         alloc.mutability = Mutability::Not;
     };
     // link the alloc id to the actual allocation
-    let alloc = tcx.intern_const_alloc(alloc);
     leftover_allocations.extend(alloc.relocations().iter().map(|&(_, alloc_id)| alloc_id));
+    let alloc = tcx.intern_const_alloc(alloc);
     tcx.set_alloc_id_memory(alloc_id, alloc);
     None
 }
@@ -168,13 +168,56 @@ impl<'rt, 'mir, 'tcx: 'mir, M: CompileTimeMachine<'mir, 'tcx, const_eval::Memory
         mplace: &MPlaceTy<'tcx>,
         fields: impl Iterator<Item = InterpResult<'tcx, Self::V>>,
     ) -> InterpResult<'tcx> {
-        // ZSTs cannot contain pointers, so we can skip them.
-        if mplace.layout.is_zst() {
+        // We want to walk the aggregate to look for references to intern. While doing that we
+        // also need to take special care of interior mutability.
+        //
+        // As an optimization, however, if the allocation does not contain any references: we don't
+        // need to do the walk. It can be costly for big arrays for example (e.g. issue #93215).
+        let is_walk_needed = |mplace: &MPlaceTy<'tcx>| -> InterpResult<'tcx, bool> {
+            // ZSTs cannot contain pointers, we can avoid the interning walk.
+            if mplace.layout.is_zst() {
+                return Ok(false);
+            }
+
+            // Now, check whether this allocation could contain references.
+            //
+            // Note, this check may sometimes not be cheap, so we only do it when the walk we'd like
+            // to avoid could be expensive: on the potentially larger types, arrays and slices,
+            // rather than on all aggregates unconditionally.
+            if matches!(mplace.layout.ty.kind(), ty::Array(..) | ty::Slice(..)) {
+                let Some((size, align)) = self.ecx.size_and_align_of_mplace(&mplace)? else {
+                    // We do the walk if we can't determine the size of the mplace: we may be
+                    // dealing with extern types here in the future.
+                    return Ok(true);
+                };
+
+                // If there are no relocations in this allocation, it does not contain references
+                // that point to another allocation, and we can avoid the interning walk.
+                if let Some(alloc) = self.ecx.get_ptr_alloc(mplace.ptr, size, align)? {
+                    if !alloc.has_relocations() {
+                        return Ok(false);
+                    }
+                } else {
+                    // We're encountering a ZST here, and can avoid the walk as well.
+                    return Ok(false);
+                }
+            }
+
+            // In the general case, we do the walk.
+            Ok(true)
+        };
+
+        // If this allocation contains no references to intern, we avoid the potentially costly
+        // walk.
+        //
+        // We can do this before the checks for interior mutability below, because only references
+        // are relevant in that situation, and we're checking if there are any here.
+        if !is_walk_needed(mplace)? {
             return Ok(());
         }
 
         if let Some(def) = mplace.layout.ty.ty_adt_def() {
-            if Some(def.did) == self.ecx.tcx.lang_items().unsafe_cell_type() {
+            if def.is_unsafe_cell() {
                 // We are crossing over an `UnsafeCell`, we can mutate again. This means that
                 // References we encounter inside here are interned as pointing to mutable
                 // allocations.
@@ -195,14 +238,14 @@ impl<'rt, 'mir, 'tcx: 'mir, M: CompileTimeMachine<'mir, 'tcx, const_eval::Memory
         let tcx = self.ecx.tcx;
         let ty = mplace.layout.ty;
         if let ty::Ref(_, referenced_ty, ref_mutability) = *ty.kind() {
-            let value = self.ecx.read_immediate(&(*mplace).into())?;
+            let value = self.ecx.read_immediate(&mplace.into())?;
             let mplace = self.ecx.ref_to_mplace(&value)?;
             assert_eq!(mplace.layout.ty, referenced_ty);
             // Handle trait object vtables.
             if let ty::Dynamic(..) =
                 tcx.struct_tail_erasing_lifetimes(referenced_ty, self.ecx.param_env).kind()
             {
-                let ptr = self.ecx.scalar_to_ptr(mplace.meta.unwrap_meta());
+                let ptr = mplace.meta.unwrap_meta().to_pointer(&tcx)?;
                 if let Some(alloc_id) = ptr.provenance {
                     // Explicitly choose const mode here, since vtables are immutable, even
                     // if the reference of the fat pointer is mutable.
@@ -300,7 +343,7 @@ pub fn intern_const_alloc_recursive<
     ecx: &mut InterpCx<'mir, 'tcx, M>,
     intern_kind: InternKind,
     ret: &MPlaceTy<'tcx>,
-) -> Result<(), ErrorReported> {
+) -> Result<(), ErrorGuaranteed> {
     let tcx = ecx.tcx;
     let base_intern_mode = match intern_kind {
         InternKind::Static(mutbl) => InternMode::Static(mutbl),
@@ -359,6 +402,8 @@ pub fn intern_const_alloc_recursive<
     // pointers, ... So we can't intern them according to their type rules
 
     let mut todo: Vec<_> = leftover_allocations.iter().cloned().collect();
+    debug!(?todo);
+    debug!("dead_alloc_map: {:#?}", ecx.memory.dead_alloc_map);
     while let Some(alloc_id) = todo.pop() {
         if let Some((_, mut alloc)) = ecx.memory.alloc_map.remove(&alloc_id) {
             // We can't call the `intern_shallow` method here, as its logic is tailored to safe
@@ -396,7 +441,7 @@ pub fn intern_const_alloc_recursive<
             }
             let alloc = tcx.intern_const_alloc(alloc);
             tcx.set_alloc_id_memory(alloc_id, alloc);
-            for &(_, alloc_id) in alloc.relocations().iter() {
+            for &(_, alloc_id) in alloc.inner().relocations().iter() {
                 if leftover_allocations.insert(alloc_id) {
                     todo.push(alloc_id);
                 }
@@ -404,9 +449,12 @@ pub fn intern_const_alloc_recursive<
         } else if ecx.memory.dead_alloc_map.contains_key(&alloc_id) {
             // Codegen does not like dangling pointers, and generally `tcx` assumes that
             // all allocations referenced anywhere actually exist. So, make sure we error here.
-            ecx.tcx.sess.span_err(ecx.tcx.span, "encountered dangling pointer in final constant");
-            return Err(ErrorReported);
-        } else if ecx.tcx.get_global_alloc(alloc_id).is_none() {
+            let reported = ecx
+                .tcx
+                .sess
+                .span_err(ecx.tcx.span, "encountered dangling pointer in final constant");
+            return Err(reported);
+        } else if ecx.tcx.try_get_global_alloc(alloc_id).is_none() {
             // We have hit an `AllocId` that is neither in local or global memory and isn't
             // marked as dangling by local memory.  That should be impossible.
             span_bug!(ecx.tcx.span, "encountered unknown alloc id {:?}", alloc_id);
@@ -426,9 +474,9 @@ impl<'mir, 'tcx: 'mir, M: super::intern::CompileTimeMachine<'mir, 'tcx, !>>
         layout: TyAndLayout<'tcx>,
         f: impl FnOnce(
             &mut InterpCx<'mir, 'tcx, M>,
-            &PlaceTy<'tcx, M::PointerTag>,
+            &PlaceTy<'tcx, M::Provenance>,
         ) -> InterpResult<'tcx, ()>,
-    ) -> InterpResult<'tcx, &'tcx Allocation> {
+    ) -> InterpResult<'tcx, ConstAllocation<'tcx>> {
         let dest = self.allocate(layout, MemoryKind::Stack)?;
         f(self, &dest.into())?;
         let mut alloc = self.memory.alloc_map.remove(&dest.ptr.provenance.unwrap()).unwrap().1;

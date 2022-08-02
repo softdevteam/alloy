@@ -13,12 +13,11 @@ use min_specialization::check_min_specialization;
 
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::struct_span_err;
-use rustc_hir as hir;
+use rustc_hir::def::DefKind;
 use rustc_hir::def_id::LocalDefId;
-use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, TyCtxt, TypeFoldable};
-use rustc_span::Span;
+use rustc_middle::ty::{self, TyCtxt, TypeVisitable};
+use rustc_span::{Span, Symbol};
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 
@@ -54,51 +53,25 @@ mod min_specialization;
 /// impl<'a> Trait<Foo> for Bar { type X = &'a i32; }
 /// //   ^ 'a is unused and appears in assoc type, error
 /// ```
-pub fn impl_wf_check(tcx: TyCtxt<'_>) {
-    // We will tag this as part of the WF check -- logically, it is,
-    // but it's one that we must perform earlier than the rest of
-    // WfCheck.
-    tcx.hir().for_each_module(|module| tcx.ensure().check_mod_impl_wf(module))
-}
-
 fn check_mod_impl_wf(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
     let min_specialization = tcx.features().min_specialization;
-    tcx.hir()
-        .visit_item_likes_in_module(module_def_id, &mut ImplWfCheck { tcx, min_specialization });
+    let module = tcx.hir_module_items(module_def_id);
+    for id in module.items() {
+        if matches!(tcx.def_kind(id.def_id), DefKind::Impl) {
+            enforce_impl_params_are_constrained(tcx, id.def_id);
+            enforce_impl_items_are_distinct(tcx, id.def_id);
+            if min_specialization {
+                check_min_specialization(tcx, id.def_id);
+            }
+        }
+    }
 }
 
 pub fn provide(providers: &mut Providers) {
     *providers = Providers { check_mod_impl_wf, ..*providers };
 }
 
-struct ImplWfCheck<'tcx> {
-    tcx: TyCtxt<'tcx>,
-    min_specialization: bool,
-}
-
-impl<'tcx> ItemLikeVisitor<'tcx> for ImplWfCheck<'tcx> {
-    fn visit_item(&mut self, item: &'tcx hir::Item<'tcx>) {
-        if let hir::ItemKind::Impl(ref impl_) = item.kind {
-            enforce_impl_params_are_constrained(self.tcx, item.def_id, impl_.items);
-            enforce_impl_items_are_distinct(self.tcx, impl_.items);
-            if self.min_specialization {
-                check_min_specialization(self.tcx, item.def_id.to_def_id(), item.span);
-            }
-        }
-    }
-
-    fn visit_trait_item(&mut self, _trait_item: &'tcx hir::TraitItem<'tcx>) {}
-
-    fn visit_impl_item(&mut self, _impl_item: &'tcx hir::ImplItem<'tcx>) {}
-
-    fn visit_foreign_item(&mut self, _foreign_item: &'tcx hir::ForeignItem<'tcx>) {}
-}
-
-fn enforce_impl_params_are_constrained(
-    tcx: TyCtxt<'_>,
-    impl_def_id: LocalDefId,
-    impl_item_refs: &[hir::ImplItemRef],
-) {
+fn enforce_impl_params_are_constrained(tcx: TyCtxt<'_>, impl_def_id: LocalDefId) {
     // Every lifetime used in an associated type must be constrained.
     let impl_self_ty = tcx.type_of(impl_def_id);
     if impl_self_ty.references_error() {
@@ -117,7 +90,7 @@ fn enforce_impl_params_are_constrained(
     let impl_predicates = tcx.predicates_of(impl_def_id);
     let impl_trait_ref = tcx.impl_trait_ref(impl_def_id);
 
-    let mut input_parameters = cgp::parameters_for_impl(tcx, impl_self_ty, impl_trait_ref);
+    let mut input_parameters = cgp::parameters_for_impl(impl_self_ty, impl_trait_ref);
     cgp::identify_constrained_generic_params(
         tcx,
         impl_predicates,
@@ -126,15 +99,15 @@ fn enforce_impl_params_are_constrained(
     );
 
     // Disallow unconstrained lifetimes, but only if they appear in assoc types.
-    let lifetimes_in_associated_types: FxHashSet<_> = impl_item_refs
+    let lifetimes_in_associated_types: FxHashSet<_> = tcx
+        .associated_item_def_ids(impl_def_id)
         .iter()
-        .map(|item_ref| item_ref.id.def_id)
         .flat_map(|def_id| {
             let item = tcx.associated_item(def_id);
             match item.kind {
                 ty::AssocKind::Type => {
                     if item.defaultness.has_value() {
-                        cgp::parameters_for(tcx, &tcx.type_of(def_id), true)
+                        cgp::parameters_for(&tcx.type_of(def_id), true)
                     } else {
                         Vec::new()
                     }
@@ -150,12 +123,7 @@ fn enforce_impl_params_are_constrained(
             ty::GenericParamDefKind::Type { .. } => {
                 let param_ty = ty::ParamTy::for_def(param);
                 if !input_parameters.contains(&cgp::Parameter::from(param_ty)) {
-                    report_unused_parameter(
-                        tcx,
-                        tcx.def_span(param.def_id),
-                        "type",
-                        &param_ty.to_string(),
-                    );
+                    report_unused_parameter(tcx, tcx.def_span(param.def_id), "type", param_ty.name);
                 }
             }
             ty::GenericParamDefKind::Lifetime => {
@@ -167,7 +135,7 @@ fn enforce_impl_params_are_constrained(
                         tcx,
                         tcx.def_span(param.def_id),
                         "lifetime",
-                        &param.name.to_string(),
+                        param.name,
                     );
                 }
             }
@@ -178,7 +146,7 @@ fn enforce_impl_params_are_constrained(
                         tcx,
                         tcx.def_span(param.def_id),
                         "const",
-                        &param_ct.to_string(),
+                        param_ct.name,
                     );
                 }
             }
@@ -187,7 +155,7 @@ fn enforce_impl_params_are_constrained(
 
     // (*) This is a horrible concession to reality. I think it'd be
     // better to just ban unconstrained lifetimes outright, but in
-    // practice people do non-hygenic macros like:
+    // practice people do non-hygienic macros like:
     //
     // ```
     // macro_rules! __impl_slice_eq1 {
@@ -205,7 +173,7 @@ fn enforce_impl_params_are_constrained(
     // used elsewhere are not projected back out.
 }
 
-fn report_unused_parameter(tcx: TyCtxt<'_>, span: Span, kind: &str, name: &str) {
+fn report_unused_parameter(tcx: TyCtxt<'_>, span: Span, kind: &str, name: Symbol) {
     let mut err = struct_span_err!(
         tcx.sess,
         span,
@@ -228,33 +196,32 @@ fn report_unused_parameter(tcx: TyCtxt<'_>, span: Span, kind: &str, name: &str) 
 }
 
 /// Enforce that we do not have two items in an impl with the same name.
-fn enforce_impl_items_are_distinct(tcx: TyCtxt<'_>, impl_item_refs: &[hir::ImplItemRef]) {
+fn enforce_impl_items_are_distinct(tcx: TyCtxt<'_>, impl_def_id: LocalDefId) {
     let mut seen_type_items = FxHashMap::default();
     let mut seen_value_items = FxHashMap::default();
-    for impl_item_ref in impl_item_refs {
-        let impl_item = tcx.hir().impl_item(impl_item_ref.id);
+    for &impl_item_ref in tcx.associated_item_def_ids(impl_def_id) {
+        let impl_item = tcx.associated_item(impl_item_ref);
         let seen_items = match impl_item.kind {
-            hir::ImplItemKind::TyAlias(_) => &mut seen_type_items,
+            ty::AssocKind::Type => &mut seen_type_items,
             _ => &mut seen_value_items,
         };
-        match seen_items.entry(impl_item.ident.normalize_to_macros_2_0()) {
+        let span = tcx.def_span(impl_item_ref);
+        let ident = impl_item.ident(tcx);
+        match seen_items.entry(ident.normalize_to_macros_2_0()) {
             Occupied(entry) => {
                 let mut err = struct_span_err!(
                     tcx.sess,
-                    impl_item.span,
+                    span,
                     E0201,
                     "duplicate definitions with name `{}`:",
-                    impl_item.ident
+                    ident
                 );
-                err.span_label(
-                    *entry.get(),
-                    format!("previous definition of `{}` here", impl_item.ident),
-                );
-                err.span_label(impl_item.span, "duplicate definition");
+                err.span_label(*entry.get(), format!("previous definition of `{}` here", ident));
+                err.span_label(span, "duplicate definition");
                 err.emit();
             }
             Vacant(entry) => {
-                entry.insert(impl_item.span);
+                entry.insert(span);
             }
         }
     }

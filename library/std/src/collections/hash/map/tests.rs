@@ -420,8 +420,8 @@ fn test_iterate() {
 
 #[test]
 fn test_keys() {
-    let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    let map: HashMap<_, _> = vec.into_iter().collect();
+    let pairs = [(1, 'a'), (2, 'b'), (3, 'c')];
+    let map: HashMap<_, _> = pairs.into_iter().collect();
     let keys: Vec<_> = map.keys().cloned().collect();
     assert_eq!(keys.len(), 3);
     assert!(keys.contains(&1));
@@ -431,8 +431,8 @@ fn test_keys() {
 
 #[test]
 fn test_values() {
-    let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    let map: HashMap<_, _> = vec.into_iter().collect();
+    let pairs = [(1, 'a'), (2, 'b'), (3, 'c')];
+    let map: HashMap<_, _> = pairs.into_iter().collect();
     let values: Vec<_> = map.values().cloned().collect();
     assert_eq!(values.len(), 3);
     assert!(values.contains(&'a'));
@@ -442,8 +442,8 @@ fn test_values() {
 
 #[test]
 fn test_values_mut() {
-    let vec = vec![(1, 1), (2, 2), (3, 3)];
-    let mut map: HashMap<_, _> = vec.into_iter().collect();
+    let pairs = [(1, 1), (2, 2), (3, 3)];
+    let mut map: HashMap<_, _> = pairs.into_iter().collect();
     for value in map.values_mut() {
         *value = (*value) * 2
     }
@@ -456,8 +456,8 @@ fn test_values_mut() {
 
 #[test]
 fn test_into_keys() {
-    let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    let map: HashMap<_, _> = vec.into_iter().collect();
+    let pairs = [(1, 'a'), (2, 'b'), (3, 'c')];
+    let map: HashMap<_, _> = pairs.into_iter().collect();
     let keys: Vec<_> = map.into_keys().collect();
 
     assert_eq!(keys.len(), 3);
@@ -468,8 +468,8 @@ fn test_into_keys() {
 
 #[test]
 fn test_into_values() {
-    let vec = vec![(1, 'a'), (2, 'b'), (3, 'c')];
-    let map: HashMap<_, _> = vec.into_iter().collect();
+    let pairs = [(1, 'a'), (2, 'b'), (3, 'c')];
+    let map: HashMap<_, _> = pairs.into_iter().collect();
     let values: Vec<_> = map.into_values().collect();
 
     assert_eq!(values.len(), 3);
@@ -515,10 +515,10 @@ fn test_show() {
     map.insert(1, 2);
     map.insert(3, 4);
 
-    let map_str = format!("{:?}", map);
+    let map_str = format!("{map:?}");
 
     assert!(map_str == "{1: 2, 3: 4}" || map_str == "{3: 4, 1: 2}");
-    assert_eq!(format!("{:?}", empty), "{}");
+    assert_eq!(format!("{empty:?}"), "{}");
 }
 
 #[test]
@@ -702,7 +702,7 @@ fn test_entry_take_doesnt_corrupt() {
     // Test for #19292
     fn check(m: &HashMap<i32, ()>) {
         for k in m.keys() {
-            assert!(m.contains_key(k), "{} is in keys() but not in the map?", k);
+            assert!(m.contains_key(k), "{k} is in keys() but not in the map?");
         }
     }
 
@@ -817,6 +817,7 @@ fn test_retain() {
 }
 
 #[test]
+#[cfg_attr(target_os = "android", ignore)] // Android used in CI has a broken dlmalloc
 fn test_try_reserve() {
     let mut empty_bytes: HashMap<u8, u8> = HashMap::new();
 
@@ -828,11 +829,21 @@ fn test_try_reserve() {
         "usize::MAX should trigger an overflow!"
     );
 
-    assert_matches!(
-        empty_bytes.try_reserve(MAX_USIZE / 8).map_err(|e| e.kind()),
-        Err(AllocError { .. }),
-        "usize::MAX / 8 should trigger an OOM!"
-    );
+    if let Err(AllocError { .. }) = empty_bytes.try_reserve(MAX_USIZE / 16).map_err(|e| e.kind()) {
+    } else {
+        // This may succeed if there is enough free memory. Attempt to
+        // allocate a few more hashmaps to ensure the allocation will fail.
+        let mut empty_bytes2: HashMap<u8, u8> = HashMap::new();
+        let _ = empty_bytes2.try_reserve(MAX_USIZE / 16);
+        let mut empty_bytes3: HashMap<u8, u8> = HashMap::new();
+        let _ = empty_bytes3.try_reserve(MAX_USIZE / 16);
+        let mut empty_bytes4: HashMap<u8, u8> = HashMap::new();
+        assert_matches!(
+            empty_bytes4.try_reserve(MAX_USIZE / 16).map_err(|e| e.kind()),
+            Err(AllocError { .. }),
+            "usize::MAX / 16 should trigger an OOM!"
+        );
+    }
 }
 
 #[test]

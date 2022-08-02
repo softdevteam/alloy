@@ -1,27 +1,34 @@
 use crate::build;
+pub(crate) use crate::build::expr::as_constant::lit_to_mir_constant;
 use crate::build::expr::as_place::PlaceBuilder;
 use crate::build::scope::DropKind;
 use crate::thir::pattern::pat_from_hir;
-use rustc_errors::ErrorReported;
+use rustc_apfloat::ieee::{Double, Single};
+use rustc_apfloat::Float;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_errors::ErrorGuaranteed;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::lang_items::LangItem;
-use rustc_hir::{GeneratorKind, HirIdMap, Node};
+use rustc_hir::{GeneratorKind, Node};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
 use rustc_middle::hir::place::PlaceBase as HirPlaceBase;
 use rustc_middle::middle::region;
+use rustc_middle::mir::interpret::ConstValue;
+use rustc_middle::mir::interpret::Scalar;
 use rustc_middle::mir::*;
-use rustc_middle::thir::{BindingMode, Expr, ExprId, LintLevel, PatKind, Thir};
+use rustc_middle::thir::{BindingMode, Expr, ExprId, LintLevel, LocalVarId, PatKind, Thir};
 use rustc_middle::ty::subst::Subst;
-use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable, TypeckResults};
+use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitable, TypeckResults};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
+use rustc_span::Symbol;
 use rustc_target::spec::abi::Abi;
 
 use super::lints;
 
-crate fn mir_built<'tcx>(
+pub(crate) fn mir_built<'tcx>(
     tcx: TyCtxt<'tcx>,
     def: ty::WithOptConstParam<LocalDefId>,
 ) -> &'tcx rustc_data_structures::steal::Steal<Body<'tcx>> {
@@ -41,7 +48,7 @@ crate fn mir_built<'tcx>(
 /// Construct the MIR for a given `DefId`.
 fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_> {
     let id = tcx.hir().local_def_id_to_hir_id(def.did);
-    let body_owner_kind = tcx.hir().body_owner_kind(id);
+    let body_owner_kind = tcx.hir().body_owner_kind(def.did);
     let typeck_results = tcx.typeck_opt_const_arg(def);
 
     // Ensure unsafeck and abstract const building is ran before we steal the THIR.
@@ -61,9 +68,10 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
 
     // Figure out what primary body this item has.
     let (body_id, return_ty_span, span_with_body) = match tcx.hir().get(id) {
-        Node::Expr(hir::Expr { kind: hir::ExprKind::Closure(_, decl, body_id, _, _), .. }) => {
-            (*body_id, decl.output.span(), None)
-        }
+        Node::Expr(hir::Expr {
+            kind: hir::ExprKind::Closure(hir::Closure { fn_decl, body, .. }),
+            ..
+        }) => (*body, fn_decl.output.span(), None),
         Node::Item(hir::Item {
             kind: hir::ItemKind::Fn(hir::FnSig { decl, .. }, _, body_id),
             span,
@@ -104,8 +112,8 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
     let span_with_body = span_with_body.unwrap_or_else(|| tcx.hir().span(id));
 
     tcx.infer_ctxt().enter(|infcx| {
-        let body = if let Some(ErrorReported) = typeck_results.tainted_by_errors {
-            build::construct_error(&infcx, def, id, body_id, body_owner_kind)
+        let body = if let Some(error_reported) = typeck_results.tainted_by_errors {
+            build::construct_error(&infcx, def, id, body_id, body_owner_kind, error_reported)
         } else if body_owner_kind.is_fn_or_closure() {
             // fetch the fully liberated fn signature (that is, all bound
             // types/lifetimes replaced)
@@ -118,7 +126,9 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
             };
 
             let body = tcx.hir().body(body_id);
-            let (thir, expr) = tcx.thir_body(def);
+            let (thir, expr) = tcx
+                .thir_body(def)
+                .unwrap_or_else(|_| (tcx.alloc_steal_thir(Thir::new()), ExprId::from_u32(0)));
             // We ran all queries that depended on THIR at the beginning
             // of `mir_build`, so now we can steal it
             let thir = thir.steal();
@@ -153,7 +163,11 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
                 let opt_ty_info;
                 let self_arg;
                 if let Some(ref fn_decl) = tcx.hir().fn_decl_by_hir_id(owner_id) {
-                    opt_ty_info = fn_decl.inputs.get(index).map(|ty| ty.span);
+                    opt_ty_info = fn_decl
+                        .inputs
+                        .get(index)
+                        // Make sure that inferred closure args have no type span
+                        .and_then(|ty| if arg.pat.span != ty.span { Some(ty.span) } else { None });
                     self_arg = if index == 0 && fn_decl.implicit_self.has_implicit_self() {
                         match fn_decl.implicit_self {
                             hir::ImplicitSelfKind::Imm => Some(ImplicitSelfKind::Imm),
@@ -175,7 +189,7 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
                 let ty = if fn_sig.c_variadic && index == fn_sig.inputs().len() {
                     let va_list_did = tcx.require_lang_item(LangItem::VaList, Some(arg.span));
 
-                    tcx.type_of(va_list_did).subst(tcx, &[tcx.lifetimes.re_erased.into()])
+                    tcx.bound_type_of(va_list_did).subst(tcx, &[tcx.lifetimes.re_erased.into()])
                 } else {
                     fn_sig.inputs()[index]
                 };
@@ -229,7 +243,9 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
 
             let return_ty = typeck_results.node_type(id);
 
-            let (thir, expr) = tcx.thir_body(def);
+            let (thir, expr) = tcx
+                .thir_body(def)
+                .unwrap_or_else(|_| (tcx.alloc_steal_thir(Thir::new()), ExprId::from_u32(0)));
             // We ran all queries that depended on THIR at the beginning
             // of `mir_build`, so now we can steal it
             let thir = thir.steal();
@@ -244,10 +260,10 @@ fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_
         // The exception is `body.user_type_annotations`, which is used unmodified
         // by borrow checking.
         debug_assert!(
-            !(body.local_decls.has_free_regions(tcx)
-                || body.basic_blocks().has_free_regions(tcx)
-                || body.var_debug_info.has_free_regions(tcx)
-                || body.yield_ty().has_free_regions(tcx)),
+            !(body.local_decls.has_free_regions()
+                || body.basic_blocks().has_free_regions()
+                || body.var_debug_info.has_free_regions()
+                || body.yield_ty().has_free_regions()),
             "Unexpected free regions in MIR: {:?}",
             body,
         );
@@ -266,9 +282,8 @@ fn liberated_closure_env_ty(
 ) -> Ty<'_> {
     let closure_ty = tcx.typeck_body(body_id).node_type(closure_expr_id);
 
-    let (closure_def_id, closure_substs) = match *closure_ty.kind() {
-        ty::Closure(closure_def_id, closure_substs) => (closure_def_id, closure_substs),
-        _ => bug!("closure expr does not have closure type: {:?}", closure_ty),
+    let ty::Closure(closure_def_id, closure_substs) = *closure_ty.kind() else {
+        bug!("closure expr does not have closure type: {:?}", closure_ty);
     };
 
     let bound_vars =
@@ -347,6 +362,7 @@ struct Builder<'a, 'tcx> {
 
     def_id: DefId,
     hir_id: hir::HirId,
+    parent_module: DefId,
     check_overflow: bool,
     fn_span: Span,
     arg_count: usize,
@@ -385,7 +401,7 @@ struct Builder<'a, 'tcx> {
 
     /// Maps `HirId`s of variable bindings to the `Local`s created for them.
     /// (A match binding can have two locals; the 2nd is for the arm's guard.)
-    var_indices: HirIdMap<LocalsForNode>,
+    var_indices: FxHashMap<LocalVarId, LocalsForNode>,
     local_decls: IndexVec<Local, LocalDecl<'tcx>>,
     canonical_user_type_annotations: ty::CanonicalUserTypeAnnotations<'tcx>,
     upvar_mutbls: Vec<Mutability>,
@@ -395,11 +411,11 @@ struct Builder<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
-    fn is_bound_var_in_guard(&self, id: hir::HirId) -> bool {
+    fn is_bound_var_in_guard(&self, id: LocalVarId) -> bool {
         self.guard_context.iter().any(|frame| frame.locals.iter().any(|local| local.id == id))
     }
 
-    fn var_local_id(&self, id: hir::HirId, for_guard: ForGuard) -> Local {
+    fn var_local_id(&self, id: LocalVarId, for_guard: ForGuard) -> Local {
         self.var_indices[&id].local_id(for_guard)
     }
 }
@@ -483,11 +499,11 @@ enum LocalsForNode {
 
 #[derive(Debug)]
 struct GuardFrameLocal {
-    id: hir::HirId,
+    id: LocalVarId,
 }
 
 impl GuardFrameLocal {
-    fn new(id: hir::HirId, _binding_mode: BindingMode) -> Self {
+    fn new(id: LocalVarId, _binding_mode: BindingMode) -> Self {
         GuardFrameLocal { id }
     }
 }
@@ -543,6 +559,18 @@ struct CFG<'tcx> {
 
 rustc_index::newtype_index! {
     struct ScopeId { .. }
+}
+
+#[derive(Debug)]
+enum NeedsTemporary {
+    /// Use this variant when whatever you are converting with `as_operand`
+    /// is the last thing you are converting. This means that if we introduced
+    /// an intermediate temporary, we'd only read it immediately after, so we can
+    /// also avoid it.
+    No,
+    /// For all cases where you aren't sure or that are too expensive to compute
+    /// for now. It is always safe to fall back to this.
+    Maybe,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -644,7 +672,7 @@ where
                 Some(builder.in_scope(arg_scope_s, LintLevel::Inherited, |builder| {
                     builder.args_and_body(
                         START_BLOCK,
-                        fn_def.did.to_def_id(),
+                        fn_def.did,
                         &arguments,
                         arg_scope,
                         &thir[expr],
@@ -663,7 +691,6 @@ where
     } else {
         None
     };
-    debug!("fn_id {:?} has attrs {:?}", fn_def, tcx.get_attrs(fn_def.did.to_def_id()));
 
     let mut body = builder.finish();
     body.spread_arg = spread_arg;
@@ -715,6 +742,7 @@ fn construct_error<'a, 'tcx>(
     hir_id: hir::HirId,
     body_id: hir::BodyId,
     body_owner_kind: hir::BodyOwnerKind,
+    err: ErrorGuaranteed,
 ) -> Body<'tcx> {
     let tcx = infcx.tcx;
     let span = tcx.hir().span(hir_id);
@@ -760,7 +788,6 @@ fn construct_error<'a, 'tcx>(
     cfg.terminate(START_BLOCK, source_info, TerminatorKind::Unreachable);
 
     let mut body = Body::new(
-        tcx,
         MirSource::item(def.did.to_def_id()),
         cfg.basic_blocks,
         source_scopes,
@@ -770,6 +797,7 @@ fn construct_error<'a, 'tcx>(
         vec![],
         span,
         generator_kind,
+        Some(err),
     );
     body.generator.as_mut().map(|gen| gen.yield_ty = Some(ty));
     body
@@ -798,20 +826,22 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         check_overflow |= tcx.sess.overflow_checks();
         // Constants always need overflow checks.
         check_overflow |= matches!(
-            tcx.hir().body_owner_kind(hir_id),
+            tcx.hir().body_owner_kind(def.did),
             hir::BodyOwnerKind::Const | hir::BodyOwnerKind::Static(_)
         );
 
         let lint_level = LintLevel::Explicit(hir_id);
+        let param_env = tcx.param_env(def.did);
         let mut builder = Builder {
             thir,
             tcx,
             infcx,
             typeck_results: tcx.typeck_opt_const_arg(def),
             region_scope_tree: tcx.region_scope_tree(def.did),
-            param_env: tcx.param_env(def.did),
+            param_env,
             def_id: def.did.to_def_id(),
             hir_id,
+            parent_module: tcx.parent_module(hir_id).to_def_id(),
             check_overflow,
             cfg: CFG { basic_blocks: IndexVec::new() },
             fn_span: span,
@@ -849,7 +879,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         Body::new(
-            self.tcx,
             MirSource::item(self.def_id),
             self.cfg.basic_blocks,
             self.source_scopes,
@@ -859,13 +888,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             self.var_debug_info,
             self.fn_span,
             self.generator_kind,
+            self.typeck_results.tainted_by_errors,
         )
     }
 
     fn args_and_body(
         &mut self,
         mut block: BasicBlock,
-        fn_def_id: DefId,
+        fn_def_id: LocalDefId,
         arguments: &[ArgInfo<'tcx>],
         argument_scope: region::Scope,
         expr: &Expr<'tcx>,
@@ -877,14 +907,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let arg_local = self.local_decls.push(LocalDecl::with_source_info(ty, source_info));
 
             // If this is a simple binding pattern, give debuginfo a nice name.
-            if let Some(arg) = arg_opt {
-                if let Some(ident) = arg.pat.simple_ident() {
-                    self.var_debug_info.push(VarDebugInfo {
-                        name: ident.name,
-                        source_info,
-                        value: VarDebugInfoContents::Place(arg_local.into()),
-                    });
-                }
+            if let Some(arg) = arg_opt && let Some(ident) = arg.pat.simple_ident() {
+                self.var_debug_info.push(VarDebugInfo {
+                    name: ident.name,
+                    source_info,
+                    value: VarDebugInfoContents::Place(arg_local.into()),
+                });
             }
         }
 
@@ -902,7 +930,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let mut closure_ty = self.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty;
             if let ty::Ref(_, ty, _) = closure_ty.kind() {
                 closure_env_projs.push(ProjectionElem::Deref);
-                closure_ty = ty;
+                closure_ty = *ty;
             }
             let upvar_substs = match closure_ty.kind() {
                 ty::Closure(_, substs) => ty::UpvarSubsts::Closure(substs),
@@ -930,14 +958,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     let mut projs = closure_env_projs.clone();
                     projs.push(ProjectionElem::Field(Field::new(i), ty));
                     match capture {
-                        ty::UpvarCapture::ByValue(_) => {}
+                        ty::UpvarCapture::ByValue => {}
                         ty::UpvarCapture::ByRef(..) => {
                             projs.push(ProjectionElem::Deref);
                         }
                     };
 
                     self.var_debug_info.push(VarDebugInfo {
-                        name: sym,
+                        name: *sym,
                         source_info: SourceInfo::outermost(tcx_hir.span(var_id)),
                         value: VarDebugInfoContents::Place(Place {
                             local: ty::CAPTURE_STRUCT_LOCAL,
@@ -970,7 +998,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 continue;
             };
             let pat = match tcx.hir().get(arg.pat.hir_id) {
-                Node::Pat(pat) | Node::Binding(pat) => pat,
+                Node::Pat(pat) => pat,
                 node => bug!("pattern became {:?}", node),
             };
             let pattern = pat_from_hir(tcx, self.param_env, self.typeck_results, pat);
@@ -1060,6 +1088,70 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.unit_temp = Some(tmp);
                 tmp
             }
+        }
+    }
+}
+
+fn parse_float_into_constval<'tcx>(
+    num: Symbol,
+    float_ty: ty::FloatTy,
+    neg: bool,
+) -> Option<ConstValue<'tcx>> {
+    parse_float_into_scalar(num, float_ty, neg).map(ConstValue::Scalar)
+}
+
+pub(crate) fn parse_float_into_scalar(
+    num: Symbol,
+    float_ty: ty::FloatTy,
+    neg: bool,
+) -> Option<Scalar> {
+    let num = num.as_str();
+    match float_ty {
+        ty::FloatTy::F32 => {
+            let Ok(rust_f) = num.parse::<f32>() else { return None };
+            let mut f = num.parse::<Single>().unwrap_or_else(|e| {
+                panic!("apfloat::ieee::Single failed to parse `{}`: {:?}", num, e)
+            });
+
+            assert!(
+                u128::from(rust_f.to_bits()) == f.to_bits(),
+                "apfloat::ieee::Single gave different result for `{}`: \
+                 {}({:#x}) vs Rust's {}({:#x})",
+                rust_f,
+                f,
+                f.to_bits(),
+                Single::from_bits(rust_f.to_bits().into()),
+                rust_f.to_bits()
+            );
+
+            if neg {
+                f = -f;
+            }
+
+            Some(Scalar::from_f32(f))
+        }
+        ty::FloatTy::F64 => {
+            let Ok(rust_f) = num.parse::<f64>() else { return None };
+            let mut f = num.parse::<Double>().unwrap_or_else(|e| {
+                panic!("apfloat::ieee::Double failed to parse `{}`: {:?}", num, e)
+            });
+
+            assert!(
+                u128::from(rust_f.to_bits()) == f.to_bits(),
+                "apfloat::ieee::Double gave different result for `{}`: \
+                 {}({:#x}) vs Rust's {}({:#x})",
+                rust_f,
+                f,
+                f.to_bits(),
+                Double::from_bits(rust_f.to_bits().into()),
+                rust_f.to_bits()
+            );
+
+            if neg {
+                f = -f;
+            }
+
+            Some(Scalar::from_f64(f))
         }
     }
 }

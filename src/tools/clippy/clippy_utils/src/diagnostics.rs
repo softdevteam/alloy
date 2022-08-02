@@ -8,13 +8,13 @@
 //! Thank you!
 //! ~The `INTERNAL_METADATA_COLLECTOR` lint
 
-use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_errors::{Applicability, Diagnostic, MultiSpan};
 use rustc_hir::HirId;
 use rustc_lint::{LateContext, Lint, LintContext};
-use rustc_span::source_map::{MultiSpan, Span};
+use rustc_span::source_map::Span;
 use std::env;
 
-fn docs_link(diag: &mut DiagnosticBuilder<'_>, lint: &'static Lint) {
+fn docs_link(diag: &mut Diagnostic, lint: &'static Lint) {
     if env::var("CLIPPY_DISABLE_DOCS_LINKS").is_err() {
         if let Some(lint) = lint.name_lower().strip_prefix("clippy::") {
             diag.help(&format!(
@@ -77,7 +77,7 @@ pub fn span_lint<T: LintContext>(cx: &T, lint: &'static Lint, sp: impl Into<Mult
 pub fn span_lint_and_help<'a, T: LintContext>(
     cx: &'a T,
     lint: &'static Lint,
-    span: Span,
+    span: impl Into<MultiSpan>,
     msg: &str,
     help_span: Option<Span>,
     help: &str,
@@ -145,7 +145,7 @@ pub fn span_lint_and_then<C, S, F>(cx: &C, lint: &'static Lint, sp: S, msg: &str
 where
     C: LintContext,
     S: Into<MultiSpan>,
-    F: FnOnce(&mut DiagnosticBuilder<'_>),
+    F: FnOnce(&mut Diagnostic),
 {
     cx.struct_span_lint(lint, sp, |diag| {
         let mut diag = diag.build(msg);
@@ -155,7 +155,13 @@ where
     });
 }
 
-pub fn span_lint_hir(cx: &LateContext<'_>, lint: &'static Lint, hir_id: HirId, sp: Span, msg: &str) {
+pub fn span_lint_hir(
+    cx: &LateContext<'_>,
+    lint: &'static Lint,
+    hir_id: HirId,
+    sp: Span,
+    msg: &str,
+) {
     cx.tcx.struct_span_lint_hir(lint, hir_id, sp, |diag| {
         let mut diag = diag.build(msg);
         docs_link(&mut diag, lint);
@@ -169,7 +175,7 @@ pub fn span_lint_hir_and_then(
     hir_id: HirId,
     sp: impl Into<MultiSpan>,
     msg: &str,
-    f: impl FnOnce(&mut DiagnosticBuilder<'_>),
+    f: impl FnOnce(&mut Diagnostic),
 ) {
     cx.tcx.struct_span_lint_hir(lint, hir_id, sp, |diag| {
         let mut diag = diag.build(msg);
@@ -198,7 +204,7 @@ pub fn span_lint_hir_and_then(
 ///     |
 ///     = note: `-D fold-any` implied by `-D warnings`
 /// ```
-#[cfg_attr(feature = "internal-lints", allow(clippy::collapsible_span_lint_calls))]
+#[cfg_attr(feature = "internal", allow(clippy::collapsible_span_lint_calls))]
 pub fn span_lint_and_sugg<'a, T: LintContext>(
     cx: &'a T,
     lint: &'static Lint,
@@ -219,7 +225,7 @@ pub fn span_lint_and_sugg<'a, T: LintContext>(
 /// appear once per
 /// replacement. In human-readable format though, it only appears once before
 /// the whole suggestion.
-pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: &str, sugg: I)
+pub fn multispan_sugg<I>(diag: &mut Diagnostic, help_msg: &str, sugg: I)
 where
     I: IntoIterator<Item = (Span, String)>,
 {
@@ -232,7 +238,7 @@ where
 /// multiple spans. This is tracked in issue [rustfix#141](https://github.com/rust-lang/rustfix/issues/141).
 /// Suggestions with multiple spans will be silently ignored.
 pub fn multispan_sugg_with_applicability<I>(
-    diag: &mut DiagnosticBuilder<'_>,
+    diag: &mut Diagnostic,
     help_msg: &str,
     applicability: Applicability,
     sugg: I,

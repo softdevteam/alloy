@@ -3,10 +3,11 @@
 
 use crate::MirPass;
 use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::intern::Interned;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::IndexVec;
 use rustc_middle::mir::*;
-use rustc_middle::ty::{self, TyCtxt};
+use rustc_middle::ty::{self, ReErased, Region, TyCtxt};
 
 const MAX_NUM_BLOCKS: usize = 800;
 const MAX_NUM_LOCALS: usize = 3000;
@@ -31,7 +32,9 @@ impl<'tcx> MirPass<'tcx> for NormalizeArrayLen {
 }
 
 pub fn normalize_array_len_calls<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
+    // We don't ever touch terminators, so no need to invalidate the CFG cache
+    let basic_blocks = body.basic_blocks.as_mut_preserves_cfg();
+    let local_decls = &mut body.local_decls;
 
     // do a preliminary analysis to see if we ever have locals of type `[T;N]` or `&[T;N]`
     let mut interesting_locals = BitSet::new_empty(local_decls.len());
@@ -124,7 +127,7 @@ impl<'tcx> Patcher<'_, 'tcx> {
                             let assign_to = Place::from(local);
                             let rvalue = Rvalue::Use(operand);
                             make_copy_statement.kind =
-                                StatementKind::Assign(box (assign_to, rvalue));
+                                StatementKind::Assign(Box::new((assign_to, rvalue)));
                             statements.push(make_copy_statement);
 
                             // to reorder we have to copy and make NOP
@@ -164,7 +167,8 @@ impl<'tcx> Patcher<'_, 'tcx> {
                     if add_deref {
                         place = self.tcx.mk_place_deref(place);
                     }
-                    len_statement.kind = StatementKind::Assign(box (*into, Rvalue::Len(place)));
+                    len_statement.kind =
+                        StatementKind::Assign(Box::new((*into, Rvalue::Len(place))));
                     statements.push(len_statement);
 
                     // make temporary dead
@@ -211,12 +215,7 @@ fn normalize_array_len_call<'tcx>(
                         let Some(local) = place.as_local() else { return };
                         match operand {
                             Operand::Copy(place) | Operand::Move(place) => {
-                                let operand_local =
-                                    if let Some(local) = place.local_or_deref_local() {
-                                        local
-                                    } else {
-                                        return;
-                                    };
+                                let Some(operand_local) = place.local_or_deref_local() else { return; };
                                 if !interesting_locals.contains(operand_local) {
                                     return;
                                 }
@@ -231,11 +230,15 @@ fn normalize_array_len_call<'tcx>(
                                     // current way of patching doesn't allow to work with `mut`
                                     (
                                         ty::Ref(
-                                            ty::RegionKind::ReErased,
+                                            Region(Interned(ReErased, _)),
                                             operand_ty,
                                             Mutability::Not,
                                         ),
-                                        ty::Ref(ty::RegionKind::ReErased, cast_ty, Mutability::Not),
+                                        ty::Ref(
+                                            Region(Interned(ReErased, _)),
+                                            cast_ty,
+                                            Mutability::Not,
+                                        ),
                                     ) => {
                                         match (operand_ty.kind(), cast_ty.kind()) {
                                             // current way of patching doesn't allow to work with `mut`

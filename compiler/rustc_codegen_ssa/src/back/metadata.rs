@@ -16,13 +16,12 @@ use rustc_data_structures::memmap::Mmap;
 use rustc_data_structures::owning_ref::OwningRef;
 use rustc_data_structures::rustc_erase_owner;
 use rustc_data_structures::sync::MetadataRef;
+use rustc_metadata::fs::METADATA_FILENAME;
 use rustc_metadata::EncodedMetadata;
 use rustc_session::cstore::MetadataLoader;
 use rustc_session::Session;
 use rustc_target::abi::Endian;
-use rustc_target::spec::Target;
-
-use crate::METADATA_FILENAME;
+use rustc_target::spec::{RelocModel, Target};
 
 /// The default metadata loader. This is used by cg_llvm and cg_clif.
 ///
@@ -79,15 +78,14 @@ fn search_for_metadata<'a>(
     bytes: &'a [u8],
     section: &str,
 ) -> Result<&'a [u8], String> {
-    let file = match object::File::parse(bytes) {
-        Ok(f) => f,
+    let Ok(file) = object::File::parse(bytes) else {
         // The parse above could fail for odd reasons like corruption, but for
         // now we just interpret it as this target doesn't support metadata
         // emission in object files so the entire byte slice itself is probably
         // a metadata file. Ideally though if necessary we could at least check
         // the prefix of bytes to see if it's an actual metadata object and if
         // not forward the error along here.
-        Err(_) => return Ok(bytes),
+        return Ok(bytes);
     };
     file.section_by_name(section)
         .ok_or_else(|| format!("no `{}` section in '{}'", section, path.display()))?
@@ -95,7 +93,7 @@ fn search_for_metadata<'a>(
         .map_err(|e| format!("failed to read {} section in '{}': {}", section, path.display(), e))
 }
 
-fn create_object_file(sess: &Session) -> Option<write::Object> {
+pub(crate) fn create_object_file(sess: &Session) -> Option<write::Object<'static>> {
     let endianness = match sess.target.options.endian {
         Endian::Little => Endianness::Little,
         Endian::Big => Endianness::Big,
@@ -131,28 +129,62 @@ fn create_object_file(sess: &Session) -> Option<write::Object> {
     };
 
     let mut file = write::Object::new(binary_format, architecture, endianness);
-    match architecture {
+    let e_flags = match architecture {
         Architecture::Mips => {
-            // copied from `mipsel-linux-gnu-gcc foo.c -c` and
-            // inspecting the resulting `e_flags` field.
-            let e_flags = elf::EF_MIPS_ARCH_32R2 | elf::EF_MIPS_CPIC | elf::EF_MIPS_PIC;
-            file.flags = FileFlags::Elf { e_flags };
+            let arch = match sess.target.options.cpu.as_ref() {
+                "mips1" => elf::EF_MIPS_ARCH_1,
+                "mips2" => elf::EF_MIPS_ARCH_2,
+                "mips3" => elf::EF_MIPS_ARCH_3,
+                "mips4" => elf::EF_MIPS_ARCH_4,
+                "mips5" => elf::EF_MIPS_ARCH_5,
+                s if s.contains("r6") => elf::EF_MIPS_ARCH_32R6,
+                _ => elf::EF_MIPS_ARCH_32R2,
+            };
+            // The only ABI LLVM supports for 32-bit MIPS CPUs is o32.
+            let mut e_flags = elf::EF_MIPS_CPIC | elf::EF_MIPS_ABI_O32 | arch;
+            if sess.target.options.relocation_model != RelocModel::Static {
+                e_flags |= elf::EF_MIPS_PIC;
+            }
+            if sess.target.options.cpu.contains("r6") {
+                e_flags |= elf::EF_MIPS_NAN2008;
+            }
+            e_flags
         }
         Architecture::Mips64 => {
             // copied from `mips64el-linux-gnuabi64-gcc foo.c -c`
-            let e_flags = elf::EF_MIPS_ARCH_64R2 | elf::EF_MIPS_CPIC | elf::EF_MIPS_PIC;
-            file.flags = FileFlags::Elf { e_flags };
+            let e_flags = elf::EF_MIPS_CPIC
+                | elf::EF_MIPS_PIC
+                | if sess.target.options.cpu.contains("r6") {
+                    elf::EF_MIPS_ARCH_64R6 | elf::EF_MIPS_NAN2008
+                } else {
+                    elf::EF_MIPS_ARCH_64R2
+                };
+            e_flags
         }
         Architecture::Riscv64 if sess.target.options.features.contains("+d") => {
             // copied from `riscv64-linux-gnu-gcc foo.c -c`, note though
             // that the `+d` target feature represents whether the double
             // float abi is enabled.
             let e_flags = elf::EF_RISCV_RVC | elf::EF_RISCV_FLOAT_ABI_DOUBLE;
-            file.flags = FileFlags::Elf { e_flags };
+            e_flags
         }
-        _ => {}
+        _ => 0,
     };
+    // adapted from LLVM's `MCELFObjectTargetWriter::getOSABI`
+    let os_abi = match sess.target.options.os.as_ref() {
+        "hermit" => elf::ELFOSABI_STANDALONE,
+        "freebsd" => elf::ELFOSABI_FREEBSD,
+        "solaris" => elf::ELFOSABI_SOLARIS,
+        _ => elf::ELFOSABI_NONE,
+    };
+    let abi_version = 0;
+    file.flags = FileFlags::Elf { os_abi, abi_version, e_flags };
     Some(file)
+}
+
+pub enum MetadataPosition {
+    First,
+    Last,
 }
 
 // For rlibs we "pack" rustc metadata into a dummy object file. When rustc
@@ -187,10 +219,8 @@ fn create_object_file(sess: &Session) -> Option<write::Object> {
 // * ELF - All other targets are similar to Windows in that there's a
 //   `SHF_EXCLUDE` flag we can set on sections in an object file to get
 //   automatically removed from the final output.
-pub fn create_rmeta_file(sess: &Session, metadata: &[u8]) -> Vec<u8> {
-    let mut file = if let Some(file) = create_object_file(sess) {
-        file
-    } else {
+pub fn create_rmeta_file(sess: &Session, metadata: &[u8]) -> (Vec<u8>, MetadataPosition) {
+    let Some(mut file) = create_object_file(sess) else {
         // This is used to handle all "other" targets. This includes targets
         // in two categories:
         //
@@ -207,7 +237,7 @@ pub fn create_rmeta_file(sess: &Session, metadata: &[u8]) -> Vec<u8> {
         // WebAssembly and for targets not supported by the `object` crate
         // yet it means that work will need to be done in the `object` crate
         // to add a case above.
-        return metadata.to_vec();
+        return (metadata.to_vec(), MetadataPosition::Last);
     };
     let section = file.add_section(
         file.segment_name(StandardSegment::Debug).to_vec(),
@@ -226,7 +256,7 @@ pub fn create_rmeta_file(sess: &Session, metadata: &[u8]) -> Vec<u8> {
         _ => {}
     };
     file.append_section_data(section, metadata, 1);
-    file.write().unwrap()
+    (file.write().unwrap(), MetadataPosition::First)
 }
 
 // Historical note:
@@ -250,9 +280,7 @@ pub fn create_compressed_metadata_file(
 ) -> Vec<u8> {
     let mut compressed = rustc_metadata::METADATA_HEADER.to_vec();
     FrameEncoder::new(&mut compressed).write_all(metadata.raw_data()).unwrap();
-    let mut file = if let Some(file) = create_object_file(sess) {
-        file
-    } else {
+    let Some(mut file) = create_object_file(sess) else {
         return compressed.to_vec();
     };
     let section = file.add_section(

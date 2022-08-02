@@ -2,19 +2,22 @@
 
 use std::borrow::Cow;
 use std::convert::{TryFrom, TryInto};
+use std::fmt;
+use std::hash;
 use std::iter;
 use std::ops::{Deref, Range};
 use std::ptr;
 
 use rustc_ast::Mutability;
+use rustc_data_structures::intern::Interned;
 use rustc_data_structures::sorted_map::SortedMap;
 use rustc_span::DUMMY_SP;
 use rustc_target::abi::{Align, HasDataLayout, Size};
 
 use super::{
     read_target_uint, write_target_uint, AllocId, InterpError, InterpResult, Pointer, Provenance,
-    ResourceExhaustionInfo, Scalar, ScalarMaybeUninit, UndefinedBehaviorInfo, UninitBytesAccess,
-    UnsupportedOpInfo,
+    ResourceExhaustionInfo, Scalar, ScalarMaybeUninit, ScalarSizeMismatch, UndefinedBehaviorInfo,
+    UninitBytesAccess, UnsupportedOpInfo,
 };
 use crate::ty;
 
@@ -23,9 +26,11 @@ use crate::ty;
 /// Its public API is rather low-level, working directly with allocation offsets and a custom error
 /// type to account for the lack of an AllocId on this level. The Miri/CTFE core engine `memory`
 /// module provides higher-level access.
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
+// Note: for performance reasons when interning, some of the `Allocation` fields can be partially
+// hashed. (see the `Hash` impl below for more details), so the impl is not derived.
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
-pub struct Allocation<Tag = AllocId, Extra = ()> {
+pub struct Allocation<Prov = AllocId, Extra = ()> {
     /// The actual bytes of the allocation.
     /// Note that the bytes of a pointer represent the offset of the pointer.
     bytes: Box<[u8]>,
@@ -33,7 +38,7 @@ pub struct Allocation<Tag = AllocId, Extra = ()> {
     /// Only the first byte of a pointer is inserted into the map; i.e.,
     /// every entry in this map applies to `pointer_size` consecutive bytes starting
     /// at the given offset.
-    relocations: Relocations<Tag>,
+    relocations: Relocations<Prov>,
     /// Denotes which part of this allocation is initialized.
     init_mask: InitMask,
     /// The alignment of the allocation to detect unaligned reads.
@@ -47,10 +52,80 @@ pub struct Allocation<Tag = AllocId, Extra = ()> {
     pub extra: Extra,
 }
 
+/// This is the maximum size we will hash at a time, when interning an `Allocation` and its
+/// `InitMask`. Note, we hash that amount of bytes twice: at the start, and at the end of a buffer.
+/// Used when these two structures are large: we only partially hash the larger fields in that
+/// situation. See the comment at the top of their respective `Hash` impl for more details.
+const MAX_BYTES_TO_HASH: usize = 64;
+
+/// This is the maximum size (in bytes) for which a buffer will be fully hashed, when interning.
+/// Otherwise, it will be partially hashed in 2 slices, requiring at least 2 `MAX_BYTES_TO_HASH`
+/// bytes.
+const MAX_HASHED_BUFFER_LEN: usize = 2 * MAX_BYTES_TO_HASH;
+
+// Const allocations are only hashed for interning. However, they can be large, making the hashing
+// expensive especially since it uses `FxHash`: it's better suited to short keys, not potentially
+// big buffers like the actual bytes of allocation. We can partially hash some fields when they're
+// large.
+impl hash::Hash for Allocation {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        // Partially hash the `bytes` buffer when it is large. To limit collisions with common
+        // prefixes and suffixes, we hash the length and some slices of the buffer.
+        let byte_count = self.bytes.len();
+        if byte_count > MAX_HASHED_BUFFER_LEN {
+            // Hash the buffer's length.
+            byte_count.hash(state);
+
+            // And its head and tail.
+            self.bytes[..MAX_BYTES_TO_HASH].hash(state);
+            self.bytes[byte_count - MAX_BYTES_TO_HASH..].hash(state);
+        } else {
+            self.bytes.hash(state);
+        }
+
+        // Hash the other fields as usual.
+        self.relocations.hash(state);
+        self.init_mask.hash(state);
+        self.align.hash(state);
+        self.mutability.hash(state);
+        self.extra.hash(state);
+    }
+}
+
+/// Interned types generally have an `Outer` type and an `Inner` type, where
+/// `Outer` is a newtype around `Interned<Inner>`, and all the operations are
+/// done on `Outer`, because all occurrences are interned. E.g. `Ty` is an
+/// outer type and `TyS` is its inner type.
+///
+/// Here things are different because only const allocations are interned. This
+/// means that both the inner type (`Allocation`) and the outer type
+/// (`ConstAllocation`) are used quite a bit.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, HashStable)]
+#[rustc_pass_by_value]
+pub struct ConstAllocation<'tcx, Prov = AllocId, Extra = ()>(
+    pub Interned<'tcx, Allocation<Prov, Extra>>,
+);
+
+impl<'tcx> fmt::Debug for ConstAllocation<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // This matches how `Allocation` is printed. We print it like this to
+        // avoid having to update expected output in a lot of tests.
+        write!(f, "{:?}", self.inner())
+    }
+}
+
+impl<'tcx, Prov, Extra> ConstAllocation<'tcx, Prov, Extra> {
+    pub fn inner(self) -> &'tcx Allocation<Prov, Extra> {
+        self.0.0
+    }
+}
+
 /// We have our own error type that does not know about the `AllocId`; that information
 /// is added when converting to `InterpError`.
 #[derive(Debug)]
 pub enum AllocError {
+    /// A scalar had the wrong size.
+    ScalarSizeMismatch(ScalarSizeMismatch),
     /// Encountered a pointer where we needed raw bytes.
     ReadPointerAsBytes,
     /// Partially overwriting a pointer.
@@ -60,10 +135,19 @@ pub enum AllocError {
 }
 pub type AllocResult<T = ()> = Result<T, AllocError>;
 
+impl From<ScalarSizeMismatch> for AllocError {
+    fn from(s: ScalarSizeMismatch) -> Self {
+        AllocError::ScalarSizeMismatch(s)
+    }
+}
+
 impl AllocError {
     pub fn to_interp_error<'tcx>(self, alloc_id: AllocId) -> InterpError<'tcx> {
         use AllocError::*;
         match self {
+            ScalarSizeMismatch(s) => {
+                InterpError::UndefinedBehavior(UndefinedBehaviorInfo::ScalarSizeMismatch(s))
+            }
             ReadPointerAsBytes => InterpError::Unsupported(UnsupportedOpInfo::ReadPointerAsBytes),
             PartialPointerOverwrite(offset) => InterpError::Unsupported(
                 UnsupportedOpInfo::PartialPointerOverwrite(Pointer::new(alloc_id, offset)),
@@ -76,10 +160,16 @@ impl AllocError {
 }
 
 /// The information that makes up a memory access: offset and size.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct AllocRange {
     pub start: Size,
     pub size: Size,
+}
+
+impl fmt::Debug for AllocRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{:#x}..{:#x}]", self.start.bytes(), self.end().bytes())
+    }
 }
 
 /// Free-starting constructor for less syntactic overhead.
@@ -89,6 +179,11 @@ pub fn alloc_range(start: Size, size: Size) -> AllocRange {
 }
 
 impl AllocRange {
+    #[inline]
+    pub fn from(r: Range<Size>) -> Self {
+        alloc_range(r.start, r.end - r.start) // `Size` subtraction (overflow-checked)
+    }
+
     #[inline(always)]
     pub fn end(self) -> Size {
         self.start + self.size // This does overflow checking.
@@ -105,7 +200,7 @@ impl AllocRange {
 }
 
 // The constructors are all without extra; the extra gets added by a machine hook later.
-impl<Tag> Allocation<Tag> {
+impl<Prov> Allocation<Prov> {
     /// Creates an allocation initialized by the given bytes
     pub fn from_bytes<'a>(
         slice: impl Into<Cow<'a, [u8]>>,
@@ -130,18 +225,20 @@ impl<Tag> Allocation<Tag> {
 
     /// Try to create an Allocation of `size` bytes, failing if there is not enough memory
     /// available to the compiler to do so.
-    pub fn uninit(size: Size, align: Align, panic_on_fail: bool) -> InterpResult<'static, Self> {
+    ///
+    /// If `panic_on_fail` is true, this will never return `Err`.
+    pub fn uninit<'tcx>(size: Size, align: Align, panic_on_fail: bool) -> InterpResult<'tcx, Self> {
         let bytes = Box::<[u8]>::try_new_zeroed_slice(size.bytes_usize()).map_err(|_| {
             // This results in an error that can happen non-deterministically, since the memory
             // available to the compiler can change between runs. Normally queries are always
-            // deterministic. However, we can be non-determinstic here because all uses of const
+            // deterministic. However, we can be non-deterministic here because all uses of const
             // evaluation (including ConstProp!) will make compilation fail (via hard error
             // or ICE) upon encountering a `MemoryExhausted` error.
             if panic_on_fail {
                 panic!("Allocation::uninit called with panic_on_fail had allocation failure")
             }
             ty::tls::with(|tcx| {
-                tcx.sess.delay_span_bug(DUMMY_SP, "exhausted memory during interpreation")
+                tcx.sess.delay_span_bug(DUMMY_SP, "exhausted memory during interpretation")
             });
             InterpError::ResourceExhaustion(ResourceExhaustionInfo::MemoryExhausted)
         })?;
@@ -159,14 +256,15 @@ impl<Tag> Allocation<Tag> {
 }
 
 impl Allocation {
-    /// Convert Tag and add Extra fields
-    pub fn convert_tag_add_extra<Tag, Extra>(
+    /// Adjust allocation from the ones in tcx to a custom Machine instance
+    /// with a different Provenance and Extra type.
+    pub fn adjust_from_tcx<Prov, Extra, Err>(
         self,
         cx: &impl HasDataLayout,
         extra: Extra,
-        mut tagger: impl FnMut(Pointer<AllocId>) -> Pointer<Tag>,
-    ) -> Allocation<Tag, Extra> {
-        // Compute new pointer tags, which also adjusts the bytes.
+        mut adjust_ptr: impl FnMut(Pointer<AllocId>) -> Result<Pointer<Prov>, Err>,
+    ) -> Result<Allocation<Prov, Extra>, Err> {
+        // Compute new pointer provenance, which also adjusts the bytes.
         let mut bytes = self.bytes;
         let mut new_relocations = Vec::with_capacity(self.relocations.0.len());
         let ptr_size = cx.data_layout().pointer_size.bytes_usize();
@@ -175,25 +273,25 @@ impl Allocation {
             let idx = offset.bytes_usize();
             let ptr_bytes = &mut bytes[idx..idx + ptr_size];
             let bits = read_target_uint(endian, ptr_bytes).unwrap();
-            let (ptr_tag, ptr_offset) =
-                tagger(Pointer::new(alloc_id, Size::from_bytes(bits))).into_parts();
+            let (ptr_prov, ptr_offset) =
+                adjust_ptr(Pointer::new(alloc_id, Size::from_bytes(bits)))?.into_parts();
             write_target_uint(endian, ptr_bytes, ptr_offset.bytes().into()).unwrap();
-            new_relocations.push((offset, ptr_tag));
+            new_relocations.push((offset, ptr_prov));
         }
         // Create allocation.
-        Allocation {
+        Ok(Allocation {
             bytes,
             relocations: Relocations::from_presorted(new_relocations),
             init_mask: self.init_mask,
             align: self.align,
             mutability: self.mutability,
             extra,
-        }
+        })
     }
 }
 
 /// Raw accessors. Provide access to otherwise private bytes.
-impl<Tag, Extra> Allocation<Tag, Extra> {
+impl<Prov, Extra> Allocation<Prov, Extra> {
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
@@ -216,19 +314,28 @@ impl<Tag, Extra> Allocation<Tag, Extra> {
     }
 
     /// Returns the relocation list.
-    pub fn relocations(&self) -> &Relocations<Tag> {
+    pub fn relocations(&self) -> &Relocations<Prov> {
         &self.relocations
     }
 }
 
 /// Byte accessors.
-impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
-    /// The last argument controls whether we error out when there are uninitialized
-    /// or pointer bytes. You should never call this, call `get_bytes` or
-    /// `get_bytes_with_uninit_and_ptr` instead,
+impl<Prov: Provenance, Extra> Allocation<Prov, Extra> {
+    /// This is the entirely abstraction-violating way to just grab the raw bytes without
+    /// caring about relocations. It just deduplicates some code between `read_scalar`
+    /// and `get_bytes_internal`.
+    fn get_bytes_even_more_internal(&self, range: AllocRange) -> &[u8] {
+        &self.bytes[range.start.bytes_usize()..range.end().bytes_usize()]
+    }
+
+    /// The last argument controls whether we error out when there are uninitialized or pointer
+    /// bytes. However, we *always* error when there are relocations overlapping the edges of the
+    /// range.
+    ///
+    /// You should never call this, call `get_bytes` or `get_bytes_with_uninit_and_ptr` instead,
     ///
     /// This function also guarantees that the resulting pointer will remain stable
-    /// even when new allocations are pushed to the `HashMap`. `copy_repeatedly` relies
+    /// even when new allocations are pushed to the `HashMap`. `mem_copy_repeatedly` relies
     /// on that.
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
@@ -246,7 +353,7 @@ impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
             self.check_relocation_edges(cx, range)?;
         }
 
-        Ok(&self.bytes[range.start.bytes_usize()..range.end().bytes_usize()])
+        Ok(self.get_bytes_even_more_internal(range))
     }
 
     /// Checks that these bytes are initialized and not pointer bytes, and then return them
@@ -307,27 +414,33 @@ impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
 }
 
 /// Reading and writing.
-impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
+impl<Prov: Provenance, Extra> Allocation<Prov, Extra> {
     /// Validates that `ptr.offset` and `ptr.offset + size` do not point to the middle of a
-    /// relocation. If `allow_uninit_and_ptr` is `false`, also enforces that the memory in the
-    /// given range contains neither relocations nor uninitialized bytes.
+    /// relocation. If `allow_uninit`/`allow_ptr` is `false`, also enforces that the memory in the
+    /// given range contains no uninitialized bytes/relocations.
     pub fn check_bytes(
         &self,
         cx: &impl HasDataLayout,
         range: AllocRange,
-        allow_uninit_and_ptr: bool,
+        allow_uninit: bool,
+        allow_ptr: bool,
     ) -> AllocResult {
         // Check bounds and relocations on the edges.
         self.get_bytes_with_uninit_and_ptr(cx, range)?;
         // Check uninit and ptr.
-        if !allow_uninit_and_ptr {
+        if !allow_uninit {
             self.check_init(range)?;
+        }
+        if !allow_ptr {
             self.check_relocations(cx, range)?;
         }
         Ok(())
     }
 
     /// Reads a *non-ZST* scalar.
+    ///
+    /// If `read_provenance` is `true`, this will also read provenance; otherwise (if the machine
+    /// supports that) provenance is entirely ignored.
     ///
     /// ZSTs can't be read because in order to obtain a `Pointer`, we need to check
     /// for ZSTness anyway due to integer pointers being valid for ZSTs.
@@ -338,35 +451,47 @@ impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
         &self,
         cx: &impl HasDataLayout,
         range: AllocRange,
-    ) -> AllocResult<ScalarMaybeUninit<Tag>> {
-        // `get_bytes_with_uninit_and_ptr` tests relocation edges.
-        // We deliberately error when loading data that partially has provenance, or partially
-        // initialized data (that's the check below), into a scalar. The LLVM semantics of this are
-        // unclear so we are conservative. See <https://github.com/rust-lang/rust/issues/69488> for
-        // further discussion.
-        let bytes = self.get_bytes_with_uninit_and_ptr(cx, range)?;
-        // Uninit check happens *after* we established that the alignment is correct.
-        // We must not return `Ok()` for unaligned pointers!
+        read_provenance: bool,
+    ) -> AllocResult<ScalarMaybeUninit<Prov>> {
+        if read_provenance {
+            assert_eq!(range.size, cx.data_layout().pointer_size);
+        }
+
+        // First and foremost, if anything is uninit, bail.
         if self.is_init(range).is_err() {
             // This inflates uninitialized bytes to the entire scalar, even if only a few
             // bytes are uninitialized.
             return Ok(ScalarMaybeUninit::Uninit);
         }
-        // Now we do the actual reading.
-        let bits = read_target_uint(cx.data_layout().endian, bytes).unwrap();
-        // See if we got a pointer.
-        if range.size != cx.data_layout().pointer_size {
-            // Not a pointer.
-            // *Now*, we better make sure that the inside is free of relocations too.
-            self.check_relocations(cx, range)?;
-        } else {
-            // Maybe a pointer.
-            if let Some(&prov) = self.relocations.get(&range.start) {
-                let ptr = Pointer::new(prov, Size::from_bytes(bits));
-                return Ok(ScalarMaybeUninit::from_pointer(ptr, cx));
-            }
+
+        // If we are doing a pointer read, and there is a relocation exactly where we
+        // are reading, then we can put data and relocation back together and return that.
+        if read_provenance && let Some(&prov) = self.relocations.get(&range.start) {
+            // We already checked init and relocations, so we can use this function.
+            let bytes = self.get_bytes_even_more_internal(range);
+            let bits = read_target_uint(cx.data_layout().endian, bytes).unwrap();
+            let ptr = Pointer::new(prov, Size::from_bytes(bits));
+            return Ok(ScalarMaybeUninit::from_pointer(ptr, cx));
         }
-        // We don't. Just return the bits.
+
+        // If we are *not* reading a pointer, and we can just ignore relocations,
+        // then do exactly that.
+        if !read_provenance && Prov::OFFSET_IS_ADDR {
+            // We just strip provenance.
+            let bytes = self.get_bytes_even_more_internal(range);
+            let bits = read_target_uint(cx.data_layout().endian, bytes).unwrap();
+            return Ok(ScalarMaybeUninit::Scalar(Scalar::from_uint(bits, range.size)));
+        }
+
+        // It's complicated. Better make sure there is no provenance anywhere.
+        // FIXME: If !OFFSET_IS_ADDR, this is the best we can do. But if OFFSET_IS_ADDR, then
+        // `read_pointer` is true and we ideally would distinguish the following two cases:
+        // - The entire `range` is covered by 2 relocations for the same provenance.
+        //   Then we should return a pointer with that provenance.
+        // - The range has inhomogeneous provenance. Then we should return just the
+        //   underlying bits.
+        let bytes = self.get_bytes(cx, range)?;
+        let bits = read_target_uint(cx.data_layout().endian, bytes).unwrap();
         Ok(ScalarMaybeUninit::Scalar(Scalar::from_uint(bits, range.size)))
     }
 
@@ -377,25 +502,25 @@ impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
     /// Most likely, you want to call `InterpCx::write_scalar` instead of this method.
+    #[instrument(skip(self, cx), level = "debug")]
     pub fn write_scalar(
         &mut self,
         cx: &impl HasDataLayout,
         range: AllocRange,
-        val: ScalarMaybeUninit<Tag>,
+        val: ScalarMaybeUninit<Prov>,
     ) -> AllocResult {
         assert!(self.mutability == Mutability::Mut);
 
         let val = match val {
             ScalarMaybeUninit::Scalar(scalar) => scalar,
             ScalarMaybeUninit::Uninit => {
-                self.mark_init(range, false);
-                return Ok(());
+                return self.write_uninit(cx, range);
             }
         };
 
         // `to_bits_or_ptr_internal` is the right method because we just want to store this data
         // as-is into memory.
-        let (bytes, provenance) = match val.to_bits_or_ptr_internal(range.size) {
+        let (bytes, provenance) = match val.to_bits_or_ptr_internal(range.size)? {
             Err(val) => {
                 let (provenance, offset) = val.into_parts();
                 (u128::from(offset.bytes()), Some(provenance))
@@ -414,26 +539,38 @@ impl<Tag: Provenance, Extra> Allocation<Tag, Extra> {
 
         Ok(())
     }
+
+    /// Write "uninit" to the given memory range.
+    pub fn write_uninit(&mut self, cx: &impl HasDataLayout, range: AllocRange) -> AllocResult {
+        self.mark_init(range, false);
+        self.clear_relocations(cx, range)?;
+        return Ok(());
+    }
 }
 
 /// Relocations.
-impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
+impl<Prov: Copy, Extra> Allocation<Prov, Extra> {
     /// Returns all relocations overlapping with the given pointer-offset pair.
-    pub fn get_relocations(&self, cx: &impl HasDataLayout, range: AllocRange) -> &[(Size, Tag)] {
+    fn get_relocations(&self, cx: &impl HasDataLayout, range: AllocRange) -> &[(Size, Prov)] {
         // We have to go back `pointer_size - 1` bytes, as that one would still overlap with
         // the beginning of this range.
         let start = range.start.bytes().saturating_sub(cx.data_layout().pointer_size.bytes() - 1);
         self.relocations.range(Size::from_bytes(start)..range.end())
     }
 
+    /// Returns whether this allocation has relocations overlapping with the given range.
+    ///
+    /// Note: this function exists to allow `get_relocations` to be private, in order to somewhat
+    /// limit access to relocations outside of the `Allocation` abstraction.
+    ///
+    pub fn has_relocations(&self, cx: &impl HasDataLayout, range: AllocRange) -> bool {
+        !self.get_relocations(cx, range).is_empty()
+    }
+
     /// Checks that there are no relocations overlapping with the given range.
     #[inline(always)]
     fn check_relocations(&self, cx: &impl HasDataLayout, range: AllocRange) -> AllocResult {
-        if self.get_relocations(cx, range).is_empty() {
-            Ok(())
-        } else {
-            Err(AllocError::ReadPointerAsBytes)
-        }
+        if self.has_relocations(cx, range) { Err(AllocError::ReadPointerAsBytes) } else { Ok(()) }
     }
 
     /// Removes all relocations inside the given range.
@@ -444,7 +581,7 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// immediately in that case.
     fn clear_relocations(&mut self, cx: &impl HasDataLayout, range: AllocRange) -> AllocResult
     where
-        Tag: Provenance,
+        Prov: Provenance,
     {
         // Find the start and end of the given range and its outermost relocations.
         let (first, last) = {
@@ -462,24 +599,33 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
         let start = range.start;
         let end = range.end();
 
-        // We need to handle clearing the relocations from parts of a pointer. See
-        // <https://github.com/rust-lang/rust/issues/87184> for details.
+        // We need to handle clearing the relocations from parts of a pointer.
+        // FIXME: Miri should preserve partial relocations; see
+        // https://github.com/rust-lang/miri/issues/2181.
         if first < start {
-            if Tag::ERR_ON_PARTIAL_PTR_OVERWRITE {
+            if Prov::ERR_ON_PARTIAL_PTR_OVERWRITE {
                 return Err(AllocError::PartialPointerOverwrite(first));
             }
+            warn!(
+                "Partial pointer overwrite! De-initializing memory at offsets {first:?}..{start:?}."
+            );
             self.init_mask.set_range(first, start, false);
         }
         if last > end {
-            if Tag::ERR_ON_PARTIAL_PTR_OVERWRITE {
+            if Prov::ERR_ON_PARTIAL_PTR_OVERWRITE {
                 return Err(AllocError::PartialPointerOverwrite(
                     last - cx.data_layout().pointer_size,
                 ));
             }
+            warn!(
+                "Partial pointer overwrite! De-initializing memory at offsets {end:?}..{last:?}."
+            );
             self.init_mask.set_range(end, last, false);
         }
 
         // Forget all the relocations.
+        // Since relocations do not overlap, we know that removing until `last` (exclusive) is fine,
+        // i.e., this will not remove any other relocations just after the ones we care about.
         self.relocations.0.remove_range(first..last);
 
         Ok(())
@@ -497,22 +643,22 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
 
 /// "Relocations" stores the provenance information of pointers stored in memory.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
-pub struct Relocations<Tag = AllocId>(SortedMap<Size, Tag>);
+pub struct Relocations<Prov = AllocId>(SortedMap<Size, Prov>);
 
-impl<Tag> Relocations<Tag> {
+impl<Prov> Relocations<Prov> {
     pub fn new() -> Self {
         Relocations(SortedMap::new())
     }
 
     // The caller must guarantee that the given relocations are already sorted
     // by address and contain no duplicates.
-    pub fn from_presorted(r: Vec<(Size, Tag)>) -> Self {
+    pub fn from_presorted(r: Vec<(Size, Prov)>) -> Self {
         Relocations(SortedMap::from_presorted_elements(r))
     }
 }
 
-impl<Tag> Deref for Relocations<Tag> {
-    type Target = SortedMap<Size, Tag>;
+impl<Prov> Deref for Relocations<Prov> {
+    type Target = SortedMap<Size, Prov>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -520,26 +666,33 @@ impl<Tag> Deref for Relocations<Tag> {
 }
 
 /// A partial, owned list of relocations to transfer into another allocation.
-pub struct AllocationRelocations<Tag> {
-    relative_relocations: Vec<(Size, Tag)>,
+///
+/// Offsets are already adjusted to the destination allocation.
+pub struct AllocationRelocations<Prov> {
+    dest_relocations: Vec<(Size, Prov)>,
 }
 
-impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
+impl<Prov: Copy, Extra> Allocation<Prov, Extra> {
     pub fn prepare_relocation_copy(
         &self,
         cx: &impl HasDataLayout,
         src: AllocRange,
         dest: Size,
         count: u64,
-    ) -> AllocationRelocations<Tag> {
+    ) -> AllocationRelocations<Prov> {
         let relocations = self.get_relocations(cx, src);
         if relocations.is_empty() {
-            return AllocationRelocations { relative_relocations: Vec::new() };
+            return AllocationRelocations { dest_relocations: Vec::new() };
         }
 
         let size = src.size;
         let mut new_relocations = Vec::with_capacity(relocations.len() * (count as usize));
 
+        // If `count` is large, this is rather wasteful -- we are allocating a big array here, which
+        // is mostly filled with redundant information since it's just N copies of the same `Prov`s
+        // at slightly adjusted offsets. The reason we do this is so that in `mark_relocation_range`
+        // we can use `insert_presorted`. That wouldn't work with an `Iterator` that just produces
+        // the right sequence of relocations for all N copies.
         for i in 0..count {
             new_relocations.extend(relocations.iter().map(|&(offset, reloc)| {
                 // compute offset for current repetition
@@ -552,14 +705,17 @@ impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
             }));
         }
 
-        AllocationRelocations { relative_relocations: new_relocations }
+        AllocationRelocations { dest_relocations: new_relocations }
     }
 
     /// Applies a relocation copy.
     /// The affected range, as defined in the parameters to `prepare_relocation_copy` is expected
     /// to be clear of relocations.
-    pub fn mark_relocation_range(&mut self, relocations: AllocationRelocations<Tag>) {
-        self.relocations.0.insert_presorted(relocations.relative_relocations);
+    ///
+    /// This is dangerous to use as it can violate internal `Allocation` invariants!
+    /// It only exists to support an efficient implementation of `mem_copy_repeatedly`.
+    pub fn mark_relocation_range(&mut self, relocations: AllocationRelocations<Prov>) {
+        self.relocations.0.insert_presorted(relocations.dest_relocations);
     }
 }
 
@@ -571,11 +727,41 @@ type Block = u64;
 
 /// A bitmask where each bit refers to the byte with the same index. If the bit is `true`, the byte
 /// is initialized. If it is `false` the byte is uninitialized.
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
+// Note: for performance reasons when interning, some of the `InitMask` fields can be partially
+// hashed. (see the `Hash` impl below for more details), so the impl is not derived.
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub struct InitMask {
     blocks: Vec<Block>,
     len: Size,
+}
+
+// Const allocations are only hashed for interning. However, they can be large, making the hashing
+// expensive especially since it uses `FxHash`: it's better suited to short keys, not potentially
+// big buffers like the allocation's init mask. We can partially hash some fields when they're
+// large.
+impl hash::Hash for InitMask {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        const MAX_BLOCKS_TO_HASH: usize = MAX_BYTES_TO_HASH / std::mem::size_of::<Block>();
+        const MAX_BLOCKS_LEN: usize = MAX_HASHED_BUFFER_LEN / std::mem::size_of::<Block>();
+
+        // Partially hash the `blocks` buffer when it is large. To limit collisions with common
+        // prefixes and suffixes, we hash the length and some slices of the buffer.
+        let block_count = self.blocks.len();
+        if block_count > MAX_BLOCKS_LEN {
+            // Hash the buffer's length.
+            block_count.hash(state);
+
+            // And its head and tail.
+            self.blocks[..MAX_BLOCKS_TO_HASH].hash(state);
+            self.blocks[block_count - MAX_BLOCKS_TO_HASH..].hash(state);
+        } else {
+            self.blocks.hash(state);
+        }
+
+        // Hash the other fields as usual.
+        self.len.hash(state);
+    }
 }
 
 impl InitMask {
@@ -704,11 +890,11 @@ impl InitMask {
         ///
         /// Note that all examples below are written with 8 (instead of 64) bit blocks for simplicity,
         /// and with the least significant bit (and lowest block) first:
-        ///
-        ///          00000000|00000000
-        ///          ^      ^ ^      ^
-        ///   index: 0      7 8      15
-        ///
+        /// ```text
+        ///        00000000|00000000
+        ///        ^      ^ ^      ^
+        /// index: 0      7 8      15
+        /// ```
         /// Also, if not stated, assume that `is_init = true`, that is, we are searching for the first 1 bit.
         fn find_bit_fast(
             init_mask: &InitMask,
@@ -917,9 +1103,9 @@ impl InitMask {
     /// Returns `Ok(())` if it's initialized. Otherwise returns a range of byte
     /// indexes for the first contiguous span of the uninitialized access.
     #[inline]
-    pub fn is_range_initialized(&self, start: Size, end: Size) -> Result<(), Range<Size>> {
+    pub fn is_range_initialized(&self, start: Size, end: Size) -> Result<(), AllocRange> {
         if end > self.len {
-            return Err(self.len..end);
+            return Err(AllocRange::from(self.len..end));
         }
 
         let uninit_start = self.find_bit(start, end, false);
@@ -927,7 +1113,7 @@ impl InitMask {
         match uninit_start {
             Some(uninit_start) => {
                 let uninit_end = self.find_bit(uninit_start, end, true).unwrap_or(end);
-                Err(uninit_start..uninit_end)
+                Err(AllocRange::from(uninit_start..uninit_end))
             }
             None => Ok(()),
         }
@@ -957,6 +1143,7 @@ impl InitMask {
 }
 
 /// Yields [`InitChunk`]s. See [`InitMask::range_as_init_chunks`].
+#[derive(Clone)]
 pub struct InitChunkIter<'a> {
     init_mask: &'a InitMask,
     /// Whether the next chunk we will return is initialized.
@@ -992,29 +1179,27 @@ impl<'a> Iterator for InitChunkIter<'a> {
 }
 
 /// Uninitialized bytes.
-impl<Tag: Copy, Extra> Allocation<Tag, Extra> {
+impl<Prov: Copy, Extra> Allocation<Prov, Extra> {
     /// Checks whether the given range  is entirely initialized.
     ///
     /// Returns `Ok(())` if it's initialized. Otherwise returns the range of byte
     /// indexes of the first contiguous uninitialized access.
-    fn is_init(&self, range: AllocRange) -> Result<(), Range<Size>> {
+    fn is_init(&self, range: AllocRange) -> Result<(), AllocRange> {
         self.init_mask.is_range_initialized(range.start, range.end()) // `Size` addition
     }
 
     /// Checks that a range of bytes is initialized. If not, returns the `InvalidUninitBytes`
     /// error which will report the first range of bytes which is uninitialized.
     fn check_init(&self, range: AllocRange) -> AllocResult {
-        self.is_init(range).map_err(|idx_range| {
+        self.is_init(range).map_err(|uninit_range| {
             AllocError::InvalidUninitBytes(Some(UninitBytesAccess {
-                access_offset: range.start,
-                access_size: range.size,
-                uninit_offset: idx_range.start,
-                uninit_size: idx_range.end - idx_range.start, // `Size` subtraction
+                access: range,
+                uninit: uninit_range,
             }))
         })
     }
 
-    pub fn mark_init(&mut self, range: AllocRange, is_init: bool) {
+    fn mark_init(&mut self, range: AllocRange, is_init: bool) {
         if range.size.bytes() == 0 {
             return;
         }
@@ -1042,7 +1227,7 @@ impl InitMaskCompressed {
 }
 
 /// Transferring the initialization mask to other allocations.
-impl<Tag, Extra> Allocation<Tag, Extra> {
+impl<Prov, Extra> Allocation<Prov, Extra> {
     /// Creates a run-length encoding of the initialization mask; panics if range is empty.
     ///
     /// This is essentially a more space-efficient version of
@@ -1076,6 +1261,9 @@ impl<Tag, Extra> Allocation<Tag, Extra> {
     }
 
     /// Applies multiple instances of the run-length encoding to the initialization mask.
+    ///
+    /// This is dangerous to use as it can violate internal `Allocation` invariants!
+    /// It only exists to support an efficient implementation of `mem_copy_repeatedly`.
     pub fn mark_compressed_init_range(
         &mut self,
         defined: &InitMaskCompressed,

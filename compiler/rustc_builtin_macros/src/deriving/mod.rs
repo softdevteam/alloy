@@ -2,7 +2,7 @@
 
 use rustc_ast as ast;
 use rustc_ast::ptr::P;
-use rustc_ast::{Impl, ItemKind, MetaItem};
+use rustc_ast::{GenericArg, Impl, ItemKind, MetaItem};
 use rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemModifier};
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
@@ -38,8 +38,8 @@ pub mod partial_ord;
 
 pub mod generic;
 
-crate struct BuiltinDerive(
-    crate fn(&mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable)),
+pub(crate) struct BuiltinDerive(
+    pub(crate) fn(&mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable)),
 );
 
 impl MultiItemModifier for BuiltinDerive {
@@ -116,9 +116,8 @@ fn inject_impl_of_structural_trait(
     structural_path: generic::ty::Path,
     push: &mut dyn FnMut(Annotatable),
 ) {
-    let item = match *item {
-        Annotatable::Item(ref item) => item,
-        _ => unreachable!(),
+    let Annotatable::Item(ref item) = *item else {
+        unreachable!();
     };
 
     let generics = match item.kind {
@@ -134,7 +133,7 @@ fn inject_impl_of_structural_trait(
 
     // Create the type of `self`.
     //
-    // in addition, remove defaults from type params (impls cannot have them).
+    // in addition, remove defaults from generic params (impls cannot have them).
     let self_params: Vec<_> = generics
         .params
         .iter_mut()
@@ -193,4 +192,17 @@ fn inject_impl_of_structural_trait(
     );
 
     push(Annotatable::Item(newitem));
+}
+
+fn assert_ty_bounds(
+    cx: &mut ExtCtxt<'_>,
+    stmts: &mut Vec<ast::Stmt>,
+    ty: P<ast::Ty>,
+    span: Span,
+    assert_path: &[Symbol],
+) {
+    // Generate statement `let _: assert_path<ty>;`.
+    let span = cx.with_def_site_ctxt(span);
+    let assert_path = cx.path_all(span, true, cx.std_path(assert_path), vec![GenericArg::Type(ty)]);
+    stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
 }

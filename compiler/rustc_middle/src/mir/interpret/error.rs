@@ -1,10 +1,10 @@
-use super::{AllocId, ConstAlloc, Pointer, Scalar};
+use super::{AllocId, AllocRange, ConstAlloc, Pointer, Scalar};
 
 use crate::mir::interpret::ConstValue;
-use crate::ty::{layout, query::TyCtxtAt, tls, FnSig, Ty};
+use crate::ty::{layout, query::TyCtxtAt, tls, Ty, ValTree};
 
 use rustc_data_structures::sync::Lock;
-use rustc_errors::{pluralize, struct_span_err, DiagnosticBuilder, ErrorReported};
+use rustc_errors::{pluralize, struct_span_err, DiagnosticBuilder, ErrorGuaranteed};
 use rustc_macros::HashStable;
 use rustc_session::CtfeBacktrace;
 use rustc_span::def_id::DefId;
@@ -15,7 +15,7 @@ use std::{any::Any, backtrace::Backtrace, fmt};
 pub enum ErrorHandled {
     /// Already reported an error for this evaluation, and the compilation is
     /// *guaranteed* to fail. Warnings/lints *must not* produce `Reported`.
-    Reported(ErrorReported),
+    Reported(ErrorGuaranteed),
     /// Already emitted a lint for this evaluation.
     Linted,
     /// Don't emit an error, the evaluation failed because the MIR was generic
@@ -23,20 +23,24 @@ pub enum ErrorHandled {
     TooGeneric,
 }
 
-impl From<ErrorReported> for ErrorHandled {
-    fn from(err: ErrorReported) -> ErrorHandled {
+impl From<ErrorGuaranteed> for ErrorHandled {
+    fn from(err: ErrorGuaranteed) -> ErrorHandled {
         ErrorHandled::Reported(err)
     }
 }
 
-TrivialTypeFoldableAndLiftImpls! {
+TrivialTypeTraversalAndLiftImpls! {
     ErrorHandled,
 }
 
 pub type EvalToAllocationRawResult<'tcx> = Result<ConstAlloc<'tcx>, ErrorHandled>;
 pub type EvalToConstValueResult<'tcx> = Result<ConstValue<'tcx>, ErrorHandled>;
+pub type EvalToValTreeResult<'tcx> = Result<Option<ValTree<'tcx>>, ErrorHandled>;
 
-pub fn struct_error<'tcx>(tcx: TyCtxtAt<'tcx>, msg: &str) -> DiagnosticBuilder<'tcx> {
+pub fn struct_error<'tcx>(
+    tcx: TyCtxtAt<'tcx>,
+    msg: &str,
+) -> DiagnosticBuilder<'tcx, ErrorGuaranteed> {
     struct_span_err!(tcx.sess, tcx.span, E0080, "{}", msg)
 }
 
@@ -88,7 +92,7 @@ fn print_backtrace(backtrace: &Backtrace) {
 impl From<ErrorHandled> for InterpErrorInfo<'_> {
     fn from(err: ErrorHandled) -> Self {
         match err {
-            ErrorHandled::Reported(ErrorReported) | ErrorHandled::Linted => {
+            ErrorHandled::Reported(ErrorGuaranteed { .. }) | ErrorHandled::Linted => {
                 err_inval!(ReferencedConstant)
             }
             ErrorHandled::TooGeneric => err_inval!(TooGeneric),
@@ -97,8 +101,8 @@ impl From<ErrorHandled> for InterpErrorInfo<'_> {
     }
 }
 
-impl From<ErrorReported> for InterpErrorInfo<'_> {
-    fn from(err: ErrorReported) -> Self {
+impl From<ErrorGuaranteed> for InterpErrorInfo<'_> {
+    fn from(err: ErrorGuaranteed) -> Self {
         InterpError::InvalidProgram(InvalidProgramInfo::AlreadyReported(err)).into()
     }
 }
@@ -138,15 +142,13 @@ pub enum InvalidProgramInfo<'tcx> {
     /// which already produced an error.
     ReferencedConstant,
     /// Abort in case errors are already reported.
-    AlreadyReported(ErrorReported),
+    AlreadyReported(ErrorGuaranteed),
     /// An error occurred during layout computation.
     Layout(layout::LayoutError<'tcx>),
     /// An error occurred during FnAbi computation: the passed --target lacks FFI support
     /// (which unfortunately typeck does not reject).
     /// Not using `FnAbiError` as that contains a nested `LayoutError`.
     FnAbiAdjustForForeignAbi(call::AdjustForForeignAbiError),
-    /// An invalid transmute happened.
-    TransmuteSizeDiff(Ty<'tcx>, Ty<'tcx>),
     /// SizeOf of unsized type was requested.
     SizeOfUnsizedType(Ty<'tcx>),
 }
@@ -157,17 +159,12 @@ impl fmt::Display for InvalidProgramInfo<'_> {
         match self {
             TooGeneric => write!(f, "encountered overly generic constant"),
             ReferencedConstant => write!(f, "referenced constant has errors"),
-            AlreadyReported(ErrorReported) => {
+            AlreadyReported(ErrorGuaranteed { .. }) => {
                 write!(f, "encountered constants with type errors, stopping evaluation")
             }
-            Layout(ref err) => write!(f, "{}", err),
-            FnAbiAdjustForForeignAbi(ref err) => write!(f, "{}", err),
-            TransmuteSizeDiff(from_ty, to_ty) => write!(
-                f,
-                "transmuting `{}` to `{}` is not possible, because these types do not have the same size",
-                from_ty, to_ty
-            ),
-            SizeOfUnsizedType(ty) => write!(f, "size_of called on unsized type `{}`", ty),
+            Layout(ref err) => write!(f, "{err}"),
+            FnAbiAdjustForForeignAbi(ref err) => write!(f, "{err}"),
+            SizeOfUnsizedType(ty) => write!(f, "size_of called on unsized type `{ty}`"),
         }
     }
 }
@@ -181,13 +178,15 @@ pub enum CheckInAllocMsg {
     MemoryAccessTest,
     /// We are doing pointer arithmetic.
     PointerArithmeticTest,
+    /// We are doing pointer offset_from.
+    OffsetFromTest,
     /// None of the above -- generic/unspecific inbounds test.
     InboundsTest,
 }
 
 impl fmt::Display for CheckInAllocMsg {
     /// When this is printed as an error the context looks like this:
-    /// "{msg}0x01 is not a valid pointer".
+    /// "{msg}{pointer} is a dangling pointer".
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -195,8 +194,9 @@ impl fmt::Display for CheckInAllocMsg {
             match *self {
                 CheckInAllocMsg::DerefTest => "dereferencing pointer failed: ",
                 CheckInAllocMsg::MemoryAccessTest => "memory access failed: ",
-                CheckInAllocMsg::PointerArithmeticTest => "pointer arithmetic failed: ",
-                CheckInAllocMsg::InboundsTest => "",
+                CheckInAllocMsg::PointerArithmeticTest => "out-of-bounds pointer arithmetic: ",
+                CheckInAllocMsg::OffsetFromTest => "out-of-bounds offset_from: ",
+                CheckInAllocMsg::InboundsTest => "out-of-bounds pointer use: ",
             }
         )
     }
@@ -205,18 +205,21 @@ impl fmt::Display for CheckInAllocMsg {
 /// Details of an access to uninitialized bytes where it is not allowed.
 #[derive(Debug)]
 pub struct UninitBytesAccess {
-    /// Location of the original memory access.
-    pub access_offset: Size,
-    /// Size of the original memory access.
-    pub access_size: Size,
-    /// Location of the first uninitialized byte that was accessed.
-    pub uninit_offset: Size,
-    /// Number of consecutive uninitialized bytes that were accessed.
-    pub uninit_size: Size,
+    /// Range of the original memory access.
+    pub access: AllocRange,
+    /// Range of the uninit memory that was encountered. (Might not be maximal.)
+    pub uninit: AllocRange,
+}
+
+/// Information about a size mismatch.
+#[derive(Debug)]
+pub struct ScalarSizeMismatch {
+    pub target_size: u64,
+    pub data_size: u64,
 }
 
 /// Error information for when the program caused Undefined Behavior.
-pub enum UndefinedBehaviorInfo<'tcx> {
+pub enum UndefinedBehaviorInfo {
     /// Free-form case. Only for errors that are never caught!
     Ub(String),
     /// Unreachable code was executed.
@@ -230,16 +233,14 @@ pub enum UndefinedBehaviorInfo<'tcx> {
     DivisionByZero,
     /// Something was "remainded" by 0 (x % 0).
     RemainderByZero,
+    /// Signed division overflowed (INT_MIN / -1).
+    DivisionOverflow,
+    /// Signed remainder overflowed (INT_MIN % -1).
+    RemainderOverflow,
     /// Overflowing inbounds pointer arithmetic.
     PointerArithOverflow,
     /// Invalid metadata in a wide pointer (using `str` to avoid allocations).
     InvalidMeta(&'static str),
-    /// Invalid drop function in vtable.
-    InvalidVtableDropFn(FnSig<'tcx>),
-    /// Invalid size in a vtable: too large.
-    InvalidVtableSize,
-    /// Invalid alignment in a vtable: too large, or not a power of 2.
-    InvalidVtableAlignment(String),
     /// Reading a C string that does not end within its allocation.
     UnterminatedCString(Pointer),
     /// Dereferencing a dangling pointer after it got freed.
@@ -264,6 +265,8 @@ pub enum UndefinedBehaviorInfo<'tcx> {
     WriteToReadOnly(AllocId),
     // Trying to access the data behind a function pointer.
     DerefFunctionPointer(AllocId),
+    // Trying to access the data behind a vtable pointer.
+    DerefVTablePointer(AllocId),
     /// The value validity check found a problem.
     /// Should only be thrown by `validity.rs` and always point out which part of the value
     /// is the problem.
@@ -281,6 +284,8 @@ pub enum UndefinedBehaviorInfo<'tcx> {
     InvalidTag(Scalar),
     /// Using a pointer-not-to-a-function as function pointer.
     InvalidFunctionPointer(Pointer),
+    /// Using a pointer-not-to-a-vtable as vtable pointer.
+    InvalidVTablePointer(Pointer),
     /// Using a string that is not valid UTF-8,
     InvalidStr(std::str::Utf8Error),
     /// Using uninitialized data where it is not allowed.
@@ -288,115 +293,99 @@ pub enum UndefinedBehaviorInfo<'tcx> {
     /// Working with a local that is not currently live.
     DeadLocal,
     /// Data size is not equal to target size.
-    ScalarSizeMismatch {
-        target_size: u64,
-        data_size: u64,
-    },
+    ScalarSizeMismatch(ScalarSizeMismatch),
     /// A discriminant of an uninhabited enum variant is written.
     UninhabitedEnumVariantWritten,
 }
 
-impl fmt::Display for UndefinedBehaviorInfo<'_> {
+impl fmt::Display for UndefinedBehaviorInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use UndefinedBehaviorInfo::*;
         match self {
-            Ub(msg) => write!(f, "{}", msg),
+            Ub(msg) => write!(f, "{msg}"),
             Unreachable => write!(f, "entering unreachable code"),
             BoundsCheckFailed { ref len, ref index } => {
-                write!(f, "indexing out of bounds: the len is {} but the index is {}", len, index)
+                write!(f, "indexing out of bounds: the len is {len} but the index is {index}")
             }
             DivisionByZero => write!(f, "dividing by zero"),
             RemainderByZero => write!(f, "calculating the remainder with a divisor of zero"),
+            DivisionOverflow => write!(f, "overflow in signed division (dividing MIN by -1)"),
+            RemainderOverflow => write!(f, "overflow in signed remainder (dividing MIN by -1)"),
             PointerArithOverflow => write!(f, "overflowing in-bounds pointer arithmetic"),
-            InvalidMeta(msg) => write!(f, "invalid metadata in wide pointer: {}", msg),
-            InvalidVtableDropFn(sig) => write!(
-                f,
-                "invalid drop function signature: got {}, expected exactly one argument which must be a pointer type",
-                sig
-            ),
-            InvalidVtableSize => {
-                write!(f, "invalid vtable: size is bigger than largest supported object")
-            }
-            InvalidVtableAlignment(msg) => write!(f, "invalid vtable: alignment {}", msg),
+            InvalidMeta(msg) => write!(f, "invalid metadata in wide pointer: {msg}"),
             UnterminatedCString(p) => write!(
                 f,
-                "reading a null-terminated string starting at {:?} with no null found before end of allocation",
-                p,
+                "reading a null-terminated string starting at {p:?} with no null found before end of allocation",
             ),
             PointerUseAfterFree(a) => {
-                write!(f, "pointer to {} was dereferenced after this allocation got freed", a)
+                write!(f, "pointer to {a:?} was dereferenced after this allocation got freed")
             }
             PointerOutOfBounds { alloc_id, alloc_size, ptr_offset, ptr_size: Size::ZERO, msg } => {
                 write!(
                     f,
-                    "{}{alloc_id} has size {alloc_size}, so pointer at offset {ptr_offset} is out-of-bounds",
-                    msg,
-                    alloc_id = alloc_id,
+                    "{msg}{alloc_id:?} has size {alloc_size}, so pointer at offset {ptr_offset} is out-of-bounds",
                     alloc_size = alloc_size.bytes(),
-                    ptr_offset = ptr_offset,
                 )
             }
             PointerOutOfBounds { alloc_id, alloc_size, ptr_offset, ptr_size, msg } => write!(
                 f,
-                "{}{alloc_id} has size {alloc_size}, so pointer to {ptr_size} byte{ptr_size_p} starting at offset {ptr_offset} is out-of-bounds",
-                msg,
-                alloc_id = alloc_id,
+                "{msg}{alloc_id:?} has size {alloc_size}, so pointer to {ptr_size} byte{ptr_size_p} starting at offset {ptr_offset} is out-of-bounds",
                 alloc_size = alloc_size.bytes(),
                 ptr_size = ptr_size.bytes(),
                 ptr_size_p = pluralize!(ptr_size.bytes()),
-                ptr_offset = ptr_offset,
             ),
-            DanglingIntPointer(0, CheckInAllocMsg::InboundsTest) => {
-                write!(f, "null pointer is not a valid pointer for this operation")
-            }
             DanglingIntPointer(i, msg) => {
-                write!(f, "{}0x{:x} is not a valid pointer", msg, i)
+                write!(
+                    f,
+                    "{msg}{pointer} is a dangling pointer (it has no provenance)",
+                    pointer = Pointer::<Option<AllocId>>::from_addr(*i),
+                )
             }
             AlignmentCheckFailed { required, has } => write!(
                 f,
-                "accessing memory with alignment {}, but alignment {} is required",
-                has.bytes(),
-                required.bytes()
+                "accessing memory with alignment {has}, but alignment {required} is required",
+                has = has.bytes(),
+                required = required.bytes()
             ),
-            WriteToReadOnly(a) => write!(f, "writing to {} which is read-only", a),
-            DerefFunctionPointer(a) => write!(f, "accessing {} which contains a function", a),
-            ValidationFailure { path: None, msg } => write!(f, "type validation failed: {}", msg),
+            WriteToReadOnly(a) => write!(f, "writing to {a:?} which is read-only"),
+            DerefFunctionPointer(a) => write!(f, "accessing {a:?} which contains a function"),
+            DerefVTablePointer(a) => write!(f, "accessing {a:?} which contains a vtable"),
+            ValidationFailure { path: None, msg } => {
+                write!(f, "constructing invalid value: {msg}")
+            }
             ValidationFailure { path: Some(path), msg } => {
-                write!(f, "type validation failed at {}: {}", path, msg)
+                write!(f, "constructing invalid value at {path}: {msg}")
             }
             InvalidBool(b) => {
-                write!(f, "interpreting an invalid 8-bit value as a bool: 0x{:02x}", b)
+                write!(f, "interpreting an invalid 8-bit value as a bool: 0x{b:02x}")
             }
             InvalidChar(c) => {
-                write!(f, "interpreting an invalid 32-bit value as a char: 0x{:08x}", c)
+                write!(f, "interpreting an invalid 32-bit value as a char: 0x{c:08x}")
             }
-            InvalidTag(val) => write!(f, "enum value has invalid tag: {}", val),
+            InvalidTag(val) => write!(f, "enum value has invalid tag: {val:x}"),
             InvalidFunctionPointer(p) => {
-                write!(f, "using {:?} as function pointer but it does not point to a function", p)
+                write!(f, "using {p:?} as function pointer but it does not point to a function")
             }
-            InvalidStr(err) => write!(f, "this string is not valid UTF-8: {}", err),
-            InvalidUninitBytes(Some((alloc, access))) => write!(
+            InvalidVTablePointer(p) => {
+                write!(f, "using {p:?} as vtable pointer but it does not point to a vtable")
+            }
+            InvalidStr(err) => write!(f, "this string is not valid UTF-8: {err}"),
+            InvalidUninitBytes(Some((alloc, info))) => write!(
                 f,
-                "reading {} byte{} of memory starting at {:?}, \
-                 but {} byte{} {} uninitialized starting at {:?}, \
+                "reading memory at {alloc:?}{access:?}, \
+                 but memory is uninitialized at {uninit:?}, \
                  and this operation requires initialized memory",
-                access.access_size.bytes(),
-                pluralize!(access.access_size.bytes()),
-                Pointer::new(*alloc, access.access_offset),
-                access.uninit_size.bytes(),
-                pluralize!(access.uninit_size.bytes()),
-                if access.uninit_size.bytes() != 1 { "are" } else { "is" },
-                Pointer::new(*alloc, access.uninit_offset),
+                access = info.access,
+                uninit = info.uninit,
             ),
             InvalidUninitBytes(None) => write!(
                 f,
                 "using uninitialized data, but this operation requires initialized memory"
             ),
             DeadLocal => write!(f, "accessing a dead local variable"),
-            ScalarSizeMismatch { target_size, data_size } => write!(
+            ScalarSizeMismatch(self::ScalarSizeMismatch { target_size, data_size }) => write!(
                 f,
-                "scalar size mismatch: expected {} bytes but got {} bytes instead",
-                target_size, data_size
+                "scalar size mismatch: expected {target_size} bytes but got {data_size} bytes instead",
             ),
             UninhabitedEnumVariantWritten => {
                 write!(f, "writing discriminant of an uninhabited enum")
@@ -415,7 +404,7 @@ pub enum UnsupportedOpInfo {
     /// Encountered a pointer where we needed raw bytes.
     ReadPointerAsBytes,
     /// Overwriting parts of a pointer; the resulting state cannot be represented in our
-    /// `Allocation` data structure.
+    /// `Allocation` data structure. See <https://github.com/rust-lang/miri/issues/2181>.
     PartialPointerOverwrite(Pointer<AllocId>),
     //
     // The variants below are only reachable from CTFE/const prop, miri will never emit them.
@@ -430,13 +419,13 @@ impl fmt::Display for UnsupportedOpInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use UnsupportedOpInfo::*;
         match self {
-            Unsupported(ref msg) => write!(f, "{}", msg),
+            Unsupported(ref msg) => write!(f, "{msg}"),
             ReadPointerAsBytes => write!(f, "unable to turn pointer into raw bytes"),
             PartialPointerOverwrite(ptr) => {
-                write!(f, "unable to overwrite parts of a pointer in memory at {:?}", ptr)
+                write!(f, "unable to overwrite parts of a pointer in memory at {ptr:?}")
             }
-            ThreadLocalStatic(did) => write!(f, "cannot access thread local static ({:?})", did),
-            ReadExternStatic(did) => write!(f, "cannot read from extern static ({:?})", did),
+            ThreadLocalStatic(did) => write!(f, "cannot access thread local static ({did:?})"),
+            ReadExternStatic(did) => write!(f, "cannot read from extern static ({did:?})"),
         }
     }
 }
@@ -499,7 +488,7 @@ impl dyn MachineStopType {
 
 pub enum InterpError<'tcx> {
     /// The program caused undefined behavior.
-    UndefinedBehavior(UndefinedBehaviorInfo<'tcx>),
+    UndefinedBehavior(UndefinedBehaviorInfo),
     /// The program did something the interpreter does not support (some of these *might* be UB
     /// but the interpreter is not sure).
     Unsupported(UnsupportedOpInfo),
@@ -519,11 +508,11 @@ impl fmt::Display for InterpError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use InterpError::*;
         match *self {
-            Unsupported(ref msg) => write!(f, "{}", msg),
-            InvalidProgram(ref msg) => write!(f, "{}", msg),
-            UndefinedBehavior(ref msg) => write!(f, "{}", msg),
-            ResourceExhaustion(ref msg) => write!(f, "{}", msg),
-            MachineStop(ref msg) => write!(f, "{}", msg),
+            Unsupported(ref msg) => write!(f, "{msg}"),
+            InvalidProgram(ref msg) => write!(f, "{msg}"),
+            UndefinedBehavior(ref msg) => write!(f, "{msg}"),
+            ResourceExhaustion(ref msg) => write!(f, "{msg}"),
+            MachineStop(ref msg) => write!(f, "{msg}"),
         }
     }
 }

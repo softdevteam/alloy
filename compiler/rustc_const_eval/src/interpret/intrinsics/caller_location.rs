@@ -15,7 +15,7 @@ use crate::interpret::{
 impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// Walks up the callstack from the intrinsic's callsite, searching for the first callsite in a
     /// frame which is not `#[track_caller]`.
-    crate fn find_closest_untracked_caller_location(&self) -> Span {
+    pub(crate) fn find_closest_untracked_caller_location(&self) -> Span {
         for frame in self.stack().iter().rev() {
             debug!("find_closest_untracked_caller_location: checking frame {:?}", frame.instance);
 
@@ -70,17 +70,17 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
         }
 
-        bug!("no non-`#[track_caller]` frame found")
+        span_bug!(self.cur_span(), "no non-`#[track_caller]` frame found")
     }
 
     /// Allocate a `const core::panic::Location` with the provided filename and line/column numbers.
-    crate fn alloc_caller_location(
+    pub(crate) fn alloc_caller_location(
         &mut self,
         filename: Symbol,
         line: u32,
         col: u32,
-    ) -> MPlaceTy<'tcx, M::PointerTag> {
-        let loc_details = &self.tcx.sess.opts.debugging_opts.location_detail;
+    ) -> MPlaceTy<'tcx, M::Provenance> {
+        let loc_details = &self.tcx.sess.opts.unstable_opts.location_detail;
         let file = if loc_details.file {
             self.allocate_str(filename.as_str(), MemoryKind::CallerLocation, Mutability::Not)
         } else {
@@ -95,7 +95,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // Allocate memory for `CallerLocation` struct.
         let loc_ty = self
             .tcx
-            .type_of(self.tcx.require_lang_item(LangItem::PanicLocation, None))
+            .bound_type_of(self.tcx.require_lang_item(LangItem::PanicLocation, None))
             .subst(*self.tcx, self.tcx.mk_substs([self.tcx.lifetimes.re_erased.into()].iter()));
         let loc_layout = self.layout_of(loc_ty).unwrap();
         // This can fail if rustc runs out of memory right here. Trying to emit an error would be
@@ -113,7 +113,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         location
     }
 
-    crate fn location_triple_for_span(&self, span: Span) -> (Symbol, u32, u32) {
+    pub(crate) fn location_triple_for_span(&self, span: Span) -> (Symbol, u32, u32) {
         let topmost = span.ctxt().outer_expn().expansion_cause().unwrap_or(span);
         let caller = self.tcx.sess.source_map().lookup_char_pos(topmost.lo());
         (
@@ -123,7 +123,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         )
     }
 
-    pub fn alloc_caller_location_for_span(&mut self, span: Span) -> MPlaceTy<'tcx, M::PointerTag> {
+    pub fn alloc_caller_location_for_span(&mut self, span: Span) -> MPlaceTy<'tcx, M::Provenance> {
         let (file, line, column) = self.location_triple_for_span(span);
         self.alloc_caller_location(file, line, column)
     }

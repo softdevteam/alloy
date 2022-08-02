@@ -5,8 +5,8 @@ use rustc_middle::mir::{
     BasicBlock, BasicBlockData, Body, Local, Location, Place, PlaceRef, ProjectionElem, Rvalue,
     SourceInfo, Statement, StatementKind, Terminator, TerminatorKind, UserTypeProjection,
 };
-use rustc_middle::ty::fold::TypeFoldable;
 use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::visit::TypeVisitable;
 use rustc_middle::ty::{self, RegionVid, Ty};
 
 use crate::{
@@ -60,8 +60,8 @@ impl<'cg, 'cx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'tcx> {
 
     /// We sometimes have `region` within an rvalue, or within a
     /// call. Make them live at the location where they appear.
-    fn visit_region(&mut self, region: &ty::Region<'tcx>, location: Location) {
-        self.add_regular_live_constraint(*region, location);
+    fn visit_region(&mut self, region: ty::Region<'tcx>, location: Location) {
+        self.add_regular_live_constraint(region, location);
         self.super_region(region);
     }
 
@@ -140,9 +140,7 @@ impl<'cg, 'cx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'tcx> {
         // A `Call` terminator's return value can be a local which has borrows,
         // so we need to record those as `killed` as well.
         if let TerminatorKind::Call { destination, .. } = terminator.kind {
-            if let Some((place, _)) = destination {
-                self.record_killed_borrows_for_place(place, location);
-            }
+            self.record_killed_borrows_for_place(destination, location);
         }
 
         self.super_terminator(terminator, location);
@@ -151,7 +149,7 @@ impl<'cg, 'cx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'tcx> {
     fn visit_ascribe_user_ty(
         &mut self,
         _place: &Place<'tcx>,
-        _variance: &ty::Variance,
+        _variance: ty::Variance,
         _user_ty: &UserTypeProjection,
         _location: Location,
     ) {
@@ -165,7 +163,7 @@ impl<'cx, 'cg, 'tcx> ConstraintGeneration<'cx, 'cg, 'tcx> {
     /// `location`.
     fn add_regular_live_constraint<T>(&mut self, live_ty: T, location: Location)
     where
-        T: TypeFoldable<'tcx>,
+        T: TypeVisitable<'tcx>,
     {
         debug!("add_regular_live_constraint(live_ty={:?}, location={:?})", live_ty, location);
 

@@ -78,7 +78,7 @@ impl<'tcx> LateLintPass<'tcx> for UninitVec {
     }
 }
 
-fn handle_uninit_vec_pair(
+fn handle_uninit_vec_pair<'tcx>(
     cx: &LateContext<'tcx>,
     maybe_init_or_reserve: &'tcx Stmt<'tcx>,
     maybe_set_len: &'tcx Expr<'tcx>,
@@ -98,7 +98,7 @@ fn handle_uninit_vec_pair(
                 // Check T of Vec<T>
                 if !is_uninit_value_valid_for_ty(cx, substs.type_at(0)) {
                     // FIXME: #7698, false positive of the internal lints
-                    #[allow(clippy::collapsible_span_lint_calls)]
+                    #[expect(clippy::collapsible_span_lint_calls)]
                     span_lint_and_then(
                         cx,
                         UNINIT_VEC,
@@ -177,7 +177,7 @@ fn extract_init_or_reserve_target<'tcx>(cx: &LateContext<'tcx>, stmt: &'tcx Stmt
                     });
                 }
             },
-            ExprKind::MethodCall(path, _, [self_expr, _], _) if is_reserve(cx, path, self_expr) => {
+            ExprKind::MethodCall(path, [self_expr, _], _) if is_reserve(cx, path, self_expr) => {
                 return Some(TargetVec {
                     location: VecLocation::Expr(self_expr),
                     init_kind: None,
@@ -196,7 +196,7 @@ fn is_reserve(cx: &LateContext<'_>, path: &PathSegment<'_>, self_expr: &Expr<'_>
 }
 
 /// Returns self if the expression is `Vec::set_len()`
-fn extract_set_len_self(cx: &LateContext<'_>, expr: &'tcx Expr<'_>) -> Option<(&'tcx Expr<'tcx>, Span)> {
+fn extract_set_len_self<'tcx>(cx: &LateContext<'_>, expr: &'tcx Expr<'_>) -> Option<(&'tcx Expr<'tcx>, Span)> {
     // peel unsafe blocks in `unsafe { vec.set_len() }`
     let expr = peel_hir_expr_while(expr, |e| {
         if let ExprKind::Block(block, _) = e.kind {
@@ -211,7 +211,7 @@ fn extract_set_len_self(cx: &LateContext<'_>, expr: &'tcx Expr<'_>) -> Option<(&
         }
     });
     match expr.kind {
-        ExprKind::MethodCall(path, _, [self_expr, _], _) => {
+        ExprKind::MethodCall(path, [self_expr, _], _) => {
             let self_type = cx.typeck_results().expr_ty(self_expr).peel_refs();
             if is_type_diagnostic_item(cx, self_type, sym::Vec) && path.ident.name.as_str() == "set_len" {
                 Some((self_expr, expr.span))

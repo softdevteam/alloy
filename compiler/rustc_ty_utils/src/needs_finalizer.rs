@@ -2,17 +2,16 @@
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::util::{needs_drop_components, AlwaysRequiresDrop};
-use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{self, EarlyBinder, Subst, Ty, TyCtxt};
 use rustc_session::Limit;
 use rustc_span::DUMMY_SP;
 
 type NeedsDropResult<T> = Result<T, AlwaysRequiresDrop>;
 
 fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-    let finalizer_fields = move |adt_def: &ty::AdtDef, _must_recurse: bool| {
-        tcx.adt_finalizer_tys(adt_def.did).map(|tys| tys.iter())
+    let finalizer_fields = move |adt_def: ty::AdtDef<'tcx>, _must_recurse: bool| {
+        tcx.adt_finalizer_tys(adt_def.did()).map(|tys| tys.iter())
     };
     let res =
         NeedsDropTypes::new(tcx, query.param_env, query.value, finalizer_fields).next().is_some();
@@ -57,7 +56,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
 
 impl<'tcx, F, I> Iterator for NeedsDropTypes<'tcx, F>
 where
-    F: Fn(&ty::AdtDef, bool) -> NeedsDropResult<I>,
+    F: Fn(ty::AdtDef<'tcx>, bool) -> NeedsDropResult<I>,
     I: Iterator<Item = Ty<'tcx>>,
 {
     type Item = NeedsDropResult<Ty<'tcx>>;
@@ -88,10 +87,7 @@ where
 
             for component in components {
                 match *component.kind() {
-                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env) =>
-                    {
-                        ()
-                    }
+                    _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env) => (),
 
                     ty::Closure(_, substs) => {
                         queue_type(self, substs.as_closure().tupled_upvars_ty());
@@ -144,7 +140,7 @@ where
                         for required_ty in tys {
                             let subst_ty = tcx.normalize_erasing_regions(
                                 self.param_env,
-                                required_ty.subst(tcx, substs),
+                                EarlyBinder(required_ty).subst(tcx, substs),
                             );
                             queue_type(self, subst_ty);
                         }
@@ -173,12 +169,12 @@ where
     }
 }
 
-fn adt_finalizer_tys(
-    tcx: TyCtxt<'_>,
+fn adt_finalizer_tys<'tcx>(
+    tcx: TyCtxt<'tcx>,
     def_id: DefId,
-) -> Result<&ty::List<Ty<'_>>, AlwaysRequiresDrop> {
-    let adt_has_dtor = |adt_def: &ty::AdtDef| adt_def.destructor(tcx).is_some();
-    let adt_components = move |adt_def: &ty::AdtDef, must_recurse: bool| {
+) -> Result<&ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
+    let adt_has_dtor = |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).is_some();
+    let adt_components = move |adt_def: ty::AdtDef<'tcx>, must_recurse: bool| {
         if adt_def.is_manually_drop() {
             debug!("dt_finalizer_tys: `{:?}` is manually drop", adt_def);
             return Ok(Vec::new().into_iter());

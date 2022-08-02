@@ -1,3 +1,4 @@
+use crate::move_paths::builder::MoveDat;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_index::vec::IndexVec;
 use rustc_middle::mir::*;
@@ -37,8 +38,8 @@ rustc_index::newtype_index! {
 }
 
 impl MoveOutIndex {
-    pub fn move_path_index(&self, move_data: &MoveData<'_>) -> MovePathIndex {
-        move_data.moves[*self].path
+    pub fn move_path_index(self, move_data: &MoveData<'_>) -> MovePathIndex {
+        move_data.moves[self].path
     }
 }
 
@@ -338,8 +339,8 @@ impl MovePathLookup {
     /// `MovePathIndex`es.
     pub fn iter_locals_enumerated(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (Local, &MovePathIndex)> + ExactSizeIterator {
-        self.locals.iter_enumerated()
+    ) -> impl DoubleEndedIterator<Item = (Local, MovePathIndex)> + ExactSizeIterator + '_ {
+        self.locals.iter_enumerated().map(|(l, &idx)| (l, idx))
     }
 }
 
@@ -386,7 +387,7 @@ impl<'tcx> MoveData<'tcx> {
         body: &Body<'tcx>,
         tcx: TyCtxt<'tcx>,
         param_env: ParamEnv<'tcx>,
-    ) -> Result<Self, (Self, Vec<(Place<'tcx>, MoveError<'tcx>)>)> {
+    ) -> MoveDat<'tcx> {
         builder::gather_moves(body, tcx, param_env)
     }
 

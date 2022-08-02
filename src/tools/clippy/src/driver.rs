@@ -21,11 +21,11 @@ use rustc_tools_util::VersionInfo;
 
 use std::borrow::Cow;
 use std::env;
-use std::lazy::SyncLazy;
 use std::ops::Deref;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
+use std::sync::LazyLock;
 
 /// If a command-line option matches `find_arg`, then apply the predicate `pred` on its value. If
 /// true, then return it. The parameter is assumed to be either `--arg=value` or `--arg value`.
@@ -60,6 +60,7 @@ fn test_arg_value() {
     assert_eq!(arg_value(args, "--bar", |p| p == "foo"), None);
     assert_eq!(arg_value(args, "--foobar", |p| p == "foo"), None);
     assert_eq!(arg_value(args, "--foobar", |p| p == "123"), Some("123"));
+    assert_eq!(arg_value(args, "--foobar", |p| p.contains("12")), Some("123"));
     assert_eq!(arg_value(args, "--foo", |_| true), None);
 }
 
@@ -93,6 +94,8 @@ struct ClippyCallbacks {
 }
 
 impl rustc_driver::Callbacks for ClippyCallbacks {
+    // JUSTIFICATION: necessary in clippy driver to set `mir_opt_level`
+    #[cfg_attr(not(bootstrap), allow(rustc::bad_opt_access))]
     fn config(&mut self, config: &mut interface::Config) {
         let previous = config.register_lints.take();
         let clippy_args_var = self.clippy_args_var.take();
@@ -116,7 +119,7 @@ impl rustc_driver::Callbacks for ClippyCallbacks {
         // run on the unoptimized MIR. On the other hand this results in some false negatives. If
         // MIR passes can be enabled / disabled separately, we should figure out, what passes to
         // use for Clippy.
-        config.opts.debugging_opts.mir_opt_level = Some(0);
+        config.opts.unstable_opts.mir_opt_level = Some(0);
     }
 }
 
@@ -152,7 +155,8 @@ You can use tool lints to allow or deny lints from your code, eg.:
 
 const BUG_REPORT_URL: &str = "https://github.com/rust-lang/rust-clippy/issues/new";
 
-static ICE_HOOK: SyncLazy<Box<dyn Fn(&panic::PanicInfo<'_>) + Sync + Send + 'static>> = SyncLazy::new(|| {
+type PanicCallback = dyn Fn(&panic::PanicInfo<'_>) + Sync + Send + 'static;
+static ICE_HOOK: LazyLock<Box<PanicCallback>> = LazyLock::new(|| {
     let hook = panic::take_hook();
     panic::set_hook(Box::new(|info| report_clippy_ice(info, BUG_REPORT_URL)));
     hook
@@ -165,9 +169,12 @@ fn report_clippy_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
     // Separate the output with an empty line
     eprintln!();
 
+    let fallback_bundle = rustc_errors::fallback_fluent_bundle(rustc_errors::DEFAULT_LOCALE_RESOURCES, false);
     let emitter = Box::new(rustc_errors::emitter::EmitterWriter::stderr(
         rustc_errors::ColorConfig::Auto,
         None,
+        None,
+        fallback_bundle,
         false,
         false,
         None,
@@ -178,8 +185,8 @@ fn report_clippy_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
     // a .span_bug or .bug call has already printed what
     // it wants to print.
     if !info.payload().is::<rustc_errors::ExplicitBug>() {
-        let d = rustc_errors::Diagnostic::new(rustc_errors::Level::Bug, "unexpected panic");
-        handler.emit_diagnostic(&d);
+        let mut d = rustc_errors::Diagnostic::new(rustc_errors::Level::Bug, "unexpected panic");
+        handler.emit_diagnostic(&mut d);
     }
 
     let version_info = rustc_tools_util::get_version_info!();
@@ -191,7 +198,7 @@ fn report_clippy_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
     ];
 
     for note in &xs {
-        handler.note_without_error(note);
+        handler.note_without_error(note.as_ref());
     }
 
     // If backtraces are enabled, also print the query stack
@@ -216,7 +223,7 @@ fn toolchain_path(home: Option<String>, toolchain: Option<String>) -> Option<Pat
 #[allow(clippy::too_many_lines)]
 pub fn main() {
     rustc_driver::init_rustc_env_logger();
-    SyncLazy::force(&ICE_HOOK);
+    LazyLock::force(&ICE_HOOK);
     exit(rustc_driver::catch_with_exit_code(move || {
         let mut orig_args: Vec<String> = env::args().collect();
 
@@ -331,16 +338,13 @@ pub fn main() {
         // - IF Clippy is run on the main crate, not on deps (`!cap_lints_allow`) THEN
         //    - IF `--no-deps` is not set (`!no_deps`) OR
         //    - IF `--no-deps` is set and Clippy is run on the specified primary package
-        let clippy_tests_set = env::var("__CLIPPY_INTERNAL_TESTS").map_or(false, |val| val == "true");
-        let cap_lints_allow = arg_value(&orig_args, "--cap-lints", |val| val == "allow").is_some();
+        let cap_lints_allow = arg_value(&orig_args, "--cap-lints", |val| val == "allow").is_some()
+            && arg_value(&orig_args, "--force-warn", |val| val.contains("clippy::")).is_none();
         let in_primary_package = env::var("CARGO_PRIMARY_PACKAGE").is_ok();
 
-        let clippy_enabled = clippy_tests_set || (!cap_lints_allow && (!no_deps || in_primary_package));
+        let clippy_enabled = !cap_lints_allow && (!no_deps || in_primary_package);
         if clippy_enabled {
             args.extend(clippy_args);
-        }
-
-        if clippy_enabled {
             rustc_driver::RunCompiler::new(&args, &mut ClippyCallbacks { clippy_args_var }).run()
         } else {
             rustc_driver::RunCompiler::new(&args, &mut RustcCallbacks { clippy_args_var }).run()

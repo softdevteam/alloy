@@ -1,6 +1,7 @@
 //! A solver for dataflow problems.
 
-use std::borrow::BorrowMut;
+use crate::framework::BitSetExt;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -91,7 +92,7 @@ where
 impl<'a, 'tcx, A, D, T> Engine<'a, 'tcx, A>
 where
     A: GenKillAnalysis<'tcx, Idx = T, Domain = D>,
-    D: Clone + JoinSemiLattice + GenKill<T> + BorrowMut<BitSet<T>>,
+    D: Clone + JoinSemiLattice + GenKill<T> + BitSetExt<T>,
     T: Idx,
 {
     /// Creates a new `Engine` to solve a gen-kill dataflow problem.
@@ -100,13 +101,13 @@ where
         // transfer function for each block exactly once (assuming that we process blocks in RPO).
         //
         // In this case, there's no need to compute the block transfer functions ahead of time.
-        if !body.is_cfg_cyclic() {
+        if !body.basic_blocks.is_cfg_cyclic() {
             return Self::new(tcx, body, analysis, None);
         }
 
         // Otherwise, compute and store the cumulative transfer function for each block.
 
-        let identity = GenKillSet::identity(analysis.bottom_value(body).borrow().domain_size());
+        let identity = GenKillSet::identity(analysis.bottom_value(body).domain_size());
         let mut trans_for_block = IndexVec::from_elem(identity, body.basic_blocks());
 
         for (block, block_data) in body.basic_blocks().iter_enumerated() {
@@ -115,7 +116,7 @@ where
         }
 
         let apply_trans = Box::new(move |bb: BasicBlock, state: &mut A::Domain| {
-            trans_for_block[bb].apply(state.borrow_mut());
+            trans_for_block[bb].apply(state);
         });
 
         Self::new(tcx, body, analysis, Some(apply_trans as Box<_>))
@@ -146,7 +147,7 @@ where
         let mut entry_sets = IndexVec::from_elem(bottom_value.clone(), body.basic_blocks());
         analysis.initialize_start_block(body, &mut entry_sets[mir::START_BLOCK]);
 
-        if A::Direction::is_backward() && entry_sets[mir::START_BLOCK] != bottom_value {
+        if A::Direction::IS_BACKWARD && entry_sets[mir::START_BLOCK] != bottom_value {
             bug!("`initialize_start_block` is not yet supported for backward dataflow analyses");
         }
 
@@ -199,7 +200,7 @@ where
         let mut dirty_queue: WorkQueue<BasicBlock> =
             WorkQueue::with_none(body.basic_blocks().len());
 
-        if A::Direction::is_forward() {
+        if A::Direction::IS_FORWARD {
             for (bb, _) in traversal::reverse_postorder(body) {
                 dirty_queue.insert(bb);
             }
@@ -274,11 +275,9 @@ where
     use std::io::{self, Write};
 
     let def_id = body.source.def_id();
-    let attrs = match RustcMirAttrs::parse(tcx, def_id) {
-        Ok(attrs) => attrs,
-
+    let Ok(attrs) = RustcMirAttrs::parse(tcx, def_id) else {
         // Invalid `rustc_mir` attrs are reported in `RustcMirAttrs::parse`
-        Err(()) => return Ok(()),
+        return Ok(());
     };
 
     let mut file = match attrs.output_path(A::NAME) {
@@ -290,7 +289,7 @@ where
             io::BufWriter::new(fs::File::create(&path)?)
         }
 
-        None if tcx.sess.opts.debugging_opts.dump_mir_dataflow
+        None if tcx.sess.opts.unstable_opts.dump_mir_dataflow
             && dump_enabled(tcx, A::NAME, def_id) =>
         {
             create_dump_file(
@@ -315,8 +314,8 @@ where
 
     let graphviz = graphviz::Formatter::new(body, results, style);
     let mut render_opts =
-        vec![dot::RenderOption::Fontname(tcx.sess.opts.debugging_opts.graphviz_font.clone())];
-    if tcx.sess.opts.debugging_opts.graphviz_dark_mode {
+        vec![dot::RenderOption::Fontname(tcx.sess.opts.unstable_opts.graphviz_font.clone())];
+    if tcx.sess.opts.unstable_opts.graphviz_dark_mode {
         render_opts.push(dot::RenderOption::DarkTheme);
     }
     dot::render_opts(&graphviz, &mut buf, &render_opts)?;
@@ -334,14 +333,11 @@ struct RustcMirAttrs {
 
 impl RustcMirAttrs {
     fn parse(tcx: TyCtxt<'_>, def_id: DefId) -> Result<Self, ()> {
-        let attrs = tcx.get_attrs(def_id);
-
         let mut result = Ok(());
         let mut ret = RustcMirAttrs::default();
 
-        let rustc_mir_attrs = attrs
-            .iter()
-            .filter(|attr| attr.has_name(sym::rustc_mir))
+        let rustc_mir_attrs = tcx
+            .get_attrs(def_id, sym::rustc_mir)
             .flat_map(|attr| attr.meta_item_list().into_iter().flat_map(|v| v.into_iter()));
 
         for attr in rustc_mir_attrs {

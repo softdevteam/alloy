@@ -1,6 +1,5 @@
 use crate::ty::{self, TyCtxt};
 use rustc_data_structures::profiling::SelfProfilerRef;
-use rustc_data_structures::sync::Lock;
 use rustc_query_system::ich::StableHashingContext;
 use rustc_session::Session;
 
@@ -13,16 +12,18 @@ pub use rustc_query_system::dep_graph::{
 };
 
 pub use dep_node::{label_strs, DepKind, DepKindStruct, DepNode, DepNodeExt};
-crate use dep_node::{make_compile_codegen_unit, make_compile_mono_item};
+pub(crate) use dep_node::{make_compile_codegen_unit, make_compile_mono_item};
 
 pub type DepGraph = rustc_query_system::dep_graph::DepGraph<DepKind>;
 pub type TaskDeps = rustc_query_system::dep_graph::TaskDeps<DepKind>;
+pub type TaskDepsRef<'a> = rustc_query_system::dep_graph::TaskDepsRef<'a, DepKind>;
 pub type DepGraphQuery = rustc_query_system::dep_graph::DepGraphQuery<DepKind>;
 pub type SerializedDepGraph = rustc_query_system::dep_graph::SerializedDepGraph<DepKind>;
 pub type EdgeFilter = rustc_query_system::dep_graph::debug::EdgeFilter<DepKind>;
 
 impl rustc_query_system::dep_graph::DepKind for DepKind {
     const NULL: Self = DepKind::Null;
+    const RED: Self = DepKind::Red;
 
     fn debug_node(node: &DepNode, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}(", node.kind)?;
@@ -45,7 +46,7 @@ impl rustc_query_system::dep_graph::DepKind for DepKind {
         write!(f, ")")
     }
 
-    fn with_deps<OP, R>(task_deps: Option<&Lock<TaskDeps>>, op: OP) -> R
+    fn with_deps<OP, R>(task_deps: TaskDepsRef<'_>, op: OP) -> R
     where
         OP: FnOnce() -> R,
     {
@@ -58,10 +59,10 @@ impl rustc_query_system::dep_graph::DepKind for DepKind {
 
     fn read_deps<OP>(op: OP)
     where
-        OP: for<'a> FnOnce(Option<&'a Lock<TaskDeps>>),
+        OP: for<'a> FnOnce(TaskDepsRef<'a>),
     {
         ty::tls::with_context_opt(|icx| {
-            let icx = if let Some(icx) = icx { icx } else { return };
+            let Some(icx) = icx else { return };
             op(icx.task_deps)
         })
     }
@@ -71,8 +72,8 @@ impl<'tcx> DepContext for TyCtxt<'tcx> {
     type DepKind = DepKind;
 
     #[inline]
-    fn create_stable_hashing_context(&self) -> StableHashingContext<'_> {
-        TyCtxt::create_stable_hashing_context(*self)
+    fn with_stable_hashing_context<R>(&self, f: impl FnOnce(StableHashingContext<'_>) -> R) -> R {
+        TyCtxt::with_stable_hashing_context(*self, f)
     }
 
     #[inline]

@@ -1,14 +1,15 @@
 use super::callee::DeferredCallResolution;
-use super::MaybeInProgressTables;
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
-use rustc_hir::def_id::{DefIdMap, LocalDefId};
+use rustc_hir::def_id::LocalDefId;
 use rustc_hir::HirIdMap;
 use rustc_infer::infer;
 use rustc_infer::infer::{InferCtxt, InferOk, TyCtxtInferExt};
 use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::visit::TypeVisitable;
 use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_span::def_id::LocalDefIdMap;
 use rustc_span::{self, Span};
 use rustc_trait_selection::infer::InferCtxtExt as _;
 use rustc_trait_selection::traits::{self, ObligationCause, TraitEngine, TraitEngineExt};
@@ -17,18 +18,18 @@ use std::cell::RefCell;
 use std::ops::Deref;
 
 /// Closures defined within the function. For example:
-///
-///     fn foo() {
-///         bar(move|| { ... })
-///     }
-///
+/// ```ignore (illustrative)
+/// fn foo() {
+///     bar(move|| { ... })
+/// }
+/// ```
 /// Here, the function `foo()` and the closure passed to
 /// `bar()` will each have their own `FnCtxt`, but they will
 /// share the inherited fields.
 pub struct Inherited<'a, 'tcx> {
     pub(super) infcx: InferCtxt<'a, 'tcx>,
 
-    pub(super) typeck_results: super::MaybeInProgressTables<'a, 'tcx>,
+    pub(super) typeck_results: &'a RefCell<ty::TypeckResults<'tcx>>,
 
     pub(super) locals: RefCell<HirIdMap<super::LocalTy<'tcx>>>,
 
@@ -46,9 +47,13 @@ pub struct Inherited<'a, 'tcx> {
     // decision. We keep these deferred resolutions grouped by the
     // def-id of the closure, so that once we decide, we can easily go
     // back and process them.
-    pub(super) deferred_call_resolutions: RefCell<DefIdMap<Vec<DeferredCallResolution<'tcx>>>>,
+    pub(super) deferred_call_resolutions: RefCell<LocalDefIdMap<Vec<DeferredCallResolution<'tcx>>>>,
 
     pub(super) deferred_cast_checks: RefCell<Vec<super::cast::CastCheck<'tcx>>>,
+
+    pub(super) deferred_transmute_checks: RefCell<Vec<(Ty<'tcx>, Ty<'tcx>, Span)>>,
+
+    pub(super) deferred_asm_checks: RefCell<Vec<(&'tcx hir::InlineAsm<'tcx>, hir::HirId)>>,
 
     pub(super) deferred_generator_interiors:
         RefCell<Vec<(hir::BodyId, Ty<'tcx>, hir::GeneratorKind)>>,
@@ -68,9 +73,9 @@ impl<'a, 'tcx> Deref for Inherited<'a, 'tcx> {
     }
 }
 
-/// Helper type of a temporary returned by `Inherited::build(...)`.
-/// Necessary because we can't write the following bound:
-/// `F: for<'b, 'tcx> where 'tcx FnOnce(Inherited<'b, 'tcx>)`.
+/// A temporary returned by `Inherited::build(...)`. This is necessary
+/// for multiple `InferCtxt` to share the same `in_progress_typeck_results`
+/// without using `Rc` or something similar.
 pub struct InheritedBuilder<'tcx> {
     infcx: infer::InferCtxtBuilder<'tcx>,
     def_id: LocalDefId,
@@ -81,7 +86,10 @@ impl<'tcx> Inherited<'_, 'tcx> {
         let hir_owner = tcx.hir().local_def_id_to_hir_id(def_id).owner;
 
         InheritedBuilder {
-            infcx: tcx.infer_ctxt().with_fresh_in_progress_typeck_results(hir_owner),
+            infcx: tcx
+                .infer_ctxt()
+                .ignoring_regions()
+                .with_fresh_in_progress_typeck_results(hir_owner),
             def_id,
         }
     }
@@ -98,29 +106,30 @@ impl<'tcx> InheritedBuilder<'tcx> {
 }
 
 impl<'a, 'tcx> Inherited<'a, 'tcx> {
-    pub(super) fn new(infcx: InferCtxt<'a, 'tcx>, def_id: LocalDefId) -> Self {
+    fn new(infcx: InferCtxt<'a, 'tcx>, def_id: LocalDefId) -> Self {
         let tcx = infcx.tcx;
-        let item_id = tcx.hir().local_def_id_to_hir_id(def_id);
-        let body_id = tcx.hir().maybe_body_owned_by(item_id);
+        let body_id = tcx.hir().maybe_body_owned_by(def_id);
+        let typeck_results =
+            infcx.in_progress_typeck_results.expect("building `FnCtxt` without typeck results");
 
         Inherited {
-            typeck_results: MaybeInProgressTables {
-                maybe_typeck_results: infcx.in_progress_typeck_results,
-            },
+            typeck_results,
             infcx,
             fulfillment_cx: RefCell::new(<dyn TraitEngine<'_>>::new(tcx)),
             locals: RefCell::new(Default::default()),
             deferred_sized_obligations: RefCell::new(Vec::new()),
             deferred_call_resolutions: RefCell::new(Default::default()),
             deferred_cast_checks: RefCell::new(Vec::new()),
+            deferred_transmute_checks: RefCell::new(Vec::new()),
+            deferred_asm_checks: RefCell::new(Vec::new()),
             deferred_generator_interiors: RefCell::new(Vec::new()),
             diverging_type_vars: RefCell::new(Default::default()),
             body_id,
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub(super) fn register_predicate(&self, obligation: traits::PredicateObligation<'tcx>) {
-        debug!("register_predicate({:?})", obligation);
         if obligation.has_escaping_bound_vars() {
             span_bug!(obligation.cause.span, "escaping bound vars in predicate {:?}", obligation);
         }

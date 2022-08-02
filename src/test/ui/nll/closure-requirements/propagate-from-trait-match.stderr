@@ -1,15 +1,8 @@
 note: external requirements
   --> $DIR/propagate-from-trait-match.rs:32:36
    |
-LL |       establish_relationships(value, |value| {
-   |  ____________________________________^
-LL | |
-LL | |
-LL | |         // This function call requires that
-...  |
-LL | |         require(value);
-LL | |     });
-   | |_____^
+LL |     establish_relationships(value, |value| {
+   |                                    ^^^^^^^
    |
    = note: defining type: supply::<'_#1r, T>::{closure#0} with closure substs [
                i32,
@@ -44,9 +37,12 @@ LL | |         // This function call requires that
 ...  |
 LL | |         require(value);
 LL | |     });
-   | |_____^
+   | |_____^ ...so that the type `T` will meet its required lifetime bounds
    |
-   = help: consider adding an explicit lifetime bound `T: 'a`...
+help: consider adding an explicit lifetime bound...
+   |
+LL |     T: Trait<'a> + 'a,
+   |                  ++++
 
 error: aborting due to previous error
 

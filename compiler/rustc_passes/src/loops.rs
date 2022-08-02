@@ -3,9 +3,10 @@ use Context::*;
 use rustc_errors::{struct_span_err, Applicability};
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{Destination, Movability, Node};
 use rustc_middle::hir::map::Map;
+use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
@@ -32,7 +33,7 @@ struct CheckLoopVisitor<'a, 'hir> {
 fn check_mod_loops(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
     tcx.hir().visit_item_likes_in_module(
         module_def_id,
-        &mut CheckLoopVisitor { sess: &tcx.sess, hir_map: tcx.hir(), cx: Normal }.as_deep_visitor(),
+        &mut CheckLoopVisitor { sess: &tcx.sess, hir_map: tcx.hir(), cx: Normal },
     );
 }
 
@@ -41,10 +42,10 @@ pub(crate) fn provide(providers: &mut Providers) {
 }
 
 impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
-    type Map = Map<'hir>;
+    type NestedFilter = nested_filter::OnlyBodies;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::OnlyBodies(self.hir_map)
+    fn nested_visit_map(&mut self) -> Self::Map {
+        self.hir_map
     }
 
     fn visit_anon_const(&mut self, c: &'hir hir::AnonConst) {
@@ -56,14 +57,20 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
             hir::ExprKind::Loop(ref b, _, source, _) => {
                 self.with_context(Loop(source), |v| v.visit_block(&b));
             }
-            hir::ExprKind::Closure(_, ref function_decl, b, span, movability) => {
+            hir::ExprKind::Closure(&hir::Closure {
+                ref fn_decl,
+                body,
+                fn_decl_span,
+                movability,
+                ..
+            }) => {
                 let cx = if let Some(Movability::Static) = movability {
-                    AsyncClosure(span)
+                    AsyncClosure(fn_decl_span)
                 } else {
-                    Closure(span)
+                    Closure(fn_decl_span)
                 };
-                self.visit_fn_decl(&function_decl);
-                self.with_context(cx, |v| v.visit_nested_body(b));
+                self.visit_fn_decl(&fn_decl);
+                self.with_context(cx, |v| v.visit_nested_body(body));
             }
             hir::ExprKind::Block(ref b, Some(_label)) => {
                 self.with_context(LabeledBlock, |v| v.visit_block(&b));
@@ -165,7 +172,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
                                             break_expr.span,
                                             "alternatively, you might have meant to use the \
                                              available loop label",
-                                            label.ident.to_string(),
+                                            label.ident,
                                             Applicability::MaybeIncorrect,
                                         );
                                     }

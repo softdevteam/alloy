@@ -9,16 +9,16 @@ use core::ops::Range;
 use pulldown_cmark::{Event, Parser, Tag};
 use regex::Regex;
 use rustc_errors::Applicability;
-use std::lazy::SyncLazy;
 use std::mem;
+use std::sync::LazyLock;
 
-crate const CHECK_BARE_URLS: Pass = Pass {
+pub(crate) const CHECK_BARE_URLS: Pass = Pass {
     name: "check-bare-urls",
     run: check_bare_urls,
     description: "detects URLs that are not hyperlinks",
 };
 
-static URL_REGEX: SyncLazy<Regex> = SyncLazy::new(|| {
+static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"https?://",                          // url scheme
         r"([-a-zA-Z0-9@:%._\+~#=]{2,256}\.)+", // one or more subdomains
@@ -54,19 +54,17 @@ impl<'a, 'tcx> BareUrlsLinter<'a, 'tcx> {
     }
 }
 
-crate fn check_bare_urls(krate: Crate, cx: &mut DocContext<'_>) -> Crate {
+pub(crate) fn check_bare_urls(krate: Crate, cx: &mut DocContext<'_>) -> Crate {
     BareUrlsLinter { cx }.visit_crate(&krate);
     krate
 }
 
 impl<'a, 'tcx> DocVisitor for BareUrlsLinter<'a, 'tcx> {
     fn visit_item(&mut self, item: &Item) {
-        let hir_id = match DocContext::as_local_hir_id(self.cx.tcx, item.def_id) {
-            Some(hir_id) => hir_id,
-            None => {
-                // If non-local, no need to check anything.
-                return;
-            }
+        let Some(hir_id) = DocContext::as_local_hir_id(self.cx.tcx, item.item_id)
+        else {
+            // If non-local, no need to check anything.
+            return;
         };
         let dox = item.attrs.collapsed_doc_value().unwrap_or_default();
         if !dox.is_empty() {
@@ -82,7 +80,7 @@ impl<'a, 'tcx> DocVisitor for BareUrlsLinter<'a, 'tcx> {
                             format!("<{}>", url),
                             Applicability::MachineApplicable,
                         )
-                        .emit()
+                        .emit();
                 });
             };
 

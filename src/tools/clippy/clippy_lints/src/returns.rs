@@ -1,17 +1,15 @@
-use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::source::snippet_opt;
+use clippy_utils::diagnostics::span_lint_hir_and_then;
+use clippy_utils::source::{snippet_opt, snippet_with_context};
 use clippy_utils::{fn_def_id, path_to_local_id};
 use if_chain::if_chain;
 use rustc_ast::ast::Attribute;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_expr, FnKind, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{walk_expr, FnKind, Visitor};
 use rustc_hir::{Block, Body, Expr, ExprKind, FnDecl, HirId, MatchSource, PatKind, StmtKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::Span;
 use rustc_span::sym;
 
@@ -95,9 +93,10 @@ impl<'tcx> LateLintPass<'tcx> for Return {
             if !in_external_macro(cx.sess(), retexpr.span);
             if !local.span.from_expansion();
             then {
-                span_lint_and_then(
+                span_lint_hir_and_then(
                     cx,
                     LET_AND_RETURN,
+                    retexpr.hir_id,
                     retexpr.span,
                     "returning the result of a `let` binding from a block",
                     |err| {
@@ -186,6 +185,7 @@ fn check_final_expr<'tcx>(
                 if !borrows {
                     emit_return_lint(
                         cx,
+                        inner.map_or(expr.hir_id, |inner| inner.hir_id),
                         span.expect("`else return` is not possible"),
                         inner.as_ref().map(|i| i.span),
                         replacement,
@@ -202,9 +202,7 @@ fn check_final_expr<'tcx>(
                 check_block_return(cx, ifblock);
             }
             if let Some(else_clause) = else_clause_opt {
-                if expr.span.desugaring_kind() != Some(DesugaringKind::LetElse) {
-                    check_final_expr(cx, else_clause, None, RetReplacement::Empty);
-                }
+                check_final_expr(cx, else_clause, None, RetReplacement::Empty);
             }
         },
         // a match expr, check all arms
@@ -221,54 +219,81 @@ fn check_final_expr<'tcx>(
     }
 }
 
-fn emit_return_lint(cx: &LateContext<'_>, ret_span: Span, inner_span: Option<Span>, replacement: RetReplacement) {
+fn emit_return_lint(
+    cx: &LateContext<'_>,
+    emission_place: HirId,
+    ret_span: Span,
+    inner_span: Option<Span>,
+    replacement: RetReplacement,
+) {
     if ret_span.from_expansion() {
         return;
     }
     match inner_span {
         Some(inner_span) => {
-            if in_external_macro(cx.tcx.sess, inner_span) || inner_span.from_expansion() {
-                return;
-            }
-
-            span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded `return` statement", |diag| {
-                if let Some(snippet) = snippet_opt(cx, inner_span) {
-                    diag.span_suggestion(ret_span, "remove `return`", snippet, Applicability::MachineApplicable);
-                }
-            });
+            let mut applicability = Applicability::MachineApplicable;
+            span_lint_hir_and_then(
+                cx,
+                NEEDLESS_RETURN,
+                emission_place,
+                ret_span,
+                "unneeded `return` statement",
+                |diag| {
+                    let (snippet, _) = snippet_with_context(cx, inner_span, ret_span.ctxt(), "..", &mut applicability);
+                    diag.span_suggestion(ret_span, "remove `return`", snippet, applicability);
+                },
+            );
         },
         None => match replacement {
             RetReplacement::Empty => {
-                span_lint_and_sugg(
+                span_lint_hir_and_then(
                     cx,
                     NEEDLESS_RETURN,
+                    emission_place,
                     ret_span,
                     "unneeded `return` statement",
-                    "remove `return`",
-                    String::new(),
-                    Applicability::MachineApplicable,
+                    |diag| {
+                        diag.span_suggestion(
+                            ret_span,
+                            "remove `return`",
+                            String::new(),
+                            Applicability::MachineApplicable,
+                        );
+                    },
                 );
             },
             RetReplacement::Block => {
-                span_lint_and_sugg(
+                span_lint_hir_and_then(
                     cx,
                     NEEDLESS_RETURN,
+                    emission_place,
                     ret_span,
                     "unneeded `return` statement",
-                    "replace `return` with an empty block",
-                    "{}".to_string(),
-                    Applicability::MachineApplicable,
+                    |diag| {
+                        diag.span_suggestion(
+                            ret_span,
+                            "replace `return` with an empty block",
+                            "{}".to_string(),
+                            Applicability::MachineApplicable,
+                        );
+                    },
                 );
             },
             RetReplacement::Unit => {
-                span_lint_and_sugg(
+                span_lint_hir_and_then(
                     cx,
                     NEEDLESS_RETURN,
+                    emission_place,
                     ret_span,
                     "unneeded `return` statement",
-                    "replace `return` with a unit value",
-                    "()".to_string(),
-                    Applicability::MachineApplicable,
+                    |diag| {
+                        diag.span_suggestion(
+                            ret_span,
+                            "replace `return` with a unit value",
+                            "()".to_string(),
+                            Applicability::MachineApplicable,
+                        );
+                    },
                 );
             },
         },
@@ -287,10 +312,8 @@ struct BorrowVisitor<'a, 'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for BorrowVisitor<'_, 'tcx> {
-    type Map = Map<'tcx>;
-
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
-        if self.borrows {
+        if self.borrows || expr.span.from_expansion() {
             return;
         }
 
@@ -301,14 +324,10 @@ impl<'tcx> Visitor<'tcx> for BorrowVisitor<'_, 'tcx> {
                 .fn_sig(def_id)
                 .output()
                 .skip_binder()
-                .walk(self.cx.tcx)
+                .walk()
                 .any(|arg| matches!(arg.unpack(), GenericArgKind::Lifetime(_)));
         }
 
         walk_expr(self, expr);
-    }
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
     }
 }

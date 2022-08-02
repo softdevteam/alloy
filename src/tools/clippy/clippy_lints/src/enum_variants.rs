@@ -32,7 +32,7 @@ declare_clippy_lint! {
     ///     BattenbergCake,
     /// }
     /// ```
-    /// Could be written as:
+    /// Use instead:
     /// ```rust
     /// enum Cake {
     ///     BlackForest,
@@ -60,7 +60,8 @@ declare_clippy_lint! {
     ///     struct BlackForestCake;
     /// }
     /// ```
-    /// Could be written as:
+    ///
+    /// Use instead:
     /// ```rust
     /// mod cake {
     ///     struct BlackForest;
@@ -172,6 +173,9 @@ fn check_variant(cx: &LateContext<'_>, threshold: u64, def: &EnumDef<'_>, item_n
         let name = var.ident.name.as_str();
 
         let variant_split = camel_case_split(name);
+        if variant_split.len() == 1 {
+            return;
+        }
 
         pre = pre
             .iter()
@@ -186,7 +190,7 @@ fn check_variant(cx: &LateContext<'_>, threshold: u64, def: &EnumDef<'_>, item_n
             .map(|e| *e.0)
             .collect();
     }
-    let (what, value) = match (pre.is_empty(), post.is_empty()) {
+    let (what, value) = match (have_no_extra_prefix(&pre), post.is_empty()) {
         (true, true) => return,
         (false, _) => ("pre", pre.join("")),
         (true, false) => {
@@ -206,6 +210,11 @@ fn check_variant(cx: &LateContext<'_>, threshold: u64, def: &EnumDef<'_>, item_n
             what
         ),
     );
+}
+
+#[must_use]
+fn have_no_extra_prefix(prefixes: &[&str]) -> bool {
+    prefixes.iter().all(|p| p == &"" || p == &"_")
 }
 
 #[must_use]
@@ -237,7 +246,7 @@ impl LateLintPass<'_> for EnumVariantNames {
         assert!(last.is_some());
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(clippy::similar_names)]
     fn check_item(&mut self, cx: &LateContext<'_>, item: &Item<'_>) {
         let item_name = item.ident.name.as_str();
         let item_camel = to_camel_case(item_name);
@@ -257,7 +266,7 @@ impl LateLintPass<'_> for EnumVariantNames {
                     }
                     // The `module_name_repetitions` lint should only trigger if the item has the module in its
                     // name. Having the same name is accepted.
-                    if item.vis.node.is_pub() && item_camel.len() > mod_camel.len() {
+                    if cx.tcx.visibility(item.def_id).is_public() && item_camel.len() > mod_camel.len() {
                         let matching = count_match_start(mod_camel, &item_camel);
                         let rmatching = count_match_end(mod_camel, &item_camel);
                         let nchars = mod_camel.chars().count();

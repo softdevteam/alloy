@@ -1,16 +1,15 @@
-use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::diagnostics::span_lint_hir_and_then;
 use clippy_utils::numeric_literal;
 use clippy_utils::source::snippet_opt;
 use if_chain::if_chain;
 use rustc_ast::ast::{LitFloatType, LitIntType, LitKind};
 use rustc_errors::Applicability;
 use rustc_hir::{
-    intravisit::{walk_expr, walk_stmt, NestedVisitorMap, Visitor},
+    intravisit::{walk_expr, walk_stmt, Visitor},
     Body, Expr, ExprKind, HirId, Lit, Stmt, StmtKind,
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::{
-    hir::map::Map,
     lint::in_external_macro,
     ty::{self, FloatTy, IntTy, PolyFnSig, Ty},
 };
@@ -54,7 +53,7 @@ declare_clippy_lint! {
 
 declare_lint_pass!(DefaultNumericFallback => [DEFAULT_NUMERIC_FALLBACK]);
 
-impl LateLintPass<'_> for DefaultNumericFallback {
+impl<'tcx> LateLintPass<'tcx> for DefaultNumericFallback {
     fn check_body(&mut self, cx: &LateContext<'tcx>, body: &'tcx Body<'_>) {
         let mut visitor = NumericFallbackVisitor::new(cx);
         visitor.visit_body(body);
@@ -77,7 +76,7 @@ impl<'a, 'tcx> NumericFallbackVisitor<'a, 'tcx> {
     }
 
     /// Check whether a passed literal has potential to cause fallback or not.
-    fn check_lit(&self, lit: &Lit, lit_ty: Ty<'tcx>) {
+    fn check_lit(&self, lit: &Lit, lit_ty: Ty<'tcx>, emit_hir_id: HirId) {
         if_chain! {
                 if !in_external_macro(self.cx.sess(), lit.span);
                 if let Some(ty_bound) = self.ty_bounds.last();
@@ -102,14 +101,15 @@ impl<'a, 'tcx> NumericFallbackVisitor<'a, 'tcx> {
                         }
                     };
                     let sugg = numeric_literal::format(&src, Some(suffix), is_float);
-                    span_lint_and_sugg(
+                    span_lint_hir_and_then(
                         self.cx,
                         DEFAULT_NUMERIC_FALLBACK,
+                        emit_hir_id,
                         lit.span,
                         "default numeric fallback might occur",
-                        "consider adding suffix",
-                        sugg,
-                        Applicability::MaybeIncorrect,
+                        |diag| {
+                            diag.span_suggestion(lit.span, "consider adding suffix", sugg, Applicability::MaybeIncorrect);
+                        }
                     );
                 }
         }
@@ -117,16 +117,13 @@ impl<'a, 'tcx> NumericFallbackVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
-    type Map = Map<'tcx>;
-
-    #[allow(clippy::too_many_lines)]
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         match &expr.kind {
             ExprKind::Call(func, args) => {
                 if let Some(fn_sig) = fn_sig_opt(self.cx, func.hir_id) {
                     for (expr, bound) in iter::zip(*args, fn_sig.skip_binder().inputs()) {
                         // Push found arg type, then visit arg.
-                        self.ty_bounds.push(TyBound::Ty(bound));
+                        self.ty_bounds.push(TyBound::Ty(*bound));
                         self.visit_expr(expr);
                         self.ty_bounds.pop();
                     }
@@ -134,11 +131,11 @@ impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
                 }
             },
 
-            ExprKind::MethodCall(_, _, args, _) => {
+            ExprKind::MethodCall(_, args, _) => {
                 if let Some(def_id) = self.cx.typeck_results().type_dependent_def_id(expr.hir_id) {
                     let fn_sig = self.cx.tcx.fn_sig(def_id).skip_binder();
                     for (expr, bound) in iter::zip(*args, fn_sig.inputs()) {
-                        self.ty_bounds.push(TyBound::Ty(bound));
+                        self.ty_bounds.push(TyBound::Ty(*bound));
                         self.visit_expr(expr);
                         self.ty_bounds.pop();
                     }
@@ -151,7 +148,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
                 if_chain! {
                     if let Some(adt_def) = ty.ty_adt_def();
                     if adt_def.is_struct();
-                    if let Some(variant) = adt_def.variants.iter().next();
+                    if let Some(variant) = adt_def.variants().iter().next();
                     then {
                         let fields_def = &variant.fields;
 
@@ -161,7 +158,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
                                 fields_def
                                     .iter()
                                     .find_map(|f_def| {
-                                        if f_def.ident == field.ident
+                                        if f_def.ident(self.cx.tcx) == field.ident
                                             { Some(self.cx.tcx.type_of(f_def.did)) }
                                         else { None }
                                     });
@@ -183,7 +180,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
 
             ExprKind::Lit(lit) => {
                 let ty = self.cx.typeck_results().expr_ty(expr);
-                self.check_lit(lit, ty);
+                self.check_lit(lit, ty, expr.hir_id);
                 return;
             },
 
@@ -209,15 +206,11 @@ impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
         walk_stmt(self, stmt);
         self.ty_bounds.pop();
     }
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
 }
 
 fn fn_sig_opt<'tcx>(cx: &LateContext<'tcx>, hir_id: HirId) -> Option<PolyFnSig<'tcx>> {
     let node_ty = cx.typeck_results().node_type_opt(hir_id)?;
-    // We can't use `TyS::fn_sig` because it automatically performs substs, this may result in FNs.
+    // We can't use `Ty::fn_sig` because it automatically performs substs, this may result in FNs.
     match node_ty.kind() {
         ty::FnDef(def_id, _) => Some(cx.tcx.fn_sig(*def_id)),
         ty::FnPtr(fn_sig) => Some(*fn_sig),

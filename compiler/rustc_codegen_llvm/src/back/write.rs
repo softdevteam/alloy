@@ -56,28 +56,24 @@ pub fn write_output_file<'ll>(
     file_type: llvm::FileType,
     self_profiler_ref: &SelfProfilerRef,
 ) -> Result<(), FatalError> {
+    debug!("write_output_file output={:?} dwo_output={:?}", output, dwo_output);
     unsafe {
         let output_c = path_to_c_string(output);
-        let result = if let Some(dwo_output) = dwo_output {
-            let dwo_output_c = path_to_c_string(dwo_output);
-            llvm::LLVMRustWriteOutputFile(
-                target,
-                pm,
-                m,
-                output_c.as_ptr(),
-                dwo_output_c.as_ptr(),
-                file_type,
-            )
+        let dwo_output_c;
+        let dwo_output_ptr = if let Some(dwo_output) = dwo_output {
+            dwo_output_c = path_to_c_string(dwo_output);
+            dwo_output_c.as_ptr()
         } else {
-            llvm::LLVMRustWriteOutputFile(
-                target,
-                pm,
-                m,
-                output_c.as_ptr(),
-                std::ptr::null(),
-                file_type,
-            )
+            std::ptr::null()
         };
+        let result = llvm::LLVMRustWriteOutputFile(
+            target,
+            pm,
+            m,
+            output_c.as_ptr(),
+            dwo_output_ptr,
+            file_type,
+        );
 
         // Record artifact sizes for self-profiling
         if result == llvm::LLVMRustResult::Success {
@@ -100,7 +96,10 @@ pub fn write_output_file<'ll>(
 
 pub fn create_informational_target_machine(sess: &Session) -> &'static mut llvm::TargetMachine {
     let config = TargetMachineFactoryConfig { split_dwarf_file: None };
-    target_machine_factory(sess, config::OptLevel::No)(config)
+    // Can't use query system here quite yet because this function is invoked before the query
+    // system/tcx is set up.
+    let features = llvm_util::global_llvm_features(sess, false);
+    target_machine_factory(sess, config::OptLevel::No, &features)(config)
         .unwrap_or_else(|err| llvm_err(sess.diagnostic(), &err).raise())
 }
 
@@ -108,15 +107,19 @@ pub fn create_target_machine(tcx: TyCtxt<'_>, mod_name: &str) -> &'static mut ll
     let split_dwarf_file = if tcx.sess.target_can_use_split_dwarf() {
         tcx.output_filenames(()).split_dwarf_path(
             tcx.sess.split_debuginfo(),
-            tcx.sess.opts.debugging_opts.split_dwarf_kind,
+            tcx.sess.opts.unstable_opts.split_dwarf_kind,
             Some(mod_name),
         )
     } else {
         None
     };
     let config = TargetMachineFactoryConfig { split_dwarf_file };
-    target_machine_factory(tcx.sess, tcx.backend_optimization_level(()))(config)
-        .unwrap_or_else(|err| llvm_err(tcx.sess.diagnostic(), &err).raise())
+    target_machine_factory(
+        &tcx.sess,
+        tcx.backend_optimization_level(()),
+        tcx.global_backend_features(()),
+    )(config)
+    .unwrap_or_else(|err| llvm_err(tcx.sess.diagnostic(), &err).raise())
 }
 
 pub fn to_llvm_opt_settings(
@@ -171,6 +174,7 @@ pub(crate) fn to_llvm_code_model(code_model: Option<CodeModel>) -> llvm::CodeMod
 pub fn target_machine_factory(
     sess: &Session,
     optlvl: config::OptLevel,
+    target_features: &[String],
 ) -> TargetMachineFactoryFn<LlvmCodegenBackend> {
     let reloc_model = to_llvm_relocation_model(sess.relocation_model());
 
@@ -178,9 +182,9 @@ pub fn target_machine_factory(
     let use_softfp = sess.opts.cg.soft_float;
 
     let ffunction_sections =
-        sess.opts.debugging_opts.function_sections.unwrap_or(sess.target.function_sections);
+        sess.opts.unstable_opts.function_sections.unwrap_or(sess.target.function_sections);
     let fdata_sections = ffunction_sections;
-    let funique_section_names = !sess.opts.debugging_opts.no_unique_section_names;
+    let funique_section_names = !sess.opts.unstable_opts.no_unique_section_names;
 
     let code_model = to_llvm_code_model(sess.code_model());
 
@@ -195,19 +199,18 @@ pub fn target_machine_factory(
 
     let triple = SmallCStr::new(&sess.target.llvm_target);
     let cpu = SmallCStr::new(llvm_util::target_cpu(sess));
-    let features = llvm_util::llvm_global_features(sess).join(",");
-    let features = CString::new(features).unwrap();
+    let features = CString::new(target_features.join(",")).unwrap();
     let abi = SmallCStr::new(&sess.target.llvm_abiname);
     let trap_unreachable =
-        sess.opts.debugging_opts.trap_unreachable.unwrap_or(sess.target.trap_unreachable);
-    let emit_stack_size_section = sess.opts.debugging_opts.emit_stack_sizes;
+        sess.opts.unstable_opts.trap_unreachable.unwrap_or(sess.target.trap_unreachable);
+    let emit_stack_size_section = sess.opts.unstable_opts.emit_stack_sizes;
 
     let asm_comments = sess.asm_comments();
     let relax_elf_relocations =
-        sess.opts.debugging_opts.relax_elf_relocations.unwrap_or(sess.target.relax_elf_relocations);
+        sess.opts.unstable_opts.relax_elf_relocations.unwrap_or(sess.target.relax_elf_relocations);
 
     let use_init_array =
-        !sess.opts.debugging_opts.use_ctors_section.unwrap_or(sess.target.use_ctors_section);
+        !sess.opts.unstable_opts.use_ctors_section.unwrap_or(sess.target.use_ctors_section);
 
     let path_mapping = sess.source_map().path_mapping().clone();
 
@@ -333,7 +336,7 @@ fn report_inline_asm(
     }
     let level = match level {
         llvm::DiagnosticLevel::Error => Level::Error { lint: false },
-        llvm::DiagnosticLevel::Warning => Level::Warning,
+        llvm::DiagnosticLevel::Warning => Level::Warning(None),
         llvm::DiagnosticLevel::Note | llvm::DiagnosticLevel::Remark => Level::Note,
     };
     cgcx.diag_emitter.inline_asm_error(cookie as u32, msg, level, source);
@@ -460,7 +463,7 @@ pub(crate) unsafe fn optimize_with_new_llvm_pass_manager(
     let llvm_selfprofiler =
         llvm_profiler.as_mut().map(|s| s as *mut _ as *mut c_void).unwrap_or(std::ptr::null_mut());
 
-    let extra_passes = config.passes.join(",");
+    let extra_passes = if !is_lto { config.passes.join(",") } else { "".to_string() };
 
     let llvm_plugins = config.llvm_plugins.join(",");
 
@@ -515,6 +518,12 @@ pub(crate) unsafe fn optimize(
 
     let module_name = module.name.clone();
     let module_name = Some(&module_name[..]);
+
+    if let Some(false) = config.new_llvm_pass_manager && llvm_util::get_version() >= (15, 0, 0) {
+        diag_handler.warn(
+            "ignoring `-Z new-llvm-pass-manager=no`, which is no longer supported with LLVM 15",
+        );
+    }
 
     if config.emit_no_opt_bc {
         let out = cgcx.output_filenames.temp_path_ext("no-opt.bc", module_name);
@@ -621,8 +630,8 @@ pub(crate) unsafe fn optimize(
                         extra_passes.as_ptr(),
                         extra_passes.len() as size_t,
                     );
-                    llvm::LLVMPassManagerBuilderPopulateFunctionPassManager(b, fpm);
-                    llvm::LLVMPassManagerBuilderPopulateModulePassManager(b, mpm);
+                    llvm::LLVMRustPassManagerBuilderPopulateFunctionPassManager(b, fpm);
+                    llvm::LLVMRustPassManagerBuilderPopulateModulePassManager(b, mpm);
                 });
 
                 have_name_anon_globals_pass = have_name_anon_globals_pass || prepare_for_thin_lto;
@@ -714,8 +723,7 @@ pub(crate) fn link(
 
     let mut linker = Linker::new(first.module_llvm.llmod());
     for module in elements {
-        let _timer =
-            cgcx.prof.generic_activity_with_arg("LLVM_link_module", format!("{:?}", module.name));
+        let _timer = cgcx.prof.generic_activity_with_arg("LLVM_link_module", &*module.name);
         let buffer = ModuleBuffer::new(module.module_llvm.llmod());
         linker.add(buffer.data()).map_err(|()| {
             let msg = format!("failed to serialize module {:?}", module.name);
@@ -782,7 +790,7 @@ pub(crate) unsafe fn codegen(
             let _timer = cgcx
                 .prof
                 .generic_activity_with_arg("LLVM_module_codegen_make_bitcode", &*module.name);
-            let thin = ThinBuffer::new(llmod);
+            let thin = ThinBuffer::new(llmod, config.emit_thin_lto);
             let data = thin.data();
 
             if let Some(bitcode_filename) = bc_out.file_name() {
@@ -826,20 +834,14 @@ pub(crate) unsafe fn codegen(
                 let input =
                     unsafe { slice::from_raw_parts(input_ptr as *const u8, input_len as usize) };
 
-                let input = match str::from_utf8(input) {
-                    Ok(s) => s,
-                    Err(_) => return 0,
-                };
+                let Ok(input) = str::from_utf8(input) else { return 0 };
 
                 let output = unsafe {
                     slice::from_raw_parts_mut(output_ptr as *mut u8, output_len as usize)
                 };
                 let mut cursor = io::Cursor::new(output);
 
-                let demangled = match rustc_demangle::try_demangle(input) {
-                    Ok(d) => d,
-                    Err(_) => return 0,
-                };
+                let Ok(demangled) = rustc_demangle::try_demangle(input) else { return 0 };
 
                 if write!(cursor, "{:#}", demangled).is_err() {
                     // Possible only if provided buffer is not big enough
@@ -1034,7 +1036,8 @@ unsafe fn embed_bitcode(
     // reason (see issue #90326 for historical background).
     let is_apple = cgcx.opts.target_triple.triple().contains("-ios")
         || cgcx.opts.target_triple.triple().contains("-darwin")
-        || cgcx.opts.target_triple.triple().contains("-tvos");
+        || cgcx.opts.target_triple.triple().contains("-tvos")
+        || cgcx.opts.target_triple.triple().contains("-watchos");
     if is_apple
         || cgcx.opts.target_triple.triple().starts_with("wasm")
         || cgcx.opts.target_triple.triple().starts_with("asmjs")
@@ -1085,7 +1088,7 @@ pub unsafe fn with_llvm_pmb(
     // Create the PassManagerBuilder for LLVM. We configure it with
     // reasonable defaults and prepare it to actually populate the pass
     // manager.
-    let builder = llvm::LLVMPassManagerBuilderCreate();
+    let builder = llvm::LLVMRustPassManagerBuilderCreate();
     let opt_size = config.opt_size.map_or(llvm::CodeGenOptSizeNone, |x| to_llvm_opt_settings(x).1);
     let inline_threshold = config.inline_threshold;
     let pgo_gen_path = get_pgo_gen_path(config);
@@ -1102,13 +1105,8 @@ pub unsafe fn with_llvm_pmb(
         pgo_gen_path.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
         pgo_use_path.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
         pgo_sample_use_path.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
+        opt_size as c_int,
     );
-
-    llvm::LLVMPassManagerBuilderSetSizeLevel(builder, opt_size as u32);
-
-    if opt_size != llvm::CodeGenOptSizeNone {
-        llvm::LLVMPassManagerBuilderSetDisableUnrollLoops(builder, 1);
-    }
 
     llvm::LLVMRustAddBuilderLibraryInfo(builder, llmod, config.no_builtins);
 
@@ -1118,16 +1116,16 @@ pub unsafe fn with_llvm_pmb(
     // thresholds copied from clang.
     match (opt_level, opt_size, inline_threshold) {
         (.., Some(t)) => {
-            llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, t);
+            llvm::LLVMRustPassManagerBuilderUseInlinerWithThreshold(builder, t);
         }
         (llvm::CodeGenOptLevel::Aggressive, ..) => {
-            llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 275);
+            llvm::LLVMRustPassManagerBuilderUseInlinerWithThreshold(builder, 275);
         }
         (_, llvm::CodeGenOptSizeDefault, _) => {
-            llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 75);
+            llvm::LLVMRustPassManagerBuilderUseInlinerWithThreshold(builder, 75);
         }
         (_, llvm::CodeGenOptSizeAggressive, _) => {
-            llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 25);
+            llvm::LLVMRustPassManagerBuilderUseInlinerWithThreshold(builder, 25);
         }
         (llvm::CodeGenOptLevel::None, ..) => {
             llvm::LLVMRustAddAlwaysInlinePass(builder, config.emit_lifetime_markers);
@@ -1136,12 +1134,12 @@ pub unsafe fn with_llvm_pmb(
             llvm::LLVMRustAddAlwaysInlinePass(builder, config.emit_lifetime_markers);
         }
         (llvm::CodeGenOptLevel::Default, ..) => {
-            llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 225);
+            llvm::LLVMRustPassManagerBuilderUseInlinerWithThreshold(builder, 225);
         }
     }
 
     f(builder);
-    llvm::LLVMPassManagerBuilderDispose(builder);
+    llvm::LLVMRustPassManagerBuilderDispose(builder);
 }
 
 // Create a `__imp_<symbol> = &symbol` global for every public static `symbol`.

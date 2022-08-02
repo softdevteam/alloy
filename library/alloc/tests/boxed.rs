@@ -177,7 +177,7 @@ fn const_box() {
         *boxed = 42;
         assert!(*boxed == 42);
 
-        *boxed
+        *Box::leak(boxed)
     };
 
     assert!(VALUE == 42);

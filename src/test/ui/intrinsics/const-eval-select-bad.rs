@@ -1,12 +1,13 @@
 #![feature(const_eval_select)]
+#![feature(core_intrinsics)]
 
 use std::intrinsics::const_eval_select;
 
 const fn not_fn_items() {
     const_eval_select((), || {}, || {});
-    //~^ ERROR expected a `FnOnce<()>` closure
+    //~^ ERROR the trait bound
     const_eval_select((), 42, 0xDEADBEEF);
-    //~^ ERROR expected a `FnOnce<()>` closure
+    //~^ ERROR the trait bound
     //~| ERROR expected a `FnOnce<()>` closure
 }
 

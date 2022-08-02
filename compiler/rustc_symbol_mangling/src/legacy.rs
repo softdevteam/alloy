@@ -1,12 +1,10 @@
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::def_id::CrateNum;
 use rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
-use rustc_middle::mir::interpret::{ConstValue, Scalar};
 use rustc_middle::ty::print::{PrettyPrinter, Print, Printer};
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
-use rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeVisitable};
 use rustc_middle::util::common::record_time;
-use rustc_query_system::ich::NodeIdHashingMode;
 
 use tracing::debug;
 
@@ -31,6 +29,7 @@ pub(super) fn mangle<'tcx>(
         match key.disambiguated_data.data {
             DefPathData::TypeNs(_) | DefPathData::ValueNs(_) => {
                 instance_ty = tcx.type_of(ty_def_id);
+                debug!(?instance_ty);
                 break;
             }
             _ => {
@@ -68,7 +67,7 @@ pub(super) fn mangle<'tcx>(
         )
         .unwrap();
 
-    if let ty::InstanceDef::VtableShim(..) = instance.def {
+    if let ty::InstanceDef::VTableShim(..) = instance.def {
         let _ = printer.write_str("{{vtable-shim}}");
     }
 
@@ -97,21 +96,20 @@ fn get_symbol_hash<'tcx>(
     let substs = instance.substs;
     debug!("get_symbol_hash(def_id={:?}, parameters={:?})", def_id, substs);
 
-    let mut hasher = StableHasher::new();
-    let mut hcx = tcx.create_stable_hashing_context();
+    tcx.with_stable_hashing_context(|mut hcx| {
+        let mut hasher = StableHasher::new();
 
-    record_time(&tcx.sess.perf_stats.symbol_hash_time, || {
-        // the main symbol name is not necessarily unique; hash in the
-        // compiler's internal def-path, guaranteeing each symbol has a
-        // truly unique path
-        tcx.def_path_hash(def_id).hash_stable(&mut hcx, &mut hasher);
+        record_time(&tcx.sess.perf_stats.symbol_hash_time, || {
+            // the main symbol name is not necessarily unique; hash in the
+            // compiler's internal def-path, guaranteeing each symbol has a
+            // truly unique path
+            tcx.def_path_hash(def_id).hash_stable(&mut hcx, &mut hasher);
 
-        // Include the main item-type. Note that, in this case, the
-        // assertions about `definitely_needs_subst` may not hold, but this item-type
-        // ought to be the same for every reference anyway.
-        assert!(!item_type.has_erasable_regions(tcx));
-        hcx.while_hashing_spans(false, |hcx| {
-            hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
+            // Include the main item-type. Note that, in this case, the
+            // assertions about `needs_subst` may not hold, but this item-type
+            // ought to be the same for every reference anyway.
+            assert!(!item_type.has_erasable_regions());
+            hcx.while_hashing_spans(false, |hcx| {
                 item_type.hash_stable(hcx, &mut hasher);
 
                 // If this is a function, we hash the signature as well.
@@ -131,15 +129,15 @@ fn get_symbol_hash<'tcx>(
                 }
 
                 // We want to avoid accidental collision between different types of instances.
-                // Especially, `VtableShim`s and `ReifyShim`s may overlap with their original
+                // Especially, `VTableShim`s and `ReifyShim`s may overlap with their original
                 // instances without this.
                 discriminant(&instance.def).hash_stable(hcx, &mut hasher);
             });
         });
-    });
 
-    // 64 bits should be enough to avoid collisions.
-    hasher.finish::<u64>()
+        // 64 bits should be enough to avoid collisions.
+        hasher.finish::<u64>()
+    })
 }
 
 // Follow C++ namespace-mangling style, see
@@ -216,7 +214,7 @@ impl<'tcx> Printer<'tcx> for &mut SymbolPrinter<'tcx> {
         Ok(self)
     }
 
-    fn print_type(self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
+    fn print_type(mut self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
         match *ty.kind() {
             // Print all nominal types as paths (unlike `pretty_print_type`).
             ty::FnDef(def_id, substs)
@@ -224,6 +222,24 @@ impl<'tcx> Printer<'tcx> for &mut SymbolPrinter<'tcx> {
             | ty::Projection(ty::ProjectionTy { item_def_id: def_id, substs })
             | ty::Closure(def_id, substs)
             | ty::Generator(def_id, substs, _) => self.print_def_path(def_id, substs),
+
+            // The `pretty_print_type` formatting of array size depends on
+            // -Zverbose flag, so we cannot reuse it here.
+            ty::Array(ty, size) => {
+                self.write_str("[")?;
+                self = self.print_type(ty)?;
+                self.write_str("; ")?;
+                if let Some(size) = size.kind().try_to_bits(self.tcx().data_layout.pointer_size) {
+                    write!(self, "{}", size)?
+                } else if let ty::ConstKind::Param(param) = size.kind() {
+                    self = param.print(self)?
+                } else {
+                    self.write_str("_")?
+                }
+                self.write_str("]")?;
+                Ok(self)
+            }
+
             _ => self.pretty_print_type(ty),
         }
     }
@@ -243,14 +259,21 @@ impl<'tcx> Printer<'tcx> for &mut SymbolPrinter<'tcx> {
         Ok(self)
     }
 
-    fn print_const(self, ct: &'tcx ty::Const<'tcx>) -> Result<Self::Const, Self::Error> {
+    fn print_const(self, ct: ty::Const<'tcx>) -> Result<Self::Const, Self::Error> {
         // only print integers
-        if let ty::ConstKind::Value(ConstValue::Scalar(Scalar::Int { .. })) = ct.val {
-            if ct.ty.is_integral() {
-                return self.pretty_print_const(ct, true);
+        match (ct.kind(), ct.ty().kind()) {
+            (ty::ConstKind::Value(ty::ValTree::Leaf(scalar)), ty::Int(_) | ty::Uint(_)) => {
+                // The `pretty_print_const` formatting depends on -Zverbose
+                // flag, so we cannot reuse it here.
+                let signed = matches!(ct.ty().kind(), ty::Int(_));
+                write!(
+                    self,
+                    "{:#?}",
+                    ty::ConstInt::new(scalar, signed, ct.ty().is_ptr_sized_integral())
+                )?;
             }
+            _ => self.write_str("_")?,
         }
-        self.write_str("_")?;
         Ok(self)
     }
 
@@ -346,7 +369,7 @@ impl<'tcx> Printer<'tcx> for &mut SymbolPrinter<'tcx> {
 }
 
 impl<'tcx> PrettyPrinter<'tcx> for &mut SymbolPrinter<'tcx> {
-    fn region_should_not_be_omitted(&self, _region: ty::Region<'_>) -> bool {
+    fn should_print_region(&self, _region: ty::Region<'_>) -> bool {
         false
     }
     fn comma_sep<T>(mut self, mut elems: impl Iterator<Item = T>) -> Result<Self, Self::Error>

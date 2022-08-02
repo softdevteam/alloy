@@ -6,7 +6,7 @@ use rustc_ast::ast::{LitFloatType, LitKind};
 use rustc_ast::LitIntType;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
-use rustc_hir::{ArrayLen, ExprKind, FnRetTy, HirId, Lit, PatKind, QPath, StmtKind, TyKind};
+use rustc_hir::{ArrayLen, Closure, ExprKind, FnRetTy, HirId, Lit, PatKind, QPath, StmtKind, TyKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::{Ident, Symbol};
@@ -70,7 +70,7 @@ macro_rules! bind {
     };
 }
 
-/// Transforms the given `Option<T>` varibles into `OptionPat<Binding<T>>`.
+/// Transforms the given `Option<T>` variables into `OptionPat<Binding<T>>`.
 /// This displays as `Some($name)` or `None` when printed. The name of the inner binding
 /// is set to the name of the variable passed to the macro.
 macro_rules! opt_bind {
@@ -138,7 +138,7 @@ impl<'tcx> LateLintPass<'tcx> for Author {
 
 fn check_item(cx: &LateContext<'_>, hir_id: HirId) {
     let hir = cx.tcx.hir();
-    if let Some(body_id) = hir.maybe_body_owned_by(hir_id) {
+    if let Some(body_id) = hir.maybe_body_owned_by(hir_id.expect_owner()) {
         check_node(cx, hir_id, |v| {
             v.expr(&v.bind("expr", &hir.body(body_id).value));
         });
@@ -315,11 +315,11 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 out!("if let Some(Guard::If({expr})) = {arm}.guard;");
                 self.expr(expr);
             },
-            Some(hir::Guard::IfLet(pat, expr)) => {
-                bind!(self, pat, expr);
-                out!("if let Some(Guard::IfLet({pat}, {expr}) = {arm}.guard;");
-                self.pat(pat);
-                self.expr(expr);
+            Some(hir::Guard::IfLet(let_expr)) => {
+                bind!(self, let_expr);
+                out!("if let Some(Guard::IfLet({let_expr}) = {arm}.guard;");
+                self.pat(field!(let_expr.pat));
+                self.expr(field!(let_expr.init));
             },
         }
         self.expr(field!(arm.body));
@@ -402,9 +402,9 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 self.expr(func);
                 self.slice(args, |e| self.expr(e));
             },
-            ExprKind::MethodCall(method_name, _, args, _) => {
+            ExprKind::MethodCall(method_name, args, _) => {
                 bind!(self, method_name, args);
-                kind!("MethodCall({method_name}, _, {args}, _)");
+                kind!("MethodCall({method_name}, {args}, _)");
                 self.ident(field!(method_name.ident));
                 self.slice(args, |e| self.expr(e));
             },
@@ -466,7 +466,13 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 self.expr(scrutinee);
                 self.slice(arms, |arm| self.arm(arm));
             },
-            ExprKind::Closure(capture_by, fn_decl, body_id, _, movability) => {
+            ExprKind::Closure(&Closure {
+                capture_clause,
+                fn_decl,
+                body: body_id,
+                movability,
+                ..
+            }) => {
                 let movability = OptionPat::new(movability.map(|m| format!("Movability::{m:?}")));
 
                 let ret_ty = match fn_decl.output {
@@ -475,7 +481,7 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 };
 
                 bind!(self, fn_decl, body_id);
-                kind!("Closure(CaptureBy::{capture_by:?}, {fn_decl}, {body_id}, _, {movability})");
+                kind!("Closure(CaptureBy::{capture_clause:?}, {fn_decl}, {body_id}, _, {movability})");
                 out!("if let {ret_ty} = {fn_decl}.output;");
                 self.body(body_id);
             },
@@ -547,10 +553,6 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 kind!("InlineAsm(_)");
                 out!("// unimplemented: `ExprKind::InlineAsm` is not further destructured at the moment");
             },
-            ExprKind::LlvmInlineAsm(_) => {
-                kind!("LlvmInlineAsm(_)");
-                out!("// unimplemented: `ExprKind::LlvmInlineAsm` is not further destructured at the moment");
-            },
             ExprKind::Struct(qpath, fields, base) => {
                 bind!(self, qpath, fields);
                 opt_bind!(self, base);
@@ -573,7 +575,7 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                         bind!(self, anon_const);
                         out!("if let ArrayLen::Body({anon_const}) = {length};");
                         self.body(field!(anon_const.body));
-                    }
+                    },
                 }
             },
             ExprKind::Err => kind!("Err"),

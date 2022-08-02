@@ -18,18 +18,8 @@ use self::BorrowKind::*;
 // This represents accessing self in the closure structure
 pub const CAPTURE_STRUCT_LOCAL: mir::Local = mir::Local::from_u32(1);
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    TyEncodable,
-    TyDecodable,
-    TypeFoldable,
-    HashStable
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
 pub struct UpvarPath {
     pub hir_id: hir::HirId,
 }
@@ -37,7 +27,8 @@ pub struct UpvarPath {
 /// Upvars do not get their own `NodeId`. Instead, we use the pair of
 /// the original var ID (that is, the root variable that is referenced
 /// by the upvar) and the ID of the closure expression.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable, TypeFoldable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
 pub struct UpvarId {
     pub var_path: UpvarPath,
     pub closure_expr_id: LocalDefId,
@@ -51,40 +42,24 @@ impl UpvarId {
 
 /// Information describing the capture of an upvar. This is computed
 /// during `typeck`, specifically by `regionck`.
-#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, TypeFoldable, HashStable)]
-pub enum UpvarCapture<'tcx> {
+#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
+pub enum UpvarCapture {
     /// Upvar is captured by value. This is always true when the
     /// closure is labeled `move`, but can also be true in other cases
     /// depending on inference.
-    ///
-    /// If the upvar was inferred to be captured by value (e.g. `move`
-    /// was not used), then the `Span` points to a usage that
-    /// required it. There may be more than one such usage
-    /// (e.g. `|| { a; a; }`), in which case we pick an
-    /// arbitrary one.
-    ByValue(Option<Span>),
+    ByValue,
 
     /// Upvar is captured by reference.
-    ByRef(UpvarBorrow<'tcx>),
-}
-
-#[derive(PartialEq, Clone, Copy, TyEncodable, TyDecodable, TypeFoldable, HashStable)]
-pub struct UpvarBorrow<'tcx> {
-    /// The kind of borrow: by-ref upvars have access to shared
-    /// immutable borrows, which are not part of the normal language
-    /// syntax.
-    pub kind: BorrowKind,
-
-    /// Region of the resulting reference.
-    pub region: ty::Region<'tcx>,
+    ByRef(BorrowKind),
 }
 
 pub type UpvarListMap = FxHashMap<DefId, FxIndexMap<hir::HirId, UpvarId>>;
-pub type UpvarCaptureMap<'tcx> = FxHashMap<UpvarId, UpvarCapture<'tcx>>;
+pub type UpvarCaptureMap = FxHashMap<UpvarId, UpvarCapture>;
 
 /// Given the closure DefId this map provides a map of root variables to minimum
 /// set of `CapturedPlace`s that need to be tracked to support all captures of that closure.
-pub type MinCaptureInformationMap<'tcx> = FxHashMap<DefId, RootVariableMinCaptureList<'tcx>>;
+pub type MinCaptureInformationMap<'tcx> = FxHashMap<LocalDefId, RootVariableMinCaptureList<'tcx>>;
 
 /// Part of `MinCaptureInformationMap`; Maps a root variable to the list of `CapturedPlace`.
 /// Used to track the minimum set of `Place`s that need to be captured to support all
@@ -133,27 +108,51 @@ impl<'tcx> ClosureKind {
     }
 
     /// Returns the representative scalar type for this closure kind.
-    /// See `TyS::to_opt_closure_kind` for more details.
+    /// See `Ty::to_opt_closure_kind` for more details.
     pub fn to_ty(self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
         match self {
-            ty::ClosureKind::Fn => tcx.types.i8,
-            ty::ClosureKind::FnMut => tcx.types.i16,
-            ty::ClosureKind::FnOnce => tcx.types.i32,
+            ClosureKind::Fn => tcx.types.i8,
+            ClosureKind::FnMut => tcx.types.i16,
+            ClosureKind::FnOnce => tcx.types.i32,
+        }
+    }
+
+    pub fn from_def_id(tcx: TyCtxt<'_>, def_id: DefId) -> Option<ClosureKind> {
+        if Some(def_id) == tcx.lang_items().fn_once_trait() {
+            Some(ClosureKind::FnOnce)
+        } else if Some(def_id) == tcx.lang_items().fn_mut_trait() {
+            Some(ClosureKind::FnMut)
+        } else if Some(def_id) == tcx.lang_items().fn_trait() {
+            Some(ClosureKind::Fn)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_def_id(&self, tcx: TyCtxt<'_>) -> DefId {
+        match self {
+            ClosureKind::Fn => tcx.lang_items().fn_once_trait().unwrap(),
+            ClosureKind::FnMut => tcx.lang_items().fn_mut_trait().unwrap(),
+            ClosureKind::FnOnce => tcx.lang_items().fn_trait().unwrap(),
         }
     }
 }
 
 /// A composite describing a `Place` that is captured by a closure.
-#[derive(PartialEq, Clone, Debug, TyEncodable, TyDecodable, TypeFoldable, HashStable)]
+#[derive(PartialEq, Clone, Debug, TyEncodable, TyDecodable, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
 pub struct CapturedPlace<'tcx> {
     /// The `Place` that is captured.
     pub place: HirPlace<'tcx>,
 
     /// `CaptureKind` and expression(s) that resulted in such capture of `place`.
-    pub info: CaptureInfo<'tcx>,
+    pub info: CaptureInfo,
 
     /// Represents if `place` can be mutated or not.
     pub mutability: hir::Mutability,
+
+    /// Region of the resulting reference if the upvar is captured by ref.
+    pub region: Option<ty::Region<'tcx>>,
 }
 
 impl<'tcx> CapturedPlace<'tcx> {
@@ -178,12 +177,16 @@ impl<'tcx> CapturedPlace<'tcx> {
                         write!(
                             &mut symbol,
                             "__{}",
-                            def.variants[variant].fields[idx as usize].ident.name.as_str(),
+                            def.variant(variant).fields[idx as usize].name.as_str(),
                         )
                         .unwrap();
                     }
                     ty => {
-                        bug!("Unexpected type {:?} for `Field` projection", ty)
+                        span_bug!(
+                            self.get_capture_kind_span(tcx),
+                            "Unexpected type {:?} for `Field` projection",
+                            ty
+                        )
                     }
                 },
 
@@ -250,7 +253,7 @@ impl<'tcx> CapturedPlace<'tcx> {
 
 fn symbols_for_closure_captures<'tcx>(
     tcx: TyCtxt<'tcx>,
-    def_id: (LocalDefId, DefId),
+    def_id: (LocalDefId, LocalDefId),
 ) -> Vec<Symbol> {
     let typeck_results = tcx.typeck(def_id.0);
     let captures = typeck_results.closure_min_captures_flattened(def_id.1);
@@ -286,8 +289,9 @@ pub fn is_ancestor_or_same_capture(
 /// Part of `MinCaptureInformationMap`; describes the capture kind (&, &mut, move)
 /// for a particular capture as well as identifying the part of the source code
 /// that triggered this capture to occur.
-#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, TypeFoldable, HashStable)]
-pub struct CaptureInfo<'tcx> {
+#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
+pub struct CaptureInfo {
     /// Expr Id pointing to use that resulted in selecting the current capture kind
     ///
     /// Eg:
@@ -295,7 +299,7 @@ pub struct CaptureInfo<'tcx> {
     /// let mut t = (0,1);
     ///
     /// let c = || {
-    ///     println!("{}",t); // L1
+    ///     println!("{t:?}"); // L1
     ///     t.1 = 4; // L2
     /// };
     /// ```
@@ -311,7 +315,7 @@ pub struct CaptureInfo<'tcx> {
     /// let x = 5;
     ///
     /// let c = || {
-    ///     let _ = x
+    ///     let _ = x;
     /// };
     /// ```
     ///
@@ -325,7 +329,7 @@ pub struct CaptureInfo<'tcx> {
     pub path_expr_id: Option<hir::HirId>,
 
     /// Capture mode that was selected
-    pub capture_kind: UpvarCapture<'tcx>,
+    pub capture_kind: UpvarCapture,
 }
 
 pub fn place_to_string_for_capture<'tcx>(tcx: TyCtxt<'tcx>, place: &HirPlace<'tcx>) -> String {
@@ -344,7 +348,7 @@ pub fn place_to_string_for_capture<'tcx>(tcx: TyCtxt<'tcx>, place: &HirPlace<'tc
                     curr_string = format!(
                         "{}.{}",
                         curr_string,
-                        def.variants[variant].fields[idx as usize].ident.name.as_str()
+                        def.variant(variant).fields[idx as usize].name.as_str()
                     );
                 }
                 ty::Tuple(_) => {
@@ -364,7 +368,8 @@ pub fn place_to_string_for_capture<'tcx>(tcx: TyCtxt<'tcx>, place: &HirPlace<'tc
     curr_string
 }
 
-#[derive(Clone, PartialEq, Debug, TyEncodable, TyDecodable, TypeFoldable, Copy, HashStable)]
+#[derive(Clone, PartialEq, Debug, TyEncodable, TyDecodable, Copy, HashStable)]
+#[derive(TypeFoldable, TypeVisitable)]
 pub enum BorrowKind {
     /// Data must be immutable and is aliasable.
     ImmBorrow,
@@ -375,17 +380,19 @@ pub enum BorrowKind {
     /// is borrowing or mutating a mutable referent, e.g.:
     ///
     /// ```
-    /// let x: &mut isize = ...;
+    /// let mut z = 3;
+    /// let x: &mut isize = &mut z;
     /// let y = || *x += 5;
     /// ```
     ///
     /// If we were to try to translate this closure into a more explicit
     /// form, we'd encounter an error with the code as written:
     ///
-    /// ```
-    /// struct Env { x: & &mut isize }
-    /// let x: &mut isize = ...;
-    /// let y = (&mut Env { &x }, fn_ptr);  // Closure is pair of env and fn
+    /// ```compile_fail,E0594
+    /// struct Env<'a> { x: &'a &'a mut isize }
+    /// let mut z = 3;
+    /// let x: &mut isize = &mut z;
+    /// let y = (&mut Env { x: &x }, fn_ptr);  // Closure is pair of env and fn
     /// fn fn_ptr(env: &mut Env) { **env.x += 5; }
     /// ```
     ///
@@ -393,10 +400,11 @@ pub enum BorrowKind {
     /// in an aliasable location. To solve, you'd have to translate with
     /// an `&mut` borrow:
     ///
-    /// ```
-    /// struct Env { x: &mut &mut isize }
-    /// let x: &mut isize = ...;
-    /// let y = (&mut Env { &mut x }, fn_ptr); // changed from &x to &mut x
+    /// ```compile_fail,E0596
+    /// struct Env<'a> { x: &'a mut &'a mut isize }
+    /// let mut z = 3;
+    /// let x: &mut isize = &mut z;
+    /// let y = (&mut Env { x: &mut x }, fn_ptr); // changed from &x to &mut x
     /// fn fn_ptr(env: &mut Env) { **env.x += 5; }
     /// ```
     ///

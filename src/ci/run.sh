@@ -43,8 +43,9 @@ else
     PYTHON="python2"
 fi
 
-if ! isCI || isCiBranch auto || isCiBranch beta || isCiBranch try; then
+if ! isCI || isCiBranch auto || isCiBranch beta || isCiBranch try || isCiBranch try-perf; then
     RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --set build.print-step-timings --enable-verbose-tests"
+    RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --set build.metrics"
 fi
 
 RUST_CONFIGURE_ARGS="$RUST_CONFIGURE_ARGS --enable-sccache"
@@ -131,7 +132,7 @@ trap datecheck EXIT
 SCCACHE_IDLE_TIMEOUT=10800 sccache --start-server || true
 
 if [ "$RUN_CHECK_WITH_PARALLEL_QUERIES" != "" ]; then
-  $SRC/configure --enable-parallel-compiler
+  $SRC/configure --set rust.parallel-compiler
   CARGO_INCREMENTAL=0 $PYTHON ../x.py check
   rm -f config.toml
   rm -rf build
@@ -140,8 +141,6 @@ fi
 $SRC/configure $RUST_CONFIGURE_ARGS
 
 retry make prepare
-
-make check-bootstrap
 
 # Display the CPU and memory information. This helps us know why the CI timing
 # is fluctuating.

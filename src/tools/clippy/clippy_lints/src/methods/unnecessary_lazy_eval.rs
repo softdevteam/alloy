@@ -1,4 +1,4 @@
-use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::source::snippet;
 use clippy_utils::ty::is_type_diagnostic_item;
 use clippy_utils::{eager_or_lazy, usage};
@@ -20,10 +20,11 @@ pub(super) fn check<'tcx>(
 ) {
     let is_option = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::Option);
     let is_result = is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(recv), sym::Result);
+    let is_bool = cx.typeck_results().expr_ty(recv).is_bool();
 
-    if is_option || is_result {
-        if let hir::ExprKind::Closure(_, _, eid, _, _) = arg.kind {
-            let body = cx.tcx.hir().body(eid);
+    if is_option || is_result || is_bool {
+        if let hir::ExprKind::Closure(&hir::Closure { body, .. }) = arg.kind {
+            let body = cx.tcx.hir().body(body);
             let body_expr = &body.value;
 
             if usage::BindingUsageFinder::are_params_used(cx, body) {
@@ -33,8 +34,10 @@ pub(super) fn check<'tcx>(
             if eager_or_lazy::switch_to_eager_eval(cx, body_expr) {
                 let msg = if is_option {
                     "unnecessary closure used to substitute value for `Option::None`"
-                } else {
+                } else if is_result {
                     "unnecessary closure used to substitute value for `Result::Err`"
+                } else {
+                    "unnecessary closure used with `bool::then`"
                 };
                 let applicability = if body
                     .params
@@ -48,20 +51,19 @@ pub(super) fn check<'tcx>(
                     Applicability::MaybeIncorrect
                 };
 
-                span_lint_and_sugg(
-                    cx,
-                    UNNECESSARY_LAZY_EVALUATIONS,
-                    expr.span,
-                    msg,
-                    &format!("use `{}` instead", simplify_using),
-                    format!(
-                        "{0}.{1}({2})",
-                        snippet(cx, recv.span, ".."),
-                        simplify_using,
-                        snippet(cx, body_expr.span, ".."),
-                    ),
-                    applicability,
-                );
+                // This is a duplicate of what's happening in clippy_lints::methods::method_call,
+                // which isn't ideal, We want to get the method call span,
+                // but prefer to avoid changing the signature of the function itself.
+                if let hir::ExprKind::MethodCall(_, _, span) = expr.kind {
+                    span_lint_and_then(cx, UNNECESSARY_LAZY_EVALUATIONS, expr.span, msg, |diag| {
+                        diag.span_suggestion(
+                            span,
+                            &format!("use `{}(..)` instead", simplify_using),
+                            format!("{}({})", simplify_using, snippet(cx, body_expr.span, "..")),
+                            applicability,
+                        );
+                    });
+                }
             }
         }
     }

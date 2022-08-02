@@ -99,7 +99,7 @@ pub fn manual_range_contains() {
 }
 
 pub fn use_self() {
-    struct Foo {}
+    struct Foo;
 
     impl Foo {
         fn new() -> Foo {
@@ -145,6 +145,21 @@ fn int_from_bool() -> u8 {
     true as u8
 }
 
+fn err_expect() {
+    let x: Result<u32, &str> = Ok(10);
+    x.err().expect("Testing expect_err");
+}
+
+fn cast_abs_to_unsigned() {
+    let x: i32 = 10;
+    assert_eq!(10u32, x.abs() as u32);
+}
+
+fn manual_rem_euclid() {
+    let x: i32 = 10;
+    let _: i32 = ((x % 4) + 4) % 4;
+}
+
 fn main() {
     filter_map_next();
     checked_conversion();
@@ -162,6 +177,9 @@ fn main() {
     missing_const_for_fn();
     unnest_or_patterns();
     int_from_bool();
+    err_expect();
+    cast_abs_to_unsigned();
+    manual_rem_euclid();
 }
 
 mod just_under_msrv {
@@ -197,5 +215,14 @@ mod just_above_msrv {
         if s.starts_with("hello, ") {
             assert_eq!(s["hello, ".len()..].to_uppercase(), "WORLD!");
         }
+    }
+}
+
+mod const_rem_euclid {
+    #![feature(custom_inner_attributes)]
+    #![clippy::msrv = "1.50.0"]
+
+    pub const fn const_rem_euclid_4(num: i32) -> i32 {
+        ((num % 4) + 4) % 4
     }
 }

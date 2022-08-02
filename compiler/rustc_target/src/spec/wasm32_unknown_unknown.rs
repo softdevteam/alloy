@@ -16,7 +16,7 @@ use crate::spec::abi::Abi;
 
 pub fn target() -> Target {
     let mut options = wasm_base::options();
-    options.os = "unknown".to_string();
+    options.os = "unknown".into();
     options.linker_flavor = LinkerFlavor::Lld(LldFlavor::Wasm);
 
     // This is a default for backwards-compatibility with the original
@@ -29,33 +29,36 @@ pub fn target() -> Target {
     // code on this target due to this ABI mismatch.
     options.default_adjusted_cabi = Some(Abi::Wasm);
 
-    let clang_args = options.pre_link_args.entry(LinkerFlavor::Gcc).or_default();
-
-    // Make sure clang uses LLD as its linker and is configured appropriately
-    // otherwise
-    clang_args.push("--target=wasm32-unknown-unknown".to_string());
-
-    // For now this target just never has an entry symbol no matter the output
-    // type, so unconditionally pass this.
-    clang_args.push("-Wl,--no-entry".to_string());
-
-    // Rust really needs a way for users to specify exports and imports in
-    // the source code. --export-dynamic isn't the right tool for this job,
-    // however it does have the side effect of automatically exporting a lot
-    // of symbols, which approximates what people want when compiling for
-    // wasm32-unknown-unknown expect, so use it for now.
-    clang_args.push("-Wl,--export-dynamic".to_string());
-
-    // Add the flags to wasm-ld's args too.
-    let lld_args = options.pre_link_args.entry(LinkerFlavor::Lld(LldFlavor::Wasm)).or_default();
-    lld_args.push("--no-entry".to_string());
-    lld_args.push("--export-dynamic".to_string());
+    options.add_pre_link_args(
+        LinkerFlavor::Lld(LldFlavor::Wasm),
+        &[
+            // For now this target just never has an entry symbol no matter the output
+            // type, so unconditionally pass this.
+            "--no-entry",
+            // Rust really needs a way for users to specify exports and imports in
+            // the source code. --export-dynamic isn't the right tool for this job,
+            // however it does have the side effect of automatically exporting a lot
+            // of symbols, which approximates what people want when compiling for
+            // wasm32-unknown-unknown expect, so use it for now.
+            "--export-dynamic",
+        ],
+    );
+    options.add_pre_link_args(
+        LinkerFlavor::Gcc,
+        &[
+            // Make sure clang uses LLD as its linker and is configured appropriately
+            // otherwise
+            "--target=wasm32-unknown-unknown",
+            "-Wl,--no-entry",
+            "-Wl,--export-dynamic",
+        ],
+    );
 
     Target {
-        llvm_target: "wasm32-unknown-unknown".to_string(),
+        llvm_target: "wasm32-unknown-unknown".into(),
         pointer_width: 32,
-        data_layout: "e-m:e-p:32:32-i64:64-n32:64-S128-ni:1:10:20".to_string(),
-        arch: "wasm32".to_string(),
+        data_layout: "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20".into(),
+        arch: "wasm32".into(),
         options,
     }
 }

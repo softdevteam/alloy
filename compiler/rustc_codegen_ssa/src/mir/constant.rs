@@ -29,7 +29,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::ConstantKind::Ty(ct) => ct,
             mir::ConstantKind::Val(val, _) => return Ok(val),
         };
-        match ct.val {
+        match ct.kind() {
             ty::ConstKind::Unevaluated(ct) => self
                 .cx
                 .tcx()
@@ -38,7 +38,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     self.cx.tcx().sess.span_err(constant.span, "erroneous constant encountered");
                     err
                 }),
-            ty::ConstKind::Value(value) => Ok(value),
+            ty::ConstKind::Value(val) => Ok(self.cx.tcx().valtree_to_const_val((ct.ty(), val))),
             err => span_bug!(
                 constant.span,
                 "encountered bad ConstKind after monomorphizing: {:?}",
@@ -58,18 +58,17 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         constant
             .map(|val| {
                 let field_ty = ty.builtin_index().unwrap();
-                let c = ty::Const::from_value(bx.tcx(), val, ty);
+                let c = mir::ConstantKind::from_value(val, ty);
                 let values: Vec<_> = bx
                     .tcx()
-                    .destructure_const(ty::ParamEnv::reveal_all().and(&c))
+                    .destructure_mir_constant(ty::ParamEnv::reveal_all(), c)
                     .fields
                     .iter()
                     .map(|field| {
-                        if let Some(prim) = field.val.try_to_scalar() {
+                        if let Some(prim) = field.try_to_scalar() {
                             let layout = bx.layout_of(field_ty);
-                            let scalar = match layout.abi {
-                                Abi::Scalar(x) => x,
-                                _ => bug!("from_const: invalid ByVal layout: {:#?}", layout),
+                            let Abi::Scalar(scalar) = layout.abi else {
+                                bug!("from_const: invalid ByVal layout: {:#?}", layout);
                             };
                             bx.scalar_to_backend(prim, scalar, bx.immediate_backend_type(layout))
                         } else {
@@ -78,7 +77,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     })
                     .collect();
                 let llval = bx.const_struct(&values, false);
-                (llval, c.ty)
+                (llval, c.ty())
             })
             .unwrap_or_else(|_| {
                 bx.tcx().sess.span_err(span, "could not evaluate shuffle_indices at compile time");

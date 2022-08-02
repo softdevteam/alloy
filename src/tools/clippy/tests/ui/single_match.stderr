@@ -128,5 +128,32 @@ LL | |         _ => (),
 LL | |     };
    | |_____^ help: try this: `if let None = x { println!() }`
 
-error: aborting due to 13 previous errors
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+  --> $DIR/single_match.rs:164:5
+   |
+LL | /     match x {
+LL | |         (Some(_), _) => {},
+LL | |         (None, _) => {},
+LL | |     }
+   | |_____^ help: try this: `if let (Some(_), _) = x {}`
+
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+  --> $DIR/single_match.rs:170:5
+   |
+LL | /     match x {
+LL | |         (Some(E::V), _) => todo!(),
+LL | |         (_, _) => {},
+LL | |     }
+   | |_____^ help: try this: `if let (Some(E::V), _) = x { todo!() }`
+
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+  --> $DIR/single_match.rs:176:5
+   |
+LL | /     match (Some(42), Some(E::V), Some(42)) {
+LL | |         (.., Some(E::V), _) => {},
+LL | |         (..) => {},
+LL | |     }
+   | |_____^ help: try this: `if let (.., Some(E::V), _) = (Some(42), Some(E::V), Some(42)) {}`
+
+error: aborting due to 16 previous errors
 

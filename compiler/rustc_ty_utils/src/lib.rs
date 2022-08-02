@@ -6,7 +6,9 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(control_flow_enum)]
-#![feature(nll)]
+#![feature(let_else)]
+#![feature(never_type)]
+#![feature(box_patterns)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -18,6 +20,7 @@ use rustc_middle::ty::query::Providers;
 
 mod assoc;
 mod common_traits;
+mod consts;
 pub mod instance;
 mod needs_drop;
 mod needs_finalizer;
@@ -27,6 +30,7 @@ mod ty;
 pub fn provide(providers: &mut Providers) {
     assoc::provide(providers);
     common_traits::provide(providers);
+    consts::provide(providers);
     needs_drop::provide(providers);
     needs_finalizer::provide(providers);
     ty::provide(providers);

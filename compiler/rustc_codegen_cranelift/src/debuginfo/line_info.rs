@@ -110,7 +110,6 @@ impl<'tcx> DebugContext<'tcx> {
 
         entry.set(gimli::DW_AT_decl_file, AttributeValue::FileIndex(Some(file_id)));
         entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(loc.line as u64));
-        // FIXME: probably omit this
         entry.set(gimli::DW_AT_decl_column, AttributeValue::Udata(loc.col.to_usize() as u64));
     }
 
@@ -141,7 +140,7 @@ impl<'tcx> DebugContext<'tcx> {
             // In order to have a good line stepping behavior in debugger, we overwrite debug
             // locations of macro expansions with that of the outermost expansion site
             // (unless the crate is being compiled with `-Z debug-macros`).
-            let span = if !span.from_expansion() || tcx.sess.opts.debugging_opts.debug_macros {
+            let span = if !span.from_expansion() || tcx.sess.opts.unstable_opts.debug_macros {
                 span
             } else {
                 // Walk up the macro expansion chain until we reach a non-expanded span.

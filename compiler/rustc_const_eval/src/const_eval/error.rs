@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use rustc_errors::{DiagnosticBuilder, ErrorReported};
+use rustc_errors::Diagnostic;
 use rustc_hir as hir;
 use rustc_middle::mir::AssertKind;
 use rustc_middle::ty::{layout::LayoutError, query::TyCtxtAt, ConstInt};
@@ -82,25 +82,25 @@ impl<'tcx> ConstEvalErr<'tcx> {
         'tcx: 'mir,
     {
         error.print_backtrace();
-        let stacktrace = ecx.generate_stacktrace();
-        ConstEvalErr {
-            error: error.into_kind(),
-            stacktrace,
-            span: span.unwrap_or_else(|| ecx.cur_span()),
-        }
+        let mut stacktrace = ecx.generate_stacktrace();
+        // Filter out `requires_caller_location` frames.
+        stacktrace.retain(|frame| !frame.instance.def.requires_caller_location(*ecx.tcx));
+        // If `span` is missing, use topmost remaining frame, or else the "root" span from `ecx.tcx`.
+        let span = span.or_else(|| stacktrace.first().map(|f| f.span)).unwrap_or(ecx.tcx.span);
+        ConstEvalErr { error: error.into_kind(), stacktrace, span }
     }
 
     pub fn struct_error(
         &self,
         tcx: TyCtxtAt<'tcx>,
         message: &str,
-        emit: impl FnOnce(DiagnosticBuilder<'_>),
+        decorate: impl FnOnce(&mut Diagnostic),
     ) -> ErrorHandled {
-        self.struct_generic(tcx, message, emit, None)
+        self.struct_generic(tcx, message, decorate, None)
     }
 
     pub fn report_as_error(&self, tcx: TyCtxtAt<'tcx>, message: &str) -> ErrorHandled {
-        self.struct_error(tcx, message, |mut e| e.emit())
+        self.struct_error(tcx, message, |_| {})
     }
 
     pub fn report_as_lint(
@@ -113,7 +113,7 @@ impl<'tcx> ConstEvalErr<'tcx> {
         self.struct_generic(
             tcx,
             message,
-            |mut lint: DiagnosticBuilder<'_>| {
+            |lint: &mut Diagnostic| {
                 // Apply the span.
                 if let Some(span) = span {
                     let primary_spans = lint.span.primary_spans().to_vec();
@@ -127,7 +127,6 @@ impl<'tcx> ConstEvalErr<'tcx> {
                         }
                     }
                 }
-                lint.emit();
             },
             Some(lint_root),
         )
@@ -136,34 +135,63 @@ impl<'tcx> ConstEvalErr<'tcx> {
     /// Create a diagnostic for this const eval error.
     ///
     /// Sets the message passed in via `message` and adds span labels with detailed error
-    /// information before handing control back to `emit` to do any final processing.
-    /// It's the caller's responsibility to call emit(), stash(), etc. within the `emit`
-    /// function to dispose of the diagnostic properly.
+    /// information before handing control back to `decorate` to do any final annotations,
+    /// after which the diagnostic is emitted.
     ///
     /// If `lint_root.is_some()` report it as a lint, else report it as a hard error.
     /// (Except that for some errors, we ignore all that -- see `must_error` below.)
+    #[instrument(skip(self, tcx, decorate, lint_root), level = "debug")]
     fn struct_generic(
         &self,
         tcx: TyCtxtAt<'tcx>,
         message: &str,
-        emit: impl FnOnce(DiagnosticBuilder<'_>),
+        decorate: impl FnOnce(&mut Diagnostic),
         lint_root: Option<hir::HirId>,
     ) -> ErrorHandled {
-        let finish = |mut err: DiagnosticBuilder<'_>, span_msg: Option<String>| {
+        let finish = |err: &mut Diagnostic, span_msg: Option<String>| {
             trace!("reporting const eval failure at {:?}", self.span);
             if let Some(span_msg) = span_msg {
                 err.span_label(self.span, span_msg);
             }
             // Add spans for the stacktrace. Don't print a single-line backtrace though.
             if self.stacktrace.len() > 1 {
+                // Helper closure to print duplicated lines.
+                let mut flush_last_line = |last_frame, times| {
+                    if let Some((line, span)) = last_frame {
+                        err.span_label(span, &line);
+                        // Don't print [... additional calls ...] if the number of lines is small
+                        if times < 3 {
+                            for _ in 0..times {
+                                err.span_label(span, &line);
+                            }
+                        } else {
+                            err.span_label(
+                                span,
+                                format!("[... {} additional calls {} ...]", times, &line),
+                            );
+                        }
+                    }
+                };
+
+                let mut last_frame = None;
+                let mut times = 0;
                 for frame_info in &self.stacktrace {
-                    err.span_label(frame_info.span, frame_info.to_string());
+                    let frame = (frame_info.to_string(), frame_info.span);
+                    if last_frame.as_ref() == Some(&frame) {
+                        times += 1;
+                    } else {
+                        flush_last_line(last_frame, times);
+                        last_frame = Some(frame);
+                        times = 0;
+                    }
                 }
+                flush_last_line(last_frame, times);
             }
-            // Let the caller finish the job.
-            emit(err)
+            // Let the caller attach any additional information it wants.
+            decorate(err);
         };
 
+        debug!("self.error: {:?}", self.error);
         // Special handling for certain errors
         match &self.error {
             // Don't emit a new diagnostic for these errors
@@ -178,8 +206,9 @@ impl<'tcx> ConstEvalErr<'tcx> {
                 // The `message` makes little sense here, this is a more serious error than the
                 // caller thinks anyway.
                 // See <https://github.com/rust-lang/rust/pull/63152>.
-                finish(struct_error(tcx, &self.error.to_string()), None);
-                return ErrorHandled::Reported(ErrorReported);
+                let mut err = struct_error(tcx, &self.error.to_string());
+                finish(&mut err, None);
+                return ErrorHandled::Reported(err.emit());
             }
             _ => {}
         };
@@ -195,13 +224,18 @@ impl<'tcx> ConstEvalErr<'tcx> {
                 rustc_session::lint::builtin::CONST_ERR,
                 hir_id,
                 tcx.span,
-                |lint| finish(lint.build(message), Some(err_msg)),
+                |lint| {
+                    let mut lint = lint.build(message);
+                    finish(&mut lint, Some(err_msg));
+                    lint.emit();
+                },
             );
             ErrorHandled::Linted
         } else {
             // Report as hard error.
-            finish(struct_error(tcx, message), Some(err_msg));
-            ErrorHandled::Reported(ErrorReported)
+            let mut err = struct_error(tcx, message);
+            finish(&mut err, Some(err_msg));
+            ErrorHandled::Reported(err.emit())
         }
     }
 }

@@ -51,11 +51,15 @@ mod platform {
     pub use crate::os::fuchsia::*;
     #[cfg(target_os = "haiku")]
     pub use crate::os::haiku::*;
+    #[cfg(target_os = "horizon")]
+    pub use crate::os::horizon::*;
     #[cfg(target_os = "illumos")]
     pub use crate::os::illumos::*;
     #[cfg(target_os = "ios")]
     pub use crate::os::ios::*;
-    #[cfg(any(target_os = "linux", target_os = "l4re"))]
+    #[cfg(target_os = "l4re")]
+    pub use crate::os::l4re::*;
+    #[cfg(target_os = "linux")]
     pub use crate::os::linux::*;
     #[cfg(target_os = "macos")]
     pub use crate::os::macos::*;
@@ -86,6 +90,7 @@ pub mod thread;
     target_os = "dragonfly",
     target_os = "freebsd",
     target_os = "ios",
+    target_os = "watchos",
     target_os = "macos",
     target_os = "netbsd",
     target_os = "openbsd"

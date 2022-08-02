@@ -6,9 +6,12 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicsARM.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Pass.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/ADT/Optional.h"
@@ -76,14 +79,14 @@ extern "C" void LLVMRustInstallFatalErrorHandler() {
   install_fatal_error_handler(FatalErrorHandler);
 }
 
+extern "C" void LLVMRustDisableSystemDialogsOnCrash() {
+  sys::DisableSystemDialogsOnCrash();
+}
+
 extern "C" char *LLVMRustGetLastError(void) {
   char *Ret = LastError;
   LastError = nullptr;
   return Ret;
-}
-
-extern "C" unsigned int LLVMRustGetInstructionCount(LLVMModuleRef M) {
-  return unwrap(M)->getInstructionCount();
 }
 
 extern "C" void LLVMRustSetLastError(const char *Err) {
@@ -170,6 +173,8 @@ static Attribute::AttrKind fromRust(LLVMRustAttribute Kind) {
     return Attribute::NoAlias;
   case NoCapture:
     return Attribute::NoCapture;
+  case NoCfCheck:
+    return Attribute::NoCfCheck;
   case NoInline:
     return Attribute::NoInline;
   case NonNull:
@@ -220,135 +225,158 @@ static Attribute::AttrKind fromRust(LLVMRustAttribute Kind) {
     return Attribute::StackProtectStrong;
   case StackProtect:
     return Attribute::StackProtect;
+  case NoUndef:
+    return Attribute::NoUndef;
+  case SanitizeMemTag:
+    return Attribute::SanitizeMemTag;
+  case ShadowCallStack:
+    return Attribute::ShadowCallStack;
+  case AllocSize:
+    return Attribute::AllocSize;
+#if LLVM_VERSION_GE(15, 0)
+  case AllocatedPointer:
+    return Attribute::AllocatedPointer;
+  case AllocAlign:
+    return Attribute::AllocAlign;
+#endif
   }
   report_fatal_error("bad AttributeKind");
 }
 
-template<typename T> static inline void AddAttribute(T *t, unsigned Index, Attribute Attr) {
-#if LLVM_VERSION_LT(14, 0)
-  t->addAttribute(Index, Attr);
-#else
-  t->addAttributeAtIndex(Index, Attr);
-#endif
-}
-
-extern "C" void LLVMRustAddCallSiteAttribute(LLVMValueRef Instr, unsigned Index,
-                                             LLVMRustAttribute RustAttr) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::get(Call->getContext(), fromRust(RustAttr));
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddCallSiteAttrString(LLVMValueRef Instr, unsigned Index,
-                                              const char *Name) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::get(Call->getContext(), Name);
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddAlignmentCallSiteAttr(LLVMValueRef Instr,
-                                                 unsigned Index,
-                                                 uint32_t Bytes) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::getWithAlignment(Call->getContext(), Align(Bytes));
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddDereferenceableCallSiteAttr(LLVMValueRef Instr,
-                                                       unsigned Index,
-                                                       uint64_t Bytes) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::getWithDereferenceableBytes(Call->getContext(), Bytes);
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddDereferenceableOrNullCallSiteAttr(LLVMValueRef Instr,
-                                                             unsigned Index,
-                                                             uint64_t Bytes) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::getWithDereferenceableOrNullBytes(Call->getContext(), Bytes);
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddByValCallSiteAttr(LLVMValueRef Instr, unsigned Index,
-                                             LLVMTypeRef Ty) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::getWithByValType(Call->getContext(), unwrap(Ty));
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddStructRetCallSiteAttr(LLVMValueRef Instr, unsigned Index,
-                                                 LLVMTypeRef Ty) {
-  CallBase *Call = unwrap<CallBase>(Instr);
-  Attribute Attr = Attribute::getWithStructRetType(Call->getContext(), unwrap(Ty));
-  AddAttribute(Call, Index, Attr);
-}
-
-extern "C" void LLVMRustAddFunctionAttribute(LLVMValueRef Fn, unsigned Index,
-                                             LLVMRustAttribute RustAttr) {
-  Function *A = unwrap<Function>(Fn);
-  Attribute Attr = Attribute::get(A->getContext(), fromRust(RustAttr));
-  AddAttribute(A, Index, Attr);
-}
-
-extern "C" void LLVMRustAddAlignmentAttr(LLVMValueRef Fn,
-                                         unsigned Index,
-                                         uint32_t Bytes) {
-  Function *A = unwrap<Function>(Fn);
-  AddAttribute(A, Index, Attribute::getWithAlignment(
-      A->getContext(), llvm::Align(Bytes)));
-}
-
-extern "C" void LLVMRustAddDereferenceableAttr(LLVMValueRef Fn, unsigned Index,
-                                               uint64_t Bytes) {
-  Function *A = unwrap<Function>(Fn);
-  AddAttribute(A, Index, Attribute::getWithDereferenceableBytes(A->getContext(),
-                                                                Bytes));
-}
-
-extern "C" void LLVMRustAddDereferenceableOrNullAttr(LLVMValueRef Fn,
-                                                     unsigned Index,
-                                                     uint64_t Bytes) {
-  Function *A = unwrap<Function>(Fn);
-  AddAttribute(A, Index, Attribute::getWithDereferenceableOrNullBytes(
-      A->getContext(), Bytes));
-}
-
-extern "C" void LLVMRustAddByValAttr(LLVMValueRef Fn, unsigned Index,
-                                     LLVMTypeRef Ty) {
-  Function *F = unwrap<Function>(Fn);
-  Attribute Attr = Attribute::getWithByValType(F->getContext(), unwrap(Ty));
-  AddAttribute(F, Index, Attr);
-}
-
-extern "C" void LLVMRustAddStructRetAttr(LLVMValueRef Fn, unsigned Index,
-                                         LLVMTypeRef Ty) {
-  Function *F = unwrap<Function>(Fn);
-  Attribute Attr = Attribute::getWithStructRetType(F->getContext(), unwrap(Ty));
-  AddAttribute(F, Index, Attr);
-}
-
-extern "C" void LLVMRustAddFunctionAttrStringValue(LLVMValueRef Fn,
-                                                   unsigned Index,
-                                                   const char *Name,
-                                                   const char *Value) {
-  Function *F = unwrap<Function>(Fn);
-  AddAttribute(F, Index, Attribute::get(
-      F->getContext(), StringRef(Name), StringRef(Value)));
-}
-
-extern "C" void LLVMRustRemoveFunctionAttributes(LLVMValueRef Fn,
-                                                 unsigned Index,
-                                                 LLVMRustAttribute RustAttr) {
-  Function *F = unwrap<Function>(Fn);
-  AttributeList PAL = F->getAttributes();
+template<typename T> static inline void AddAttributes(T *t, unsigned Index,
+                                                      LLVMAttributeRef *Attrs, size_t AttrsLen) {
+  AttributeList PAL = t->getAttributes();
   AttributeList PALNew;
 #if LLVM_VERSION_LT(14, 0)
-  PALNew = PAL.removeAttribute(F->getContext(), Index, fromRust(RustAttr));
+  AttrBuilder B;
+  for (LLVMAttributeRef Attr : makeArrayRef(Attrs, AttrsLen))
+    B.addAttribute(unwrap(Attr));
+  PALNew = PAL.addAttributes(t->getContext(), Index, B);
 #else
-  PALNew = PAL.removeAttributeAtIndex(F->getContext(), Index, fromRust(RustAttr));
+  AttrBuilder B(t->getContext());
+  for (LLVMAttributeRef Attr : makeArrayRef(Attrs, AttrsLen))
+    B.addAttribute(unwrap(Attr));
+  PALNew = PAL.addAttributesAtIndex(t->getContext(), Index, B);
 #endif
-  F->setAttributes(PALNew);
+  t->setAttributes(PALNew);
+}
+
+extern "C" void LLVMRustAddFunctionAttributes(LLVMValueRef Fn, unsigned Index,
+                                              LLVMAttributeRef *Attrs, size_t AttrsLen) {
+  Function *F = unwrap<Function>(Fn);
+  AddAttributes(F, Index, Attrs, AttrsLen);
+}
+
+extern "C" void LLVMRustAddCallSiteAttributes(LLVMValueRef Instr, unsigned Index,
+                                              LLVMAttributeRef *Attrs, size_t AttrsLen) {
+  CallBase *Call = unwrap<CallBase>(Instr);
+  AddAttributes(Call, Index, Attrs, AttrsLen);
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateAttrNoValue(LLVMContextRef C,
+                                                      LLVMRustAttribute RustAttr) {
+  return wrap(Attribute::get(*unwrap(C), fromRust(RustAttr)));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateAlignmentAttr(LLVMContextRef C,
+                                                        uint64_t Bytes) {
+  return wrap(Attribute::getWithAlignment(*unwrap(C), llvm::Align(Bytes)));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateDereferenceableAttr(LLVMContextRef C,
+                                                              uint64_t Bytes) {
+  return wrap(Attribute::getWithDereferenceableBytes(*unwrap(C), Bytes));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateDereferenceableOrNullAttr(LLVMContextRef C,
+                                                                    uint64_t Bytes) {
+  return wrap(Attribute::getWithDereferenceableOrNullBytes(*unwrap(C), Bytes));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateByValAttr(LLVMContextRef C, LLVMTypeRef Ty) {
+  return wrap(Attribute::getWithByValType(*unwrap(C), unwrap(Ty)));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateStructRetAttr(LLVMContextRef C, LLVMTypeRef Ty) {
+  return wrap(Attribute::getWithStructRetType(*unwrap(C), unwrap(Ty)));
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateElementTypeAttr(LLVMContextRef C, LLVMTypeRef Ty) {
+#if LLVM_VERSION_GE(15, 0)
+  return wrap(Attribute::get(*unwrap(C), Attribute::ElementType, unwrap(Ty)));
+#else
+  report_fatal_error("Should not be needed on LLVM < 15");
+#endif
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateUWTableAttr(LLVMContextRef C, bool Async) {
+#if LLVM_VERSION_LT(15, 0)
+  return wrap(Attribute::get(*unwrap(C), Attribute::UWTable));
+#else
+  return wrap(Attribute::getWithUWTableKind(
+      *unwrap(C), Async ? UWTableKind::Async : UWTableKind::Sync));
+#endif
+}
+
+extern "C" LLVMAttributeRef LLVMRustCreateAllocSizeAttr(LLVMContextRef C, uint32_t ElementSizeArg) {
+  return wrap(Attribute::getWithAllocSizeArgs(*unwrap(C), ElementSizeArg, None));
+}
+
+#if LLVM_VERSION_GE(15, 0)
+
+// These values **must** match ffi::AllocKindFlags.
+// It _happens_ to match the LLVM values of llvm::AllocFnKind,
+// but that's happenstance and we do explicit conversions before
+// passing them to LLVM.
+enum class LLVMRustAllocKindFlags : uint64_t {
+  Unknown = 0,
+  Alloc = 1,
+  Realloc = 1 << 1,
+  Free = 1 << 2,
+  Uninitialized = 1 << 3,
+  Zeroed = 1 << 4,
+  Aligned = 1 << 5,
+};
+
+static LLVMRustAllocKindFlags operator&(LLVMRustAllocKindFlags A, LLVMRustAllocKindFlags B) {
+  return static_cast<LLVMRustAllocKindFlags>(static_cast<uint64_t>(A) &
+                                      static_cast<uint64_t>(B));
+}
+
+static bool isSet(LLVMRustAllocKindFlags F) { return F != LLVMRustAllocKindFlags::Unknown; }
+
+static llvm::AllocFnKind allocKindFromRust(LLVMRustAllocKindFlags F) {
+  llvm::AllocFnKind AFK = llvm::AllocFnKind::Unknown;
+  if (isSet(F & LLVMRustAllocKindFlags::Alloc)) {
+    AFK |= llvm::AllocFnKind::Alloc;
+  }
+  if (isSet(F & LLVMRustAllocKindFlags::Realloc)) {
+    AFK |= llvm::AllocFnKind::Realloc;
+  }
+  if (isSet(F & LLVMRustAllocKindFlags::Free)) {
+    AFK |= llvm::AllocFnKind::Free;
+  }
+  if (isSet(F & LLVMRustAllocKindFlags::Uninitialized)) {
+    AFK |= llvm::AllocFnKind::Uninitialized;
+  }
+  if (isSet(F & LLVMRustAllocKindFlags::Zeroed)) {
+    AFK |= llvm::AllocFnKind::Zeroed;
+  }
+  if (isSet(F & LLVMRustAllocKindFlags::Aligned)) {
+    AFK |= llvm::AllocFnKind::Aligned;
+  }
+  return AFK;
+}
+#endif
+
+extern "C" LLVMAttributeRef LLVMRustCreateAllocKindAttr(LLVMContextRef C, uint64_t AllocKindArg) {
+#if LLVM_VERSION_GE(15, 0)
+  return wrap(Attribute::get(*unwrap(C), Attribute::AllocKind,
+      static_cast<uint64_t>(allocKindFromRust(static_cast<LLVMRustAllocKindFlags>(AllocKindArg)))));
+#else
+  report_fatal_error(
+      "allockind attributes are new in LLVM 15 and should not be used on older LLVMs");
+#endif
 }
 
 // Enable a fast-math flag
@@ -461,8 +489,14 @@ LLVMRustInlineAsm(LLVMTypeRef Ty, char *AsmString, size_t AsmStringLen,
 
 extern "C" bool LLVMRustInlineAsmVerify(LLVMTypeRef Ty, char *Constraints,
                                         size_t ConstraintsLen) {
+#if LLVM_VERSION_LT(15, 0)
   return InlineAsm::Verify(unwrap<FunctionType>(Ty),
                            StringRef(Constraints, ConstraintsLen));
+#else
+  // llvm::Error converts to true if it is an error.
+  return !llvm::errorToBool(InlineAsm::verify(
+      unwrap<FunctionType>(Ty), StringRef(Constraints, ConstraintsLen)));
+#endif
 }
 
 extern "C" void LLVMRustAppendModuleInlineAsm(LLVMModuleRef M, const char *Asm,
@@ -714,21 +748,26 @@ extern "C" uint32_t LLVMRustVersionMinor() { return LLVM_VERSION_MINOR; }
 
 extern "C" uint32_t LLVMRustVersionMajor() { return LLVM_VERSION_MAJOR; }
 
-extern "C" bool LLVMRustIsRustLLVM() {
-#ifdef LLVM_RUSTLLVM
-  return true;
-#else
-  return false;
-#endif
+extern "C" void LLVMRustAddModuleFlag(
+    LLVMModuleRef M,
+    Module::ModFlagBehavior MergeBehavior,
+    const char *Name,
+    uint32_t Value) {
+  unwrap(M)->addModuleFlag(MergeBehavior, Name, Value);
 }
 
-extern "C" void LLVMRustAddModuleFlag(LLVMModuleRef M, const char *Name,
-                                      uint32_t Value) {
-  unwrap(M)->addModuleFlag(Module::Warning, Name, Value);
+extern "C" bool LLVMRustHasModuleFlag(LLVMModuleRef M, const char *Name,
+                                      size_t Len) {
+  return unwrap(M)->getModuleFlag(StringRef(Name, Len)) != nullptr;
 }
 
 extern "C" LLVMValueRef LLVMRustMetadataAsValue(LLVMContextRef C, LLVMMetadataRef MD) {
   return wrap(MetadataAsValue::get(*unwrap(C), unwrap(MD)));
+}
+
+extern "C" void LLVMRustGlobalAddMetadata(
+    LLVMValueRef Global, unsigned Kind, LLVMMetadataRef MD) {
+  unwrap<GlobalObject>(Global)->addMetadata(Kind, *unwrap<MDNode>(MD));
 }
 
 extern "C" LLVMRustDIBuilderRef LLVMRustDIBuilderCreate(LLVMModuleRef M) {
@@ -1272,6 +1311,11 @@ extern "C" LLVMTypeKind LLVMRustGetTypeKind(LLVMTypeRef Ty) {
     return LLVMBFloatTypeKind;
   case Type::X86_AMXTyID:
     return LLVMX86_AMXTypeKind;
+#if LLVM_VERSION_GE(15, 0)
+  case Type::DXILPointerTyID:
+    report_fatal_error("Rust does not support DirectX typed pointers.");
+    break;
+#endif
   }
   report_fatal_error("Unhandled TypeID.");
 }
@@ -1490,11 +1534,6 @@ extern "C" void LLVMRustSetComdat(LLVMModuleRef M, LLVMValueRef V,
   }
 }
 
-extern "C" void LLVMRustUnsetComdat(LLVMValueRef V) {
-  GlobalObject *GV = unwrap<GlobalObject>(V);
-  GV->setComdat(nullptr);
-}
-
 enum class LLVMRustLinkage {
   ExternalLinkage = 0,
   AvailableExternallyLinkage = 1,
@@ -1592,11 +1631,19 @@ extern "C" bool LLVMRustConstInt128Get(LLVMValueRef CV, bool sext, uint64_t *hig
     auto C = unwrap<llvm::ConstantInt>(CV);
     if (C->getBitWidth() > 128) { return false; }
     APInt AP;
+#if LLVM_VERSION_GE(15, 0)
+    if (sext) {
+        AP = C->getValue().sext(128);
+    } else {
+        AP = C->getValue().zext(128);
+    }
+#else
     if (sext) {
         AP = C->getValue().sextOrSelf(128);
     } else {
         AP = C->getValue().zextOrSelf(128);
     }
+#endif
     *low = AP.getLoBits(64).getZExtValue();
     *high = AP.getHiBits(64).getZExtValue();
     return true;
@@ -1890,4 +1937,31 @@ extern "C" void LLVMRustContextConfigureDiagnosticHandler(
 
   unwrap(C)->setDiagnosticHandler(std::make_unique<RustDiagnosticHandler>(
       DiagnosticHandlerCallback, DiagnosticHandlerContext, RemarkAllPasses, Passes));
+}
+
+extern "C" void LLVMRustGetMangledName(LLVMValueRef V, RustStringRef Str) {
+  RawRustStringOstream OS(Str);
+  GlobalValue *GV = unwrap<GlobalValue>(V);
+  Mangler().getNameWithPrefix(OS, GV, true);
+}
+
+// LLVMGetAggregateElement was added in LLVM 15. For earlier LLVM versions just
+// use its implementation.
+#if LLVM_VERSION_LT(15, 0)
+extern "C" LLVMValueRef LLVMGetAggregateElement(LLVMValueRef C, unsigned Idx) {
+    return wrap(unwrap<Constant>(C)->getAggregateElement(Idx));
+}
+#endif
+
+extern "C" int32_t LLVMRustGetElementTypeArgIndex(LLVMValueRef CallSite) {
+#if LLVM_VERSION_GE(15, 0)
+    auto *CB = unwrap<CallBase>(CallSite);
+    switch (CB->getIntrinsicID()) {
+        case Intrinsic::arm_ldrex:
+            return 0;
+        case Intrinsic::arm_strex:
+            return 1;
+    }
+#endif
+    return -1;
 }

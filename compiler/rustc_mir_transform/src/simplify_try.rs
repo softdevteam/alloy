@@ -1,10 +1,12 @@
 //! The general point of the optimizations provided here is to simplify something like:
 //!
 //! ```rust
+//! # fn foo<T, E>(x: Result<T, E>) -> Result<T, E> {
 //! match x {
 //!     Ok(x) => Ok(x),
 //!     Err(x) => Err(x)
 //! }
+//! # }
 //! ```
 //!
 //! into just `x`.
@@ -23,7 +25,7 @@ use std::slice::Iter;
 ///
 /// This is done by transforming basic blocks where the statements match:
 ///
-/// ```rust
+/// ```ignore (MIR)
 /// _LOCAL_TMP = ((_LOCAL_1 as Variant ).FIELD: TY );
 /// _TMP_2 = _LOCAL_TMP;
 /// ((_LOCAL_0 as Variant).FIELD: TY) = move _TMP_2;
@@ -32,7 +34,7 @@ use std::slice::Iter;
 ///
 /// into:
 ///
-/// ```rust
+/// ```ignore (MIR)
 /// _LOCAL_0 = move _LOCAL_1
 /// ```
 pub struct SimplifyArmIdentity;
@@ -362,7 +364,7 @@ fn optimization_applies<'tcx>(
         return false;
     } else if last_assigned_to != opt_info.local_tmp_s1 {
         trace!(
-            "NO: end of assignemnt chain does not match written enum temp: {:?} != {:?}",
+            "NO: end of assignment chain does not match written enum temp: {:?} != {:?}",
             last_assigned_to,
             opt_info.local_tmp_s1
         );
@@ -376,7 +378,7 @@ fn optimization_applies<'tcx>(
 impl<'tcx> MirPass<'tcx> for SimplifyArmIdentity {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         // FIXME(77359): This optimization can result in unsoundness.
-        if !tcx.sess.opts.debugging_opts.unsound_mir_opts {
+        if !tcx.sess.opts.unstable_opts.unsound_mir_opts {
             return;
         }
 
@@ -384,14 +386,17 @@ impl<'tcx> MirPass<'tcx> for SimplifyArmIdentity {
         trace!("running SimplifyArmIdentity on {:?}", source);
 
         let local_uses = LocalUseCounter::get_local_uses(body);
-        let (basic_blocks, local_decls, debug_info) =
-            body.basic_blocks_local_decls_mut_and_var_debug_info();
-        for bb in basic_blocks {
+        for bb in body.basic_blocks.as_mut() {
             if let Some(opt_info) =
-                get_arm_identity_info(&bb.statements, local_decls.len(), debug_info)
+                get_arm_identity_info(&bb.statements, body.local_decls.len(), &body.var_debug_info)
             {
                 trace!("got opt_info = {:#?}", opt_info);
-                if !optimization_applies(&opt_info, local_decls, &local_uses, &debug_info) {
+                if !optimization_applies(
+                    &opt_info,
+                    &body.local_decls,
+                    &local_uses,
+                    &body.var_debug_info,
+                ) {
                     debug!("optimization skipped for {:?}", source);
                     continue;
                 }
@@ -429,7 +434,7 @@ impl<'tcx> MirPass<'tcx> for SimplifyArmIdentity {
 
                 // Fix the debug info to point to the right local
                 for dbg_index in opt_info.dbg_info_to_adjust {
-                    let dbg_info = &mut debug_info[dbg_index];
+                    let dbg_info = &mut body.var_debug_info[dbg_index];
                     assert!(
                         matches!(dbg_info.value, VarDebugInfoContents::Place(_)),
                         "value was not a Place"
@@ -460,19 +465,19 @@ impl LocalUseCounter {
 }
 
 impl Visitor<'_> for LocalUseCounter {
-    fn visit_local(&mut self, local: &Local, context: PlaceContext, _location: Location) {
+    fn visit_local(&mut self, local: Local, context: PlaceContext, _location: Location) {
         if context.is_storage_marker()
             || context == PlaceContext::NonUse(NonUseContext::VarDebugInfo)
         {
             return;
         }
 
-        self.local_uses[*local] += 1;
+        self.local_uses[local] += 1;
     }
 }
 
 /// Match on:
-/// ```rust
+/// ```ignore (MIR)
 /// _LOCAL_INTO = ((_LOCAL_FROM as Variant).FIELD: TY);
 /// ```
 fn match_get_variant_field<'tcx>(
@@ -492,7 +497,7 @@ fn match_get_variant_field<'tcx>(
 }
 
 /// Match on:
-/// ```rust
+/// ```ignore (MIR)
 /// ((_LOCAL_FROM as Variant).FIELD: TY) = move _LOCAL_INTO;
 /// ```
 fn match_set_variant_field<'tcx>(stmt: &Statement<'tcx>) -> Option<(Local, Local, VarField<'tcx>)> {
@@ -507,7 +512,7 @@ fn match_set_variant_field<'tcx>(stmt: &Statement<'tcx>) -> Option<(Local, Local
 }
 
 /// Match on:
-/// ```rust
+/// ```ignore (MIR)
 /// discriminant(_LOCAL_TO_SET) = VAR_IDX;
 /// ```
 fn match_set_discr(stmt: &Statement<'_>) -> Option<(Local, VariantIdx)> {
@@ -546,7 +551,7 @@ impl<'tcx> MirPass<'tcx> for SimplifyBranchSame {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         // This optimization is disabled by default for now due to
         // soundness concerns; see issue #89485 and PR #89489.
-        if !tcx.sess.opts.debugging_opts.unsound_mir_opts {
+        if !tcx.sess.opts.unstable_opts.unsound_mir_opts {
             return;
         }
 
@@ -631,10 +636,6 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
                     .filter(|(_, bb)| {
                         // Reaching `unreachable` is UB so assume it doesn't happen.
                         bb.terminator().kind != TerminatorKind::Unreachable
-                    // But `asm!(...)` could abort the program,
-                    // so we cannot assume that the `unreachable` terminator itself is reachable.
-                    // FIXME(Centril): use a normalization pass instead of a check.
-                    || bb.statements.iter().any(|stmt| matches!(stmt.kind, StatementKind::LlvmInlineAsm(..)))
                     })
                     .peekable();
 
@@ -694,7 +695,7 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
     ///
     /// Statements can be trivially equal if the kinds match.
     /// But they can also be considered equal in the following case A:
-    /// ```
+    /// ```ignore (MIR)
     /// discriminant(_0) = 0;   // bb1
     /// _0 = move _1;           // bb2
     /// ```
@@ -711,7 +712,7 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
     ) -> StatementEquality {
         let helper = |rhs: &Rvalue<'tcx>,
                       place: &Place<'tcx>,
-                      variant_index: &VariantIdx,
+                      variant_index: VariantIdx,
                       switch_value: u128,
                       side_to_choose| {
             let place_type = place.ty(self.body, self.tcx).ty;
@@ -721,7 +722,7 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
             };
             // We need to make sure that the switch value that targets the bb with
             // SetDiscriminant is the same as the variant discriminant.
-            let variant_discr = adt.discriminant_for_variant(self.tcx, *variant_index).val;
+            let variant_discr = adt.discriminant_for_variant(self.tcx, variant_index).val;
             if variant_discr != switch_value {
                 trace!(
                     "NO: variant discriminant {} does not equal switch value {}",
@@ -730,7 +731,7 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
                 );
                 return StatementEquality::NotEqual;
             }
-            let variant_is_fieldless = adt.variants[*variant_index].fields.is_empty();
+            let variant_is_fieldless = adt.variant(variant_index).fields.is_empty();
             if !variant_is_fieldless {
                 trace!("NO: variant {:?} was not fieldless", variant_index);
                 return StatementEquality::NotEqual;
@@ -757,7 +758,7 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
             // check for case A
             (
                 StatementKind::Assign(box (_, rhs)),
-                StatementKind::SetDiscriminant { place, variant_index },
+                &StatementKind::SetDiscriminant { ref place, variant_index },
             ) if y_target_and_value.value.is_some() => {
                 // choose basic block of x, as that has the assign
                 helper(
@@ -769,8 +770,8 @@ impl<'tcx> SimplifyBranchSameOptimizationFinder<'_, 'tcx> {
                 )
             }
             (
-                StatementKind::SetDiscriminant { place, variant_index },
-                StatementKind::Assign(box (_, rhs)),
+                &StatementKind::SetDiscriminant { ref place, variant_index },
+                &StatementKind::Assign(box (_, ref rhs)),
             ) if x_target_and_value.value.is_some() => {
                 // choose basic block of y, as that has the assign
                 helper(

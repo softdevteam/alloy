@@ -1,17 +1,15 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
-
-use build_helper::t;
+use std::path::PathBuf;
+use std::process::Command;
 
 use crate::builder::{Builder, Cargo as CargoCommand, RunConfig, ShouldRun, Step};
 use crate::channel::GitInfo;
 use crate::compile;
 use crate::config::TargetSelection;
 use crate::toolstate::ToolState;
-use crate::util::{add_dylib_path, exe};
+use crate::util::{add_dylib_path, exe, t};
 use crate::Compiler;
 use crate::Mode;
 
@@ -53,10 +51,10 @@ impl Step for ToolBuild {
 
         match self.mode {
             Mode::ToolRustc => {
-                builder.ensure(compile::Std { compiler, target: compiler.host });
-                builder.ensure(compile::Rustc { compiler, target });
+                builder.ensure(compile::Std::new(compiler, compiler.host));
+                builder.ensure(compile::Rustc::new(compiler, target));
             }
-            Mode::ToolStd => builder.ensure(compile::Std { compiler, target }),
+            Mode::ToolStd => builder.ensure(compile::Std::new(compiler, target)),
             Mode::ToolBootstrap => {} // uses downloaded stage0 compiler libs
             _ => panic!("unexpected Mode for tool build"),
         }
@@ -154,43 +152,43 @@ impl Step for ToolBuild {
         });
 
         if is_expected && !duplicates.is_empty() {
-            println!(
+            eprintln!(
                 "duplicate artifacts found when compiling a tool, this \
                       typically means that something was recompiled because \
                       a transitive dependency has different features activated \
                       than in a previous build:\n"
             );
-            println!(
+            eprintln!(
                 "the following dependencies are duplicated although they \
                       have the same features enabled:"
             );
             let (same, different): (Vec<_>, Vec<_>) =
                 duplicates.into_iter().partition(|(_, cur, prev)| cur.2 == prev.2);
             for (id, cur, prev) in same {
-                println!("  {}", id);
+                eprintln!("  {}", id);
                 // same features
-                println!("    `{}` ({:?})\n    `{}` ({:?})", cur.0, cur.1, prev.0, prev.1);
+                eprintln!("    `{}` ({:?})\n    `{}` ({:?})", cur.0, cur.1, prev.0, prev.1);
             }
-            println!("the following dependencies have different features:");
+            eprintln!("the following dependencies have different features:");
             for (id, cur, prev) in different {
-                println!("  {}", id);
+                eprintln!("  {}", id);
                 let cur_features: HashSet<_> = cur.2.into_iter().collect();
                 let prev_features: HashSet<_> = prev.2.into_iter().collect();
-                println!(
+                eprintln!(
                     "    `{}` additionally enabled features {:?} at {:?}",
                     cur.0,
                     &cur_features - &prev_features,
                     cur.1
                 );
-                println!(
+                eprintln!(
                     "    `{}` additionally enabled features {:?} at {:?}",
                     prev.0,
                     &prev_features - &cur_features,
                     prev.1
                 );
             }
-            println!();
-            println!(
+            eprintln!();
+            eprintln!(
                 "to fix this you will probably want to edit the local \
                       src/tools/rustc-workspace-hack/Cargo.toml crate, as \
                       that will update the dependency graph to ensure that \
@@ -206,7 +204,7 @@ impl Step for ToolBuild {
 
         if !is_expected {
             if !is_optional_tool {
-                exit(1);
+                crate::detail_exit(1);
             } else {
                 None
             }
@@ -251,6 +249,10 @@ pub fn prepare_tool_cargo(
             features.push("rustc-workspace-hack/all-static".to_string());
         }
     }
+
+    // clippy tests need to know about the stage sysroot. Set them consistently while building to
+    // avoid rebuilding when running tests.
+    cargo.env("SYSROOT", builder.sysroot(compiler));
 
     // if tools are using lzma we want to force the build script to build its
     // own copy
@@ -365,7 +367,7 @@ bootstrap_tool!(
     Compiletest, "src/tools/compiletest", "compiletest", is_unstable_tool = true;
     BuildManifest, "src/tools/build-manifest", "build-manifest";
     RemoteTestClient, "src/tools/remote-test-client", "remote-test-client";
-    RustInstaller, "src/tools/rust-installer", "fabricate", is_external_tool = true;
+    RustInstaller, "src/tools/rust-installer", "rust-installer", is_external_tool = true;
     RustdocTheme, "src/tools/rustdoc-themes", "rustdoc-themes";
     ExpandYamlAnchors, "src/tools/expand-yaml-anchors", "expand-yaml-anchors";
     LintDocs, "src/tools/lint-docs", "lint-docs";
@@ -381,22 +383,14 @@ pub struct ErrorIndex {
 
 impl ErrorIndex {
     pub fn command(builder: &Builder<'_>) -> Command {
-        // This uses stage-1 to match the behavior of building rustdoc.
-        // Error-index-generator links with the rustdoc library, so we want to
-        // use the same librustdoc to avoid building rustdoc twice (and to
-        // avoid building the compiler an extra time). This uses
-        // saturating_sub to deal with building with stage 0. (Using stage 0
-        // isn't recommended, since it will fail if any new error index tests
-        // use new syntax, but it should work otherwise.)
-        let compiler = builder.compiler(builder.top_stage.saturating_sub(1), builder.config.build);
+        // Error-index-generator links with the rustdoc library, so we need to add `rustc_lib_paths`
+        // for rustc_private and libLLVM.so, and `sysroot_lib` for libstd, etc.
+        let host = builder.config.build;
+        let compiler = builder.compiler_for(builder.top_stage, host, host);
         let mut cmd = Command::new(builder.ensure(ErrorIndex { compiler }));
-        add_dylib_path(
-            vec![
-                PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host)),
-                PathBuf::from(builder.rustc_libdir(compiler)),
-            ],
-            &mut cmd,
-        );
+        let mut dylib_paths = builder.rustc_lib_paths(compiler);
+        dylib_paths.push(PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host)));
+        add_dylib_path(dylib_paths, &mut cmd);
         cmd
     }
 }
@@ -518,11 +512,11 @@ impl Step for Rustdoc {
         // When using `download-rustc` and a stage0 build_compiler, copying rustc doesn't actually
         // build stage0 libstd (because the libstd in sysroot has the wrong ABI). Explicitly build
         // it.
-        builder.ensure(compile::Std { compiler: build_compiler, target: target_compiler.host });
-        builder.ensure(compile::Rustc { compiler: build_compiler, target: target_compiler.host });
+        builder.ensure(compile::Std::new(build_compiler, target_compiler.host));
+        builder.ensure(compile::Rustc::new(build_compiler, target_compiler.host));
         // NOTE: this implies that `download-rustc` is pretty useless when compiling with the stage0
         // compiler, since you do just as much work.
-        if !builder.config.dry_run && builder.config.download_rustc && build_compiler.stage == 0 {
+        if !builder.config.dry_run && builder.download_rustc() && build_compiler.stage == 0 {
             println!(
                 "warning: `download-rustc` does nothing when building stage1 tools; consider using `--stage 2` instead"
             );
@@ -662,7 +656,6 @@ impl Step for Cargo {
 pub struct LldWrapper {
     pub compiler: Compiler,
     pub target: TargetSelection,
-    pub flavor_feature: &'static str,
 }
 
 impl Step for LldWrapper {
@@ -682,11 +675,99 @@ impl Step for LldWrapper {
                 path: "src/tools/lld-wrapper",
                 is_optional_tool: false,
                 source_type: SourceType::InTree,
-                extra_features: vec![self.flavor_feature.to_owned()],
+                extra_features: Vec::new(),
             })
             .expect("expected to build -- essential tool");
 
         src_exe
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct RustAnalyzer {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for RustAnalyzer {
+    type Output = Option<PathBuf>;
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = false;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        let builder = run.builder;
+        run.path("src/tools/rust-analyzer").default_condition(
+            builder.config.extended
+                && builder
+                    .config
+                    .tools
+                    .as_ref()
+                    .map_or(true, |tools| tools.iter().any(|tool| tool == "rust-analyzer")),
+        )
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(RustAnalyzer {
+            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
+            target: run.target,
+        });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
+        builder.ensure(ToolBuild {
+            compiler: self.compiler,
+            target: self.target,
+            tool: "rust-analyzer",
+            mode: Mode::ToolStd,
+            path: "src/tools/rust-analyzer",
+            extra_features: vec!["rust-analyzer/in-rust-tree".to_owned()],
+            is_optional_tool: false,
+            source_type: SourceType::InTree,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct RustAnalyzerProcMacroSrv {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for RustAnalyzerProcMacroSrv {
+    type Output = Option<PathBuf>;
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = false;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        let builder = run.builder;
+        run.path("src/tools/rust-analyzer").default_condition(
+            builder.config.extended
+                && builder
+                    .config
+                    .tools
+                    .as_ref()
+                    .map_or(true, |tools| tools.iter().any(|tool| tool == "rust-analyzer")),
+        )
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(RustAnalyzerProcMacroSrv {
+            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
+            target: run.target,
+        });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> Option<PathBuf> {
+        builder.ensure(ToolBuild {
+            compiler: self.compiler,
+            target: self.target,
+            tool: "rust-analyzer-proc-macro-srv",
+            mode: Mode::ToolStd,
+            path: "src/tools/rust-analyzer/crates/proc-macro-srv-cli",
+            extra_features: vec!["proc-macro-srv/sysroot-abi".to_owned()],
+            is_optional_tool: false,
+            source_type: SourceType::InTree,
+        })
     }
 }
 
@@ -699,6 +780,7 @@ macro_rules! tool_extended {
        stable = $stable:expr,
        $(in_tree = $in_tree:expr,)?
        $(submodule = $submodule:literal,)?
+       $(tool_std = $tool_std:literal,)?
        $extra_deps:block;)+) => {
         $(
             #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -747,7 +829,7 @@ macro_rules! tool_extended {
                     compiler: $sel.compiler,
                     target: $sel.target,
                     tool: $tool_name,
-                    mode: Mode::ToolRustc,
+                    mode: if false $(|| $tool_std)? { Mode::ToolStd } else { Mode::ToolRustc },
                     path: $path,
                     extra_features: $sel.extra_features,
                     is_optional_tool: true,
@@ -781,9 +863,11 @@ tool_extended!((self, builder),
         });
         self.extra_features.push("clippy".to_owned());
     };
-    RustDemangler, rust_demangler, "src/tools/rust-demangler", "rust-demangler", stable=false, in_tree=true, {};
+    // FIXME: tool_std is not quite right, we shouldn't allow nightly features.
+    // But `builder.cargo` doesn't know how to handle ToolBootstrap in stages other than 0,
+    // and this is close enough for now.
+    RustDemangler, rust_demangler, "src/tools/rust-demangler", "rust-demangler", stable=false, in_tree=true, tool_std=true, {};
     Rustfmt, rustfmt, "src/tools/rustfmt", "rustfmt", stable=true, in_tree=true, {};
-    RustAnalyzer, rust_analyzer, "src/tools/rust-analyzer/crates/rust-analyzer", "rust-analyzer", stable=false, submodule="rust-analyzer", {};
 );
 
 impl<'a> Builder<'a> {

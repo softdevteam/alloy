@@ -20,7 +20,7 @@ pub struct MismatchedProjectionTypes<'tcx> {
     pub err: ty::error::TypeError<'tcx>,
 }
 
-#[derive(Clone, TypeFoldable)]
+#[derive(Clone, TypeFoldable, TypeVisitable)]
 pub struct Normalized<'tcx, T> {
     pub value: T,
     pub obligations: Vec<PredicateObligation<'tcx>>,
@@ -70,7 +70,7 @@ pub struct ProjectionCache<'a, 'tcx> {
     undo_log: &'a mut InferCtxtUndoLogs<'tcx>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProjectionCacheStorage<'tcx> {
     map: SnapshotMapStorage<ProjectionCacheKey<'tcx>, ProjectionCacheEntry<'tcx>>,
 }
@@ -93,7 +93,7 @@ pub enum ProjectionCacheEntry<'tcx> {
     Recur,
     Error,
     NormalizedTy {
-        ty: NormalizedTy<'tcx>,
+        ty: Normalized<'tcx, ty::Term<'tcx>>,
         /// If we were able to successfully evaluate the
         /// corresponding cache entry key during predicate
         /// evaluation, then this field stores the final
@@ -174,7 +174,11 @@ impl<'tcx> ProjectionCache<'_, 'tcx> {
     }
 
     /// Indicates that `key` was normalized to `value`.
-    pub fn insert_ty(&mut self, key: ProjectionCacheKey<'tcx>, value: NormalizedTy<'tcx>) {
+    pub fn insert_term(
+        &mut self,
+        key: ProjectionCacheKey<'tcx>,
+        value: Normalized<'tcx, ty::Term<'tcx>>,
+    ) {
         debug!(
             "ProjectionCacheEntry::insert_ty: adding cache entry: key={:?}, value={:?}",
             key, value
@@ -199,7 +203,7 @@ impl<'tcx> ProjectionCache<'_, 'tcx> {
             Some(&ProjectionCacheEntry::NormalizedTy { ref ty, complete: _ }) => {
                 info!("ProjectionCacheEntry::complete({:?}) - completing {:?}", key, ty);
                 let mut ty = ty.clone();
-                if result == EvaluationResult::EvaluatedToOk {
+                if result.must_apply_considering_regions() {
                     ty.obligations = vec![];
                 }
                 map.insert(key, ProjectionCacheEntry::NormalizedTy { ty, complete: Some(result) });

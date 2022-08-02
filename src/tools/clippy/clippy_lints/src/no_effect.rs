@@ -82,7 +82,7 @@ impl<'tcx> LateLintPass<'tcx> for NoEffect {
     }
 }
 
-fn check_no_effect(cx: &LateContext<'tcx>, stmt: &'tcx Stmt<'_>) -> bool {
+fn check_no_effect(cx: &LateContext<'_>, stmt: &Stmt<'_>) -> bool {
     if let StmtKind::Semi(expr) = stmt.kind {
         if has_no_effect(cx, expr) {
             span_lint_hir(cx, NO_EFFECT, expr.hir_id, stmt.span, "statement with no effect");
@@ -92,6 +92,7 @@ fn check_no_effect(cx: &LateContext<'tcx>, stmt: &'tcx Stmt<'_>) -> bool {
         if_chain! {
             if !is_lint_allowed(cx, NO_EFFECT_UNDERSCORE_BINDING, local.hir_id);
             if let Some(init) = local.init;
+            if local.els.is_none();
             if !local.pat.span.from_expansion();
             if has_no_effect(cx, init);
             if let PatKind::Binding(_, _, ident, _) = local.pat.kind;
@@ -116,7 +117,7 @@ fn has_no_effect(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
         return false;
     }
     match peel_blocks(expr).kind {
-        ExprKind::Lit(..) | ExprKind::Closure(..) => true,
+        ExprKind::Lit(..) | ExprKind::Closure { .. } => true,
         ExprKind::Path(..) => !has_drop(cx, cx.typeck_results().expr_ty(expr)),
         ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => has_no_effect(cx, a) && has_no_effect(cx, b),
         ExprKind::Array(v) | ExprKind::Tup(v) => v.iter().all(|val| has_no_effect(cx, val)),
@@ -155,7 +156,7 @@ fn has_no_effect(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     }
 }
 
-fn check_unnecessary_operation(cx: &LateContext<'tcx>, stmt: &'tcx Stmt<'_>) {
+fn check_unnecessary_operation(cx: &LateContext<'_>, stmt: &Stmt<'_>) {
     if_chain! {
         if let StmtKind::Semi(expr) = stmt.kind;
         if let Some(reduced) = reduce_expression(cx, expr);

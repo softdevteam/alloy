@@ -51,7 +51,7 @@ pub fn inject(sess: &Session, resolver: &mut dyn ResolverExpand, krate: &mut ast
     let test_runner = get_test_runner(sess, span_diagnostic, &krate);
 
     if sess.opts.test {
-        let panic_strategy = match (panic_strategy, sess.opts.debugging_opts.panic_abort_tests) {
+        let panic_strategy = match (panic_strategy, sess.opts.unstable_opts.panic_abort_tests) {
             (PanicStrategy::Abort, true) => PanicStrategy::Abort,
             (PanicStrategy::Abort, false) => {
                 if panic_strategy == platform_panic_strategy {
@@ -112,7 +112,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
     fn visit_crate(&mut self, c: &mut ast::Crate) {
         let prev_tests = mem::take(&mut self.tests);
         noop_visit_crate(c, self);
-        self.add_test_cases(ast::CRATE_NODE_ID, c.span, prev_tests);
+        self.add_test_cases(ast::CRATE_NODE_ID, c.spans.inner_span, prev_tests);
 
         // Create a main function to run our tests
         c.items.push(mk_main(&mut self.cx));
@@ -129,7 +129,8 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
 
         // We don't want to recurse into anything other than mods, since
         // mods or tests inside of functions will break things
-        if let ast::ItemKind::Mod(_, ModKind::Loaded(.., span)) = item.kind {
+        if let ast::ItemKind::Mod(_, ModKind::Loaded(.., ref spans)) = item.kind {
+            let ast::ModSpans { inner_span: span, inject_use_span: _ } = *spans;
             let prev_tests = mem::take(&mut self.tests);
             noop_visit_item_kind(&mut item.kind, self);
             self.add_test_cases(item.id, span, prev_tests);
@@ -146,7 +147,7 @@ fn entry_point_type(sess: &Session, item: &ast::Item, depth: usize) -> EntryPoin
             if sess.contains_name(&item.attrs, sym::start) {
                 EntryPointType::Start
             } else if sess.contains_name(&item.attrs, sym::rustc_main) {
-                EntryPointType::MainAttr
+                EntryPointType::RustcMainAttr
             } else if item.ident.name == sym::main {
                 if depth == 0 {
                     // This is a top-level function so can be 'main'
@@ -176,12 +177,12 @@ impl<'a> MutVisitor for EntryPointCleaner<'a> {
         let item = noop_flat_map_item(i, self).expect_one("noop did something");
         self.depth -= 1;
 
-        // Remove any #[main] or #[start] from the AST so it doesn't
+        // Remove any #[rustc_main] or #[start] from the AST so it doesn't
         // clash with the one we're going to add, but mark it as
         // #[allow(dead_code)] to avoid printing warnings.
         let item = match entry_point_type(self.sess, &item, self.depth) {
-            EntryPointType::MainNamed | EntryPointType::MainAttr | EntryPointType::Start => item
-                .map(|ast::Item { id, ident, attrs, kind, vis, span, tokens }| {
+            EntryPointType::MainNamed | EntryPointType::RustcMainAttr | EntryPointType::Start => {
+                item.map(|ast::Item { id, ident, attrs, kind, vis, span, tokens }| {
                     let allow_ident = Ident::new(sym::allow, self.def_site);
                     let dc_nested =
                         attr::mk_nested_word_item(Ident::new(sym::dead_code, self.def_site));
@@ -196,7 +197,8 @@ impl<'a> MutVisitor for EntryPointCleaner<'a> {
                         .collect();
 
                     ast::Item { id, ident, attrs, kind, vis, span, tokens }
-                }),
+                })
+            }
             EntryPointType::None | EntryPointType::OtherMain => item,
         };
 
@@ -248,7 +250,7 @@ fn generate_test_harness(
 ///
 /// By default this expands to
 ///
-/// ```
+/// ```ignore UNSOLVED (I think I still need guidance for this one. Is it correct? Do we try to make it run? How do we nicely fill it out?)
 /// #[rustc_main]
 /// pub fn main() {
 ///     extern crate test;
@@ -350,7 +352,7 @@ fn mk_tests_slice(cx: &TestCtxt<'_>, sp: Span) -> P<ast::Expr> {
     debug!("building test vector from {} tests", cx.test_cases.len());
     let ecx = &cx.ext_cx;
 
-    ecx.expr_vec_slice(
+    ecx.expr_array_ref(
         sp,
         cx.test_cases
             .iter()
@@ -376,9 +378,13 @@ fn get_test_runner(
     match &*meta_list {
         [single] => match single.meta_item() {
             Some(meta_item) if meta_item.is_word() => return Some(meta_item.path.clone()),
-            _ => sd.struct_span_err(span, "`test_runner` argument must be a path").emit(),
+            _ => {
+                sd.struct_span_err(span, "`test_runner` argument must be a path").emit();
+            }
         },
-        _ => sd.struct_span_err(span, "`#![test_runner(..)]` accepts exactly 1 argument").emit(),
+        _ => {
+            sd.struct_span_err(span, "`#![test_runner(..)]` accepts exactly 1 argument").emit();
+        }
     }
     None
 }

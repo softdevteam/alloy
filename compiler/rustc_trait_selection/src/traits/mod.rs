@@ -23,18 +23,17 @@ mod util;
 pub mod wf;
 
 use crate::infer::outlives::env::OutlivesEnvironment;
-use crate::infer::{InferCtxt, RegionckMode, TyCtxtInferExt};
+use crate::infer::{InferCtxt, TyCtxtInferExt};
 use crate::traits::error_reporting::InferCtxtExt as _;
 use crate::traits::query::evaluate_obligation::InferCtxtExt as _;
-use rustc_errors::ErrorReported;
+use rustc_errors::ErrorGuaranteed;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::ty::fold::TypeFoldable;
 use rustc_middle::ty::subst::{InternalSubsts, SubstsRef};
-use rustc_middle::ty::{
-    self, GenericParamDefKind, ToPredicate, Ty, TyCtxt, VtblEntry, COMMON_VTABLE_ENTRIES,
-};
+use rustc_middle::ty::visit::TypeVisitable;
+use rustc_middle::ty::{self, GenericParamDefKind, ToPredicate, Ty, TyCtxt, VtblEntry};
 use rustc_span::{sym, Span};
 use smallvec::SmallVec;
 
@@ -48,7 +47,7 @@ pub use self::SelectionError::*;
 
 pub use self::coherence::{add_placeholder_note, orphan_check, overlapping_impls};
 pub use self::coherence::{OrphanCheckErr, OverlapResult};
-pub use self::engine::TraitEngineExt;
+pub use self::engine::{ObligationCtxt, TraitEngineExt};
 pub use self::fulfill::{FulfillmentContext, PendingPredicateObligation};
 pub use self::object_safety::astconv_object_safety_violations;
 pub use self::object_safety::is_vtable_safe_method;
@@ -61,8 +60,9 @@ pub use self::select::{EvaluationResult, IntercrateAmbiguityCause, OverflowError
 pub use self::specialize::specialization_graph::FutureCompatOverlapError;
 pub use self::specialize::specialization_graph::FutureCompatOverlapErrorKind;
 pub use self::specialize::{specialization_graph, translate_substs, OverlapError};
-pub use self::structural_match::search_for_structural_match_violation;
-pub use self::structural_match::NonStructuralMatchTy;
+pub use self::structural_match::{
+    search_for_adt_const_param_violation, search_for_structural_match_violation,
+};
 pub use self::util::{
     elaborate_obligations, elaborate_predicates, elaborate_predicates_with_span,
     elaborate_trait_ref, elaborate_trait_refs,
@@ -164,7 +164,7 @@ pub fn type_known_to_meet_bound_modulo_regions<'a, 'tcx>(
         // The handling of regions in this area of the code is terrible,
         // see issue #29149. We should be able to improve on this with
         // NLL.
-        let mut fulfill_cx = FulfillmentContext::new_ignoring_regions();
+        let mut fulfill_cx = FulfillmentContext::new();
 
         // We can use a dummy node-id here because we won't pay any mind
         // to region obligations that arise (there shouldn't really be any
@@ -200,39 +200,35 @@ pub fn type_known_to_meet_bound_modulo_regions<'a, 'tcx>(
     }
 }
 
+#[instrument(level = "debug", skip(tcx, elaborated_env))]
 fn do_normalize_predicates<'tcx>(
     tcx: TyCtxt<'tcx>,
-    region_context: DefId,
     cause: ObligationCause<'tcx>,
     elaborated_env: ty::ParamEnv<'tcx>,
     predicates: Vec<ty::Predicate<'tcx>>,
-) -> Result<Vec<ty::Predicate<'tcx>>, ErrorReported> {
-    debug!(
-        "do_normalize_predicates(predicates={:?}, region_context={:?}, cause={:?})",
-        predicates, region_context, cause,
-    );
+) -> Result<Vec<ty::Predicate<'tcx>>, ErrorGuaranteed> {
     let span = cause.span;
-    tcx.infer_ctxt().enter(|infcx| {
-        // FIXME. We should really... do something with these region
-        // obligations. But this call just continues the older
-        // behavior (i.e., doesn't cause any new bugs), and it would
-        // take some further refactoring to actually solve them. In
-        // particular, we would have to handle implied bounds
-        // properly, and that code is currently largely confined to
-        // regionck (though I made some efforts to extract it
-        // out). -nmatsakis
-        //
-        // @arielby: In any case, these obligations are checked
-        // by wfcheck anyway, so I'm not sure we have to check
-        // them here too, and we will remove this function when
-        // we move over to lazy normalization *anyway*.
-        let fulfill_cx = FulfillmentContext::new_ignoring_regions();
+    // FIXME. We should really... do something with these region
+    // obligations. But this call just continues the older
+    // behavior (i.e., doesn't cause any new bugs), and it would
+    // take some further refactoring to actually solve them. In
+    // particular, we would have to handle implied bounds
+    // properly, and that code is currently largely confined to
+    // regionck (though I made some efforts to extract it
+    // out). -nmatsakis
+    //
+    // @arielby: In any case, these obligations are checked
+    // by wfcheck anyway, so I'm not sure we have to check
+    // them here too, and we will remove this function when
+    // we move over to lazy normalization *anyway*.
+    tcx.infer_ctxt().ignoring_regions().enter(|infcx| {
+        let fulfill_cx = FulfillmentContext::new();
         let predicates =
             match fully_normalize(&infcx, fulfill_cx, cause, elaborated_env, predicates) {
                 Ok(predicates) => predicates,
                 Err(errors) => {
-                    infcx.report_fulfillment_errors(&errors, None, false);
-                    return Err(ErrorReported);
+                    let reported = infcx.report_fulfillment_errors(&errors, None, false);
+                    return Err(reported);
                 }
             };
 
@@ -242,40 +238,46 @@ fn do_normalize_predicates<'tcx>(
         // cares about declarations like `'a: 'b`.
         let outlives_env = OutlivesEnvironment::new(elaborated_env);
 
-        infcx.resolve_regions_and_report_errors(
-            region_context,
-            &outlives_env,
-            RegionckMode::default(),
-        );
+        // FIXME: It's very weird that we ignore region obligations but apparently
+        // still need to use `resolve_regions` as we need the resolved regions in
+        // the normalized predicates.
+        let errors = infcx.resolve_regions(&outlives_env);
+        if !errors.is_empty() {
+            tcx.sess.delay_span_bug(
+                span,
+                format!(
+                    "failed region resolution while normalizing {elaborated_env:?}: {errors:?}"
+                ),
+            );
+        }
 
-        let predicates = match infcx.fully_resolve(predicates) {
-            Ok(predicates) => predicates,
+        match infcx.fully_resolve(predicates) {
+            Ok(predicates) => Ok(predicates),
             Err(fixup_err) => {
                 // If we encounter a fixup error, it means that some type
                 // variable wound up unconstrained. I actually don't know
                 // if this can happen, and I certainly don't expect it to
                 // happen often, but if it did happen it probably
                 // represents a legitimate failure due to some kind of
-                // unconstrained variable, and it seems better not to ICE,
-                // all things considered.
-                tcx.sess.span_err(span, &fixup_err.to_string());
-                return Err(ErrorReported);
+                // unconstrained variable.
+                //
+                // @lcnr: Let's still ICE here for now. I want a test case
+                // for that.
+                span_bug!(
+                    span,
+                    "inference variables in normalized parameter environment: {}",
+                    fixup_err
+                );
             }
-        };
-        if predicates.needs_infer() {
-            tcx.sess.delay_span_bug(span, "encountered inference variables after `fully_resolve`");
-            Err(ErrorReported)
-        } else {
-            Ok(predicates)
         }
     })
 }
 
 // FIXME: this is gonna need to be removed ...
 /// Normalizes the parameter environment, reporting errors if they occur.
+#[instrument(level = "debug", skip(tcx))]
 pub fn normalize_param_env_or_error<'tcx>(
     tcx: TyCtxt<'tcx>,
-    region_context: DefId,
     unnormalized_env: ty::ParamEnv<'tcx>,
     cause: ObligationCause<'tcx>,
 ) -> ty::ParamEnv<'tcx> {
@@ -291,14 +293,8 @@ pub fn normalize_param_env_or_error<'tcx>(
     //
     // In any case, in practice, typeck constructs all the
     // parameter environments once for every fn as it goes,
-    // and errors will get reported then; so after typeck we
+    // and errors will get reported then; so outside of type inference we
     // can be sure that no errors should occur.
-
-    debug!(
-        "normalize_param_env_or_error(region_context={:?}, unnormalized_env={:?}, cause={:?})",
-        region_context, unnormalized_env, cause
-    );
-
     let mut predicates: Vec<_> =
         util::elaborate_predicates(tcx, unnormalized_env.caller_bounds().into_iter())
             .map(|obligation| obligation.predicate)
@@ -340,19 +336,15 @@ pub fn normalize_param_env_or_error<'tcx>(
         "normalize_param_env_or_error: predicates=(non-outlives={:?}, outlives={:?})",
         predicates, outlives_predicates
     );
-    let non_outlives_predicates = match do_normalize_predicates(
+    let Ok(non_outlives_predicates) = do_normalize_predicates(
         tcx,
-        region_context,
         cause.clone(),
         elaborated_env,
         predicates,
-    ) {
-        Ok(predicates) => predicates,
+    ) else {
         // An unnormalized env is better than nothing.
-        Err(ErrorReported) => {
-            debug!("normalize_param_env_or_error: errored resolving non-outlives predicates");
-            return elaborated_env;
-        }
+        debug!("normalize_param_env_or_error: errored resolving non-outlives predicates");
+        return elaborated_env;
     };
 
     debug!("normalize_param_env_or_error: non-outlives predicates={:?}", non_outlives_predicates);
@@ -367,19 +359,15 @@ pub fn normalize_param_env_or_error<'tcx>(
         unnormalized_env.reveal(),
         unnormalized_env.constness(),
     );
-    let outlives_predicates = match do_normalize_predicates(
+    let Ok(outlives_predicates) = do_normalize_predicates(
         tcx,
-        region_context,
         cause,
         outlives_env,
         outlives_predicates,
-    ) {
-        Ok(predicates) => predicates,
+    ) else {
         // An unnormalized env is better than nothing.
-        Err(ErrorReported) => {
-            debug!("normalize_param_env_or_error: errored resolving outlives predicates");
-            return elaborated_env;
-        }
+        debug!("normalize_param_env_or_error: errored resolving outlives predicates");
+        return elaborated_env;
     };
     debug!("normalize_param_env_or_error: outlives predicates={:?}", outlives_predicates);
 
@@ -436,6 +424,9 @@ pub fn impossible_predicates<'tcx>(
     debug!("impossible_predicates(predicates={:?})", predicates);
 
     let result = tcx.infer_ctxt().enter(|infcx| {
+        // HACK: Set tainted by errors to gracefully exit in case of overflow.
+        infcx.set_tainted_by_errors();
+
         let param_env = ty::ParamEnv::reveal_all();
         let mut selcx = SelectionContext::new(&infcx);
         let mut fulfill_cx = FulfillmentContext::new();
@@ -452,6 +443,9 @@ pub fn impossible_predicates<'tcx>(
 
         let errors = fulfill_cx.select_all_or_error(&infcx);
 
+        // Clean up after ourselves
+        let _ = infcx.inner.borrow_mut().opaque_type_storage.take_opaque_types();
+
         !errors.is_empty()
     });
     debug!("impossible_predicates = {:?}", result);
@@ -465,7 +459,15 @@ fn subst_and_check_impossible_predicates<'tcx>(
     debug!("subst_and_check_impossible_predicates(key={:?})", key);
 
     let mut predicates = tcx.predicates_of(key.0).instantiate(tcx, key.1).predicates;
-    predicates.retain(|predicate| !predicate.definitely_needs_subst(tcx));
+
+    // Specifically check trait fulfillment to avoid an error when trying to resolve
+    // associated items.
+    if let Some(trait_def_id) = tcx.trait_of_item(key.0) {
+        let trait_ref = ty::TraitRef::from_method(tcx, trait_def_id, key.1);
+        predicates.push(ty::Binder::dummy(trait_ref).to_poly_trait_predicate().to_predicate(tcx));
+    }
+
+    predicates.retain(|predicate| !predicate.needs_subst());
     let result = impossible_predicates(tcx, predicates);
 
     debug!("subst_and_check_impossible_predicates(key={:?}) = {:?}", key, result);
@@ -542,8 +544,8 @@ fn prepare_vtable_segments<'tcx, T>(
 
     // the main traversal loop:
     // basically we want to cut the inheritance directed graph into a few non-overlapping slices of nodes
-    // that each node is emited after all its descendents have been emitted.
-    // so we convert the directed graph into a tree by skipping all previously visted nodes using a visited set.
+    // that each node is emitted after all its descendents have been emitted.
+    // so we convert the directed graph into a tree by skipping all previously visited nodes using a visited set.
     // this is done on the fly.
     // Each loop run emits a slice - it starts by find a "childless" unvisited node, backtracking upwards, and it
     // stops after it finds a node that has a next-sibling node.
@@ -557,10 +559,10 @@ fn prepare_vtable_segments<'tcx, T>(
     // Starting point 0 stack [D]
     // Loop run #0: Stack after diving in is [D B A], A is "childless"
     // after this point, all newly visited nodes won't have a vtable that equals to a prefix of this one.
-    // Loop run #0: Emiting the slice [B A] (in reverse order), B has a next-sibling node, so this slice stops here.
+    // Loop run #0: Emitting the slice [B A] (in reverse order), B has a next-sibling node, so this slice stops here.
     // Loop run #0: Stack after exiting out is [D C], C is the next starting point.
     // Loop run #1: Stack after diving in is [D C], C is "childless", since its child A is skipped(already emitted).
-    // Loop run #1: Emiting the slice [D C] (in reverse order). No one has a next-sibling node.
+    // Loop run #1: Emitting the slice [D C] (in reverse order). No one has a next-sibling node.
     // Loop run #1: Stack after exiting out is []. Now the function exits.
 
     loop {
@@ -685,7 +687,7 @@ fn vtable_entries<'tcx>(
     let vtable_segment_callback = |segment| -> ControlFlow<()> {
         match segment {
             VtblSegment::MetadataDSA => {
-                entries.extend(COMMON_VTABLE_ENTRIES);
+                entries.extend(TyCtxt::COMMON_VTABLE_ENTRIES);
             }
             VtblSegment::TraitOwnEntries { trait_ref, emit_vptr } => {
                 let existential_trait_ref = trait_ref
@@ -775,7 +777,7 @@ fn vtable_trait_first_method_offset<'tcx>(
         move |segment| {
             match segment {
                 VtblSegment::MetadataDSA => {
-                    vtable_base += COMMON_VTABLE_ENTRIES.len();
+                    vtable_base += TyCtxt::COMMON_VTABLE_ENTRIES.len();
                 }
                 VtblSegment::TraitOwnEntries { trait_ref, emit_vptr } => {
                     if tcx.erase_regions(trait_ref) == trait_to_be_found_erased {
@@ -834,9 +836,8 @@ pub fn vtable_trait_upcasting_coercion_new_vptr_slot<'tcx>(
         selcx.select(&obligation).unwrap()
     });
 
-    let implsrc_traitcasting = match implsrc {
-        Some(ImplSource::TraitUpcasting(data)) => data,
-        _ => bug!(),
+    let Some(ImplSource::TraitUpcasting(implsrc_traitcasting)) = implsrc else {
+        bug!();
     };
 
     implsrc_traitcasting.vtable_vptr_slot
@@ -853,21 +854,10 @@ pub fn provide(providers: &mut ty::query::Providers) {
         vtable_entries,
         vtable_trait_upcasting_coercion_new_vptr_slot,
         subst_and_check_impossible_predicates,
-        thir_abstract_const: |tcx, def_id| {
-            let def_id = def_id.expect_local();
-            if let Some(def) = ty::WithOptConstParam::try_lookup(def_id, tcx) {
-                tcx.thir_abstract_const_of_const_arg(def)
-            } else {
-                const_evaluatable::thir_abstract_const(tcx, ty::WithOptConstParam::unknown(def_id))
-            }
+        try_unify_abstract_consts: |tcx, param_env_and| {
+            let (param_env, (a, b)) = param_env_and.into_parts();
+            const_evaluatable::try_unify_abstract_consts(tcx, (a, b), param_env)
         },
-        thir_abstract_const_of_const_arg: |tcx, (did, param_did)| {
-            const_evaluatable::thir_abstract_const(
-                tcx,
-                ty::WithOptConstParam { did, const_param_did: Some(param_did) },
-            )
-        },
-        try_unify_abstract_consts: const_evaluatable::try_unify_abstract_consts,
         ..*providers
     };
 }

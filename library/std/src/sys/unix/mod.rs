@@ -1,9 +1,9 @@
 #![allow(missing_docs, nonstandard_style)]
 
+use crate::ffi::CStr;
 use crate::io::ErrorKind;
 
 pub use self::rand::hashmap_random_keys;
-pub use libc::strlen;
 
 #[cfg(not(target_os = "espidf"))]
 #[macro_use]
@@ -14,7 +14,6 @@ pub mod android;
 pub mod args;
 #[path = "../unix/cmath.rs"]
 pub mod cmath;
-pub mod condvar;
 pub mod env;
 pub mod fd;
 pub mod fs;
@@ -24,8 +23,8 @@ pub mod io;
 pub mod kernel_copy;
 #[cfg(target_os = "l4re")]
 mod l4re;
+pub mod locks;
 pub mod memchr;
-pub mod mutex;
 #[cfg(not(target_os = "l4re"))]
 pub mod net;
 #[cfg(target_os = "l4re")]
@@ -36,12 +35,12 @@ pub mod path;
 pub mod pipe;
 pub mod process;
 pub mod rand;
-pub mod rwlock;
 pub mod stack_overflow;
 pub mod stdio;
 pub mod thread;
 pub mod thread_local_dtor;
 pub mod thread_local_key;
+pub mod thread_parker;
 pub mod time;
 
 #[cfg(target_os = "espidf")]
@@ -68,35 +67,78 @@ pub unsafe fn init(argc: isize, argv: *const *const u8) {
     stack_overflow::init();
     args::init(argc, argv);
 
+    // Normally, `thread::spawn` will call `Thread::set_name` but since this thread
+    // already exists, we have to call it ourselves. We only do this on macos
+    // because some unix-like operating systems such as Linux share process-id and
+    // thread-id for the main thread and so renaming the main thread will rename the
+    // process and we only want to enable this on platforms we've tested.
+    if cfg!(target_os = "macos") {
+        thread::Thread::set_name(&CStr::from_bytes_with_nul_unchecked(b"main\0"));
+    }
+
     unsafe fn sanitize_standard_fds() {
-        #[cfg(not(miri))]
-        // The standard fds are always available in Miri.
-        cfg_if::cfg_if! {
-            if #[cfg(not(any(
-                target_os = "emscripten",
-                target_os = "fuchsia",
-                target_os = "vxworks",
-                // The poll on Darwin doesn't set POLLNVAL for closed fds.
-                target_os = "macos",
-                target_os = "ios",
-                target_os = "redox",
-            )))] {
-                use crate::sys::os::errno;
-                let pfds: &mut [_] = &mut [
-                    libc::pollfd { fd: 0, events: 0, revents: 0 },
-                    libc::pollfd { fd: 1, events: 0, revents: 0 },
-                    libc::pollfd { fd: 2, events: 0, revents: 0 },
-                ];
-                while libc::poll(pfds.as_mut_ptr(), 3, 0) == -1 {
-                    if errno() == libc::EINTR {
-                        continue;
+        // fast path with a single syscall for systems with poll()
+        #[cfg(not(any(
+            miri,
+            target_os = "emscripten",
+            target_os = "fuchsia",
+            target_os = "vxworks",
+            // The poll on Darwin doesn't set POLLNVAL for closed fds.
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "watchos",
+            target_os = "redox",
+            target_os = "l4re",
+            target_os = "horizon",
+        )))]
+        'poll: {
+            use crate::sys::os::errno;
+            let pfds: &mut [_] = &mut [
+                libc::pollfd { fd: 0, events: 0, revents: 0 },
+                libc::pollfd { fd: 1, events: 0, revents: 0 },
+                libc::pollfd { fd: 2, events: 0, revents: 0 },
+            ];
+
+            while libc::poll(pfds.as_mut_ptr(), 3, 0) == -1 {
+                match errno() {
+                    libc::EINTR => continue,
+                    libc::EINVAL | libc::EAGAIN | libc::ENOMEM => {
+                        // RLIMIT_NOFILE or temporary allocation failures
+                        // may be preventing use of poll(), fall back to fcntl
+                        break 'poll;
                     }
+                    _ => libc::abort(),
+                }
+            }
+            for pfd in pfds {
+                if pfd.revents & libc::POLLNVAL == 0 {
+                    continue;
+                }
+                if libc::open("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
+                    // If the stream is closed but we failed to reopen it, abort the
+                    // process. Otherwise we wouldn't preserve the safety of
+                    // operations on the corresponding Rust object Stdin, Stdout, or
+                    // Stderr.
                     libc::abort();
                 }
-                for pfd in pfds {
-                    if pfd.revents & libc::POLLNVAL == 0 {
-                        continue;
-                    }
+            }
+            return;
+        }
+
+        // fallback in case poll isn't available or limited by RLIMIT_NOFILE
+        #[cfg(not(any(
+            // The standard fds are always available in Miri.
+            miri,
+            target_os = "emscripten",
+            target_os = "fuchsia",
+            target_os = "vxworks",
+            target_os = "l4re",
+            target_os = "horizon",
+        )))]
+        {
+            use crate::sys::os::errno;
+            for fd in 0..3 {
+                if libc::fcntl(fd, libc::F_GETFD) == -1 && errno() == libc::EBADF {
                     if libc::open("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
                         // If the stream is closed but we failed to reopen it, abort the
                         // process. Otherwise we wouldn't preserve the safety of
@@ -105,21 +147,12 @@ pub unsafe fn init(argc: isize, argv: *const *const u8) {
                         libc::abort();
                     }
                 }
-            } else if #[cfg(any(target_os = "macos", target_os = "ios", target_os = "redox"))] {
-                use crate::sys::os::errno;
-                for fd in 0..3 {
-                    if libc::fcntl(fd, libc::F_GETFD) == -1 && errno() == libc::EBADF {
-                        if libc::open("/dev/null\0".as_ptr().cast(), libc::O_RDWR, 0) == -1 {
-                            libc::abort();
-                        }
-                    }
-                }
             }
         }
     }
 
     unsafe fn reset_sigpipe() {
-        #[cfg(not(any(target_os = "emscripten", target_os = "fuchsia")))]
+        #[cfg(not(any(target_os = "emscripten", target_os = "fuchsia", target_os = "horizon")))]
         rtassert!(signal(libc::SIGPIPE, libc::SIG_IGN) != libc::SIG_ERR);
     }
 }
@@ -159,7 +192,7 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         libc::ENOSPC => StorageFull,
         libc::ENOSYS => Unsupported,
         libc::EMLINK => TooManyLinks,
-        libc::ENAMETOOLONG => FilenameTooLong,
+        libc::ENAMETOOLONG => InvalidFilename,
         libc::ENETDOWN => NetworkDown,
         libc::ENETUNREACH => NetworkUnreachable,
         libc::ENOTCONN => NotConnected,
@@ -216,6 +249,7 @@ where
     }
 }
 
+#[allow(dead_code)] // Not used on all platforms.
 pub fn cvt_nz(error: libc::c_int) -> crate::io::Result<()> {
     if error == 0 { Ok(()) } else { Err(crate::io::Error::from_raw_os_error(error)) }
 }
@@ -296,7 +330,7 @@ cfg_if::cfg_if! {
         // See #41582 and https://blog.achernya.com/2013/03/os-x-has-silly-libsystem.html
         #[link(name = "resolv")]
         extern "C" {}
-    } else if #[cfg(target_os = "ios")] {
+    } else if #[cfg(any(target_os = "ios", target_os = "watchos"))] {
         #[link(name = "System")]
         #[link(name = "objc")]
         #[link(name = "Security", kind = "framework")]
@@ -313,7 +347,7 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(target_os = "espidf")]
+#[cfg(any(target_os = "espidf", target_os = "horizon"))]
 mod unsupported {
     use crate::io;
 
@@ -322,9 +356,6 @@ mod unsupported {
     }
 
     pub fn unsupported_err() -> io::Error {
-        io::Error::new_const(
-            io::ErrorKind::Unsupported,
-            &"operation not supported on this platform",
-        )
+        io::const_io_error!(io::ErrorKind::Unsupported, "operation not supported on this platform",)
     }
 }

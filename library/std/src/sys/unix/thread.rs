@@ -122,7 +122,13 @@ impl Thread {
         // pthread wrapper only appeared in glibc 2.12, so we use syscall
         // directly.
         unsafe {
-            libc::prctl(PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
+            libc::prctl(
+                PR_SET_NAME,
+                name.as_ptr(),
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            );
         }
     }
 
@@ -133,7 +139,7 @@ impl Thread {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "watchos"))]
     pub fn set_name(name: &CStr) {
         unsafe {
             libc::pthread_setname_np(name.as_ptr());
@@ -279,15 +285,20 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
         ))] {
             #[cfg(any(target_os = "android", target_os = "linux"))]
             {
+                let quota = cgroups::quota().max(1);
                 let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
-                if unsafe { libc::sched_getaffinity(0, mem::size_of::<libc::cpu_set_t>(), &mut set) } == 0 {
-                    let count = unsafe { libc::CPU_COUNT(&set) };
-                    return Ok(unsafe { NonZeroUsize::new_unchecked(count as usize) });
+                unsafe {
+                    if libc::sched_getaffinity(0, mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
+                        let count = libc::CPU_COUNT(&set) as usize;
+                        let count = count.min(quota);
+                        // SAFETY: affinity mask can't be empty and the quota gets clamped to a minimum of 1
+                        return Ok(NonZeroUsize::new_unchecked(count));
+                    }
                 }
             }
             match unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } {
                 -1 => Err(io::Error::last_os_error()),
-                0 => Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform")),
+                0 => Err(io::const_io_error!(io::ErrorKind::NotFound, "The number of hardware threads is not known for the target platform")),
                 cpus => Ok(unsafe { NonZeroUsize::new_unchecked(cpus as usize) }),
             }
         } else if #[cfg(any(target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd"))] {
@@ -318,7 +329,7 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
                 if res == -1 {
                     return Err(io::Error::last_os_error());
                 } else if cpus == 0 {
-                    return Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform"));
+                    return Err(io::const_io_error!(io::ErrorKind::NotFound, "The number of hardware threads is not known for the target platform"));
                 }
             }
             Ok(unsafe { NonZeroUsize::new_unchecked(cpus as usize) })
@@ -344,7 +355,7 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
             if res == -1 {
                 return Err(io::Error::last_os_error());
             } else if cpus == 0 {
-                return Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform"));
+                return Err(io::const_io_error!(io::ErrorKind::NotFound, "The number of hardware threads is not known for the target platform"));
             }
 
             Ok(unsafe { NonZeroUsize::new_unchecked(cpus as usize) })
@@ -356,15 +367,237 @@ pub fn available_parallelism() -> io::Result<NonZeroUsize> {
                 let res = libc::get_system_info(&mut sinfo);
 
                 if res != libc::B_OK {
-                    return Err(io::Error::new_const(io::ErrorKind::NotFound, &"The number of hardware threads is not known for the target platform"));
+                    return Err(io::const_io_error!(io::ErrorKind::NotFound, "The number of hardware threads is not known for the target platform"));
                 }
 
                 Ok(NonZeroUsize::new_unchecked(sinfo.cpu_count as usize))
             }
         } else {
             // FIXME: implement on vxWorks, Redox, l4re
-            Err(io::Error::new_const(io::ErrorKind::Unsupported, &"Getting the number of hardware threads is not supported on the target platform"))
+            Err(io::const_io_error!(io::ErrorKind::Unsupported, "Getting the number of hardware threads is not supported on the target platform"))
         }
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+mod cgroups {
+    //! Currently not covered
+    //! * cgroup v2 in non-standard mountpoints
+    //! * paths containing control characters or spaces, since those would be escaped in procfs
+    //!   output and we don't unescape
+    use crate::borrow::Cow;
+    use crate::ffi::OsString;
+    use crate::fs::{try_exists, File};
+    use crate::io::Read;
+    use crate::io::{BufRead, BufReader};
+    use crate::os::unix::ffi::OsStringExt;
+    use crate::path::Path;
+    use crate::path::PathBuf;
+    use crate::str::from_utf8;
+
+    #[derive(PartialEq)]
+    enum Cgroup {
+        V1,
+        V2,
+    }
+
+    /// Returns cgroup CPU quota in core-equivalents, rounded down or usize::MAX if the quota cannot
+    /// be determined or is not set.
+    pub(super) fn quota() -> usize {
+        let mut quota = usize::MAX;
+        if cfg!(miri) {
+            // Attempting to open a file fails under default flags due to isolation.
+            // And Miri does not have parallelism anyway.
+            return quota;
+        }
+
+        let _: Option<()> = try {
+            let mut buf = Vec::with_capacity(128);
+            // find our place in the cgroup hierarchy
+            File::open("/proc/self/cgroup").ok()?.read_to_end(&mut buf).ok()?;
+            let (cgroup_path, version) =
+                buf.split(|&c| c == b'\n').fold(None, |previous, line| {
+                    let mut fields = line.splitn(3, |&c| c == b':');
+                    // 2nd field is a list of controllers for v1 or empty for v2
+                    let version = match fields.nth(1) {
+                        Some(b"") => Cgroup::V2,
+                        Some(controllers)
+                            if from_utf8(controllers)
+                                .is_ok_and(|c| c.split(",").any(|c| c == "cpu")) =>
+                        {
+                            Cgroup::V1
+                        }
+                        _ => return previous,
+                    };
+
+                    // already-found v1 trumps v2 since it explicitly specifies its controllers
+                    if previous.is_some() && version == Cgroup::V2 {
+                        return previous;
+                    }
+
+                    let path = fields.last()?;
+                    // skip leading slash
+                    Some((path[1..].to_owned(), version))
+                })?;
+            let cgroup_path = PathBuf::from(OsString::from_vec(cgroup_path));
+
+            quota = match version {
+                Cgroup::V1 => quota_v1(cgroup_path),
+                Cgroup::V2 => quota_v2(cgroup_path),
+            };
+        };
+
+        quota
+    }
+
+    fn quota_v2(group_path: PathBuf) -> usize {
+        let mut quota = usize::MAX;
+
+        let mut path = PathBuf::with_capacity(128);
+        let mut read_buf = String::with_capacity(20);
+
+        // standard mount location defined in file-hierarchy(7) manpage
+        let cgroup_mount = "/sys/fs/cgroup";
+
+        path.push(cgroup_mount);
+        path.push(&group_path);
+
+        path.push("cgroup.controllers");
+
+        // skip if we're not looking at cgroup2
+        if matches!(try_exists(&path), Err(_) | Ok(false)) {
+            return usize::MAX;
+        };
+
+        path.pop();
+
+        let _: Option<()> = try {
+            while path.starts_with(cgroup_mount) {
+                path.push("cpu.max");
+
+                read_buf.clear();
+
+                if File::open(&path).and_then(|mut f| f.read_to_string(&mut read_buf)).is_ok() {
+                    let raw_quota = read_buf.lines().next()?;
+                    let mut raw_quota = raw_quota.split(' ');
+                    let limit = raw_quota.next()?;
+                    let period = raw_quota.next()?;
+                    match (limit.parse::<usize>(), period.parse::<usize>()) {
+                        (Ok(limit), Ok(period)) => {
+                            quota = quota.min(limit / period);
+                        }
+                        _ => {}
+                    }
+                }
+
+                path.pop(); // pop filename
+                path.pop(); // pop dir
+            }
+        };
+
+        quota
+    }
+
+    fn quota_v1(group_path: PathBuf) -> usize {
+        let mut quota = usize::MAX;
+        let mut path = PathBuf::with_capacity(128);
+        let mut read_buf = String::with_capacity(20);
+
+        // Hardcode commonly used locations mentioned in the cgroups(7) manpage
+        // if that doesn't work scan mountinfo and adjust `group_path` for bind-mounts
+        let mounts: &[fn(&Path) -> Option<(_, &Path)>] = &[
+            |p| Some((Cow::Borrowed("/sys/fs/cgroup/cpu"), p)),
+            |p| Some((Cow::Borrowed("/sys/fs/cgroup/cpu,cpuacct"), p)),
+            // this can be expensive on systems with tons of mountpoints
+            // but we only get to this point when /proc/self/cgroups explicitly indicated
+            // this process belongs to a cpu-controller cgroup v1 and the defaults didn't work
+            find_mountpoint,
+        ];
+
+        for mount in mounts {
+            let Some((mount, group_path)) = mount(&group_path) else { continue };
+
+            path.clear();
+            path.push(mount.as_ref());
+            path.push(&group_path);
+
+            // skip if we guessed the mount incorrectly
+            if matches!(try_exists(&path), Err(_) | Ok(false)) {
+                continue;
+            }
+
+            while path.starts_with(mount.as_ref()) {
+                let mut parse_file = |name| {
+                    path.push(name);
+                    read_buf.clear();
+
+                    let f = File::open(&path);
+                    path.pop(); // restore buffer before any early returns
+                    f.ok()?.read_to_string(&mut read_buf).ok()?;
+                    let parsed = read_buf.trim().parse::<usize>().ok()?;
+
+                    Some(parsed)
+                };
+
+                let limit = parse_file("cpu.cfs_quota_us");
+                let period = parse_file("cpu.cfs_period_us");
+
+                match (limit, period) {
+                    (Some(limit), Some(period)) => quota = quota.min(limit / period),
+                    _ => {}
+                }
+
+                path.pop();
+            }
+
+            // we passed the try_exists above so we should have traversed the correct hierarchy
+            // when reaching this line
+            break;
+        }
+
+        quota
+    }
+
+    /// Scan mountinfo for cgroup v1 mountpoint with a cpu controller
+    ///
+    /// If the cgroupfs is a bind mount then `group_path` is adjusted to skip
+    /// over the already-included prefix
+    fn find_mountpoint(group_path: &Path) -> Option<(Cow<'static, str>, &Path)> {
+        let mut reader = BufReader::new(File::open("/proc/self/mountinfo").ok()?);
+        let mut line = String::with_capacity(256);
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).ok()? == 0 {
+                break;
+            }
+
+            let line = line.trim();
+            let mut items = line.split(' ');
+
+            let sub_path = items.nth(3)?;
+            let mount_point = items.next()?;
+            let mount_opts = items.next_back()?;
+            let filesystem_type = items.nth_back(1)?;
+
+            if filesystem_type != "cgroup" || !mount_opts.split(',').any(|opt| opt == "cpu") {
+                // not a cgroup / not a cpu-controller
+                continue;
+            }
+
+            let sub_path = Path::new(sub_path).strip_prefix("/").ok()?;
+
+            if !group_path.starts_with(sub_path) {
+                // this is a bind-mount and the bound subdirectory
+                // does not contain the cgroup this process belongs to
+                continue;
+            }
+
+            let trimmed_group_path = group_path.strip_prefix(sub_path).ok()?;
+
+            return Some((Cow::Owned(mount_point.to_owned()), trimmed_group_path));
+        }
+
+        None
     }
 }
 
@@ -421,9 +654,8 @@ pub mod guard {
     #[cfg(target_os = "macos")]
     unsafe fn get_stack_start() -> Option<*mut libc::c_void> {
         let th = libc::pthread_self();
-        let stackaddr =
-            libc::pthread_get_stackaddr_np(th) as usize - libc::pthread_get_stacksize_np(th);
-        Some(stackaddr as *mut libc::c_void)
+        let stackptr = libc::pthread_get_stackaddr_np(th);
+        Some(stackptr.map_addr(|addr| addr - libc::pthread_get_stacksize_np(th)))
     }
 
     #[cfg(target_os = "openbsd")]
@@ -431,14 +663,15 @@ pub mod guard {
         let mut current_stack: libc::stack_t = crate::mem::zeroed();
         assert_eq!(libc::pthread_stackseg_np(libc::pthread_self(), &mut current_stack), 0);
 
+        let stack_ptr = current_stack.ss_sp;
         let stackaddr = if libc::pthread_main_np() == 1 {
             // main thread
-            current_stack.ss_sp as usize - current_stack.ss_size + PAGE_SIZE.load(Ordering::Relaxed)
+            stack_ptr.addr() - current_stack.ss_size + PAGE_SIZE.load(Ordering::Relaxed)
         } else {
             // new thread
-            current_stack.ss_sp as usize - current_stack.ss_size
+            stack_ptr.addr() - current_stack.ss_size
         };
-        Some(stackaddr as *mut libc::c_void)
+        Some(stack_ptr.with_addr(stackaddr))
     }
 
     #[cfg(any(
@@ -473,7 +706,8 @@ pub mod guard {
     unsafe fn get_stack_start_aligned() -> Option<*mut libc::c_void> {
         let page_size = PAGE_SIZE.load(Ordering::Relaxed);
         assert!(page_size != 0);
-        let stackaddr = get_stack_start()?;
+        let stackptr = get_stack_start()?;
+        let stackaddr = stackptr.addr();
 
         // Ensure stackaddr is page aligned! A parent process might
         // have reset RLIMIT_STACK to be non-page aligned. The
@@ -481,11 +715,11 @@ pub mod guard {
         // stackaddr < stackaddr + stacksize, so if stackaddr is not
         // page-aligned, calculate the fix such that stackaddr <
         // new_page_aligned_stackaddr < stackaddr + stacksize
-        let remainder = (stackaddr as usize) % page_size;
+        let remainder = stackaddr % page_size;
         Some(if remainder == 0 {
-            stackaddr
+            stackptr
         } else {
-            ((stackaddr as usize) + page_size - remainder) as *mut libc::c_void
+            stackptr.with_addr(stackaddr + page_size - remainder)
         })
     }
 
@@ -504,8 +738,8 @@ pub mod guard {
             // Instead, we'll just note where we expect rlimit to start
             // faulting, so our handler can report "stack overflow", and
             // trust that the kernel's own stack guard will work.
-            let stackaddr = get_stack_start_aligned()?;
-            let stackaddr = stackaddr as usize;
+            let stackptr = get_stack_start_aligned()?;
+            let stackaddr = stackptr.addr();
             Some(stackaddr - page_size..stackaddr)
         } else if cfg!(all(target_os = "linux", target_env = "musl")) {
             // For the main thread, the musl's pthread_attr_getstack
@@ -518,8 +752,8 @@ pub mod guard {
             // at the bottom.  If we try to remap the bottom of the stack
             // ourselves, FreeBSD's guard page moves upwards.  So we'll just use
             // the builtin guard page.
-            let stackaddr = get_stack_start_aligned()?;
-            let guardaddr = stackaddr as usize;
+            let stackptr = get_stack_start_aligned()?;
+            let guardaddr = stackptr.addr();
             // Technically the number of guard pages is tunable and controlled
             // by the security.bsd.stack_guard_page sysctl, but there are
             // few reasons to change it from the default.  The default value has
@@ -536,25 +770,25 @@ pub mod guard {
             // than the initial mmap() used, so we mmap() here with
             // read/write permissions and only then mprotect() it to
             // no permissions at all. See issue #50313.
-            let stackaddr = get_stack_start_aligned()?;
+            let stackptr = get_stack_start_aligned()?;
             let result = mmap(
-                stackaddr,
+                stackptr,
                 page_size,
                 PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANON | MAP_FIXED,
                 -1,
                 0,
             );
-            if result != stackaddr || result == MAP_FAILED {
+            if result != stackptr || result == MAP_FAILED {
                 panic!("failed to allocate a guard page: {}", io::Error::last_os_error());
             }
 
-            let result = mprotect(stackaddr, page_size, PROT_NONE);
+            let result = mprotect(stackptr, page_size, PROT_NONE);
             if result != 0 {
                 panic!("failed to protect the guard page: {}", io::Error::last_os_error());
             }
 
-            let guardaddr = stackaddr as usize;
+            let guardaddr = stackptr.addr();
 
             Some(guardaddr..guardaddr + page_size)
         }
@@ -562,7 +796,8 @@ pub mod guard {
 
     #[cfg(any(target_os = "macos", target_os = "openbsd", target_os = "solaris"))]
     pub unsafe fn current() -> Option<Guard> {
-        let stackaddr = get_stack_start()? as usize;
+        let stackptr = get_stack_start()?;
+        let stackaddr = stackptr.addr();
         Some(stackaddr - PAGE_SIZE.load(Ordering::Relaxed)..stackaddr)
     }
 
@@ -595,11 +830,11 @@ pub mod guard {
                     panic!("there is no guard page");
                 }
             }
-            let mut stackaddr = crate::ptr::null_mut();
+            let mut stackptr = crate::ptr::null_mut::<libc::c_void>();
             let mut size = 0;
-            assert_eq!(libc::pthread_attr_getstack(&attr, &mut stackaddr, &mut size), 0);
+            assert_eq!(libc::pthread_attr_getstack(&attr, &mut stackptr, &mut size), 0);
 
-            let stackaddr = stackaddr as usize;
+            let stackaddr = stackptr.addr();
             ret = if cfg!(any(target_os = "freebsd", target_os = "netbsd")) {
                 Some(stackaddr - guardsize..stackaddr)
             } else if cfg!(all(target_os = "linux", target_env = "musl")) {

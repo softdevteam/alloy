@@ -1,8 +1,9 @@
 use super::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use super::{FixupError, FixupResult, InferCtxt, Span};
 use rustc_middle::mir;
-use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFolder, TypeVisitor};
-use rustc_middle::ty::{self, Const, InferConst, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFolder, TypeSuperFoldable};
+use rustc_middle::ty::visit::{TypeSuperVisitable, TypeVisitor};
+use rustc_middle::ty::{self, Const, InferConst, Ty, TyCtxt, TypeFoldable, TypeVisitable};
 
 use std::ops::ControlFlow;
 
@@ -39,7 +40,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for OpportunisticVarResolver<'a, 'tcx> {
         }
     }
 
-    fn fold_const(&mut self, ct: &'tcx Const<'tcx>) -> &'tcx Const<'tcx> {
+    fn fold_const(&mut self, ct: Const<'tcx>) -> Const<'tcx> {
         if !ct.has_infer_types_or_consts() {
             ct // micro-optimize -- if there is nothing in this const that this fold affects...
         } else {
@@ -55,7 +56,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for OpportunisticVarResolver<'a, 'tcx> {
 
 /// The opportunistic region resolver opportunistically resolves regions
 /// variables to the variable with the least variable id. It is used when
-/// normlizing projections to avoid hitting the recursion limit by creating
+/// normalizing projections to avoid hitting the recursion limit by creating
 /// many versions of a predicate for types that in the end have to unify.
 ///
 /// If you want to resolve type and const variables as well, call
@@ -92,13 +93,13 @@ impl<'a, 'tcx> TypeFolder<'tcx> for OpportunisticRegionResolver<'a, 'tcx> {
                     .borrow_mut()
                     .unwrap_region_constraints()
                     .opportunistic_resolve_var(rid);
-                self.tcx().reuse_or_mk_region(r, ty::ReVar(resolved))
+                TypeFolder::tcx(self).reuse_or_mk_region(r, ty::ReVar(resolved))
             }
             _ => r,
         }
     }
 
-    fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+    fn fold_const(&mut self, ct: ty::Const<'tcx>) -> ty::Const<'tcx> {
         if !ct.has_infer_regions() {
             ct // micro-optimize -- if there is nothing in this const that this fold affects...
         } else {
@@ -126,11 +127,6 @@ impl<'a, 'tcx> UnresolvedTypeFinder<'a, 'tcx> {
 
 impl<'a, 'tcx> TypeVisitor<'tcx> for UnresolvedTypeFinder<'a, 'tcx> {
     type BreakTy = (Ty<'tcx>, Option<Span>);
-
-    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
-        Some(self.infcx.tcx)
-    }
-
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         let t = self.infcx.shallow_resolve(t);
         if t.has_infer_types() {
@@ -184,15 +180,13 @@ struct FullTypeResolver<'a, 'tcx> {
     infcx: &'a InferCtxt<'a, 'tcx>,
 }
 
-impl<'a, 'tcx> TypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
+impl<'a, 'tcx> FallibleTypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
     type Error = FixupError<'tcx>;
 
     fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
-}
 
-impl<'a, 'tcx> FallibleTypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
     fn try_fold_ty(&mut self, t: Ty<'tcx>) -> Result<Ty<'tcx>, Self::Error> {
         if !t.needs_infer() {
             Ok(t) // micro-optimize -- if there is nothing in this type that this fold affects...
@@ -212,26 +206,23 @@ impl<'a, 'tcx> FallibleTypeFolder<'tcx> for FullTypeResolver<'a, 'tcx> {
 
     fn try_fold_region(&mut self, r: ty::Region<'tcx>) -> Result<ty::Region<'tcx>, Self::Error> {
         match *r {
-            ty::ReVar(rid) => Ok(self
+            ty::ReVar(_) => Ok(self
                 .infcx
                 .lexical_region_resolutions
                 .borrow()
                 .as_ref()
                 .expect("region resolution not performed")
-                .resolve_var(rid)),
+                .resolve_region(self.infcx.tcx, r)),
             _ => Ok(r),
         }
     }
 
-    fn try_fold_const(
-        &mut self,
-        c: &'tcx ty::Const<'tcx>,
-    ) -> Result<&'tcx ty::Const<'tcx>, Self::Error> {
+    fn try_fold_const(&mut self, c: ty::Const<'tcx>) -> Result<ty::Const<'tcx>, Self::Error> {
         if !c.needs_infer() {
             Ok(c) // micro-optimize -- if there is nothing in this const that this fold affects...
         } else {
             let c = self.infcx.shallow_resolve(c);
-            match c.val {
+            match c.kind() {
                 ty::ConstKind::Infer(InferConst::Var(vid)) => {
                     return Err(FixupError::UnresolvedConst(vid));
                 }

@@ -146,6 +146,7 @@
 //! [`Cell`]: crate::cell::Cell
 //! [`RefCell`]: crate::cell::RefCell
 //! [`with`]: LocalKey::with
+//! [`thread_local!`]: crate::thread_local
 
 #![stable(feature = "rust1", since = "1.0.0")]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -159,11 +160,14 @@ use crate::cell::UnsafeCell;
 use crate::ffi::{CStr, CString};
 use crate::fmt;
 use crate::io;
+use crate::marker::PhantomData;
 use crate::mem;
 use crate::num::NonZeroU64;
 use crate::num::NonZeroUsize;
 use crate::panic;
 use crate::panicking;
+use crate::pin::Pin;
+use crate::ptr::addr_of_mut;
 use crate::str;
 use crate::sync::Arc;
 use crate::sys::thread as imp;
@@ -180,6 +184,12 @@ use crate::time::Duration;
 
 #[macro_use]
 mod local;
+
+#[stable(feature = "scoped_threads", since = "1.63.0")]
+mod scoped;
+
+#[stable(feature = "scoped_threads", since = "1.63.0")]
+pub use scoped::{scope, Scope, ScopedJoinHandle};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::local::{AccessError, LocalKey};
@@ -448,6 +458,20 @@ impl Builder {
         F: Send + 'a,
         T: Send + 'a,
     {
+        Ok(JoinHandle(unsafe { self.spawn_unchecked_(f, None) }?))
+    }
+
+    unsafe fn spawn_unchecked_<'a, 'scope, F, T>(
+        self,
+        f: F,
+        scope_data: Option<Arc<scoped::ScopeData>>,
+    ) -> io::Result<JoinInner<'scope, T>>
+    where
+        F: FnOnce() -> T,
+        F: Send + 'a,
+        T: Send + 'a,
+        'scope: 'a,
+    {
         let Builder { name, stack_size } = self;
 
         let stack_size = stack_size.unwrap_or_else(thread::min_stack);
@@ -457,7 +481,11 @@ impl Builder {
         }));
         let their_thread = my_thread.clone();
 
-        let my_packet: Arc<UnsafeCell<Option<Result<T>>>> = Arc::new(UnsafeCell::new(None));
+        let my_packet: Arc<Packet<'scope, T>> = Arc::new(Packet {
+            scope: scope_data,
+            result: UnsafeCell::new(None),
+            _marker: PhantomData,
+        });
         let their_packet = my_packet.clone();
 
         let output_capture = crate::io::set_output_capture(None);
@@ -496,10 +524,14 @@ impl Builder {
             // closure (it is an Arc<...>) and `my_packet` will be stored in the
             // same `JoinInner` as this closure meaning the mutation will be
             // safe (not modify it and affect a value far away).
-            unsafe { *their_packet.get() = Some(try_result) };
+            unsafe { *their_packet.result.get() = Some(try_result) };
         };
 
-        Ok(JoinHandle(JoinInner {
+        if let Some(scope_data) = &my_packet.scope {
+            scope_data.increment_num_running_threads();
+        }
+
+        Ok(JoinInner {
             // SAFETY:
             //
             // `imp::Thread::new` takes a closure with a `'static` lifetime, since it's passed
@@ -514,16 +546,16 @@ impl Builder {
             // exist after the thread has terminated, which is signaled by `Thread::join`
             // returning.
             native: unsafe {
-                Some(imp::Thread::new(
+                imp::Thread::new(
                     stack_size,
                     mem::transmute::<Box<dyn FnOnce() + 'a>, Box<dyn FnOnce() + 'static>>(
                         Box::new(main),
                     ),
-                )?)
+                )?
             },
             thread: my_thread,
-            packet: Packet(my_packet),
-        }))
+            packet: my_packet,
+        })
     }
 }
 
@@ -604,7 +636,7 @@ impl Builder {
 ///
 /// let receiver = thread::spawn(move || {
 ///     let value = rx.recv().expect("Unable to receive from channel");
-///     println!("{}", value);
+///     println!("{value}");
 /// });
 ///
 /// sender.join().expect("The sender thread has panicked");
@@ -624,7 +656,7 @@ impl Builder {
 /// });
 ///
 /// let result = computation.join().unwrap();
-/// println!("{}", result);
+/// println!("{result}");
 /// ```
 ///
 /// [`channels`]: crate::sync::mpsc
@@ -777,7 +809,7 @@ pub fn panicking() -> bool {
 /// thread::sleep_ms(2000);
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_deprecated(since = "1.6.0", reason = "replaced by `std::thread::sleep`")]
+#[deprecated(since = "1.6.0", note = "replaced by `std::thread::sleep`")]
 pub fn sleep_ms(ms: u32) {
     sleep(Duration::from_millis(ms as u64))
 }
@@ -914,7 +946,7 @@ pub fn sleep(dur: Duration) {
 pub fn park() {
     // SAFETY: park_timeout is called on the parker owned by this thread.
     unsafe {
-        current().inner.parker.park();
+        current().inner.as_ref().parker().park();
     }
 }
 
@@ -931,7 +963,7 @@ pub fn park() {
 ///
 /// See the [park documentation][`park`] for more detail.
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_deprecated(since = "1.6.0", reason = "replaced by `std::thread::park_timeout`")]
+#[deprecated(since = "1.6.0", note = "replaced by `std::thread::park_timeout`")]
 pub fn park_timeout_ms(ms: u32) {
     park_timeout(Duration::from_millis(ms as u64))
 }
@@ -970,7 +1002,7 @@ pub fn park_timeout_ms(ms: u32) {
 ///     if elapsed >= timeout {
 ///         break;
 ///     }
-///     println!("restarting park_timeout after {:?}", elapsed);
+///     println!("restarting park_timeout after {elapsed:?}");
 ///     timeout_remaining = timeout - elapsed;
 /// }
 /// ```
@@ -978,7 +1010,7 @@ pub fn park_timeout_ms(ms: u32) {
 pub fn park_timeout(dur: Duration) {
     // SAFETY: park_timeout is called on the parker owned by this thread.
     unsafe {
-        current().inner.parker.park_timeout(dur);
+        current().inner.as_ref().parker().park_timeout(dur);
     }
 }
 
@@ -1064,6 +1096,12 @@ struct Inner {
     parker: Parker,
 }
 
+impl Inner {
+    fn parker(self: Pin<&Self>) -> Pin<&Parker> {
+        unsafe { Pin::map_unchecked(self, |inner| &inner.parker) }
+    }
+}
+
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 /// A handle to a thread.
@@ -1085,14 +1123,28 @@ struct Inner {
 ///
 /// [`thread::current`]: current
 pub struct Thread {
-    inner: Arc<Inner>,
+    inner: Pin<Arc<Inner>>,
 }
 
 impl Thread {
     // Used only internally to construct a thread object without spawning
     // Panics if the name contains nuls.
     pub(crate) fn new(name: Option<CString>) -> Thread {
-        Thread { inner: Arc::new(Inner { name, id: ThreadId::new(), parker: Parker::new() }) }
+        // We have to use `unsafe` here to construct the `Parker` in-place,
+        // which is required for the UNIX implementation.
+        //
+        // SAFETY: We pin the Arc immediately after creation, so its address never
+        // changes.
+        let inner = unsafe {
+            let mut arc = Arc::<Inner>::new_uninit();
+            let ptr = Arc::get_mut_unchecked(&mut arc).as_mut_ptr();
+            addr_of_mut!((*ptr).name).write(name);
+            addr_of_mut!((*ptr).id).write(ThreadId::new());
+            Parker::new(addr_of_mut!((*ptr).parker));
+            Pin::new_unchecked(arc.assume_init())
+        };
+
+        Thread { inner }
     }
 
     /// Atomically makes the handle's token available if it is not already.
@@ -1128,7 +1180,7 @@ impl Thread {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn unpark(&self) {
-        self.inner.parker.unpark();
+        self.inner.as_ref().parker().unpark();
     }
 
     /// Gets the thread's unique identifier.
@@ -1258,34 +1310,68 @@ impl fmt::Debug for Thread {
 #[stable(feature = "rust1", since = "1.0.0")]
 pub type Result<T> = crate::result::Result<T, Box<dyn Any + Send + 'static>>;
 
-// This packet is used to communicate the return value between the spawned thread
-// and the rest of the program. Memory is shared through the `Arc` within and there's
-// no need for a mutex here because synchronization happens with `join()` (the
-// caller will never read this packet until the thread has exited).
+// This packet is used to communicate the return value between the spawned
+// thread and the rest of the program. It is shared through an `Arc` and
+// there's no need for a mutex here because synchronization happens with `join()`
+// (the caller will never read this packet until the thread has exited).
 //
-// This packet itself is then stored into a `JoinInner` which in turns is placed
-// in `JoinHandle` and `JoinGuard`. Due to the usage of `UnsafeCell` we need to
-// manually worry about impls like Send and Sync. The type `T` should
-// already always be Send (otherwise the thread could not have been created) and
-// this type is inherently Sync because no methods take &self. Regardless,
-// however, we add inheriting impls for Send/Sync to this type to ensure it's
-// Send/Sync and that future modifications will still appropriately classify it.
-struct Packet<T>(Arc<UnsafeCell<Option<Result<T>>>>);
-
-unsafe impl<T: Send> Send for Packet<T> {}
-unsafe impl<T: Sync> Sync for Packet<T> {}
-
-/// Inner representation for JoinHandle
-struct JoinInner<T> {
-    native: Option<imp::Thread>,
-    thread: Thread,
-    packet: Packet<T>,
+// An Arc to the packet is stored into a `JoinInner` which in turns is placed
+// in `JoinHandle`.
+struct Packet<'scope, T> {
+    scope: Option<Arc<scoped::ScopeData>>,
+    result: UnsafeCell<Option<Result<T>>>,
+    _marker: PhantomData<Option<&'scope scoped::ScopeData>>,
 }
 
-impl<T> JoinInner<T> {
-    fn join(&mut self) -> Result<T> {
-        self.native.take().unwrap().join();
-        unsafe { (*self.packet.0.get()).take().unwrap() }
+// Due to the usage of `UnsafeCell` we need to manually implement Sync.
+// The type `T` should already always be Send (otherwise the thread could not
+// have been created) and the Packet is Sync because all access to the
+// `UnsafeCell` synchronized (by the `join()` boundary), and `ScopeData` is Sync.
+unsafe impl<'scope, T: Sync> Sync for Packet<'scope, T> {}
+
+impl<'scope, T> Drop for Packet<'scope, T> {
+    fn drop(&mut self) {
+        // If this packet was for a thread that ran in a scope, the thread
+        // panicked, and nobody consumed the panic payload, we make sure
+        // the scope function will panic.
+        let unhandled_panic = matches!(self.result.get_mut(), Some(Err(_)));
+        // Drop the result without causing unwinding.
+        // This is only relevant for threads that aren't join()ed, as
+        // join() will take the `result` and set it to None, such that
+        // there is nothing left to drop here.
+        // If this panics, we should handle that, because we're outside the
+        // outermost `catch_unwind` of our thread.
+        // We just abort in that case, since there's nothing else we can do.
+        // (And even if we tried to handle it somehow, we'd also need to handle
+        // the case where the panic payload we get out of it also panics on
+        // drop, and so on. See issue #86027.)
+        if let Err(_) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            *self.result.get_mut() = None;
+        })) {
+            rtabort!("thread result panicked on drop");
+        }
+        // Book-keeping so the scope knows when it's done.
+        if let Some(scope) = &self.scope {
+            // Now that there will be no more user code running on this thread
+            // that can use 'scope, mark the thread as 'finished'.
+            // It's important we only do this after the `result` has been dropped,
+            // since dropping it might still use things it borrowed from 'scope.
+            scope.decrement_num_running_threads(unhandled_panic);
+        }
+    }
+}
+
+/// Inner representation for JoinHandle
+struct JoinInner<'scope, T> {
+    native: imp::Thread,
+    thread: Thread,
+    packet: Arc<Packet<'scope, T>>,
+}
+
+impl<'scope, T> JoinInner<'scope, T> {
+    fn join(mut self) -> Result<T> {
+        self.native.join();
+        Arc::get_mut(&mut self.packet).unwrap().result.get_mut().take().unwrap()
     }
 }
 
@@ -1352,7 +1438,7 @@ impl<T> JoinInner<T> {
 /// [`thread::Builder::spawn`]: Builder::spawn
 /// [`thread::spawn`]: spawn
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct JoinHandle<T>(JoinInner<T>);
+pub struct JoinHandle<T>(JoinInner<'static, T>);
 
 #[stable(feature = "joinhandle_impl_send_sync", since = "1.29.0")]
 unsafe impl<T> Send for JoinHandle<T> {}
@@ -1416,29 +1502,35 @@ impl<T> JoinHandle<T> {
     /// join_handle.join().expect("Couldn't join on the associated thread");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn join(mut self) -> Result<T> {
+    pub fn join(self) -> Result<T> {
         self.0.join()
     }
 
-    /// Checks if the the associated thread is still running its main function.
+    /// Checks if the associated thread has finished running its main function.
     ///
-    /// This might return `false` for a brief moment after the thread's main
+    /// `is_finished` supports implementing a non-blocking join operation, by checking
+    /// `is_finished`, and calling `join` if it returns `true`. This function does not block. To
+    /// block while waiting on the thread to finish, use [`join`][Self::join].
+    ///
+    /// This might return `true` for a brief moment after the thread's main
     /// function has returned, but before the thread itself has stopped running.
-    #[unstable(feature = "thread_is_running", issue = "90470")]
-    pub fn is_running(&self) -> bool {
-        Arc::strong_count(&self.0.packet.0) > 1
+    /// However, once this returns `true`, [`join`][Self::join] can be expected
+    /// to return quickly, without blocking for any significant amount of time.
+    #[stable(feature = "thread_is_running", since = "1.61.0")]
+    pub fn is_finished(&self) -> bool {
+        Arc::strong_count(&self.0.packet) == 1
     }
 }
 
 impl<T> AsInner<imp::Thread> for JoinHandle<T> {
     fn as_inner(&self) -> &imp::Thread {
-        self.0.native.as_ref().unwrap()
+        &self.0.native
     }
 }
 
 impl<T> IntoInner<imp::Thread> for JoinHandle<T> {
     fn into_inner(self) -> imp::Thread {
-        self.0.native.unwrap()
+        self.0.native
     }
 }
 
@@ -1459,7 +1551,7 @@ fn _assert_sync_and_send() {
 ///
 /// Parallelism is a resource. A given machine provides a certain capacity for
 /// parallelism, i.e., a bound on the number of computations it can perform
-/// simultaneously. This number often corresponds to the amount of CPUs or
+/// simultaneously. This number often corresponds to the amount of CPUs a
 /// computer has, but it may diverge in various cases.
 ///
 /// Host environments such as VMs or container orchestrators may want to
@@ -1501,7 +1593,15 @@ fn _assert_sync_and_send() {
 ///
 /// On Linux:
 /// - It may overcount the amount of parallelism available when limited by a
-///   process-wide affinity mask, or when affected by cgroup limits.
+///   process-wide affinity mask or cgroup quotas and `sched_getaffinity()` or cgroup fs can't be
+///   queried, e.g. due to sandboxing.
+/// - It may undercount the amount of parallelism if the current thread's affinity mask
+///   does not reflect the process' cpuset, e.g. due to pinned threads.
+/// - If the process is in a cgroup v1 cpu controller, this may need to
+///   scan mountpoints to find the corresponding cgroup v1 controller,
+///   which may take time on systems with large numbers of mountpoints.
+///   (This does not apply to cgroup v2, or to processes not in a
+///   cgroup.)
 ///
 /// On all targets:
 /// - It may overcount the amount of parallelism available when running in a VM

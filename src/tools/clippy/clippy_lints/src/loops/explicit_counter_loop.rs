@@ -7,7 +7,7 @@ use rustc_errors::Applicability;
 use rustc_hir::intravisit::{walk_block, walk_expr};
 use rustc_hir::{Expr, Pat};
 use rustc_lint::LateContext;
-use rustc_middle::ty::{self, UintTy};
+use rustc_middle::ty::{self, Ty, UintTy};
 
 // To trigger the EXPLICIT_COUNTER_LOOP lint, a variable must be
 // incremented exactly once in the loop body, and initialized to zero
@@ -34,15 +34,16 @@ pub(super) fn check<'tcx>(
                 if let Some((name, ty, initializer)) = initialize_visitor.get_result();
                 if is_integer_const(cx, initializer, 0);
                 then {
-                    let mut applicability = Applicability::MachineApplicable;
+                    let mut applicability = Applicability::MaybeIncorrect;
+                    let span = expr.span.with_hi(arg.span.hi());
 
-                    let int_name = match ty.map(ty::TyS::kind) {
+                    let int_name = match ty.map(Ty::kind) {
                         // usize or inferred
                         Some(ty::Uint(UintTy::Usize)) | None => {
                             span_lint_and_sugg(
                                 cx,
                                 EXPLICIT_COUNTER_LOOP,
-                                expr.span.with_hi(arg.span.hi()),
+                                span,
                                 &format!("the variable `{}` is used as a loop counter", name),
                                 "consider using",
                                 format!(
@@ -63,11 +64,11 @@ pub(super) fn check<'tcx>(
                     span_lint_and_then(
                         cx,
                         EXPLICIT_COUNTER_LOOP,
-                        expr.span.with_hi(arg.span.hi()),
+                        span,
                         &format!("the variable `{}` is used as a loop counter", name),
                         |diag| {
                             diag.span_suggestion(
-                                expr.span.with_hi(arg.span.hi()),
+                                span,
                                 "consider using",
                                 format!(
                                     "for ({}, {}) in (0_{}..).zip({})",

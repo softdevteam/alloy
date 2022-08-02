@@ -42,7 +42,7 @@
 //!   now considered to be in error.
 //!
 //! When the call to `process_obligations` completes, you get back an `Outcome`,
-//! which includes three bits of information:
+//! which includes two bits of information:
 //!
 //! - `completed`: a list of obligations where processing was fully
 //!   completed without error (meaning that all transitive subobligations
@@ -53,13 +53,10 @@
 //!   all the obligations in `C` have been found completed.
 //! - `errors`: a list of errors that occurred and associated backtraces
 //!   at the time of error, which can be used to give context to the user.
-//! - `stalled`: if true, then none of the existing obligations were
-//!   *shallowly successful* (that is, no callback returned `Changed(_)`).
-//!   This implies that all obligations were either errors or returned an
-//!   ambiguous result, which means that any further calls to
-//!   `process_obligations` would simply yield back further ambiguous
-//!   results. This is used by the `FulfillmentContext` to decide when it
-//!   has reached a steady state.
+//!
+//! Upon completion, none of the existing obligations were *shallowly
+//! successful* (that is, no callback returned `Changed(_)`). This implies that
+//! all obligations were either errors or returned an ambiguous result.
 //!
 //! ### Implementation details
 //!
@@ -99,6 +96,8 @@ pub trait ObligationProcessor {
     type Obligation: ForestObligation;
     type Error: Debug;
 
+    fn needs_process_obligation(&self, obligation: &Self::Obligation) -> bool;
+
     fn process_obligation(
         &mut self,
         obligation: &mut Self::Obligation,
@@ -132,11 +131,11 @@ type ObligationTreeIdGenerator =
     std::iter::Map<std::ops::RangeFrom<usize>, fn(usize) -> ObligationTreeId>;
 
 pub struct ObligationForest<O: ForestObligation> {
-    /// The list of obligations. In between calls to `process_obligations`,
+    /// The list of obligations. In between calls to [Self::process_obligations],
     /// this list only contains nodes in the `Pending` or `Waiting` state.
     ///
     /// `usize` indices are used here and throughout this module, rather than
-    /// `rustc_index::newtype_index!` indices, because this code is hot enough
+    /// [`rustc_index::newtype_index!`] indices, because this code is hot enough
     /// that the `u32`-to-`usize` conversions that would be required are
     /// significant, and space considerations are not important.
     nodes: Vec<Node<O>>,
@@ -146,10 +145,11 @@ pub struct ObligationForest<O: ForestObligation> {
 
     /// A cache of the nodes in `nodes`, indexed by predicate. Unfortunately,
     /// its contents are not guaranteed to match those of `nodes`. See the
-    /// comments in `process_obligation` for details.
+    /// comments in `Self::process_obligation` for details.
     active_cache: FxHashMap<O::CacheKey, usize>,
 
-    /// A vector reused in compress() and find_cycles_from_node(), to avoid allocating new vectors.
+    /// A vector reused in [Self::compress()] and [Self::find_cycles_from_node()],
+    /// to avoid allocating new vectors.
     reused_node_vec: Vec<usize>,
 
     obligation_tree_id_generator: ObligationTreeIdGenerator,
@@ -201,7 +201,7 @@ impl<O> Node<O> {
 /// with this node.
 ///
 /// The non-`Error` state transitions are as follows.
-/// ```
+/// ```text
 /// (Pre-creation)
 ///  |
 ///  |     register_obligation_at() (called by process_obligations() and
@@ -259,8 +259,6 @@ pub trait OutcomeTrait {
     type Obligation;
 
     fn new() -> Self;
-    fn mark_not_stalled(&mut self);
-    fn is_stalled(&self) -> bool;
     fn record_completed(&mut self, outcome: &Self::Obligation);
     fn record_error(&mut self, error: Self::Error);
 }
@@ -269,14 +267,6 @@ pub trait OutcomeTrait {
 pub struct Outcome<O, E> {
     /// Backtrace of obligations that were found to be in error.
     pub errors: Vec<Error<O, E>>,
-
-    /// If true, then we saw no successful obligations, which means
-    /// there is no point in further iteration. This is based on the
-    /// assumption that when trait matching returns `Error` or
-    /// `Unchanged`, those results do not affect environmental
-    /// inference state. (Note that if we invoke `process_obligations`
-    /// with no pending obligations, stalled will be true.)
-    pub stalled: bool,
 }
 
 impl<O, E> OutcomeTrait for Outcome<O, E> {
@@ -284,15 +274,7 @@ impl<O, E> OutcomeTrait for Outcome<O, E> {
     type Obligation = O;
 
     fn new() -> Self {
-        Self { stalled: true, errors: vec![] }
-    }
-
-    fn mark_not_stalled(&mut self) {
-        self.stalled = false;
-    }
-
-    fn is_stalled(&self) -> bool {
-        self.stalled
+        Self { errors: vec![] }
     }
 
     fn record_completed(&mut self, _outcome: &Self::Obligation) {
@@ -414,10 +396,7 @@ impl<O: ForestObligation> ObligationForest<O> {
             .insert(node.obligation.as_cache_key());
     }
 
-    /// Performs a pass through the obligation list. This must
-    /// be called in a loop until `outcome.stalled` is false.
-    ///
-    /// This _cannot_ be unrolled (presently, at least).
+    /// Performs a fixpoint computation over the obligation list.
     #[inline(never)]
     pub fn process_obligations<P, OUT>(&mut self, processor: &mut P) -> OUT
     where
@@ -426,55 +405,69 @@ impl<O: ForestObligation> ObligationForest<O> {
     {
         let mut outcome = OUT::new();
 
-        // Note that the loop body can append new nodes, and those new nodes
-        // will then be processed by subsequent iterations of the loop.
-        //
-        // We can't use an iterator for the loop because `self.nodes` is
-        // appended to and the borrow checker would complain. We also can't use
-        // `for index in 0..self.nodes.len() { ... }` because the range would
-        // be computed with the initial length, and we would miss the appended
-        // nodes. Therefore we use a `while` loop.
-        let mut index = 0;
-        while let Some(node) = self.nodes.get_mut(index) {
-            // `processor.process_obligation` can modify the predicate within
-            // `node.obligation`, and that predicate is the key used for
-            // `self.active_cache`. This means that `self.active_cache` can get
-            // out of sync with `nodes`. It's not very common, but it does
-            // happen, and code in `compress` has to allow for it.
-            if node.state.get() != NodeState::Pending {
-                index += 1;
-                continue;
-            }
+        // Fixpoint computation: we repeat until the inner loop stalls.
+        loop {
+            let mut has_changed = false;
 
-            match processor.process_obligation(&mut node.obligation) {
-                ProcessResult::Unchanged => {
-                    // No change in state.
+            // Note that the loop body can append new nodes, and those new nodes
+            // will then be processed by subsequent iterations of the loop.
+            //
+            // We can't use an iterator for the loop because `self.nodes` is
+            // appended to and the borrow checker would complain. We also can't use
+            // `for index in 0..self.nodes.len() { ... }` because the range would
+            // be computed with the initial length, and we would miss the appended
+            // nodes. Therefore we use a `while` loop.
+            let mut index = 0;
+            while let Some(node) = self.nodes.get_mut(index) {
+                if node.state.get() != NodeState::Pending
+                    || !processor.needs_process_obligation(&node.obligation)
+                {
+                    index += 1;
+                    continue;
                 }
-                ProcessResult::Changed(children) => {
-                    // We are not (yet) stalled.
-                    outcome.mark_not_stalled();
-                    node.state.set(NodeState::Success);
 
-                    for child in children {
-                        let st = self.register_obligation_at(child, Some(index));
-                        if let Err(()) = st {
-                            // Error already reported - propagate it
-                            // to our node.
-                            self.error_at(index);
+                // `processor.process_obligation` can modify the predicate within
+                // `node.obligation`, and that predicate is the key used for
+                // `self.active_cache`. This means that `self.active_cache` can get
+                // out of sync with `nodes`. It's not very common, but it does
+                // happen, and code in `compress` has to allow for it.
+
+                match processor.process_obligation(&mut node.obligation) {
+                    ProcessResult::Unchanged => {
+                        // No change in state.
+                    }
+                    ProcessResult::Changed(children) => {
+                        // We are not (yet) stalled.
+                        has_changed = true;
+                        node.state.set(NodeState::Success);
+
+                        for child in children {
+                            let st = self.register_obligation_at(child, Some(index));
+                            if let Err(()) = st {
+                                // Error already reported - propagate it
+                                // to our node.
+                                self.error_at(index);
+                            }
                         }
                     }
+                    ProcessResult::Error(err) => {
+                        has_changed = true;
+                        outcome.record_error(Error { error: err, backtrace: self.error_at(index) });
+                    }
                 }
-                ProcessResult::Error(err) => {
-                    outcome.mark_not_stalled();
-                    outcome.record_error(Error { error: err, backtrace: self.error_at(index) });
-                }
+                index += 1;
             }
-            index += 1;
-        }
 
-        // There's no need to perform marking, cycle processing and compression when nothing
-        // changed.
-        if !outcome.is_stalled() {
+            // If unchanged, then we saw no successful obligations, which means
+            // there is no point in further iteration. This is based on the
+            // assumption that when trait matching returns `Error` or
+            // `Unchanged`, those results do not affect environmental inference
+            // state. (Note that this will occur if we invoke
+            // `process_obligations` with no pending obligations.)
+            if !has_changed {
+                break;
+            }
+
             self.mark_successes();
             self.process_cycles(processor);
             self.compress(|obl| outcome.record_completed(obl));
@@ -633,17 +626,14 @@ impl<O: ForestObligation> ObligationForest<O> {
                     }
                 }
                 NodeState::Done => {
-                    // This lookup can fail because the contents of
+                    // The removal lookup might fail because the contents of
                     // `self.active_cache` are not guaranteed to match those of
                     // `self.nodes`. See the comment in `process_obligation`
                     // for more details.
-                    if let Some((predicate, _)) =
-                        self.active_cache.remove_entry(&node.obligation.as_cache_key())
-                    {
-                        self.done_cache.insert(predicate);
-                    } else {
-                        self.done_cache.insert(node.obligation.as_cache_key().clone());
-                    }
+                    let cache_key = node.obligation.as_cache_key();
+                    self.active_cache.remove(&cache_key);
+                    self.done_cache.insert(cache_key);
+
                     // Extract the success stories.
                     outcome_cb(&node.obligation);
                     node_rewrites[index] = orig_nodes_len;

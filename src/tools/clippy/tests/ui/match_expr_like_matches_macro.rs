@@ -63,6 +63,18 @@ fn main() {
     }
     {
         // lint
+        // skip rustfmt to prevent removing block for first pattern
+        #[rustfmt::skip]
+        let _ans = match x {
+            E::A(_) => {
+                true
+            }
+            E::B(_) => true,
+            _ => false,
+        };
+    }
+    {
+        // lint
         let _ans = match x {
             E::B(_) => false,
             E::C => false,
@@ -180,5 +192,20 @@ fn main() {
             _ => false,
         };
         fun(val);
+    }
+
+    {
+        enum E {
+            A,
+            B,
+            C,
+        }
+
+        let _ = match E::A {
+            E::B => true,
+            #[cfg(feature = "foo")]
+            E::A => true,
+            _ => false,
+        };
     }
 }

@@ -1,8 +1,8 @@
 pub trait Foo {
     // @has assoc_consts/trait.Foo.html '//*[@class="rust trait"]' \
-    //      'const FOO: usize;'
+    //      'const FOO: usize = 13usize;'
     // @has - '//*[@id="associatedconstant.FOO"]' 'const FOO: usize'
-    const FOO: usize = 12;
+    const FOO: usize = 12 + 1;
     // @has - '//*[@id="associatedconstant.FOO_NO_DEFAULT"]' 'const FOO_NO_DEFAULT: bool'
     const FOO_NO_DEFAULT: bool;
     // @!has - FOO_HIDDEN
@@ -27,6 +27,10 @@ impl Bar {
     // @has assoc_consts/struct.Bar.html '//*[@id="associatedconstant.BAR"]' \
     //      'const BAR: usize'
     pub const BAR: usize = 3;
+
+    // @has - '//*[@id="associatedconstant.BAR_ESCAPED"]' \
+    //      "const BAR_ESCAPED: &'static str = \"<em>markup</em>\""
+    pub const BAR_ESCAPED: &'static str = "<em>markup</em>";
 }
 
 pub struct Baz<'a, U: 'a, T>(T, &'a [U]);
