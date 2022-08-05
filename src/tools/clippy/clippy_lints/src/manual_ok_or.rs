@@ -5,7 +5,7 @@ use clippy_utils::{is_lang_ctor, path_to_local_id};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::LangItem::{ResultErr, ResultOk};
-use rustc_hir::{Expr, ExprKind, PatKind};
+use rustc_hir::{Closure, Expr, ExprKind, PatKind};
 use rustc_lint::LintContext;
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::lint::in_external_macro;
@@ -40,14 +40,14 @@ declare_clippy_lint! {
 
 declare_lint_pass!(ManualOkOr => [MANUAL_OK_OR]);
 
-impl LateLintPass<'_> for ManualOkOr {
+impl<'tcx> LateLintPass<'tcx> for ManualOkOr {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, scrutinee: &'tcx Expr<'tcx>) {
         if in_external_macro(cx.sess(), scrutinee.span) {
             return;
         }
 
         if_chain! {
-            if let ExprKind::MethodCall(method_segment, _, args, _) = scrutinee.kind;
+            if let ExprKind::MethodCall(method_segment, args, _) = scrutinee.kind;
             if method_segment.ident.name == sym!(map_or);
             if args.len() == 3;
             let method_receiver = &args[0];
@@ -88,8 +88,8 @@ fn is_ok_wrapping(cx: &LateContext<'_>, map_expr: &Expr<'_>) -> bool {
         }
     }
     if_chain! {
-        if let ExprKind::Closure(_, _, body_id, ..) = map_expr.kind;
-        let body = cx.tcx.hir().body(body_id);
+        if let ExprKind::Closure(&Closure { body, .. }) = map_expr.kind;
+        let body = cx.tcx.hir().body(body);
         if let PatKind::Binding(_, param_id, ..) = body.params[0].pat.kind;
         if let ExprKind::Call(Expr { kind: ExprKind::Path(ok_path), .. }, &[ref ok_arg]) = body.value.kind;
         if is_lang_ctor(cx, ok_path, ResultOk);

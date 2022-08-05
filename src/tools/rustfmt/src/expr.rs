@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 
 use itertools::Itertools;
-use rustc_ast::token::{DelimToken, LitKind};
+use rustc_ast::token::{Delimiter, LitKind};
 use rustc_ast::{ast, ptr};
 use rustc_span::{BytePos, Span};
 
@@ -203,11 +203,17 @@ pub(crate) fn format_expr(
                 Some("yield".to_string())
             }
         }
-        ast::ExprKind::Closure(capture, ref is_async, movability, ref fn_decl, ref body, _) => {
-            closures::rewrite_closure(
-                capture, is_async, movability, fn_decl, body, expr.span, context, shape,
-            )
-        }
+        ast::ExprKind::Closure(
+            ref binder,
+            capture,
+            ref is_async,
+            movability,
+            ref fn_decl,
+            ref body,
+            _,
+        ) => closures::rewrite_closure(
+            binder, capture, is_async, movability, fn_decl, body, expr.span, context, shape,
+        ),
         ast::ExprKind::Try(..)
         | ast::ExprKind::Field(..)
         | ast::ExprKind::MethodCall(..)
@@ -224,6 +230,10 @@ pub(crate) fn format_expr(
         ast::ExprKind::Ret(None) => Some("return".to_owned()),
         ast::ExprKind::Ret(Some(ref expr)) => {
             rewrite_unary_prefix(context, "return ", &**expr, shape)
+        }
+        ast::ExprKind::Yeet(None) => Some("do yeet".to_owned()),
+        ast::ExprKind::Yeet(Some(ref expr)) => {
+            rewrite_unary_prefix(context, "do yeet ", &**expr, shape)
         }
         ast::ExprKind::Box(ref expr) => rewrite_unary_prefix(context, "box ", &**expr, shape),
         ast::ExprKind::AddrOf(borrow_kind, mutability, ref expr) => {
@@ -334,9 +344,7 @@ pub(crate) fn format_expr(
         // satisfy our width restrictions.
         // Style Guide RFC for InlineAsm variant pending
         // https://github.com/rust-dev-tools/fmt-rfcs/issues/152
-        ast::ExprKind::LlvmInlineAsm(..) | ast::ExprKind::InlineAsm(..) => {
-            Some(context.snippet(expr.span).to_owned())
-        }
+        ast::ExprKind::InlineAsm(..) => Some(context.snippet(expr.span).to_owned()),
         ast::ExprKind::TryBlock(ref block) => {
             if let rw @ Some(_) =
                 rewrite_single_line_block(context, "try ", block, Some(&expr.attrs), None, shape)
@@ -414,7 +422,7 @@ pub(crate) fn rewrite_array<'a, T: 'a + IntoOverflowableItem<'a>>(
     context: &'a RewriteContext<'_>,
     shape: Shape,
     force_separator_tactic: Option<SeparatorTactic>,
-    delim_token: Option<DelimToken>,
+    delim_token: Option<Delimiter>,
 ) -> Option<String> {
     overflow::rewrite_with_square_brackets(
         context,
@@ -1327,7 +1335,7 @@ pub(crate) fn can_be_overflowed_expr(
         }
         ast::ExprKind::MacCall(ref mac) => {
             match (
-                rustc_ast::ast::MacDelimiter::from_token(mac.args.delim()),
+                rustc_ast::ast::MacDelimiter::from_token(mac.args.delim().unwrap()),
                 context.config.overflow_delimited_expr(),
             ) {
                 (Some(ast::MacDelimiter::Bracket), true)
@@ -1535,7 +1543,7 @@ fn rewrite_struct_lit<'a>(
     enum StructLitField<'a> {
         Regular(&'a ast::ExprField),
         Base(&'a ast::Expr),
-        Rest(&'a Span),
+        Rest(Span),
     }
 
     // 2 = " {".len()
@@ -1570,7 +1578,7 @@ fn rewrite_struct_lit<'a>(
         let field_iter = fields.iter().map(StructLitField::Regular).chain(
             match struct_rest {
                 ast::StructRest::Base(expr) => Some(StructLitField::Base(&**expr)),
-                ast::StructRest::Rest(span) => Some(StructLitField::Rest(span)),
+                ast::StructRest::Rest(span) => Some(StructLitField::Rest(*span)),
                 ast::StructRest::None => None,
             }
             .into_iter(),

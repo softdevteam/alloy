@@ -28,7 +28,7 @@ use std::hash::{Hash, Hasher};
 use std::io::prelude::*;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::str;
 
 use glob::glob;
@@ -179,7 +179,7 @@ pub fn compute_stamp_hash(config: &Config) -> String {
         }
 
         Some(Debugger::Lldb) => {
-            config.lldb_python.hash(&mut hash);
+            config.python.hash(&mut hash);
             config.lldb_python_dir.hash(&mut hash);
             env::var_os("PATH").hash(&mut hash);
             env::var_os("PYTHONPATH").hash(&mut hash);
@@ -323,12 +323,13 @@ impl<'test> TestCx<'test> {
         let output_to_check = self.get_output(&proc_res);
         let expected_errors = errors::load_errors(&self.testpaths.file, self.revision);
         if !expected_errors.is_empty() {
-            if !self.props.error_patterns.is_empty() {
+            if !self.props.error_patterns.is_empty() || !self.props.regex_error_patterns.is_empty()
+            {
                 self.fatal("both error pattern and expected errors specified");
             }
             self.check_expected_errors(expected_errors, &proc_res);
         } else {
-            self.check_error_patterns(&output_to_check, &proc_res, pm);
+            self.check_all_error_patterns(&output_to_check, &proc_res, pm);
         }
         if self.props.should_ice {
             match proc_res.status.code() {
@@ -363,7 +364,7 @@ impl<'test> TestCx<'test> {
 
         let output_to_check = self.get_output(&proc_res);
         self.check_correct_failure_status(&proc_res);
-        self.check_error_patterns(&output_to_check, &proc_res, pm);
+        self.check_all_error_patterns(&output_to_check, &proc_res, pm);
     }
 
     fn get_output(&self, proc_res: &ProcRes) -> String {
@@ -500,7 +501,19 @@ impl<'test> TestCx<'test> {
             expected = expected.replace(&cr, "");
         }
 
-        self.compare_source(&expected, &actual);
+        if !self.config.bless {
+            self.compare_source(&expected, &actual);
+        } else if expected != actual {
+            let filepath_buf;
+            let filepath = match &self.props.pp_exact {
+                Some(file) => {
+                    filepath_buf = self.testpaths.file.parent().unwrap().join(file);
+                    &filepath_buf
+                }
+                None => &self.testpaths.file,
+            };
+            fs::write(filepath, &actual).unwrap();
+        }
 
         // If we're only making sure that the output matches then just stop here
         if self.props.pretty_compare_only {
@@ -635,8 +648,6 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_debuginfo_cdb_test(&self) {
-        assert!(self.revision.is_none(), "revisions not relevant here");
-
         let config = Config {
             target_rustcflags: self.cleanup_debug_info_options(&self.config.target_rustcflags),
             host_rustcflags: self.cleanup_debug_info_options(&self.config.host_rustcflags),
@@ -649,6 +660,21 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_debuginfo_cdb_test_no_opt(&self) {
+        let exe_file = self.make_exe_name();
+
+        // Existing PDB files are update in-place. When changing the debuginfo
+        // the compiler generates for something, this can lead to the situation
+        // where both the old and the new version of the debuginfo for the same
+        // type is present in the PDB, which is very confusing.
+        // Therefore we delete any existing PDB file before compiling the test
+        // case.
+        // FIXME: If can reliably detect that MSVC's link.exe is used, then
+        //        passing `/INCREMENTAL:NO` might be a cleaner way to do this.
+        let pdb_file = exe_file.with_extension(".pdb");
+        if pdb_file.exists() {
+            std::fs::remove_file(pdb_file).unwrap();
+        }
+
         // compile test file (it should have 'compile-flags:-g' in the header)
         let should_run = self.run_if_enabled();
         let compile_result = self.compile_test(should_run, EmitMetadata::No);
@@ -659,8 +685,6 @@ impl<'test> TestCx<'test> {
             return;
         }
 
-        let exe_file = self.make_exe_name();
-
         let prefixes = {
             static PREFIXES: &[&str] = &["cdb", "cdbg"];
             // No "native rust support" variation for CDB yet.
@@ -669,7 +693,12 @@ impl<'test> TestCx<'test> {
 
         // Parse debugger commands etc from test files
         let DebuggerCommands { commands, check_lines, breakpoint_lines, .. } =
-            match DebuggerCommands::parse_from(&self.testpaths.file, self.config, prefixes) {
+            match DebuggerCommands::parse_from(
+                &self.testpaths.file,
+                self.config,
+                prefixes,
+                self.revision,
+            ) {
                 Ok(cmds) => cmds,
                 Err(e) => self.fatal(&e),
             };
@@ -730,8 +759,6 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_debuginfo_gdb_test(&self) {
-        assert!(self.revision.is_none(), "revisions not relevant here");
-
         let config = Config {
             target_rustcflags: self.cleanup_debug_info_options(&self.config.target_rustcflags),
             host_rustcflags: self.cleanup_debug_info_options(&self.config.host_rustcflags),
@@ -757,7 +784,12 @@ impl<'test> TestCx<'test> {
         };
 
         let DebuggerCommands { commands, check_lines, breakpoint_lines } =
-            match DebuggerCommands::parse_from(&self.testpaths.file, self.config, prefixes) {
+            match DebuggerCommands::parse_from(
+                &self.testpaths.file,
+                self.config,
+                prefixes,
+                self.revision,
+            ) {
                 Ok(cmds) => cmds,
                 Err(e) => self.fatal(&e),
             };
@@ -904,6 +936,16 @@ impl<'test> TestCx<'test> {
                             "add-auto-load-safe-path {}\n",
                             rust_pp_module_abs_path.replace(r"\", r"\\")
                         ));
+
+                        let output_base_dir = self.output_base_dir().to_str().unwrap().to_owned();
+
+                        // Add the directory containing the output binary to
+                        // include embedded pretty printers to GDB's script
+                        // auto loading safe path
+                        script_str.push_str(&format!(
+                            "add-auto-load-safe-path {}\n",
+                            output_base_dir.replace(r"\", r"\\")
+                        ));
                     }
                 }
                 _ => {
@@ -969,8 +1011,6 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_debuginfo_lldb_test(&self) {
-        assert!(self.revision.is_none(), "revisions not relevant here");
-
         if self.config.lldb_python_dir.is_none() {
             self.fatal("Can't run LLDB test because LLDB's python path is not set.");
         }
@@ -1023,7 +1063,12 @@ impl<'test> TestCx<'test> {
 
         // Parse debugger commands etc from test files
         let DebuggerCommands { commands, check_lines, breakpoint_lines, .. } =
-            match DebuggerCommands::parse_from(&self.testpaths.file, self.config, prefixes) {
+            match DebuggerCommands::parse_from(
+                &self.testpaths.file,
+                self.config,
+                prefixes,
+                self.revision,
+            ) {
                 Ok(cmds) => cmds,
                 Err(e) => self.fatal(&e),
             };
@@ -1116,7 +1161,7 @@ impl<'test> TestCx<'test> {
         // Prepare the lldb_batchmode which executes the debugger script
         let lldb_script_path = rust_src_root.join("src/etc/lldb_batchmode.py");
         self.cmd2procres(
-            Command::new(&self.config.lldb_python)
+            Command::new(&self.config.python)
                 .arg(&lldb_script_path)
                 .arg(test_executable)
                 .arg(debugger_script)
@@ -1187,14 +1232,13 @@ impl<'test> TestCx<'test> {
         }
     }
 
-    fn check_error_patterns(
+    fn check_all_error_patterns(
         &self,
         output_to_check: &str,
         proc_res: &ProcRes,
         pm: Option<PassMode>,
     ) {
-        debug!("check_error_patterns");
-        if self.props.error_patterns.is_empty() {
+        if self.props.error_patterns.is_empty() && self.props.regex_error_patterns.is_empty() {
             if pm.is_some() {
                 // FIXME(#65865)
                 return;
@@ -1208,13 +1252,8 @@ impl<'test> TestCx<'test> {
 
         let mut missing_patterns: Vec<String> = Vec::new();
 
-        for pattern in &self.props.error_patterns {
-            if output_to_check.contains(pattern.trim()) {
-                debug!("found error pattern {}", pattern);
-            } else {
-                missing_patterns.push(pattern.to_string());
-            }
-        }
+        self.check_error_patterns(output_to_check, &mut missing_patterns);
+        self.check_regex_error_patterns(output_to_check, proc_res, &mut missing_patterns);
 
         if missing_patterns.is_empty() {
             return;
@@ -1230,6 +1269,44 @@ impl<'test> TestCx<'test> {
                 self.error(&format!("error pattern '{}' not found!", pattern));
             }
             self.fatal_proc_rec("multiple error patterns not found", proc_res);
+        }
+    }
+
+    fn check_error_patterns(&self, output_to_check: &str, missing_patterns: &mut Vec<String>) {
+        debug!("check_error_patterns");
+        for pattern in &self.props.error_patterns {
+            if output_to_check.contains(pattern.trim()) {
+                debug!("found error pattern {}", pattern);
+            } else {
+                missing_patterns.push(pattern.to_string());
+            }
+        }
+    }
+
+    fn check_regex_error_patterns(
+        &self,
+        output_to_check: &str,
+        proc_res: &ProcRes,
+        missing_patterns: &mut Vec<String>,
+    ) {
+        debug!("check_regex_error_patterns");
+
+        for pattern in &self.props.regex_error_patterns {
+            let pattern = pattern.trim();
+            let re = match Regex::new(pattern) {
+                Ok(re) => re,
+                Err(err) => {
+                    self.fatal_proc_rec(
+                        &format!("invalid regex error pattern '{}': {:?}", pattern, err),
+                        proc_res,
+                    );
+                }
+            };
+            if re.is_match(output_to_check) {
+                debug!("found regex error pattern {}", pattern);
+            } else {
+                missing_patterns.push(pattern.to_string());
+            }
         }
     }
 
@@ -1260,6 +1337,16 @@ impl<'test> TestCx<'test> {
             && expected_errors.iter().any(|x| x.kind == Some(ErrorKind::Error))
         {
             self.fatal_proc_rec("process did not return an error status", proc_res);
+        }
+
+        if self.props.known_bug {
+            if !expected_errors.is_empty() {
+                self.fatal_proc_rec(
+                    "`known_bug` tests should not have an expected errors",
+                    proc_res,
+                );
+            }
+            return;
         }
 
         // On Windows, keep all '\' path separators to match the paths reported in the JSON output
@@ -1298,6 +1385,7 @@ impl<'test> TestCx<'test> {
                 }
 
                 None => {
+                    // If the test is a known bug, don't require that the error is annotated
                     if self.is_unexpected_compiler_message(actual_error, expect_help, expect_note) {
                         self.error(&format!(
                             "{}:{}: unexpected {}: '{}'",
@@ -1699,6 +1787,28 @@ impl<'test> TestCx<'test> {
         dylib
     }
 
+    fn read2_abbreviated(&self, child: Child) -> Output {
+        let mut filter_paths_from_len = Vec::new();
+        let mut add_path = |path: &Path| {
+            let path = path.display().to_string();
+            let windows = path.replace("\\", "\\\\");
+            if windows != path {
+                filter_paths_from_len.push(windows);
+            }
+            filter_paths_from_len.push(path);
+        };
+
+        // List of paths that will not be measured when determining whether the output is larger
+        // than the output truncation threshold.
+        //
+        // Note: avoid adding a subdirectory of an already filtered directory here, otherwise the
+        // same slice of text will be double counted and the truncation might not happen.
+        add_path(&self.config.src_base);
+        add_path(&self.config.build_base);
+
+        read2_abbreviated(child, &filter_paths_from_len).expect("failed to read output")
+    }
+
     fn compose_and_run(
         &self,
         mut command: Command,
@@ -1733,8 +1843,7 @@ impl<'test> TestCx<'test> {
             child.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
         }
 
-        let Output { status, stdout, stderr } =
-            read2_abbreviated(child).expect("failed to read output");
+        let Output { status, stdout, stderr } = self.read2_abbreviated(child);
 
         let result = ProcRes {
             status,
@@ -1795,12 +1904,39 @@ impl<'test> TestCx<'test> {
             }
         }
 
+        if self.config.optimize_tests && !is_rustdoc {
+            match self.config.mode {
+                Ui => {
+                    // If optimize-tests is true we still only want to optimize tests that actually get
+                    // executed and that don't specify their own optimization levels.
+                    // Note: aux libs don't have a pass-mode, so they won't get optimized
+                    // unless compile-flags are set in the aux file.
+                    if self.config.optimize_tests
+                        && self.props.pass_mode(&self.config) == Some(PassMode::Run)
+                        && !self
+                            .props
+                            .compile_flags
+                            .iter()
+                            .any(|arg| arg == "-O" || arg.contains("opt-level"))
+                    {
+                        rustc.arg("-O");
+                    }
+                }
+                DebugInfo => { /* debuginfo tests must be unoptimized */ }
+                _ => {
+                    rustc.arg("-O");
+                }
+            }
+        }
+
         match self.config.mode {
             Incremental => {
                 // If we are extracting and matching errors in the new
                 // fashion, then you want JSON mode. Old-skool error
                 // patterns still match the raw compiler output.
-                if self.props.error_patterns.is_empty() {
+                if self.props.error_patterns.is_empty()
+                    && self.props.regex_error_patterns.is_empty()
+                {
                     rustc.args(&["--error-format", "json"]);
                     rustc.args(&["--json", "future-incompat"]);
                 }
@@ -1815,15 +1951,22 @@ impl<'test> TestCx<'test> {
                 rustc.arg("-Ccodegen-units=1");
                 rustc.arg("-Zui-testing");
                 rustc.arg("-Zdeduplicate-diagnostics=no");
+                // FIXME: use this for other modes too, for perf?
+                rustc.arg("-Cstrip=debuginfo");
             }
             MirOpt => {
                 rustc.args(&[
                     "-Copt-level=1",
                     "-Zdump-mir=all",
-                    "-Zmir-opt-level=4",
                     "-Zvalidate-mir",
                     "-Zdump-mir-exclude-pass-number",
+                    "-Zmir-pretty-relative-line-numbers=yes",
                 ]);
+                if let Some(pass) = &self.props.mir_unit_test {
+                    rustc.args(&["-Zmir-opt-level=0", &format!("-Zmir-enable-passes=+{}", pass)]);
+                } else {
+                    rustc.arg("-Zmir-opt-level=4");
+                }
 
                 let mir_dump_dir = self.get_mir_dump_dir();
                 let _ = fs::remove_dir_all(&mir_dump_dir);
@@ -1867,11 +2010,8 @@ impl<'test> TestCx<'test> {
         }
 
         match self.config.compare_mode {
-            Some(CompareMode::Nll) => {
-                rustc.args(&["-Zborrowck=mir"]);
-            }
             Some(CompareMode::Polonius) => {
-                rustc.args(&["-Zpolonius", "-Zborrowck=mir"]);
+                rustc.args(&["-Zpolonius"]);
             }
             Some(CompareMode::Chalk) => {
                 rustc.args(&["-Zchalk"]);
@@ -2220,7 +2360,7 @@ impl<'test> TestCx<'test> {
             self.check_rustdoc_test_option(proc_res);
         } else {
             let root = self.config.find_rust_src_root().unwrap();
-            let mut cmd = Command::new(&self.config.docck_python);
+            let mut cmd = Command::new(&self.config.python);
             cmd.arg(root.join("src/etc/htmldocck.py")).arg(&out_dir).arg(&self.testpaths.file);
             if self.config.bless {
                 cmd.arg("--bless");
@@ -2412,13 +2552,16 @@ impl<'test> TestCx<'test> {
         );
 
         if !res.status.success() {
-            self.fatal_proc_rec("jsondocck failed!", &res)
+            self.fatal_proc_rec_with_ctx("jsondocck failed!", &res, |_| {
+                println!("Rustdoc Output:");
+                proc_res.print_info();
+            })
         }
 
         let mut json_out = out_dir.join(self.testpaths.file.file_stem().unwrap());
         json_out.set_extension("json");
         let res = self.cmd2procres(
-            Command::new(&self.config.docck_python)
+            Command::new(&self.config.python)
                 .arg(root.join("src/etc/check_missing_items.py"))
                 .arg(&json_out),
         );
@@ -2813,7 +2956,7 @@ impl<'test> TestCx<'test> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("TARGET", &self.config.target)
-            .env("PYTHON", &self.config.docck_python)
+            .env("PYTHON", &self.config.python)
             .env("S", src_root)
             .env("RUST_BUILD_STAGE", &self.config.stage_id)
             .env("RUSTC", cwd.join(&self.config.rustc_path))
@@ -2893,15 +3036,22 @@ impl<'test> TestCx<'test> {
                 .map(|s| s.replace("/", "-"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let cxxflags = self
+                .config
+                .cxxflags
+                .split(' ')
+                .map(|s| s.replace("/", "-"))
+                .collect::<Vec<_>>()
+                .join(" ");
 
             cmd.env("IS_MSVC", "1")
                 .env("IS_WINDOWS", "1")
                 .env("MSVC_LIB", format!("'{}' -nologo", lib.display()))
                 .env("CC", format!("'{}' {}", self.config.cc, cflags))
-                .env("CXX", format!("'{}'", &self.config.cxx));
+                .env("CXX", format!("'{}' {}", &self.config.cxx, cxxflags));
         } else {
             cmd.env("CC", format!("{} {}", self.config.cc, self.config.cflags))
-                .env("CXX", format!("{} {}", self.config.cxx, self.config.cflags))
+                .env("CXX", format!("{} {}", self.config.cxx, self.config.cxxflags))
                 .env("AR", &self.config.ar);
 
             if self.config.target.contains("windows") {
@@ -2909,7 +3059,7 @@ impl<'test> TestCx<'test> {
             }
         }
 
-        let output = cmd.spawn().and_then(read2_abbreviated).expect("failed to spawn `make`");
+        let output = self.read2_abbreviated(cmd.spawn().expect("failed to spawn `make`"));
         if !output.status.success() {
             let res = ProcRes {
                 status: output.status,
@@ -3061,8 +3211,7 @@ impl<'test> TestCx<'test> {
 
         let expected_fixed = self.load_expected_output(UI_FIXED);
 
-        let modes_to_prune = vec![CompareMode::Nll];
-        self.prune_duplicate_outputs(&modes_to_prune);
+        self.check_and_prune_duplicate_outputs(&proc_res, &[], &[]);
 
         let mut errors = self.load_compare_outputs(&proc_res, TestOutput::Compile, explicit);
         let rustfix_input = json::rustfix_diagnostics_only(&proc_res.stderr);
@@ -3164,9 +3313,11 @@ impl<'test> TestCx<'test> {
                 self.fatal_proc_rec("test run succeeded!", &proc_res);
             }
 
-            if !self.props.error_patterns.is_empty() {
+            if !self.props.error_patterns.is_empty() || !self.props.regex_error_patterns.is_empty()
+            {
                 // "// error-pattern" comments
-                self.check_error_patterns(&proc_res.stderr, &proc_res, pm);
+                let output_to_check = self.get_output(&proc_res);
+                self.check_all_error_patterns(&output_to_check, &proc_res, pm);
             }
         }
 
@@ -3180,14 +3331,16 @@ impl<'test> TestCx<'test> {
             self.props.error_patterns
         );
         if !explicit && self.config.compare_mode.is_none() {
-            let check_patterns =
-                should_run == WillExecute::No && !self.props.error_patterns.is_empty();
+            let check_patterns = should_run == WillExecute::No
+                && (!self.props.error_patterns.is_empty()
+                    || !self.props.regex_error_patterns.is_empty());
 
             let check_annotations = !check_patterns || !expected_errors.is_empty();
 
             if check_patterns {
                 // "// error-pattern" comments
-                self.check_error_patterns(&proc_res.stderr, &proc_res, pm);
+                let output_to_check = self.get_output(&proc_res);
+                self.check_all_error_patterns(&output_to_check, &proc_res, pm);
             }
 
             if check_annotations {
@@ -3444,22 +3597,21 @@ impl<'test> TestCx<'test> {
         normalize_path(parent_dir, "$DIR");
 
         // Paths into the libstd/libcore
-        let src_dir = self
-            .config
-            .src_base
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("library");
+        let base_dir = self.config.src_base.parent().unwrap().parent().unwrap().parent().unwrap();
+        let src_dir = base_dir.join("library");
         normalize_path(&src_dir, "$SRC_DIR");
+
+        // `ui-fulldeps` tests can show paths to the compiler source when testing macros from
+        // `rustc_macros`
+        // eg. /home/user/rust/compiler
+        let compiler_src_dir = base_dir.join("compiler");
+        normalize_path(&compiler_src_dir, "$COMPILER_DIR");
 
         if let Some(virtual_rust_source_base_dir) =
             option_env!("CFG_VIRTUAL_RUST_SOURCE_BASE_DIR").map(PathBuf::from)
         {
             normalize_path(&virtual_rust_source_base_dir.join("library"), "$SRC_DIR");
+            normalize_path(&virtual_rust_source_base_dir.join("compiler"), "$COMPILER_DIR");
         }
 
         // Paths into the build directory
@@ -3486,10 +3638,12 @@ impl<'test> TestCx<'test> {
         // with placeholders as we do not want tests needing updated when compiler source code
         // changes.
         // eg. $SRC_DIR/libcore/mem.rs:323:14 becomes $SRC_DIR/libcore/mem.rs:LL:COL
-        normalized = Regex::new("SRC_DIR(.+):\\d+:\\d+(: \\d+:\\d+)?")
-            .unwrap()
-            .replace_all(&normalized, "SRC_DIR$1:LL:COL")
-            .into_owned();
+        lazy_static! {
+            static ref SRC_DIR_RE: Regex =
+                Regex::new("SRC_DIR(.+):\\d+:\\d+(: \\d+:\\d+)?").unwrap();
+        }
+
+        normalized = SRC_DIR_RE.replace_all(&normalized, "SRC_DIR$1:LL:COL").into_owned();
 
         normalized = Self::normalize_platform_differences(&normalized);
         normalized = normalized.replace("\t", "\\t"); // makes tabs visible
@@ -3498,73 +3652,38 @@ impl<'test> TestCx<'test> {
         // since they duplicate actual errors and make the output hard to read.
         // This mirrors the regex in src/tools/tidy/src/style.rs, please update
         // both if either are changed.
-        normalized =
-            Regex::new("\\s*//(\\[.*\\])?~.*").unwrap().replace_all(&normalized, "").into_owned();
+        lazy_static! {
+            static ref ANNOTATION_RE: Regex = Regex::new("\\s*//(\\[.*\\])?~.*").unwrap();
+        }
 
-        // This code normalizes various hashes in both
-        // v0 and legacy symbol names that are emitted in
-        // the ui and mir-opt tests.
-        //
-        // Some tests still require normalization with headers.
-        const DEFID_HASH_REGEX: &str = r"\[[0-9a-z]{4}\]";
-        const DEFID_HASH_PLACEHOLDER: &str = r"[HASH]";
-        const V0_DEMANGLING_HASH_REGEX: &str = r"\[[0-9a-z]+\]";
-        const V0_DEMANGLING_HASH_PLACEHOLDER: &str = r"[HASH]";
-        const V0_CRATE_HASH_PREFIX_REGEX: &str = r"_R.*?Cs[0-9a-zA-Z]+_";
-        const V0_CRATE_HASH_REGEX: &str = r"Cs[0-9a-zA-Z]+_";
+        normalized = ANNOTATION_RE.replace_all(&normalized, "").into_owned();
+
+        // This code normalizes various hashes in v0 symbol mangling that is
+        // emitted in the ui and mir-opt tests.
+        lazy_static! {
+            static ref V0_CRATE_HASH_PREFIX_RE: Regex =
+                Regex::new(r"_R.*?Cs[0-9a-zA-Z]+_").unwrap();
+            static ref V0_CRATE_HASH_RE: Regex = Regex::new(r"Cs[0-9a-zA-Z]+_").unwrap();
+        }
+
         const V0_CRATE_HASH_PLACEHOLDER: &str = r"CsCRATE_HASH_";
-        const V0_BACK_REF_PREFIX_REGEX: &str = r"\(_R.*?B[0-9a-zA-Z]_";
-        const V0_BACK_REF_REGEX: &str = r"B[0-9a-zA-Z]_";
-        const V0_BACK_REF_PLACEHOLDER: &str = r"B<REF>_";
-        const LEGACY_SYMBOL_HASH_REGEX: &str = r"h[\w]{16}E?\)";
-        const LEGACY_SYMBOL_HASH_PLACEHOLDER: &str = r"h<SYMBOL_HASH>)";
-        let test_name = self
-            .output_testname_unique()
-            .into_os_string()
-            .into_string()
-            .unwrap()
-            .split('.')
-            .next()
-            .unwrap()
-            .replace("-", "_");
-        // Normalize `DefId` hashes
-        let defid_regex = format!("{}{}", test_name, DEFID_HASH_REGEX);
-        let defid_placeholder = format!("{}{}", test_name, DEFID_HASH_PLACEHOLDER);
-        normalized = Regex::new(&defid_regex)
-            .unwrap()
-            .replace_all(&normalized, defid_placeholder)
-            .into_owned();
-        // Normalize v0 demangling hashes
-        let demangling_regex = format!("{}{}", test_name, V0_DEMANGLING_HASH_REGEX);
-        let demangling_placeholder = format!("{}{}", test_name, V0_DEMANGLING_HASH_PLACEHOLDER);
-        normalized = Regex::new(&demangling_regex)
-            .unwrap()
-            .replace_all(&normalized, demangling_placeholder)
-            .into_owned();
-        // Normalize v0 crate hashes (see RFC 2603)
-        let symbol_mangle_prefix_re = Regex::new(V0_CRATE_HASH_PREFIX_REGEX).unwrap();
-        if symbol_mangle_prefix_re.is_match(&normalized) {
+        if V0_CRATE_HASH_PREFIX_RE.is_match(&normalized) {
             // Normalize crate hash
-            normalized = Regex::new(V0_CRATE_HASH_REGEX)
-                .unwrap()
-                .replace_all(&normalized, V0_CRATE_HASH_PLACEHOLDER)
-                .into_owned();
+            normalized =
+                V0_CRATE_HASH_RE.replace_all(&normalized, V0_CRATE_HASH_PLACEHOLDER).into_owned();
         }
-        let back_ref_prefix_re = Regex::new(V0_BACK_REF_PREFIX_REGEX).unwrap();
-        if back_ref_prefix_re.is_match(&normalized) {
+
+        lazy_static! {
+            static ref V0_BACK_REF_PREFIX_RE: Regex = Regex::new(r"\(_R.*?B[0-9a-zA-Z]_").unwrap();
+            static ref V0_BACK_REF_RE: Regex = Regex::new(r"B[0-9a-zA-Z]_").unwrap();
+        }
+
+        const V0_BACK_REF_PLACEHOLDER: &str = r"B<REF>_";
+        if V0_BACK_REF_PREFIX_RE.is_match(&normalized) {
             // Normalize back references (see RFC 2603)
-            let back_ref_regex = format!("{}", V0_BACK_REF_REGEX);
-            let back_ref_placeholder = format!("{}", V0_BACK_REF_PLACEHOLDER);
-            normalized = Regex::new(&back_ref_regex)
-                .unwrap()
-                .replace_all(&normalized, back_ref_placeholder)
-                .into_owned();
+            normalized =
+                V0_BACK_REF_RE.replace_all(&normalized, V0_BACK_REF_PLACEHOLDER).into_owned();
         }
-        // Normalize legacy mangled symbols
-        normalized = Regex::new(LEGACY_SYMBOL_HASH_REGEX)
-            .unwrap()
-            .replace_all(&normalized, LEGACY_SYMBOL_HASH_PLACEHOLDER)
-            .into_owned();
 
         // Custom normalization rules
         for rule in custom_rules {
@@ -3612,12 +3731,7 @@ impl<'test> TestCx<'test> {
 
         if !path.exists() {
             if let Some(CompareMode::Polonius) = self.config.compare_mode {
-                path = expected_output_path(
-                    &self.testpaths,
-                    self.revision,
-                    &Some(CompareMode::Nll),
-                    kind,
-                );
+                path = expected_output_path(&self.testpaths, self.revision, &None, kind);
             }
         }
 
@@ -3714,28 +3828,54 @@ impl<'test> TestCx<'test> {
         if self.config.bless { 0 } else { 1 }
     }
 
-    fn prune_duplicate_output(&self, mode: CompareMode, kind: &str, canon_content: &str) {
-        let examined_path = expected_output_path(&self.testpaths, self.revision, &Some(mode), kind);
+    fn check_and_prune_duplicate_outputs(
+        &self,
+        proc_res: &ProcRes,
+        modes: &[CompareMode],
+        require_same_modes: &[CompareMode],
+    ) {
+        for kind in UI_EXTENSIONS {
+            let canon_comparison_path =
+                expected_output_path(&self.testpaths, self.revision, &None, kind);
 
-        let examined_content =
-            self.load_expected_output_from_path(&examined_path).unwrap_or_else(|_| String::new());
+            let canon = match self.load_expected_output_from_path(&canon_comparison_path) {
+                Ok(canon) => canon,
+                _ => continue,
+            };
+            let bless = self.config.bless;
+            let check_and_prune_duplicate_outputs = |mode: &CompareMode, require_same: bool| {
+                let examined_path =
+                    expected_output_path(&self.testpaths, self.revision, &Some(mode.clone()), kind);
 
-        if canon_content == examined_content {
-            self.delete_file(&examined_path);
-        }
-    }
+                // If there is no output, there is nothing to do
+                let examined_content = match self.load_expected_output_from_path(&examined_path) {
+                    Ok(content) => content,
+                    _ => return,
+                };
 
-    fn prune_duplicate_outputs(&self, modes: &[CompareMode]) {
-        if self.config.bless {
-            for kind in UI_EXTENSIONS {
-                let canon_comparison_path =
-                    expected_output_path(&self.testpaths, self.revision, &None, kind);
+                let is_duplicate = canon == examined_content;
 
-                if let Ok(canon) = self.load_expected_output_from_path(&canon_comparison_path) {
-                    for mode in modes {
-                        self.prune_duplicate_output(mode.clone(), kind, &canon);
+                match (bless, require_same, is_duplicate) {
+                    // If we're blessing and the output is the same, then delete the file.
+                    (true, _, true) => {
+                        self.delete_file(&examined_path);
                     }
+                    // If we want them to be the same, but they are different, then error.
+                    // We do this wether we bless or not
+                    (_, true, false) => {
+                        self.fatal_proc_rec(
+                            &format!("`{}` should not have different output from base test!", kind),
+                            proc_res,
+                        );
+                    }
+                    _ => {}
                 }
+            };
+            for mode in modes {
+                check_and_prune_duplicate_outputs(mode, false);
+            }
+            for mode in require_same_modes {
+                check_and_prune_duplicate_outputs(mode, true);
             }
         }
     }
@@ -3759,28 +3899,36 @@ pub struct ProcRes {
 }
 
 impl ProcRes {
+    pub fn print_info(&self) {
+        fn render(name: &str, contents: &str) -> String {
+            let contents = json::extract_rendered(contents);
+            let contents = contents.trim();
+            if contents.is_empty() {
+                format!("{name}: none")
+            } else {
+                format!(
+                    "\
+                     --- {name} -------------------------------\n\
+                     {contents}\n\
+                     ------------------------------------------",
+                )
+            }
+        }
+
+        println!(
+            "status: {}\ncommand: {}\n{}\n{}\n",
+            self.status,
+            self.cmdline,
+            render("stdout", &self.stdout),
+            render("stderr", &self.stderr),
+        );
+    }
+
     pub fn fatal(&self, err: Option<&str>, on_failure: impl FnOnce()) -> ! {
         if let Some(e) = err {
             println!("\nerror: {}", e);
         }
-        print!(
-            "\
-             status: {}\n\
-             command: {}\n\
-             stdout:\n\
-             ------------------------------------------\n\
-             {}\n\
-             ------------------------------------------\n\
-             stderr:\n\
-             ------------------------------------------\n\
-             {}\n\
-             ------------------------------------------\n\
-             \n",
-            self.status,
-            self.cmdline,
-            json::extract_rendered(&self.stdout),
-            json::extract_rendered(&self.stderr),
-        );
+        self.print_info();
         on_failure();
         // Use resume_unwind instead of panic!() to prevent a panic message + backtrace from
         // compiletest, which is unnecessary noise.

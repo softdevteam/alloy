@@ -1,4 +1,4 @@
-//! This crates defines the trait resolution method.
+//! This crate defines the trait resolution method.
 //!
 //! - **Traits.** Trait resolution is implemented in the `traits` module.
 //!
@@ -10,17 +10,17 @@
 //!
 //! This API is completely unstable and subject to change.
 
+#![allow(rustc::potential_query_instability)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(bool_to_option)]
 #![feature(box_patterns)]
+#![feature(control_flow_enum)]
 #![feature(drain_filter)]
-#![feature(derive_default_enum)]
 #![feature(hash_drain_filter)]
 #![feature(label_break_value)]
+#![cfg_attr(bootstrap, feature(let_chains))]
 #![feature(let_else)]
+#![feature(if_let_guard)]
 #![feature(never_type)]
-#![feature(crate_visibility_modifier)]
-#![feature(control_flow_enum)]
 #![recursion_limit = "512"] // For rustdoc
 
 #[macro_use]
@@ -37,5 +37,4 @@ extern crate smallvec;
 
 pub mod autoderef;
 pub mod infer;
-pub mod opaque_types;
 pub mod traits;

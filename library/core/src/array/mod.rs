@@ -31,14 +31,12 @@ pub use iter::IntoIter;
 /// # Example
 ///
 /// ```rust
-/// #![feature(array_from_fn)]
-///
 /// let array = core::array::from_fn(|i| i);
 /// assert_eq!(array, [0, 1, 2, 3, 4]);
 /// ```
 #[inline]
-#[unstable(feature = "array_from_fn", issue = "89379")]
-pub fn from_fn<F, T, const N: usize>(mut cb: F) -> [T; N]
+#[stable(feature = "array_from_fn", since = "1.63.0")]
+pub fn from_fn<T, const N: usize, F>(mut cb: F) -> [T; N]
 where
     F: FnMut(usize) -> T,
 {
@@ -65,7 +63,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// #![feature(array_from_fn)]
+/// #![feature(array_try_from_fn)]
 ///
 /// let array: Result<[u8; 5], _> = std::array::try_from_fn(|i| i.try_into());
 /// assert_eq!(array, Ok([0, 1, 2, 3, 4]));
@@ -80,8 +78,8 @@ where
 /// assert_eq!(array, None);
 /// ```
 #[inline]
-#[unstable(feature = "array_from_fn", issue = "89379")]
-pub fn try_from_fn<F, R, const N: usize>(cb: F) -> ChangeOutputType<R, [R::Output; N]>
+#[unstable(feature = "array_try_from_fn", issue = "89379")]
+pub fn try_from_fn<R, const N: usize, F>(cb: F) -> ChangeOutputType<R, [R::Output; N]>
 where
     F: FnMut(usize) -> R,
     R: Try,
@@ -94,7 +92,7 @@ where
 
 /// Converts a reference to `T` into a reference to an array of length 1 (without copying).
 #[stable(feature = "array_from_ref", since = "1.53.0")]
-#[rustc_const_unstable(feature = "const_array_from_ref", issue = "90206")]
+#[rustc_const_stable(feature = "const_array_from_ref_shared", since = "1.63.0")]
 pub const fn from_ref<T>(s: &T) -> &[T; 1] {
     // SAFETY: Converting `&T` to `&[T; 1]` is sound.
     unsafe { &*(s as *const T).cast::<[T; 1]>() }
@@ -276,9 +274,10 @@ impl<'a, T, const N: usize> IntoIterator for &'a mut [T; N] {
 }
 
 #[stable(feature = "index_trait_on_arrays", since = "1.50.0")]
-impl<T, I, const N: usize> Index<I> for [T; N]
+#[rustc_const_unstable(feature = "const_slice_index", issue = "none")]
+impl<T, I, const N: usize> const Index<I> for [T; N]
 where
-    [T]: Index<I>,
+    [T]: ~const Index<I>,
 {
     type Output = <[T] as Index<I>>::Output;
 
@@ -289,9 +288,10 @@ where
 }
 
 #[stable(feature = "index_trait_on_arrays", since = "1.50.0")]
-impl<T, I, const N: usize> IndexMut<I> for [T; N]
+#[rustc_const_unstable(feature = "const_slice_index", issue = "none")]
+impl<T, I, const N: usize> const IndexMut<I> for [T; N]
 where
-    [T]: IndexMut<I>,
+    [T]: ~const IndexMut<I>,
 {
     #[inline]
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
@@ -393,7 +393,6 @@ macro_rules! array_impl_default {
 
 array_impl_default! {32, T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T}
 
-#[lang = "array"]
 impl<T, const N: usize> [T; N] {
     /// Returns an array of the same size as `self`, with function `f` applied to each element
     /// in order.
@@ -512,6 +511,7 @@ impl<T, const N: usize> [T; N] {
 
     /// Returns a slice containing the entire array. Equivalent to `&s[..]`.
     #[stable(feature = "array_as_slice", since = "1.57.0")]
+    #[rustc_const_stable(feature = "array_as_slice", since = "1.57.0")]
     pub const fn as_slice(&self) -> &[T] {
         self
     }
@@ -780,8 +780,8 @@ where
 }
 
 /// Pulls `N` items from `iter` and returns them as an array. If the iterator
-/// yields fewer than `N` items, `None` is returned and all already yielded
-/// items are dropped.
+/// yields fewer than `N` items, `Err` is returned containing an iterator over
+/// the already yielded items.
 ///
 /// Since the iterator is passed as a mutable reference and this function calls
 /// `next` at most `N` times, the iterator can still be used afterwards to
@@ -789,7 +789,10 @@ where
 ///
 /// If `iter.next()` panicks, all items already yielded by the iterator are
 /// dropped.
-fn try_collect_into_array<I, T, R, const N: usize>(iter: &mut I) -> Option<R::TryType>
+#[inline]
+fn try_collect_into_array<I, T, R, const N: usize>(
+    iter: &mut I,
+) -> Result<R::TryType, IntoIter<T, N>>
 where
     I: Iterator,
     I::Item: Try<Output = T, Residual = R>,
@@ -797,7 +800,7 @@ where
 {
     if N == 0 {
         // SAFETY: An empty array is always inhabited and has no validity invariants.
-        return unsafe { Some(Try::from_output(mem::zeroed())) };
+        return Ok(Try::from_output(unsafe { mem::zeroed() }));
     }
 
     struct Guard<'a, T, const N: usize> {
@@ -821,35 +824,49 @@ where
     let mut array = MaybeUninit::uninit_array::<N>();
     let mut guard = Guard { array_mut: &mut array, initialized: 0 };
 
-    while let Some(item_rslt) = iter.next() {
-        let item = match item_rslt.branch() {
-            ControlFlow::Break(r) => {
-                return Some(FromResidual::from_residual(r));
+    for _ in 0..N {
+        match iter.next() {
+            Some(item_rslt) => {
+                let item = match item_rslt.branch() {
+                    ControlFlow::Break(r) => {
+                        return Ok(FromResidual::from_residual(r));
+                    }
+                    ControlFlow::Continue(elem) => elem,
+                };
+
+                // SAFETY: `guard.initialized` starts at 0, is increased by one in the
+                // loop and the loop is aborted once it reaches N (which is
+                // `array.len()`).
+                unsafe {
+                    guard.array_mut.get_unchecked_mut(guard.initialized).write(item);
+                }
+                guard.initialized += 1;
             }
-            ControlFlow::Continue(elem) => elem,
-        };
-
-        // SAFETY: `guard.initialized` starts at 0, is increased by one in the
-        // loop and the loop is aborted once it reaches N (which is
-        // `array.len()`).
-        unsafe {
-            guard.array_mut.get_unchecked_mut(guard.initialized).write(item);
-        }
-        guard.initialized += 1;
-
-        // Check if the whole array was initialized.
-        if guard.initialized == N {
-            mem::forget(guard);
-
-            // SAFETY: the condition above asserts that all elements are
-            // initialized.
-            let out = unsafe { MaybeUninit::array_assume_init(array) };
-            return Some(Try::from_output(out));
+            None => {
+                let alive = 0..guard.initialized;
+                mem::forget(guard);
+                // SAFETY: `array` was initialized with exactly `initialized`
+                // number of elements.
+                return Err(unsafe { IntoIter::new_unchecked(array, alive) });
+            }
         }
     }
 
-    // This is only reached if the iterator is exhausted before
-    // `guard.initialized` reaches `N`. Also note that `guard` is dropped here,
-    // dropping all already initialized elements.
-    None
+    mem::forget(guard);
+    // SAFETY: All elements of the array were populated in the loop above.
+    let output = unsafe { MaybeUninit::array_assume_init(array) };
+    Ok(Try::from_output(output))
+}
+
+/// Returns the next chunk of `N` items from the iterator or errors with an
+/// iterator over the remainder. Used for `Iterator::next_chunk`.
+#[inline]
+pub(crate) fn iter_next_chunk<I, const N: usize>(
+    iter: &mut I,
+) -> Result<[I::Item; N], IntoIter<I::Item, N>>
+where
+    I: Iterator,
+{
+    let mut map = iter.map(NeverShortCircuit);
+    try_collect_into_array(&mut map).map(|NeverShortCircuit(arr)| arr)
 }

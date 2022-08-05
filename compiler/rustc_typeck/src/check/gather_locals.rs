@@ -1,6 +1,6 @@
 use crate::check::{FnCtxt, LocalTy, UserType};
 use rustc_hir as hir;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::PatKind;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_middle::ty::Ty;
@@ -16,19 +16,20 @@ pub(super) struct Declaration<'a> {
     pub ty: Option<&'a hir::Ty<'a>>,
     pub span: Span,
     pub init: Option<&'a hir::Expr<'a>>,
+    pub els: Option<&'a hir::Block<'a>>,
 }
 
 impl<'a> From<&'a hir::Local<'a>> for Declaration<'a> {
     fn from(local: &'a hir::Local<'a>) -> Self {
-        let hir::Local { hir_id, pat, ty, span, init, .. } = *local;
-        Declaration { hir_id, pat, ty, span, init }
+        let hir::Local { hir_id, pat, ty, span, init, els, source: _ } = *local;
+        Declaration { hir_id, pat, ty, span, init, els }
     }
 }
 
 impl<'a> From<&'a hir::Let<'a>> for Declaration<'a> {
     fn from(let_expr: &'a hir::Let<'a>) -> Self {
         let hir::Let { hir_id, pat, ty, span, init } = *let_expr;
-        Declaration { hir_id, pat, ty, span, init: Some(init) }
+        Declaration { hir_id, pat, ty, span, init: Some(init), els: None }
     }
 }
 
@@ -92,22 +93,16 @@ impl<'a, 'tcx> GatherLocalsVisitor<'a, 'tcx> {
         debug!(
             "local variable {:?} is assigned type {}",
             decl.pat,
-            self.fcx.ty_to_string(&*self.fcx.locals.borrow().get(&decl.hir_id).unwrap().decl_ty)
+            self.fcx.ty_to_string(self.fcx.locals.borrow().get(&decl.hir_id).unwrap().decl_ty)
         );
     }
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for GatherLocalsVisitor<'a, 'tcx> {
-    type Map = intravisit::ErasedMap<'tcx>;
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
     // Add explicitly-declared locals.
     fn visit_local(&mut self, local: &'tcx hir::Local<'tcx>) {
         self.declare(local.into());
-        intravisit::walk_local(self, local);
+        intravisit::walk_local(self, local)
     }
 
     fn visit_let_expr(&mut self, let_expr: &'tcx hir::Let<'tcx>) {
@@ -143,7 +138,7 @@ impl<'a, 'tcx> Visitor<'tcx> for GatherLocalsVisitor<'a, 'tcx> {
             debug!(
                 "pattern binding {} is assigned to {} with type {:?}",
                 ident,
-                self.fcx.ty_to_string(&*self.fcx.locals.borrow().get(&p.hir_id).unwrap().decl_ty),
+                self.fcx.ty_to_string(self.fcx.locals.borrow().get(&p.hir_id).unwrap().decl_ty),
                 var_ty
             );
         }

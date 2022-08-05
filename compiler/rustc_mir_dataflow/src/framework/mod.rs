@@ -1,7 +1,7 @@
 //! A framework that can express both [gen-kill] and generic dataflow problems.
 //!
-//! To actually use this framework, you must implement either the `Analysis` or the
-//! `GenKillAnalysis` trait. If your transfer function can be expressed with only gen/kill
+//! To use this framework, implement either the [`Analysis`] or the
+//! [`GenKillAnalysis`] trait. If your transfer function can be expressed with only gen/kill
 //! operations, prefer `GenKillAnalysis` since it will run faster while iterating to fixpoint. The
 //! `impls` module contains several examples of gen/kill dataflow analyses.
 //!
@@ -30,10 +30,9 @@
 //!
 //! [gen-kill]: https://en.wikipedia.org/wiki/Data-flow_analysis#Bit_vector_problems
 
-use std::borrow::BorrowMut;
 use std::cmp::Ordering;
 
-use rustc_index::bit_set::{BitSet, HybridBitSet};
+use rustc_index::bit_set::{BitSet, ChunkedBitSet, HybridBitSet};
 use rustc_index::vec::Idx;
 use rustc_middle::mir::{self, BasicBlock, Location};
 use rustc_middle::ty::TyCtxt;
@@ -52,7 +51,52 @@ pub use self::engine::{Engine, Results};
 pub use self::lattice::{JoinSemiLattice, MeetSemiLattice};
 pub use self::visitor::{visit_results, ResultsVisitable, ResultsVisitor};
 
-/// Define the domain of a dataflow problem.
+/// Analysis domains are all bitsets of various kinds. This trait holds
+/// operations needed by all of them.
+pub trait BitSetExt<T> {
+    fn domain_size(&self) -> usize;
+    fn contains(&self, elem: T) -> bool;
+    fn union(&mut self, other: &HybridBitSet<T>);
+    fn subtract(&mut self, other: &HybridBitSet<T>);
+}
+
+impl<T: Idx> BitSetExt<T> for BitSet<T> {
+    fn domain_size(&self) -> usize {
+        self.domain_size()
+    }
+
+    fn contains(&self, elem: T) -> bool {
+        self.contains(elem)
+    }
+
+    fn union(&mut self, other: &HybridBitSet<T>) {
+        self.union(other);
+    }
+
+    fn subtract(&mut self, other: &HybridBitSet<T>) {
+        self.subtract(other);
+    }
+}
+
+impl<T: Idx> BitSetExt<T> for ChunkedBitSet<T> {
+    fn domain_size(&self) -> usize {
+        self.domain_size()
+    }
+
+    fn contains(&self, elem: T) -> bool {
+        self.contains(elem)
+    }
+
+    fn union(&mut self, other: &HybridBitSet<T>) {
+        self.union(other);
+    }
+
+    fn subtract(&mut self, other: &HybridBitSet<T>) {
+        self.subtract(other);
+    }
+}
+
+/// Defines the domain of a dataflow problem.
 ///
 /// This trait specifies the lattice on which this analysis operates (the domain) as well as its
 /// initial value at the entry point of each basic block.
@@ -69,12 +113,12 @@ pub trait AnalysisDomain<'tcx> {
     /// suitable as part of a filename.
     const NAME: &'static str;
 
-    /// The initial value of the dataflow state upon entry to each basic block.
+    /// Returns the initial value of the dataflow state upon entry to each basic block.
     fn bottom_value(&self, body: &mir::Body<'tcx>) -> Self::Domain;
 
     /// Mutates the initial value of the dataflow state upon entry to the `START_BLOCK`.
     ///
-    /// For backward analyses, initial state besides the bottom value is not yet supported. Trying
+    /// For backward analyses, initial state (besides the bottom value) is not yet supported. Trying
     /// to mutate the initial state will result in a panic.
     //
     // FIXME: For backward dataflow analyses, the initial state should be applied to every basic
@@ -111,9 +155,9 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     /// Updates the current dataflow state with an effect that occurs immediately *before* the
     /// given statement.
     ///
-    /// This method is useful if the consumer of the results of this analysis needs only to observe
+    /// This method is useful if the consumer of the results of this analysis only needs to observe
     /// *part* of the effect of a statement (e.g. for two-phase borrows). As a general rule,
-    /// analyses should not implement this without implementing `apply_statement_effect`.
+    /// analyses should not implement this without also implementing `apply_statement_effect`.
     fn apply_before_statement_effect(
         &self,
         _state: &mut Self::Domain,
@@ -140,7 +184,7 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     ///
     /// This method is useful if the consumer of the results of this analysis needs only to observe
     /// *part* of the effect of a terminator (e.g. for two-phase borrows). As a general rule,
-    /// analyses should not implement this without implementing `apply_terminator_effect`.
+    /// analyses should not implement this without also implementing `apply_terminator_effect`.
     fn apply_before_terminator_effect(
         &self,
         _state: &mut Self::Domain,
@@ -190,8 +234,6 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     /// about a given `SwitchInt` terminator for each one of its edges—and more efficient—the
     /// engine doesn't need to clone the exit state for a block unless
     /// `SwitchIntEdgeEffects::apply` is actually called.
-    ///
-    /// FIXME: This class of effects is not supported for backward dataflow analyses.
     fn apply_switch_int_edge_effects(
         &self,
         _block: BasicBlock,
@@ -303,7 +345,7 @@ pub trait GenKillAnalysis<'tcx>: Analysis<'tcx> {
 impl<'tcx, A> Analysis<'tcx> for A
 where
     A: GenKillAnalysis<'tcx>,
-    A::Domain: GenKill<A::Idx> + BorrowMut<BitSet<A::Idx>>,
+    A::Domain: GenKill<A::Idx> + BitSetExt<A::Idx>,
 {
     fn apply_statement_effect(
         &self,
@@ -435,7 +477,7 @@ impl<T: Idx> GenKillSet<T> {
         }
     }
 
-    pub fn apply(&self, state: &mut BitSet<T>) {
+    pub fn apply(&self, state: &mut impl BitSetExt<T>) {
         state.union(&self.gen);
         state.subtract(&self.kill);
     }
@@ -454,6 +496,16 @@ impl<T: Idx> GenKill<T> for GenKillSet<T> {
 }
 
 impl<T: Idx> GenKill<T> for BitSet<T> {
+    fn gen(&mut self, elem: T) {
+        self.insert(elem);
+    }
+
+    fn kill(&mut self, elem: T) {
+        self.remove(elem);
+    }
+}
+
+impl<T: Idx> GenKill<T> for ChunkedBitSet<T> {
     fn gen(&mut self, elem: T) {
         self.insert(elem);
     }

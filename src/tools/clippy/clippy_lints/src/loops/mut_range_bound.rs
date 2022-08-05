@@ -2,11 +2,10 @@ use super::MUT_RANGE_BOUND;
 use clippy_utils::diagnostics::span_lint_and_note;
 use clippy_utils::{get_enclosing_block, higher, path_to_local};
 use if_chain::if_chain;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{BindingAnnotation, Expr, ExprKind, HirId, Node, PatKind};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::LateContext;
-use rustc_middle::hir::map::Map;
 use rustc_middle::{mir::FakeReadCause, ty};
 use rustc_span::source_map::Span;
 use rustc_typeck::expr_use_visitor::{Delegate, ExprUseVisitor, PlaceBase, PlaceWithHirId};
@@ -44,7 +43,7 @@ fn mut_warn_with_span(cx: &LateContext<'_>, span: Option<Span>) {
 fn check_for_mutability(cx: &LateContext<'_>, bound: &Expr<'_>) -> Option<HirId> {
     if_chain! {
         if let Some(hir_id) = path_to_local(bound);
-        if let Node::Binding(pat) = cx.tcx.hir().get(hir_id);
+        if let Node::Pat(pat) = cx.tcx.hir().get(hir_id);
         if let PatKind::Binding(BindingAnnotation::Mutable, ..) = pat.kind;
         then {
             return Some(hir_id);
@@ -115,7 +114,7 @@ impl<'tcx> Delegate<'tcx> for MutatePairDelegate<'_, 'tcx> {
         }
     }
 
-    fn fake_read(&mut self, _: rustc_typeck::expr_use_visitor::Place<'tcx>, _: FakeReadCause, _: HirId) {}
+    fn fake_read(&mut self, _: &rustc_typeck::expr_use_visitor::PlaceWithHirId<'tcx>, _: FakeReadCause, _: HirId) {}
 }
 
 impl MutatePairDelegate<'_, '_> {
@@ -147,13 +146,7 @@ impl BreakAfterExprVisitor {
     }
 }
 
-impl intravisit::Visitor<'tcx> for BreakAfterExprVisitor {
-    type Map = Map<'tcx>;
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
+impl<'tcx> intravisit::Visitor<'tcx> for BreakAfterExprVisitor {
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
         if self.past_candidate {
             return;

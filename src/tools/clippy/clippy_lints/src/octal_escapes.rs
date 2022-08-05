@@ -2,7 +2,7 @@ use clippy_utils::diagnostics::span_lint_and_then;
 use rustc_ast::ast::{Expr, ExprKind};
 use rustc_ast::token::{Lit, LitKind};
 use rustc_errors::Applicability;
-use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
@@ -25,23 +25,24 @@ declare_clippy_lint! {
     ///
     /// ### Known problems
     /// The actual meaning can be the intended one. `\x00` can be used in these
-    /// cases to be unambigious.
+    /// cases to be unambiguous.
     ///
     /// The lint does not trigger for format strings in `print!()`, `write!()`
     /// and friends since the string is already preprocessed when Clippy lints
     /// can see it.
     ///
-    /// # Example
+    /// ### Example
     /// ```rust
-    /// // Bad
     /// let one = "\033[1m Bold? \033[0m";  // \033 intended as escape
     /// let two = "\033\0";                 // \033 intended as null-3-3
+    /// ```
     ///
-    /// // Good
+    /// Use instead:
+    /// ```rust
     /// let one = "\x1b[1mWill this be bold?\x1b[0m";
     /// let two = "\x0033\x00";
     /// ```
-    #[clippy::version = "1.58.0"]
+    #[clippy::version = "1.59.0"]
     pub OCTAL_ESCAPES,
     suspicious,
     "string escape sequences looking like octal characters"
@@ -50,8 +51,8 @@ declare_clippy_lint! {
 declare_lint_pass!(OctalEscapes => [OCTAL_ESCAPES]);
 
 impl EarlyLintPass for OctalEscapes {
-    fn check_expr(&mut self, cx: &EarlyContext<'tcx>, expr: &Expr) {
-        if in_external_macro(cx.sess, expr.span) {
+    fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
+        if in_external_macro(cx.sess(), expr.span) {
             return;
         }
 
@@ -65,7 +66,7 @@ impl EarlyLintPass for OctalEscapes {
     }
 }
 
-fn check_lit(cx: &EarlyContext<'tcx>, lit: &Lit, span: Span, is_string: bool) {
+fn check_lit(cx: &EarlyContext<'_>, lit: &Lit, span: Span, is_string: bool) {
     let contents = lit.symbol.as_str();
     let mut iter = contents.char_indices().peekable();
     let mut found = vec![];
@@ -101,7 +102,7 @@ fn check_lit(cx: &EarlyContext<'tcx>, lit: &Lit, span: Span, is_string: bool) {
         // construct a replacement escape
         // the maximum value is \077, or \x3f, so u8 is sufficient here
         if let Ok(n) = u8::from_str_radix(&contents[from + 1..to], 8) {
-            write!(&mut suggest_1, "\\x{:02x}", n).unwrap();
+            write!(suggest_1, "\\x{:02x}", n).unwrap();
         }
 
         // append the null byte as \x00 and the following digits literally

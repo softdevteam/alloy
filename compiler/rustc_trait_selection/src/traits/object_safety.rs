@@ -11,18 +11,20 @@
 use super::elaborate_predicates;
 
 use crate::infer::TyCtxtInferExt;
-use crate::traits::const_evaluatable::{self, AbstractConst};
 use crate::traits::query::evaluate_obligation::InferCtxtExt;
 use crate::traits::{self, Obligation, ObligationCause};
-use rustc_errors::FatalError;
+use rustc_errors::{FatalError, MultiSpan};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::abstract_const::{walk_abstract_const, AbstractConst};
 use rustc_middle::ty::subst::{GenericArg, InternalSubsts, Subst};
-use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable, TypeVisitor};
+use rustc_middle::ty::{
+    self, EarlyBinder, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor,
+};
 use rustc_middle::ty::{Predicate, ToPredicate};
 use rustc_session::lint::builtin::WHERE_CLAUSES_OBJECT_SAFETY;
 use rustc_span::symbol::Symbol;
-use rustc_span::{MultiSpan, Span};
+use rustc_span::Span;
 use smallvec::SmallVec;
 
 use std::iter;
@@ -89,7 +91,7 @@ fn object_safety_violations_for_trait(
         .filter(|item| item.kind == ty::AssocKind::Fn)
         .filter_map(|item| {
             object_safety_violation_for_method(tcx, trait_def_id, &item)
-                .map(|(code, span)| ObjectSafetyViolation::Method(item.ident.name, code, span))
+                .map(|(code, span)| ObjectSafetyViolation::Method(item.name, code, span))
         })
         .filter(|violation| {
             if let ObjectSafetyViolation::Method(
@@ -98,7 +100,7 @@ fn object_safety_violations_for_trait(
                 span,
             ) = violation
             {
-                lint_object_unsafe_trait(tcx, *span, trait_def_id, violation);
+                lint_object_unsafe_trait(tcx, *span, trait_def_id, &violation);
                 false
             } else {
                 true
@@ -125,16 +127,24 @@ fn object_safety_violations_for_trait(
         tcx.associated_items(trait_def_id)
             .in_definition_order()
             .filter(|item| item.kind == ty::AssocKind::Const)
-            .map(|item| ObjectSafetyViolation::AssocConst(item.ident.name, item.ident.span)),
+            .map(|item| {
+                let ident = item.ident(tcx);
+                ObjectSafetyViolation::AssocConst(ident.name, ident.span)
+            }),
     );
 
-    violations.extend(
-        tcx.associated_items(trait_def_id)
-            .in_definition_order()
-            .filter(|item| item.kind == ty::AssocKind::Type)
-            .filter(|item| !tcx.generics_of(item.def_id).params.is_empty())
-            .map(|item| ObjectSafetyViolation::GAT(item.ident.name, item.ident.span)),
-    );
+    if !tcx.features().generic_associated_types_extended {
+        violations.extend(
+            tcx.associated_items(trait_def_id)
+                .in_definition_order()
+                .filter(|item| item.kind == ty::AssocKind::Type)
+                .filter(|item| !tcx.generics_of(item.def_id).params.is_empty())
+                .map(|item| {
+                    let ident = item.ident(tcx);
+                    ObjectSafetyViolation::GAT(ident.name, ident.span)
+                }),
+        );
+    }
 
     debug!(
         "object_safety_violations_for_trait(trait_def_id={:?}) = {:?}",
@@ -161,10 +171,7 @@ fn lint_object_unsafe_trait(
         let node = tcx.hir().get_if_local(trait_def_id);
         let mut spans = MultiSpan::from_span(span);
         if let Some(hir::Node::Item(item)) = node {
-            spans.push_span_label(
-                item.ident.span,
-                "this trait cannot be made into an object...".into(),
-            );
+            spans.push_span_label(item.ident.span, "this trait cannot be made into an object...");
             spans.push_span_label(span, format!("...because {}", violation.error_msg()));
         } else {
             spans.push_span_label(
@@ -216,7 +223,6 @@ fn get_sized_bounds(tcx: TyCtxt<'_>, trait_def_id: DefId) -> SmallVec<[Span; 1]>
                 ..
             }) => Some(
                 generics
-                    .where_clause
                     .predicates
                     .iter()
                     .filter_map(|pred| {
@@ -274,7 +280,7 @@ fn predicate_references_self<'tcx>(
     (predicate, sp): (ty::Predicate<'tcx>, Span),
 ) -> Option<Span> {
     let self_ty = tcx.types.self_param;
-    let has_self_ty = |arg: &GenericArg<'tcx>| arg.walk(tcx).any(|arg| arg == self_ty.into());
+    let has_self_ty = |arg: &GenericArg<'tcx>| arg.walk().any(|arg| arg == self_ty.into());
     match predicate.kind().skip_binder() {
         ty::PredicateKind::Trait(ref data) => {
             // In the case of a trait predicate, we can skip the "self" type.
@@ -316,11 +322,8 @@ fn trait_has_sized_self(tcx: TyCtxt<'_>, trait_def_id: DefId) -> bool {
 }
 
 fn generics_require_sized_self(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    let sized_def_id = match tcx.lang_items().sized_trait() {
-        Some(def_id) => def_id,
-        None => {
-            return false; /* No Sized trait, can't require it! */
-        }
+    let Some(sized_def_id) = tcx.lang_items().sized_trait() else {
+        return false; /* No Sized trait, can't require it! */
     };
 
     // Search for a predicate like `Self : Sized` amongst the trait bounds.
@@ -363,19 +366,13 @@ fn object_safety_violation_for_method(
     // Get an accurate span depending on the violation.
     violation.map(|v| {
         let node = tcx.hir().get_if_local(method.def_id);
-        let span = match (v, node) {
-            (MethodViolationCode::ReferencesSelfInput(arg), Some(node)) => node
-                .fn_decl()
-                .and_then(|decl| decl.inputs.get(arg + 1))
-                .map_or(method.ident.span, |arg| arg.span),
-            (MethodViolationCode::UndispatchableReceiver, Some(node)) => node
-                .fn_decl()
-                .and_then(|decl| decl.inputs.get(0))
-                .map_or(method.ident.span, |arg| arg.span),
+        let span = match (&v, node) {
+            (MethodViolationCode::ReferencesSelfInput(Some(span)), _) => *span,
+            (MethodViolationCode::UndispatchableReceiver(Some(span)), _) => *span,
             (MethodViolationCode::ReferencesSelfOutput, Some(node)) => {
-                node.fn_decl().map_or(method.ident.span, |decl| decl.output.span())
+                node.fn_decl().map_or(method.ident(tcx).span, |decl| decl.output.span())
             }
-            _ => method.ident.span,
+            _ => method.ident(tcx).span,
         };
         (v, span)
     })
@@ -394,32 +391,41 @@ fn virtual_call_violation_for_method<'tcx>(
 
     // The method's first parameter must be named `self`
     if !method.fn_has_self_parameter {
-        // We'll attempt to provide a structured suggestion for `Self: Sized`.
-        let sugg =
-            tcx.hir().get_if_local(method.def_id).as_ref().and_then(|node| node.generics()).map(
-                |generics| match generics.where_clause.predicates {
-                    [] => (" where Self: Sized", generics.where_clause.span),
-                    [.., pred] => (", Self: Sized", pred.span().shrink_to_hi()),
-                },
-            );
-        // Get the span pointing at where the `self` receiver should be.
-        let sm = tcx.sess.source_map();
-        let self_span = method.ident.span.to(tcx
-            .hir()
-            .span_if_local(method.def_id)
-            .unwrap_or_else(|| sm.next_point(method.ident.span))
-            .shrink_to_hi());
-        let self_span = sm.span_through_char(self_span, '(').shrink_to_hi();
-        return Some(MethodViolationCode::StaticMethod(
-            sugg,
-            self_span,
-            !sig.inputs().skip_binder().is_empty(),
-        ));
+        let sugg = if let Some(hir::Node::TraitItem(hir::TraitItem {
+            generics,
+            kind: hir::TraitItemKind::Fn(sig, _),
+            ..
+        })) = tcx.hir().get_if_local(method.def_id).as_ref()
+        {
+            let sm = tcx.sess.source_map();
+            Some((
+                (
+                    format!("&self{}", if sig.decl.inputs.is_empty() { "" } else { ", " }),
+                    sm.span_through_char(sig.span, '(').shrink_to_hi(),
+                ),
+                (
+                    format!("{} Self: Sized", generics.add_where_or_trailing_comma()),
+                    generics.tail_span_for_predicate_suggestion(),
+                ),
+            ))
+        } else {
+            None
+        };
+        return Some(MethodViolationCode::StaticMethod(sugg));
     }
 
-    for (i, &input_ty) in sig.skip_binder().inputs()[1..].iter().enumerate() {
+    for (i, &input_ty) in sig.skip_binder().inputs().iter().enumerate().skip(1) {
         if contains_illegal_self_type_reference(tcx, trait_def_id, sig.rebind(input_ty)) {
-            return Some(MethodViolationCode::ReferencesSelfInput(i));
+            let span = if let Some(hir::Node::TraitItem(hir::TraitItem {
+                kind: hir::TraitItemKind::Fn(sig, _),
+                ..
+            })) = tcx.hir().get_if_local(method.def_id).as_ref()
+            {
+                Some(sig.decl.inputs[i].span)
+            } else {
+                None
+            };
+            return Some(MethodViolationCode::ReferencesSelfInput(span));
         }
     }
     if contains_illegal_self_type_reference(tcx, trait_def_id, sig.output()) {
@@ -453,7 +459,16 @@ fn virtual_call_violation_for_method<'tcx>(
     // `Receiver: Unsize<Receiver[Self => dyn Trait]>`.
     if receiver_ty != tcx.types.self_param {
         if !receiver_is_dispatchable(tcx, method, receiver_ty) {
-            return Some(MethodViolationCode::UndispatchableReceiver);
+            let span = if let Some(hir::Node::TraitItem(hir::TraitItem {
+                kind: hir::TraitItemKind::Fn(sig, _),
+                ..
+            })) = tcx.hir().get_if_local(method.def_id).as_ref()
+            {
+                Some(sig.decl.inputs[0].span)
+            } else {
+                None
+            };
+            return Some(MethodViolationCode::UndispatchableReceiver(span));
         } else {
             // Do sanity check to make sure the receiver actually has the layout of a pointer.
 
@@ -530,7 +545,7 @@ fn receiver_for_self_ty<'tcx>(
         if param.index == 0 { self_ty.into() } else { tcx.mk_param_from_def(param) }
     });
 
-    let result = receiver_ty.subst(tcx, substs);
+    let result = EarlyBinder(receiver_ty).subst(tcx, substs);
     debug!(
         "receiver_for_self_ty({:?}, {:?}, {:?}) = {:?}",
         receiver_ty, self_ty, method_def_id, result
@@ -571,7 +586,7 @@ fn object_ty_for_trait<'tcx>(
         // `trait MyTrait: for<'s> OtherTrait<&'s T, Output=bool>`.
         super_trait_ref.map_bound(|super_trait_ref| {
             ty::ExistentialPredicate::Projection(ty::ExistentialProjection {
-                ty: tcx.mk_projection(item.def_id, super_trait_ref.substs),
+                term: tcx.mk_projection(item.def_id, super_trait_ref.substs).into(),
                 item_def_id: item.def_id,
                 substs: super_trait_ref.substs,
             })
@@ -594,7 +609,7 @@ fn object_ty_for_trait<'tcx>(
 /// - let `Receiver` be the type of the `self` argument, i.e `Self`, `&Self`, `Rc<Self>`,
 /// - require the following bound:
 ///
-///   ```
+///   ```ignore (not-rust)
 ///   Receiver[Self => T]: DispatchFromDyn<Receiver[Self => dyn Trait]>
 ///   ```
 ///
@@ -620,13 +635,13 @@ fn object_ty_for_trait<'tcx>(
 /// Instead, we fudge a little by introducing a new type parameter `U` such that
 /// `Self: Unsize<U>` and `U: Trait + ?Sized`, and use `U` in place of `dyn Trait`.
 /// Written as a chalk-style query:
-///
-///     forall (U: Trait + ?Sized) {
-///         if (Self: Unsize<U>) {
-///             Receiver: DispatchFromDyn<Receiver[Self => U]>
-///         }
+/// ```ignore (not-rust)
+/// forall (U: Trait + ?Sized) {
+///     if (Self: Unsize<U>) {
+///         Receiver: DispatchFromDyn<Receiver[Self => U]>
 ///     }
-///
+/// }
+/// ```
 /// for `self: &'a mut Self`, this means `&'a mut Self: DispatchFromDyn<&'a mut U>`
 /// for `self: Rc<Self>`, this means `Rc<Self>: DispatchFromDyn<Rc<U>>`
 /// for `self: Pin<Box<Self>>`, this means `Pin<Box<Self>>: DispatchFromDyn<Pin<Box<U>>>`
@@ -716,7 +731,7 @@ fn receiver_is_dispatchable<'tcx>(
     })
 }
 
-fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
+fn contains_illegal_self_type_reference<'tcx, T: TypeVisitable<'tcx>>(
     tcx: TyCtxt<'tcx>,
     trait_def_id: DefId,
     value: T,
@@ -768,9 +783,6 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
 
     impl<'tcx> TypeVisitor<'tcx> for IllegalSelfTypeVisitor<'tcx> {
         type BreakTy = ();
-        fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
-            Some(self.tcx)
-        }
 
         fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
             match t.kind() {
@@ -816,10 +828,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             }
         }
 
-        fn visit_unevaluated_const(
-            &mut self,
-            uv: ty::Unevaluated<'tcx>,
-        ) -> ControlFlow<Self::BreakTy> {
+        fn visit_unevaluated(&mut self, uv: ty::Unevaluated<'tcx>) -> ControlFlow<Self::BreakTy> {
             // Constants can only influence object safety if they reference `Self`.
             // This is only possible for unevaluated constants, so we walk these here.
             //
@@ -832,15 +841,13 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             //
             // This shouldn't really matter though as we can't really use any
             // constants which are not considered const evaluatable.
-            use rustc_middle::thir::abstract_const::Node;
+            use rustc_middle::ty::abstract_const::Node;
             if let Ok(Some(ct)) = AbstractConst::new(self.tcx, uv.shrink()) {
-                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| {
-                    match node.root(self.tcx) {
-                        Node::Leaf(leaf) => self.visit_const(leaf),
-                        Node::Cast(_, _, ty) => self.visit_ty(ty),
-                        Node::Binop(..) | Node::UnaryOp(..) | Node::FunctionCall(_, _) => {
-                            ControlFlow::CONTINUE
-                        }
+                walk_abstract_const(self.tcx, ct, |node| match node.root(self.tcx) {
+                    Node::Leaf(leaf) => self.visit_const(leaf),
+                    Node::Cast(_, _, ty) => self.visit_ty(ty),
+                    Node::Binop(..) | Node::UnaryOp(..) | Node::FunctionCall(_, _) => {
+                        ControlFlow::CONTINUE
                     }
                 })
             } else {

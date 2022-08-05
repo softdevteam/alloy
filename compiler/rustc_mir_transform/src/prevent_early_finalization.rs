@@ -50,7 +50,7 @@ impl<'tcx> MirPass<'tcx> for PreventEarlyFinalization {
                 let loc = Location { block, statement_index: data.statements.len() };
                 let mut asm = barrier.clone();
                 asm.inputs = Box::new([(DUMMY_SP, Operand::Copy(Place::from(*local)))]);
-                patch.add_statement(loc, StatementKind::LlvmInlineAsm(asm));
+                // patch.add_statement(loc, StatementKind::LlvmInlineAsm(asm));
                 patch.add_statement(loc, StatementKind::StorageDead(*local));
             }
         }
@@ -75,7 +75,7 @@ fn needs_barrier<'tcx>(
     }
 
     if let ty::Adt(def, ..) = local.ty.kind() {
-        if def.did != tcx.lang_items().gc_type().unwrap() {
+        if def.did() != tcx.lang_items().gc_type().unwrap() {
             return false;
         }
 

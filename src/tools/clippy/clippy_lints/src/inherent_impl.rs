@@ -119,7 +119,7 @@ impl<'tcx> LateLintPass<'tcx> for MultipleInherentImpl {
 fn get_impl_span(cx: &LateContext<'_>, id: LocalDefId) -> Option<Span> {
     let id = cx.tcx.hir().local_def_id_to_hir_id(id);
     if let Node::Item(&Item {
-        kind: ItemKind::Impl(ref impl_item),
+        kind: ItemKind::Impl(impl_item),
         span,
         ..
     }) = cx.tcx.hir().get(id)
@@ -127,7 +127,7 @@ fn get_impl_span(cx: &LateContext<'_>, id: LocalDefId) -> Option<Span> {
         (!span.from_expansion()
             && impl_item.generics.params.is_empty()
             && !is_lint_allowed(cx, MULTIPLE_INHERENT_IMPL, id))
-        .then(|| span)
+        .then_some(span)
     } else {
         None
     }

@@ -19,16 +19,11 @@ error[E0596]: cannot borrow data in a `&` reference as mutable
 LL | const S: &'static mut str = &mut " hello ";
    |                             ^^^^^^^^^^^^^^ cannot borrow as mutable
 
-error[E0080]: it is undefined behavior to use this value
-  --> $DIR/issue-76510.rs:5:1
+error[E0080]: evaluation of constant value failed
+  --> $DIR/issue-76510.rs:11:70
    |
-LL | const S: &'static mut str = &mut " hello ";
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ type validation failed: encountered mutable reference in a `const`
-   |
-   = note: The rules on what exactly is undefined behavior aren't clear, so this check might be overzealous. Please open an issue on the rustc repository if you believe it should not be considered undefined behavior.
-   = note: the raw bytes of the constant (size: 8, align: 4) {
-               ╾─alloc3──╼ 07 00 00 00                         │ ╾──╼....
-           }
+LL |         let s = transmute::<(*const u8, usize), &ManuallyDrop<str>>((S.as_ptr(), 3));
+   |                                                                      ^ referenced constant has errors
 
 error: aborting due to 4 previous errors
 

@@ -47,6 +47,12 @@ fn main() {
     }
     {
         // lint
+        // skip rustfmt to prevent removing block for first pattern
+        #[rustfmt::skip]
+        let _ans = matches!(x, E::A(_) | E::B(_));
+    }
+    {
+        // lint
         let _ans = !matches!(x, E::B(_) | E::C);
     }
     {
@@ -145,5 +151,20 @@ fn main() {
         let val = Some(S(42));
         let _res = matches!(&val, &Some(ref _a));
         fun(val);
+    }
+
+    {
+        enum E {
+            A,
+            B,
+            C,
+        }
+
+        let _ = match E::A {
+            E::B => true,
+            #[cfg(feature = "foo")]
+            E::A => true,
+            _ => false,
+        };
     }
 }

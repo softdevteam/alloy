@@ -2,7 +2,7 @@
 
 use rustc_ast as ast;
 use rustc_ast_pretty::pprust;
-use rustc_errors::ErrorReported;
+use rustc_errors::ErrorGuaranteed;
 use rustc_hir as hir;
 use rustc_hir_pretty as pprust_hir;
 use rustc_middle::hir::map as hir_map;
@@ -42,7 +42,7 @@ where
     F: FnOnce(&dyn PrinterSupport) -> A,
 {
     match *ppmode {
-        Normal | EveryBodyLoops | Expanded => {
+        Normal | Expanded => {
             let annotation = NoAnn { sess, tcx };
             f(&annotation)
         }
@@ -328,7 +328,7 @@ impl<'tcx> pprust_hir::PpAnn for TypedAnnotation<'tcx> {
             let typeck_results = self.maybe_typeck_results.get().or_else(|| {
                 self.tcx
                     .hir()
-                    .maybe_body_owned_by(self.tcx.hir().local_def_id_to_hir_id(expr.hir_id.owner))
+                    .maybe_body_owned_by(expr.hir_id.owner)
                     .map(|body_id| self.tcx.typeck_body(body_id))
             });
 
@@ -479,7 +479,7 @@ fn print_with_analysis(
     tcx: TyCtxt<'_>,
     ppm: PpMode,
     ofile: Option<&Path>,
-) -> Result<(), ErrorReported> {
+) -> Result<(), ErrorGuaranteed> {
     tcx.analysis(())?;
     let out = match ppm {
         Mir => {

@@ -25,7 +25,7 @@ jobs:
         github_token: "${{ secrets.github_token }}"
 
     - name: Checkout
-      uses: actions/checkout@v2.3.3
+      uses: actions/checkout@v3.0.2
       with:
         ref: ${{ github.ref }}
 
@@ -88,7 +88,7 @@ jobs:
       if: matrix.host == 'i686-unknown-linux-gnu'
 
     - name: Checkout
-      uses: actions/checkout@v2.3.3
+      uses: actions/checkout@v3.0.2
 
     - name: Install toolchain
       run: rustup show active-toolchain
@@ -112,17 +112,22 @@ jobs:
         echo "$SYSROOT/bin" >> $GITHUB_PATH
 
     - name: Build
-      run: cargo build --features deny-warnings,internal-lints,metadata-collector-lint
+      run: cargo build --features deny-warnings,internal
 
     - name: Test
-      run: cargo test --features deny-warnings,internal-lints,metadata-collector-lint
+      if: runner.os == 'Linux'
+      run: cargo test --features deny-warnings,internal
+
+    - name: Test
+      if: runner.os != 'Linux'
+      run: cargo test --features deny-warnings,internal -- --skip dogfood
 
     - name: Test clippy_lints
-      run: cargo test --features deny-warnings,internal-lints,metadata-collector-lint
+      run: cargo test --features deny-warnings,internal
       working-directory: clippy_lints
 
     - name: Test clippy_utils
-      run: cargo test --features deny-warnings,internal-lints,metadata-collector-lint
+      run: cargo test --features deny-warnings,internal
       working-directory: clippy_utils
 
     - name: Test rustc_tools_util
@@ -133,25 +138,29 @@ jobs:
       run: cargo test --features deny-warnings
       working-directory: clippy_dev
 
-    - name: Test cargo-clippy
-      run: ../target/debug/cargo-clippy
-      working-directory: clippy_workspace_tests
-
-    - name: Test cargo-clippy --fix
-      run: ../target/debug/cargo-clippy clippy --fix
-      working-directory: clippy_workspace_tests
-
     - name: Test clippy-driver
       run: bash .github/driver.sh
       env:
         OS: ${{ runner.os }}
 
-    - name: Test cargo dev new lint
-      run: |
-        cargo dev new_lint --name new_early_pass --pass early
-        cargo dev new_lint --name new_late_pass --pass late
-        cargo check
-        git reset --hard HEAD
+  metadata_collection:
+    needs: changelog
+    runs-on: ubuntu-latest
+
+    steps:
+     # Setup
+    - uses: rust-lang/simpleinfra/github-actions/cancel-outdated-builds@master
+      with:
+        github_token: "${{ secrets.github_token }}"
+
+    - name: Checkout
+      uses: actions/checkout@v3.0.2
+
+    - name: Install toolchain
+      run: rustup show active-toolchain
+
+    - name: Test metadata collection
+      run: cargo collect-metadata
 
   integration_build:
     needs: changelog
@@ -164,7 +173,7 @@ jobs:
         github_token: "${{ secrets.github_token }}"
 
     - name: Checkout
-      uses: actions/checkout@v2.3.3
+      uses: actions/checkout@v3.0.2
 
     - name: Install toolchain
       run: rustup show active-toolchain
@@ -222,7 +231,7 @@ jobs:
         github_token: "${{ secrets.github_token }}"
 
     - name: Checkout
-      uses: actions/checkout@v2.3.3
+      uses: actions/checkout@v3.0.2
 
     - name: Install toolchain
       run: rustup show active-toolchain
@@ -255,7 +264,7 @@ jobs:
     name: bors test finished
     if: github.event.pusher.name == 'bors' && success()
     runs-on: ubuntu-latest
-    needs: [changelog, base, integration_build, integration]
+    needs: [changelog, base, metadata_collection, integration_build, integration]
 
     steps:
       - name: Mark the job as successful
@@ -265,7 +274,7 @@ jobs:
     name: bors test finished
     if: github.event.pusher.name == 'bors' && (failure() || cancelled())
     runs-on: ubuntu-latest
-    needs: [changelog, base, integration_build, integration]
+    needs: [changelog, base, metadata_collection, integration_build, integration]
 
     steps:
       - name: Mark the job as a failure

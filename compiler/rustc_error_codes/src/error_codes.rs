@@ -97,6 +97,7 @@ E0184: include_str!("./error_codes/E0184.md"),
 E0185: include_str!("./error_codes/E0185.md"),
 E0186: include_str!("./error_codes/E0186.md"),
 E0191: include_str!("./error_codes/E0191.md"),
+E0192: include_str!("./error_codes/E0192.md"),
 E0193: include_str!("./error_codes/E0193.md"),
 E0195: include_str!("./error_codes/E0195.md"),
 E0197: include_str!("./error_codes/E0197.md"),
@@ -393,6 +394,7 @@ E0663: include_str!("./error_codes/E0663.md"),
 E0664: include_str!("./error_codes/E0664.md"),
 E0665: include_str!("./error_codes/E0665.md"),
 E0666: include_str!("./error_codes/E0666.md"),
+E0667: include_str!("./error_codes/E0667.md"),
 E0668: include_str!("./error_codes/E0668.md"),
 E0669: include_str!("./error_codes/E0669.md"),
 E0670: include_str!("./error_codes/E0670.md"),
@@ -428,6 +430,7 @@ E0720: include_str!("./error_codes/E0720.md"),
 E0722: include_str!("./error_codes/E0722.md"),
 E0724: include_str!("./error_codes/E0724.md"),
 E0725: include_str!("./error_codes/E0725.md"),
+E0726: include_str!("./error_codes/E0726.md"),
 E0727: include_str!("./error_codes/E0727.md"),
 E0728: include_str!("./error_codes/E0728.md"),
 E0729: include_str!("./error_codes/E0729.md"),
@@ -472,6 +475,7 @@ E0768: include_str!("./error_codes/E0768.md"),
 E0769: include_str!("./error_codes/E0769.md"),
 E0770: include_str!("./error_codes/E0770.md"),
 E0771: include_str!("./error_codes/E0771.md"),
+E0772: include_str!("./error_codes/E0772.md"),
 E0773: include_str!("./error_codes/E0773.md"),
 E0774: include_str!("./error_codes/E0774.md"),
 E0775: include_str!("./error_codes/E0775.md"),
@@ -486,6 +490,9 @@ E0783: include_str!("./error_codes/E0783.md"),
 E0784: include_str!("./error_codes/E0784.md"),
 E0785: include_str!("./error_codes/E0785.md"),
 E0786: include_str!("./error_codes/E0786.md"),
+E0787: include_str!("./error_codes/E0787.md"),
+E0788: include_str!("./error_codes/E0788.md"),
+E0790: include_str!("./error_codes/E0790.md"),
 ;
 //  E0006, // merged with E0005
 //  E0008, // cannot bind by-move into a pattern guard
@@ -520,10 +527,9 @@ E0786: include_str!("./error_codes/E0786.md"),
 //  E0188, // can not cast an immutable reference to a mutable pointer
 //  E0189, // deprecated: can only cast a boxed pointer to a boxed object
 //  E0190, // deprecated: can only cast a &-pointer to an &-object
-//  E0192, // negative impl only applicable to auto traits
 //  E0194, // merged into E0403
 //  E0196, // cannot determine a type for this closure
-    E0208,
+    E0208, // internal error code
 //  E0209, // builtin traits can only be implemented on structs or enums
 //  E0213, // associated types are not accepted in this context
 //  E0215, // angle-bracket notation is not stable with `Fn`
@@ -553,7 +559,7 @@ E0786: include_str!("./error_codes/E0786.md"),
 //  E0273, // on_unimplemented #1
 //  E0274, // on_unimplemented #2
 //  E0278, // requirement is not satisfied
-    E0279, // requirement is not satisfied
+//  E0279,
     E0280, // requirement is not satisfied
 //  E0285, // overflow evaluation builtin bounds
 //  E0296, // replaced with a generic attribute input check
@@ -628,18 +634,16 @@ E0786: include_str!("./error_codes/E0786.md"),
 //  E0629, // missing 'feature' (rustc_const_unstable)
 //  E0630, // rustc_const_unstable attribute must be paired with stable/unstable
            // attribute
-    E0640, // infer outlives requirements
+    E0640, // infer outlives requirements, internal error code
 //  E0645, // trait aliases not finished
-    E0667, // `impl Trait` in projections
 //  E0694, // an unknown tool name found in scoped attributes
 //  E0702, // replaced with a generic attribute input check
 //  E0707, // multiple elided lifetimes used in arguments of `async fn`
 //  E0709, // multiple different lifetimes used in arguments of `async fn`
-    E0711, // a feature has been declared with conflicting stability attributes
-    E0717, // rustc_promotable without stability attribute
+    E0711, // a feature has been declared with conflicting stability attributes, internal error code
+    E0717, // rustc_promotable without stability attribute, internal error code
 //  E0721, // `await` keyword
 //  E0723, // unstable feature in `const` context
-    E0726, // non-explicit (not `'_`) elided lifetime in unsupported position
 //  E0738, // Removed; errored on `#[track_caller] fn`s in `extern "Rust" { ... }`.
-    E0772, // `'static' obligation coming from `impl dyn Trait {}` or `impl Foo for dyn Bar {}`.
+    E0789, // rustc_allowed_through_unstable_modules without stability attribute
 }

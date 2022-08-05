@@ -39,7 +39,7 @@ impl<'tcx> MirPass<'tcx> for AddCallGuards {
 impl AddCallGuards {
     pub fn add_call_guards(&self, body: &mut Body<'_>) {
         let mut pred_count: IndexVec<_, _> =
-            body.predecessors().iter().map(|ps| ps.len()).collect();
+            body.basic_blocks.predecessors().iter().map(|ps| ps.len()).collect();
         pred_count[START_BLOCK] += 1;
 
         // We need a place to store the new blocks generated
@@ -50,12 +50,7 @@ impl AddCallGuards {
         for block in body.basic_blocks_mut() {
             match block.terminator {
                 Some(Terminator {
-                    kind:
-                        TerminatorKind::Call {
-                            destination: Some((_, ref mut destination)),
-                            cleanup,
-                            ..
-                        },
+                    kind: TerminatorKind::Call { target: Some(ref mut destination), cleanup, .. },
                     source_info,
                 }) if pred_count[*destination] > 1
                     && (cleanup.is_some() || self == &AllCallEdges) =>

@@ -3,22 +3,20 @@
 #![feature(array_methods)]
 #![feature(array_windows)]
 #![feature(bench_black_box)]
-#![feature(bool_to_option)]
-#![feature(box_syntax)]
 #![feature(cell_update)]
-#![feature(cfg_panic)]
-#![feature(cfg_target_has_atomic)]
 #![feature(const_assume)]
 #![feature(const_black_box)]
 #![feature(const_bool_to_option)]
 #![feature(const_cell_into_inner)]
 #![feature(const_convert)]
+#![feature(const_heap)]
 #![feature(const_maybe_uninit_as_mut_ptr)]
-#![feature(const_maybe_uninit_assume_init)]
+#![feature(const_maybe_uninit_assume_init_read)]
+#![feature(const_nonnull_new)]
 #![feature(const_num_from_num)]
+#![feature(const_ptr_as_ref)]
 #![feature(const_ptr_read)]
 #![feature(const_ptr_write)]
-#![feature(const_ptr_offset)]
 #![feature(const_trait_impl)]
 #![feature(const_likely)]
 #![feature(core_intrinsics)]
@@ -34,24 +32,27 @@
 #![feature(fmt_internals)]
 #![feature(float_minimum_maximum)]
 #![feature(future_join)]
-#![feature(future_poll_fn)]
-#![feature(array_from_fn)]
+#![feature(generic_assert_internals)]
+#![feature(array_try_from_fn)]
+#![feature(hasher_prefixfree_extras)]
 #![feature(hashmap_internals)]
 #![feature(try_find)]
 #![feature(inline_const)]
 #![feature(is_sorted)]
 #![feature(pattern)]
+#![feature(pin_macro)]
 #![feature(sort_internals)]
-#![feature(slice_partition_at_index)]
 #![feature(slice_take)]
+#![feature(slice_from_ptr_range)]
+#![feature(split_as_slice)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
-#![feature(maybe_uninit_extra)]
 #![feature(maybe_uninit_write_slice)]
 #![feature(min_specialization)]
 #![feature(numfmt)]
 #![feature(step_trait)]
 #![feature(str_internals)]
+#![feature(std_internals)]
 #![feature(test)]
 #![feature(trusted_len)]
 #![feature(try_blocks)]
@@ -60,14 +61,16 @@
 #![feature(slice_partition_dedup)]
 #![feature(int_log)]
 #![feature(iter_advance_by)]
+#![feature(iter_collect_into)]
 #![feature(iter_partition_in_place)]
 #![feature(iter_intersperse)]
 #![feature(iter_is_partitioned)]
+#![feature(iter_next_chunk)]
 #![feature(iter_order_by)]
+#![feature(iterator_try_collect)]
 #![feature(iterator_try_reduce)]
 #![feature(const_mut_refs)]
 #![feature(const_pin)]
-#![feature(const_slice_from_raw_parts)]
 #![feature(never_type)]
 #![feature(unwrap_infallible)]
 #![feature(result_into_ok_or_err)]
@@ -83,11 +86,16 @@
 #![feature(int_roundings)]
 #![feature(slice_group_by)]
 #![feature(split_array)]
+#![feature(strict_provenance)]
+#![feature(strict_provenance_atomic_ptr)]
 #![feature(trusted_random_access)]
 #![feature(unsize)]
 #![feature(unzip_option)]
 #![feature(const_array_from_ref)]
 #![feature(const_slice_from_ref)]
+#![feature(waker_getters)]
+#![feature(slice_flatten)]
+#![feature(provide_any)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 extern crate test;
@@ -96,6 +104,7 @@ mod alloc;
 mod any;
 mod array;
 mod ascii;
+mod asserting;
 mod atomic;
 mod bool;
 mod cell;
@@ -119,6 +128,7 @@ mod ops;
 mod option;
 mod pattern;
 mod pin;
+mod pin_macro;
 mod ptr;
 mod result;
 mod simd;
@@ -129,3 +139,4 @@ mod task;
 mod time;
 mod tuple;
 mod unicode;
+mod waker;

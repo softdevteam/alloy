@@ -1,9 +1,8 @@
 use crate::check::FnCtxt;
 use rustc_data_structures::{
-    fx::FxHashMap,
+    fx::{FxHashMap, FxHashSet},
     graph::WithSuccessors,
     graph::{iterate::DepthFirstSearch, vec_graph::VecGraph},
-    stable_set::FxHashSet,
 };
 use rustc_middle::ty::{self, Ty};
 
@@ -24,7 +23,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             self.fulfillment_cx.borrow_mut().pending_obligations()
         );
 
-        // Check if we have any unsolved varibales. If not, no need for fallback.
+        // Check if we have any unsolved variables. If not, no need for fallback.
         let unsolved_variables = self.unsolved_variables();
         if unsolved_variables.is_empty() {
             return false;
@@ -64,16 +63,6 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         // If we had tried to fallback the opaque inference variable to `MyType`,
         // we will generate a confusing type-check error that does not explicitly
         // refer to opaque types.
-        self.select_obligations_where_possible(fallback_has_occurred, |_| {});
-
-        // We now run fallback again, but this time we allow it to replace
-        // unconstrained opaque type variables, in addition to performing
-        // other kinds of fallback.
-        for ty in &self.unsolved_variables() {
-            fallback_has_occurred |= self.fallback_opaque_type_vars(ty);
-        }
-
-        // See if we can make any more progress.
         self.select_obligations_where_possible(fallback_has_occurred, |_| {});
 
         fallback_has_occurred
@@ -136,59 +125,6 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         true
     }
 
-    /// Second round of fallback: Unconstrained type variables created
-    /// from the instantiation of an opaque type fall back to the
-    /// opaque type itself. This is a somewhat incomplete attempt to
-    /// manage "identity passthrough" for `impl Trait` types.
-    ///
-    /// For example, in this code:
-    ///
-    ///```
-    /// type MyType = impl Copy;
-    /// fn defining_use() -> MyType { true }
-    /// fn other_use() -> MyType { defining_use() }
-    /// ```
-    ///
-    /// `defining_use` will constrain the instantiated inference
-    /// variable to `bool`, while `other_use` will constrain
-    /// the instantiated inference variable to `MyType`.
-    ///
-    /// When we process opaque types during writeback, we
-    /// will handle cases like `other_use`, and not count
-    /// them as defining usages
-    ///
-    /// However, we also need to handle cases like this:
-    ///
-    /// ```rust
-    /// pub type Foo = impl Copy;
-    /// fn produce() -> Option<Foo> {
-    ///     None
-    ///  }
-    ///  ```
-    ///
-    /// In the above snippet, the inference variable created by
-    /// instantiating `Option<Foo>` will be completely unconstrained.
-    /// We treat this as a non-defining use by making the inference
-    /// variable fall back to the opaque type itself.
-    fn fallback_opaque_type_vars(&self, ty: Ty<'tcx>) -> bool {
-        let span = self
-            .infcx
-            .type_var_origin(ty)
-            .map(|origin| origin.span)
-            .unwrap_or(rustc_span::DUMMY_SP);
-        let oty = self.inner.borrow().opaque_types_vars.get(ty).copied();
-        if let Some(opaque_ty) = oty {
-            debug!(
-                "fallback_opaque_type_vars(ty={:?}): falling back to opaque type {:?}",
-                ty, opaque_ty
-            );
-            self.demand_eqtype(span, ty, opaque_ty);
-            true
-        } else {
-            return false;
-        }
-    }
-
     /// The "diverging fallback" system is rather complicated. This is
     /// a result of our need to balance 'do the right thing' with
     /// backwards compatibility.
@@ -207,6 +143,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     /// code. The most common case is something like this:
     ///
     /// ```rust
+    /// # fn foo() -> i32 { 4 }
     /// match foo() {
     ///     22 => Default::default(), // call this type `?D`
     ///     _ => return, // return has type `!`
@@ -231,7 +168,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
     /// fallback to use based on whether there is a coercion pattern
     /// like this:
     ///
-    /// ```
+    /// ```ignore (not-rust)
     /// ?Diverging -> ?V
     /// ?NonDiverging -> ?V
     /// ?V != ?NonDiverging
@@ -281,9 +218,9 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             .diverging_type_vars
             .borrow()
             .iter()
-            .map(|&ty| self.infcx.shallow_resolve(ty))
+            .map(|&ty| self.shallow_resolve(ty))
             .filter_map(|ty| ty.ty_vid())
-            .map(|vid| self.infcx.root_var(vid))
+            .map(|vid| self.root_var(vid))
             .collect();
         debug!(
             "calculate_diverging_fallback: diverging_type_vars={:?}",
@@ -299,7 +236,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         let mut diverging_vids = vec![];
         let mut non_diverging_vids = vec![];
         for unsolved_vid in unsolved_vids {
-            let root_vid = self.infcx.root_var(unsolved_vid);
+            let root_vid = self.root_var(unsolved_vid);
             debug!(
                 "calculate_diverging_fallback: unsolved_vid={:?} root_vid={:?} diverges={:?}",
                 unsolved_vid,
@@ -334,7 +271,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         // variables. (Note that this set consists of "root variables".)
         let mut roots_reachable_from_non_diverging = DepthFirstSearch::new(&coercion_graph);
         for &non_diverging_vid in &non_diverging_vids {
-            let root_vid = self.infcx.root_var(non_diverging_vid);
+            let root_vid = self.root_var(non_diverging_vid);
             if roots_reachable_from_diverging.visited(root_vid) {
                 continue;
             }
@@ -357,7 +294,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         diverging_fallback.reserve(diverging_vids.len());
         for &diverging_vid in &diverging_vids {
             let diverging_ty = self.tcx.mk_ty_var(diverging_vid);
-            let root_vid = self.infcx.root_var(diverging_vid);
+            let root_vid = self.root_var(diverging_vid);
             let can_reach_non_diverging = coercion_graph
                 .depth_first_search(root_vid)
                 .any(|n| roots_reachable_from_non_diverging.visited(n));
@@ -365,7 +302,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             let mut relationship = ty::FoundRelationships { self_in_trait: false, output: false };
 
             for (vid, rel) in relationships.iter() {
-                if self.infcx.root_var(*vid) == root_vid {
+                if self.root_var(*vid) == root_vid {
                     relationship.self_in_trait |= rel.self_in_trait;
                     relationship.output |= rel.output;
                 }
@@ -450,12 +387,12 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             })
             .collect();
         debug!("create_coercion_graph: coercion_edges={:?}", coercion_edges);
-        let num_ty_vars = self.infcx.num_ty_vars();
+        let num_ty_vars = self.num_ty_vars();
         VecGraph::new(num_ty_vars, coercion_edges)
     }
 
     /// If `ty` is an unresolved type variable, returns its root vid.
     fn root_vid(&self, ty: Ty<'tcx>) -> Option<ty::TyVid> {
-        Some(self.infcx.root_var(self.infcx.shallow_resolve(ty).ty_vid()?))
+        Some(self.root_var(self.shallow_resolve(ty).ty_vid()?))
     }
 }

@@ -1,4 +1,140 @@
-//! Traits for working with Errors.
+//! Interfaces for working with Errors.
+//!
+//! # Error Handling In Rust
+//!
+//! The Rust language provides two complementary systems for constructing /
+//! representing, reporting, propagating, reacting to, and discarding errors.
+//! These responsibilities are collectively known as "error handling." The
+//! components of the first system, the panic runtime and interfaces, are most
+//! commonly used to represent bugs that have been detected in your program. The
+//! components of the second system, `Result`, the error traits, and user
+//! defined types, are used to represent anticipated runtime failure modes of
+//! your program.
+//!
+//! ## The Panic Interfaces
+//!
+//! The following are the primary interfaces of the panic system and the
+//! responsibilities they cover:
+//!
+//! * [`panic!`] and [`panic_any`] (Constructing, Propagated automatically)
+//! * [`PanicInfo`] (Reporting)
+//! * [`set_hook`], [`take_hook`], and [`#[panic_handler]`][panic-handler] (Reporting)
+//! * [`catch_unwind`] and [`resume_unwind`] (Discarding, Propagating)
+//!
+//! The following are the primary interfaces of the error system and the
+//! responsibilities they cover:
+//!
+//! * [`Result`] (Propagating, Reacting)
+//! * The [`Error`] trait (Reporting)
+//! * User defined types (Constructing / Representing)
+//! * [`match`] and [`downcast`] (Reacting)
+//! * The question mark operator ([`?`]) (Propagating)
+//! * The partially stable [`Try`] traits (Propagating, Constructing)
+//! * [`Termination`] (Reporting)
+//!
+//! ## Converting Errors into Panics
+//!
+//! The panic and error systems are not entirely distinct. Often times errors
+//! that are anticipated runtime failures in an API might instead represent bugs
+//! to a caller. For these situations the standard library provides APIs for
+//! constructing panics with an `Error` as it's source.
+//!
+//! * [`Result::unwrap`]
+//! * [`Result::expect`]
+//!
+//! These functions are equivalent, they either return the inner value if the
+//! `Result` is `Ok` or panic if the `Result` is `Err` printing the inner error
+//! as the source. The only difference between them is that with `expect` you
+//! provide a panic error message to be printed alongside the source, whereas
+//! `unwrap` has a default message indicating only that you unwraped an `Err`.
+//!
+//! Of the two, `expect` is generally preferred since its `msg` field allows you
+//! to convey your intent and assumptions which makes tracking down the source
+//! of a panic easier. `unwrap` on the other hand can still be a good fit in
+//! situations where you can trivially show that a piece of code will never
+//! panic, such as `"127.0.0.1".parse::<std::net::IpAddr>().unwrap()` or early
+//! prototyping.
+//!
+//! # Common Message Styles
+//!
+//! There are two common styles for how people word `expect` messages. Using
+//! the message to present information to users encountering a panic
+//! ("expect as error message") or using the message to present information
+//! to developers debugging the panic ("expect as precondition").
+//!
+//! In the former case the expect message is used to describe the error that
+//! has occurred which is considered a bug. Consider the following example:
+//!
+//! ```should_panic
+//! // Read environment variable, panic if it is not present
+//! let path = std::env::var("IMPORTANT_PATH").unwrap();
+//! ```
+//!
+//! In the "expect as error message" style we would use expect to describe
+//! that the environment variable was not set when it should have been:
+//!
+//! ```should_panic
+//! let path = std::env::var("IMPORTANT_PATH")
+//!     .expect("env variable `IMPORTANT_PATH` is not set");
+//! ```
+//!
+//! In the "expect as precondition" style, we would instead describe the
+//! reason we _expect_ the `Result` should be `Ok`. With this style we would
+//! prefer to write:
+//!
+//! ```should_panic
+//! let path = std::env::var("IMPORTANT_PATH")
+//!     .expect("env variable `IMPORTANT_PATH` should be set by `wrapper_script.sh`");
+//! ```
+//!
+//! The "expect as error message" style does not work as well with the
+//! default output of the std panic hooks, and often ends up repeating
+//! information that is already communicated by the source error being
+//! unwrapped:
+//!
+//! ```text
+//! thread 'main' panicked at 'env variable `IMPORTANT_PATH` is not set: NotPresent', src/main.rs:4:6
+//! ```
+//!
+//! In this example we end up mentioning that an env variable is not set,
+//! followed by our source message that says the env is not present, the
+//! only additional information we're communicating is the name of the
+//! environment variable being checked.
+//!
+//! The "expect as precondition" style instead focuses on source code
+//! readability, making it easier to understand what must have gone wrong in
+//! situations where panics are being used to represent bugs exclusively.
+//! Also, by framing our expect in terms of what "SHOULD" have happened to
+//! prevent the source error, we end up introducing new information that is
+//! independent from our source error.
+//!
+//! ```text
+//! thread 'main' panicked at 'env variable `IMPORTANT_PATH` should be set by `wrapper_script.sh`: NotPresent', src/main.rs:4:6
+//! ```
+//!
+//! In this example we are communicating not only the name of the
+//! environment variable that should have been set, but also an explanation
+//! for why it should have been set, and we let the source error display as
+//! a clear contradiction to our expectation.
+//!
+//! **Hint**: If you're having trouble remembering how to phrase
+//! expect-as-precondition style error messages remember to focus on the word
+//! "should" as in "env variable should be set by blah" or "the given binary
+//! should be available and executable by the current user".
+//!
+//! [`panic_any`]: crate::panic::panic_any
+//! [`PanicInfo`]: crate::panic::PanicInfo
+//! [`catch_unwind`]: crate::panic::catch_unwind
+//! [`resume_unwind`]: crate::panic::resume_unwind
+//! [`downcast`]: crate::error::Error
+//! [`Termination`]: crate::process::Termination
+//! [`Try`]: crate::ops::Try
+//! [panic hook]: crate::panic::set_hook
+//! [`set_hook`]: crate::panic::set_hook
+//! [`take_hook`]: crate::panic::take_hook
+//! [panic-handler]: <https://doc.rust-lang.org/nomicon/panic-handler.html>
+//! [`match`]: ../../std/keyword.match.html
+//! [`?`]: ../../std/result/index.html#the-question-mark-operator-
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -20,12 +156,13 @@ use core::array;
 use core::convert::Infallible;
 
 use crate::alloc::{AllocError, LayoutError};
-use crate::any::TypeId;
+use crate::any::{Demand, Provider, TypeId};
 use crate::backtrace::Backtrace;
 use crate::borrow::Cow;
 use crate::cell;
 use crate::char;
-use crate::fmt::{self, Debug, Display};
+use crate::fmt::{self, Debug, Display, Write};
+use crate::io;
 use crate::mem::transmute;
 use crate::num;
 use crate::str;
@@ -52,6 +189,7 @@ use crate::time;
 /// high-level module to provide its own errors while also revealing some of the
 /// implementation for debugging via `source` chains.
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "Error")]
 pub trait Error: Debug + Display {
     /// The lower-level source of this error, if any.
     ///
@@ -63,7 +201,7 @@ pub trait Error: Debug + Display {
     ///
     /// #[derive(Debug)]
     /// struct SuperError {
-    ///     side: SuperErrorSideKick,
+    ///     source: SuperErrorSideKick,
     /// }
     ///
     /// impl fmt::Display for SuperError {
@@ -74,7 +212,7 @@ pub trait Error: Debug + Display {
     ///
     /// impl Error for SuperError {
     ///     fn source(&self) -> Option<&(dyn Error + 'static)> {
-    ///         Some(&self.side)
+    ///         Some(&self.source)
     ///     }
     /// }
     ///
@@ -90,13 +228,13 @@ pub trait Error: Debug + Display {
     /// impl Error for SuperErrorSideKick {}
     ///
     /// fn get_super_error() -> Result<(), SuperError> {
-    ///     Err(SuperError { side: SuperErrorSideKick })
+    ///     Err(SuperError { source: SuperErrorSideKick })
     /// }
     ///
     /// fn main() {
     ///     match get_super_error() {
     ///         Err(e) => {
-    ///             println!("Error: {}", e);
+    ///             println!("Error: {e}");
     ///             println!("Caused by: {}", e.source().unwrap());
     ///         }
     ///         _ => println!("No error"),
@@ -139,23 +277,102 @@ pub trait Error: Debug + Display {
     /// ```
     /// if let Err(e) = "xc".parse::<u32>() {
     ///     // Print `e` itself, no need for description().
-    ///     eprintln!("Error: {}", e);
+    ///     eprintln!("Error: {e}");
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_deprecated(since = "1.42.0", reason = "use the Display impl or to_string()")]
+    #[deprecated(since = "1.42.0", note = "use the Display impl or to_string()")]
     fn description(&self) -> &str {
         "description() is deprecated; use Display"
     }
 
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_deprecated(
+    #[deprecated(
         since = "1.33.0",
-        reason = "replaced by Error::source, which can support downcasting"
+        note = "replaced by Error::source, which can support downcasting"
     )]
     #[allow(missing_docs)]
     fn cause(&self) -> Option<&dyn Error> {
         self.source()
+    }
+
+    /// Provides type based access to context intended for error reports.
+    ///
+    /// Used in conjunction with [`Demand::provide_value`] and [`Demand::provide_ref`] to extract
+    /// references to member variables from `dyn Error` trait objects.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// #![feature(provide_any)]
+    /// #![feature(error_generic_member_access)]
+    /// use core::fmt;
+    /// use core::any::Demand;
+    ///
+    /// #[derive(Debug)]
+    /// struct MyBacktrace {
+    ///     // ...
+    /// }
+    ///
+    /// impl MyBacktrace {
+    ///     fn new() -> MyBacktrace {
+    ///         // ...
+    ///         # MyBacktrace {}
+    ///     }
+    /// }
+    ///
+    /// #[derive(Debug)]
+    /// struct SourceError {
+    ///     // ...
+    /// }
+    ///
+    /// impl fmt::Display for SourceError {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "Example Source Error")
+    ///     }
+    /// }
+    ///
+    /// impl std::error::Error for SourceError {}
+    ///
+    /// #[derive(Debug)]
+    /// struct Error {
+    ///     source: SourceError,
+    ///     backtrace: MyBacktrace,
+    /// }
+    ///
+    /// impl fmt::Display for Error {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "Example Error")
+    ///     }
+    /// }
+    ///
+    /// impl std::error::Error for Error {
+    ///     fn provide<'a>(&'a self, req: &mut Demand<'a>) {
+    ///         req
+    ///             .provide_ref::<MyBacktrace>(&self.backtrace)
+    ///             .provide_ref::<dyn std::error::Error + 'static>(&self.source);
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let backtrace = MyBacktrace::new();
+    ///     let source = SourceError {};
+    ///     let error = Error { source, backtrace };
+    ///     let dyn_error = &error as &dyn std::error::Error;
+    ///     let backtrace_ref = dyn_error.request_ref::<MyBacktrace>().unwrap();
+    ///
+    ///     assert!(core::ptr::eq(&error.backtrace, backtrace_ref));
+    /// }
+    /// ```
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    #[allow(unused_variables)]
+    fn provide<'a>(&'a self, req: &mut Demand<'a>) {}
+}
+
+#[unstable(feature = "error_generic_member_access", issue = "99301")]
+impl Provider for dyn Error + 'static {
+    fn provide<'a>(&'a self, req: &mut Demand<'a>) {
+        self.provide(req)
     }
 }
 
@@ -516,6 +733,14 @@ impl<T: Error> Error for Box<T> {
     }
 }
 
+#[unstable(feature = "thin_box", issue = "92791")]
+impl<T: ?Sized + crate::error::Error> crate::error::Error for crate::boxed::ThinBox<T> {
+    fn source(&self) -> Option<&(dyn crate::error::Error + 'static)> {
+        use core::ops::Deref;
+        self.deref().source()
+    }
+}
+
 #[stable(feature = "error_by_ref", since = "1.51.0")]
 impl<'a, T: Error + ?Sized> Error for &'a T {
     #[allow(deprecated, deprecated_in_future)]
@@ -602,25 +827,67 @@ impl Error for char::ParseCharError {
 impl Error for alloc::collections::TryReserveError {}
 
 #[unstable(feature = "duration_checked_float", issue = "83400")]
-impl Error for time::FromSecsError {}
+impl Error for time::FromFloatSecsError {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl Error for alloc::ffi::NulError {
+    #[allow(deprecated)]
+    fn description(&self) -> &str {
+        "nul byte found in data"
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl From<alloc::ffi::NulError> for io::Error {
+    /// Converts a [`alloc::ffi::NulError`] into a [`io::Error`].
+    fn from(_: alloc::ffi::NulError) -> io::Error {
+        io::const_io_error!(io::ErrorKind::InvalidInput, "data provided contains a nul byte")
+    }
+}
+
+#[stable(feature = "frombyteswithnulerror_impls", since = "1.17.0")]
+impl Error for core::ffi::FromBytesWithNulError {
+    #[allow(deprecated)]
+    fn description(&self) -> &str {
+        self.__description()
+    }
+}
+
+#[unstable(feature = "cstr_from_bytes_until_nul", issue = "95027")]
+impl Error for core::ffi::FromBytesUntilNulError {}
+
+#[stable(feature = "cstring_from_vec_with_nul", since = "1.58.0")]
+impl Error for alloc::ffi::FromVecWithNulError {}
+
+#[stable(feature = "cstring_into", since = "1.7.0")]
+impl Error for alloc::ffi::IntoStringError {
+    #[allow(deprecated)]
+    fn description(&self) -> &str {
+        "C string contained non-utf8 bytes"
+    }
+
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.__source())
+    }
+}
 
 // Copied from `any.rs`.
 impl dyn Error + 'static {
-    /// Returns `true` if the boxed type is the same as `T`
+    /// Returns `true` if the inner type is the same as `T`.
     #[stable(feature = "error_downcast", since = "1.3.0")]
     #[inline]
     pub fn is<T: Error + 'static>(&self) -> bool {
         // Get `TypeId` of the type this function is instantiated with.
         let t = TypeId::of::<T>();
 
-        // Get `TypeId` of the type in the trait object.
-        let boxed = self.type_id(private::Internal);
+        // Get `TypeId` of the type in the trait object (`self`).
+        let concrete = self.type_id(private::Internal);
 
         // Compare both `TypeId`s on equality.
-        t == boxed
+        t == concrete
     }
 
-    /// Returns some reference to the boxed value if it is of type `T`, or
+    /// Returns some reference to the inner value if it is of type `T`, or
     /// `None` if it isn't.
     #[stable(feature = "error_downcast", since = "1.3.0")]
     #[inline]
@@ -632,7 +899,7 @@ impl dyn Error + 'static {
         }
     }
 
-    /// Returns some mutable reference to the boxed value if it is of type `T`, or
+    /// Returns some mutable reference to the inner value if it is of type `T`, or
     /// `None` if it isn't.
     #[stable(feature = "error_downcast", since = "1.3.0")]
     #[inline]
@@ -642,6 +909,18 @@ impl dyn Error + 'static {
         } else {
             None
         }
+    }
+
+    /// Request a reference of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_ref<T: ?Sized + 'static>(&self) -> Option<&T> {
+        core::any::request_ref(self)
+    }
+
+    /// Request a value of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_value<T: 'static>(&self) -> Option<T> {
+        core::any::request_value(self)
     }
 }
 
@@ -666,6 +945,18 @@ impl dyn Error + 'static + Send {
     pub fn downcast_mut<T: Error + 'static>(&mut self) -> Option<&mut T> {
         <dyn Error + 'static>::downcast_mut::<T>(self)
     }
+
+    /// Request a reference of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_ref<T: ?Sized + 'static>(&self) -> Option<&T> {
+        <dyn Error + 'static>::request_ref(self)
+    }
+
+    /// Request a value of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_value<T: 'static>(&self) -> Option<T> {
+        <dyn Error + 'static>::request_value(self)
+    }
 }
 
 impl dyn Error + 'static + Send + Sync {
@@ -688,6 +979,18 @@ impl dyn Error + 'static + Send + Sync {
     #[inline]
     pub fn downcast_mut<T: Error + 'static>(&mut self) -> Option<&mut T> {
         <dyn Error + 'static>::downcast_mut::<T>(self)
+    }
+
+    /// Request a reference of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_ref<T: ?Sized + 'static>(&self) -> Option<&T> {
+        <dyn Error + 'static>::request_ref(self)
+    }
+
+    /// Request a value of type `T` as context about this error.
+    #[unstable(feature = "error_generic_member_access", issue = "99301")]
+    pub fn request_value<T: 'static>(&self) -> Option<T> {
+        <dyn Error + 'static>::request_value(self)
     }
 }
 
@@ -808,5 +1111,644 @@ impl dyn Error + Send + Sync {
             // Reapply the `Send + Sync` marker.
             transmute::<Box<dyn Error>, Box<dyn Error + Send + Sync>>(s)
         })
+    }
+}
+
+/// An error reporter that prints an error and its sources.
+///
+/// Report also exposes configuration options for formatting the error chain, either entirely on a
+/// single line, or in multi-line format with each cause in the error chain on a new line.
+///
+/// `Report` only requires that the wrapped error implement `Error`. It doesn't require that the
+/// wrapped error be `Send`, `Sync`, or `'static`.
+///
+/// # Examples
+///
+/// ```rust
+/// #![feature(error_reporter)]
+/// use std::error::{Error, Report};
+/// use std::fmt;
+///
+/// #[derive(Debug)]
+/// struct SuperError {
+///     source: SuperErrorSideKick,
+/// }
+///
+/// impl fmt::Display for SuperError {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         write!(f, "SuperError is here!")
+///     }
+/// }
+///
+/// impl Error for SuperError {
+///     fn source(&self) -> Option<&(dyn Error + 'static)> {
+///         Some(&self.source)
+///     }
+/// }
+///
+/// #[derive(Debug)]
+/// struct SuperErrorSideKick;
+///
+/// impl fmt::Display for SuperErrorSideKick {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         write!(f, "SuperErrorSideKick is here!")
+///     }
+/// }
+///
+/// impl Error for SuperErrorSideKick {}
+///
+/// fn get_super_error() -> Result<(), SuperError> {
+///     Err(SuperError { source: SuperErrorSideKick })
+/// }
+///
+/// fn main() {
+///     match get_super_error() {
+///         Err(e) => println!("Error: {}", Report::new(e)),
+///         _ => println!("No error"),
+///     }
+/// }
+/// ```
+///
+/// This example produces the following output:
+///
+/// ```console
+/// Error: SuperError is here!: SuperErrorSideKick is here!
+/// ```
+///
+/// ## Output consistency
+///
+/// Report prints the same output via `Display` and `Debug`, so it works well with
+/// [`Result::unwrap`]/[`Result::expect`] which print their `Err` variant via `Debug`:
+///
+/// ```should_panic
+/// #![feature(error_reporter)]
+/// use std::error::Report;
+/// # use std::error::Error;
+/// # use std::fmt;
+/// # #[derive(Debug)]
+/// # struct SuperError {
+/// #     source: SuperErrorSideKick,
+/// # }
+/// # impl fmt::Display for SuperError {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperError is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperError {
+/// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+/// #         Some(&self.source)
+/// #     }
+/// # }
+/// # #[derive(Debug)]
+/// # struct SuperErrorSideKick;
+/// # impl fmt::Display for SuperErrorSideKick {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperErrorSideKick is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperErrorSideKick {}
+/// # fn get_super_error() -> Result<(), SuperError> {
+/// #     Err(SuperError { source: SuperErrorSideKick })
+/// # }
+///
+/// get_super_error().map_err(Report::new).unwrap();
+/// ```
+///
+/// This example produces the following output:
+///
+/// ```console
+/// thread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: SuperError is here!: SuperErrorSideKick is here!', src/error.rs:34:40
+/// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+/// ```
+///
+/// ## Return from `main`
+///
+/// `Report` also implements `From` for all types that implement [`Error`]; this when combined with
+/// the `Debug` output means `Report` is an ideal starting place for formatting errors returned
+/// from `main`.
+///
+/// ```should_panic
+/// #![feature(error_reporter)]
+/// use std::error::Report;
+/// # use std::error::Error;
+/// # use std::fmt;
+/// # #[derive(Debug)]
+/// # struct SuperError {
+/// #     source: SuperErrorSideKick,
+/// # }
+/// # impl fmt::Display for SuperError {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperError is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperError {
+/// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+/// #         Some(&self.source)
+/// #     }
+/// # }
+/// # #[derive(Debug)]
+/// # struct SuperErrorSideKick;
+/// # impl fmt::Display for SuperErrorSideKick {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperErrorSideKick is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperErrorSideKick {}
+/// # fn get_super_error() -> Result<(), SuperError> {
+/// #     Err(SuperError { source: SuperErrorSideKick })
+/// # }
+///
+/// fn main() -> Result<(), Report> {
+///     get_super_error()?;
+///     Ok(())
+/// }
+/// ```
+///
+/// This example produces the following output:
+///
+/// ```console
+/// Error: SuperError is here!: SuperErrorSideKick is here!
+/// ```
+///
+/// **Note**: `Report`s constructed via `?` and `From` will be configured to use the single line
+/// output format. If you want to make sure your `Report`s are pretty printed and include backtrace
+/// you will need to manually convert and enable those flags.
+///
+/// ```should_panic
+/// #![feature(error_reporter)]
+/// use std::error::Report;
+/// # use std::error::Error;
+/// # use std::fmt;
+/// # #[derive(Debug)]
+/// # struct SuperError {
+/// #     source: SuperErrorSideKick,
+/// # }
+/// # impl fmt::Display for SuperError {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperError is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperError {
+/// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+/// #         Some(&self.source)
+/// #     }
+/// # }
+/// # #[derive(Debug)]
+/// # struct SuperErrorSideKick;
+/// # impl fmt::Display for SuperErrorSideKick {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         write!(f, "SuperErrorSideKick is here!")
+/// #     }
+/// # }
+/// # impl Error for SuperErrorSideKick {}
+/// # fn get_super_error() -> Result<(), SuperError> {
+/// #     Err(SuperError { source: SuperErrorSideKick })
+/// # }
+///
+/// fn main() -> Result<(), Report> {
+///     get_super_error()
+///         .map_err(Report::from)
+///         .map_err(|r| r.pretty(true).show_backtrace(true))?;
+///     Ok(())
+/// }
+/// ```
+///
+/// This example produces the following output:
+///
+/// ```console
+/// Error: SuperError is here!
+///
+/// Caused by:
+///       SuperErrorSideKick is here!
+/// ```
+#[unstable(feature = "error_reporter", issue = "90172")]
+pub struct Report<E = Box<dyn Error>> {
+    /// The error being reported.
+    error: E,
+    /// Whether a backtrace should be included as part of the report.
+    show_backtrace: bool,
+    /// Whether the report should be pretty-printed.
+    pretty: bool,
+}
+
+impl<E> Report<E>
+where
+    Report<E>: From<E>,
+{
+    /// Create a new `Report` from an input error.
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    pub fn new(error: E) -> Report<E> {
+        Self::from(error)
+    }
+}
+
+impl<E> Report<E> {
+    /// Enable pretty-printing the report across multiple lines.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #![feature(error_reporter)]
+    /// use std::error::Report;
+    /// # use std::error::Error;
+    /// # use std::fmt;
+    /// # #[derive(Debug)]
+    /// # struct SuperError {
+    /// #     source: SuperErrorSideKick,
+    /// # }
+    /// # impl fmt::Display for SuperError {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperError is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperError {
+    /// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    /// #         Some(&self.source)
+    /// #     }
+    /// # }
+    /// # #[derive(Debug)]
+    /// # struct SuperErrorSideKick;
+    /// # impl fmt::Display for SuperErrorSideKick {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperErrorSideKick is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperErrorSideKick {}
+    ///
+    /// let error = SuperError { source: SuperErrorSideKick };
+    /// let report = Report::new(error).pretty(true);
+    /// eprintln!("Error: {report:?}");
+    /// ```
+    ///
+    /// This example produces the following output:
+    ///
+    /// ```console
+    /// Error: SuperError is here!
+    ///
+    /// Caused by:
+    ///       SuperErrorSideKick is here!
+    /// ```
+    ///
+    /// When there are multiple source errors the causes will be numbered in order of iteration
+    /// starting from the outermost error.
+    ///
+    /// ```rust
+    /// #![feature(error_reporter)]
+    /// use std::error::Report;
+    /// # use std::error::Error;
+    /// # use std::fmt;
+    /// # #[derive(Debug)]
+    /// # struct SuperError {
+    /// #     source: SuperErrorSideKick,
+    /// # }
+    /// # impl fmt::Display for SuperError {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperError is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperError {
+    /// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    /// #         Some(&self.source)
+    /// #     }
+    /// # }
+    /// # #[derive(Debug)]
+    /// # struct SuperErrorSideKick {
+    /// #     source: SuperErrorSideKickSideKick,
+    /// # }
+    /// # impl fmt::Display for SuperErrorSideKick {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperErrorSideKick is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperErrorSideKick {
+    /// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    /// #         Some(&self.source)
+    /// #     }
+    /// # }
+    /// # #[derive(Debug)]
+    /// # struct SuperErrorSideKickSideKick;
+    /// # impl fmt::Display for SuperErrorSideKickSideKick {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperErrorSideKickSideKick is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperErrorSideKickSideKick { }
+    ///
+    /// let source = SuperErrorSideKickSideKick;
+    /// let source = SuperErrorSideKick { source };
+    /// let error = SuperError { source };
+    /// let report = Report::new(error).pretty(true);
+    /// eprintln!("Error: {report:?}");
+    /// ```
+    ///
+    /// This example produces the following output:
+    ///
+    /// ```console
+    /// Error: SuperError is here!
+    ///
+    /// Caused by:
+    ///    0: SuperErrorSideKick is here!
+    ///    1: SuperErrorSideKickSideKick is here!
+    /// ```
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    pub fn pretty(mut self, pretty: bool) -> Self {
+        self.pretty = pretty;
+        self
+    }
+
+    /// Display backtrace if available when using pretty output format.
+    ///
+    /// # Examples
+    ///
+    /// **Note**: Report will search for the first `Backtrace` it can find starting from the
+    /// outermost error. In this example it will display the backtrace from the second error in the
+    /// chain, `SuperErrorSideKick`.
+    ///
+    /// ```rust
+    /// #![feature(error_reporter)]
+    /// #![feature(backtrace)]
+    /// # use std::error::Error;
+    /// # use std::fmt;
+    /// use std::error::Report;
+    /// use std::backtrace::Backtrace;
+    ///
+    /// # #[derive(Debug)]
+    /// # struct SuperError {
+    /// #     source: SuperErrorSideKick,
+    /// # }
+    /// # impl fmt::Display for SuperError {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperError is here!")
+    /// #     }
+    /// # }
+    /// # impl Error for SuperError {
+    /// #     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    /// #         Some(&self.source)
+    /// #     }
+    /// # }
+    /// #[derive(Debug)]
+    /// struct SuperErrorSideKick {
+    ///     backtrace: Backtrace,
+    /// }
+    ///
+    /// impl SuperErrorSideKick {
+    ///     fn new() -> SuperErrorSideKick {
+    ///         SuperErrorSideKick { backtrace: Backtrace::force_capture() }
+    ///     }
+    /// }
+    ///
+    /// impl Error for SuperErrorSideKick {
+    ///     fn backtrace(&self) -> Option<&Backtrace> {
+    ///         Some(&self.backtrace)
+    ///     }
+    /// }
+    ///
+    /// // The rest of the example is unchanged ...
+    /// # impl fmt::Display for SuperErrorSideKick {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         write!(f, "SuperErrorSideKick is here!")
+    /// #     }
+    /// # }
+    ///
+    /// let source = SuperErrorSideKick::new();
+    /// let error = SuperError { source };
+    /// let report = Report::new(error).pretty(true).show_backtrace(true);
+    /// eprintln!("Error: {report:?}");
+    /// ```
+    ///
+    /// This example produces something similar to the following output:
+    ///
+    /// ```console
+    /// Error: SuperError is here!
+    ///
+    /// Caused by:
+    ///       SuperErrorSideKick is here!
+    ///
+    /// Stack backtrace:
+    ///    0: rust_out::main::_doctest_main_src_error_rs_1158_0::SuperErrorSideKick::new
+    ///    1: rust_out::main::_doctest_main_src_error_rs_1158_0
+    ///    2: rust_out::main
+    ///    3: core::ops::function::FnOnce::call_once
+    ///    4: std::sys_common::backtrace::__rust_begin_short_backtrace
+    ///    5: std::rt::lang_start::{{closure}}
+    ///    6: std::panicking::try
+    ///    7: std::rt::lang_start_internal
+    ///    8: std::rt::lang_start
+    ///    9: main
+    ///   10: __libc_start_main
+    ///   11: _start
+    /// ```
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    pub fn show_backtrace(mut self, show_backtrace: bool) -> Self {
+        self.show_backtrace = show_backtrace;
+        self
+    }
+}
+
+impl<E> Report<E>
+where
+    E: Error,
+{
+    fn backtrace(&self) -> Option<&Backtrace> {
+        // have to grab the backtrace on the first error directly since that error may not be
+        // 'static
+        let backtrace = self.error.backtrace();
+        let backtrace = backtrace.or_else(|| {
+            self.error
+                .source()
+                .map(|source| source.chain().find_map(|source| source.backtrace()))
+                .flatten()
+        });
+        backtrace
+    }
+
+    /// Format the report as a single line.
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    fn fmt_singleline(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.error)?;
+
+        let sources = self.error.source().into_iter().flat_map(<dyn Error>::chain);
+
+        for cause in sources {
+            write!(f, ": {cause}")?;
+        }
+
+        Ok(())
+    }
+
+    /// Format the report as multiple lines, with each error cause on its own line.
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    fn fmt_multiline(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let error = &self.error;
+
+        write!(f, "{error}")?;
+
+        if let Some(cause) = error.source() {
+            write!(f, "\n\nCaused by:")?;
+
+            let multiple = cause.source().is_some();
+
+            for (ind, error) in cause.chain().enumerate() {
+                writeln!(f)?;
+                let mut indented = Indented { inner: f };
+                if multiple {
+                    write!(indented, "{ind: >4}: {error}")?;
+                } else {
+                    write!(indented, "      {error}")?;
+                }
+            }
+        }
+
+        if self.show_backtrace {
+            let backtrace = self.backtrace();
+
+            if let Some(backtrace) = backtrace {
+                let backtrace = backtrace.to_string();
+
+                f.write_str("\n\nStack backtrace:\n")?;
+                f.write_str(backtrace.trim_end())?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Report<Box<dyn Error>> {
+    fn backtrace(&self) -> Option<&Backtrace> {
+        // have to grab the backtrace on the first error directly since that error may not be
+        // 'static
+        let backtrace = self.error.backtrace();
+        let backtrace = backtrace.or_else(|| {
+            self.error
+                .source()
+                .map(|source| source.chain().find_map(|source| source.backtrace()))
+                .flatten()
+        });
+        backtrace
+    }
+
+    /// Format the report as a single line.
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    fn fmt_singleline(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.error)?;
+
+        let sources = self.error.source().into_iter().flat_map(<dyn Error>::chain);
+
+        for cause in sources {
+            write!(f, ": {cause}")?;
+        }
+
+        Ok(())
+    }
+
+    /// Format the report as multiple lines, with each error cause on its own line.
+    #[unstable(feature = "error_reporter", issue = "90172")]
+    fn fmt_multiline(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let error = &self.error;
+
+        write!(f, "{error}")?;
+
+        if let Some(cause) = error.source() {
+            write!(f, "\n\nCaused by:")?;
+
+            let multiple = cause.source().is_some();
+
+            for (ind, error) in cause.chain().enumerate() {
+                writeln!(f)?;
+                let mut indented = Indented { inner: f };
+                if multiple {
+                    write!(indented, "{ind: >4}: {error}")?;
+                } else {
+                    write!(indented, "      {error}")?;
+                }
+            }
+        }
+
+        if self.show_backtrace {
+            let backtrace = self.backtrace();
+
+            if let Some(backtrace) = backtrace {
+                let backtrace = backtrace.to_string();
+
+                f.write_str("\n\nStack backtrace:\n")?;
+                f.write_str(backtrace.trim_end())?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[unstable(feature = "error_reporter", issue = "90172")]
+impl<E> From<E> for Report<E>
+where
+    E: Error,
+{
+    fn from(error: E) -> Self {
+        Report { error, show_backtrace: false, pretty: false }
+    }
+}
+
+#[unstable(feature = "error_reporter", issue = "90172")]
+impl<'a, E> From<E> for Report<Box<dyn Error + 'a>>
+where
+    E: Error + 'a,
+{
+    fn from(error: E) -> Self {
+        let error = box error;
+        Report { error, show_backtrace: false, pretty: false }
+    }
+}
+
+#[unstable(feature = "error_reporter", issue = "90172")]
+impl<E> fmt::Display for Report<E>
+where
+    E: Error,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.pretty { self.fmt_multiline(f) } else { self.fmt_singleline(f) }
+    }
+}
+
+#[unstable(feature = "error_reporter", issue = "90172")]
+impl fmt::Display for Report<Box<dyn Error>> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.pretty { self.fmt_multiline(f) } else { self.fmt_singleline(f) }
+    }
+}
+
+// This type intentionally outputs the same format for `Display` and `Debug`for
+// situations where you unwrap a `Report` or return it from main.
+#[unstable(feature = "error_reporter", issue = "90172")]
+impl<E> fmt::Debug for Report<E>
+where
+    Report<E>: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+/// Wrapper type for indenting the inner source.
+struct Indented<'a, D> {
+    inner: &'a mut D,
+}
+
+impl<T> Write for Indented<'_, T>
+where
+    T: Write,
+{
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for (i, line) in s.split('\n').enumerate() {
+            if i > 0 {
+                self.inner.write_char('\n')?;
+                self.inner.write_str("      ")?;
+            }
+
+            self.inner.write_str(line)?;
+        }
+
+        Ok(())
     }
 }

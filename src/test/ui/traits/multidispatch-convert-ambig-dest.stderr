@@ -2,13 +2,18 @@ error[E0282]: type annotations needed
   --> $DIR/multidispatch-convert-ambig-dest.rs:26:5
    |
 LL |     test(22, std::default::Default::default());
-   |     ^^^^ cannot infer type for type parameter `U` declared on the function `test`
+   |     ^^^^ cannot infer type of the type parameter `U` declared on the function `test`
+   |
+help: consider specifying the generic arguments
+   |
+LL |     test::<i32, U>(22, std::default::Default::default());
+   |         ++++++++++
 
 error[E0283]: type annotations needed
   --> $DIR/multidispatch-convert-ambig-dest.rs:26:5
    |
 LL |     test(22, std::default::Default::default());
-   |     ^^^^ cannot infer type for type parameter `U` declared on the function `test`
+   |     ^^^^ cannot infer type of the type parameter `U` declared on the function `test`
    |
 note: multiple `impl`s satisfying `i32: Convert<_>` found
   --> $DIR/multidispatch-convert-ambig-dest.rs:8:1

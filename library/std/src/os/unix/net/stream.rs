@@ -1,13 +1,4 @@
-#[cfg(any(
-    doc,
-    target_os = "android",
-    target_os = "dragonfly",
-    target_os = "emscripten",
-    target_os = "freebsd",
-    target_os = "linux",
-    target_os = "netbsd",
-    target_os = "openbsd",
-))]
+#[cfg(any(doc, target_os = "android", target_os = "linux"))]
 use super::{recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to, SocketAncillary};
 use super::{sockaddr_un, SocketAddr};
 use crate::fmt;
@@ -21,6 +12,7 @@ use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, Owned
     target_os = "freebsd",
     target_os = "ios",
     target_os = "macos",
+    target_os = "watchos",
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
@@ -39,6 +31,7 @@ use crate::time::Duration;
     target_os = "freebsd",
     target_os = "ios",
     target_os = "macos",
+    target_os = "watchos",
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
@@ -57,7 +50,7 @@ pub use ucred::UCred;
 ///     stream.write_all(b"hello world")?;
 ///     let mut response = String::new();
 ///     stream.read_to_string(&mut response)?;
-///     println!("{}", response);
+///     println!("{response}");
 ///     Ok(())
 /// }
 /// ```
@@ -90,7 +83,7 @@ impl UnixStream {
     /// let socket = match UnixStream::connect("/tmp/sock") {
     ///     Ok(sock) => sock,
     ///     Err(e) => {
-    ///         println!("Couldn't connect: {:?}", e);
+    ///         println!("Couldn't connect: {e:?}");
     ///         return
     ///     }
     /// };
@@ -123,7 +116,7 @@ impl UnixStream {
     ///     let sock = match UnixStream::connect_addr(&addr) {
     ///         Ok(sock) => sock,
     ///         Err(e) => {
-    ///             println!("Couldn't connect: {:?}", e);
+    ///             println!("Couldn't connect: {e:?}");
     ///             return Err(e)
     ///         }
     ///     };
@@ -155,7 +148,7 @@ impl UnixStream {
     /// let (sock1, sock2) = match UnixStream::pair() {
     ///     Ok((sock1, sock2)) => (sock1, sock2),
     ///     Err(e) => {
-    ///         println!("Couldn't create a pair of sockets: {:?}", e);
+    ///         println!("Couldn't create a pair of sockets: {e:?}");
     ///         return
     ///     }
     /// };
@@ -247,6 +240,7 @@ impl UnixStream {
         target_os = "freebsd",
         target_os = "ios",
         target_os = "macos",
+        target_os = "watchos",
         target_os = "netbsd",
         target_os = "openbsd"
     ))]
@@ -415,7 +409,7 @@ impl UnixStream {
     ///     Ok(())
     /// }
     /// ```
-    #[cfg(any(doc, target_os = "android", target_os = "linux",))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "netbsd",))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn set_passcred(&self, passcred: bool) -> io::Result<()> {
         self.0.set_passcred(passcred)
@@ -427,7 +421,7 @@ impl UnixStream {
     /// Get the socket option `SO_PASSCRED`.
     ///
     /// [`set_passcred`]: UnixStream::set_passcred
-    #[cfg(any(doc, target_os = "android", target_os = "linux",))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "netbsd",))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn passcred(&self) -> io::Result<bool> {
         self.0.passcred()
@@ -443,7 +437,7 @@ impl UnixStream {
     /// fn main() -> std::io::Result<()> {
     ///     let socket = UnixStream::connect("/tmp/sock")?;
     ///     if let Ok(Some(err)) = socket.take_error() {
-    ///         println!("Got error: {:?}", err);
+    ///         println!("Got error: {err:?}");
     ///     }
     ///     Ok(())
     /// }
@@ -511,7 +505,8 @@ impl UnixStream {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    #[cfg_attr(any(target_os = "android", target_os = "linux"), doc = "```no_run")]
+    #[cfg_attr(not(any(target_os = "android", target_os = "linux")), doc = "```ignore")]
     /// #![feature(unix_socket_ancillary_data)]
     /// use std::os::unix::net::{UnixStream, SocketAncillary, AncillaryData};
     /// use std::io::IoSliceMut;
@@ -530,26 +525,18 @@ impl UnixStream {
     ///     let mut ancillary_buffer = [0; 128];
     ///     let mut ancillary = SocketAncillary::new(&mut ancillary_buffer[..]);
     ///     let size = socket.recv_vectored_with_ancillary(bufs, &mut ancillary)?;
-    ///     println!("received {}", size);
+    ///     println!("received {size}");
     ///     for ancillary_result in ancillary.messages() {
     ///         if let AncillaryData::ScmRights(scm_rights) = ancillary_result.unwrap() {
     ///             for fd in scm_rights {
-    ///                 println!("receive file descriptor: {}", fd);
+    ///                 println!("receive file descriptor: {fd}");
     ///             }
     ///         }
     ///     }
     ///     Ok(())
     /// }
     /// ```
-    #[cfg(any(
-        target_os = "android",
-        target_os = "dragonfly",
-        target_os = "emscripten",
-        target_os = "freebsd",
-        target_os = "linux",
-        target_os = "netbsd",
-        target_os = "openbsd",
-    ))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux"))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn recv_vectored_with_ancillary(
         &self,
@@ -567,7 +554,8 @@ impl UnixStream {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    #[cfg_attr(any(target_os = "android", target_os = "linux"), doc = "```no_run")]
+    #[cfg_attr(not(any(target_os = "android", target_os = "linux")), doc = "```ignore")]
     /// #![feature(unix_socket_ancillary_data)]
     /// use std::os::unix::net::{UnixStream, SocketAncillary};
     /// use std::io::IoSlice;
@@ -591,15 +579,7 @@ impl UnixStream {
     ///     Ok(())
     /// }
     /// ```
-    #[cfg(any(
-        target_os = "android",
-        target_os = "dragonfly",
-        target_os = "emscripten",
-        target_os = "freebsd",
-        target_os = "linux",
-        target_os = "netbsd",
-        target_os = "openbsd",
-    ))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux"))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn send_vectored_with_ancillary(
         &self,
@@ -706,7 +686,7 @@ impl IntoRawFd for UnixStream {
     }
 }
 
-#[unstable(feature = "io_safety", issue = "87074")]
+#[stable(feature = "io_safety", since = "1.63.0")]
 impl AsFd for UnixStream {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -714,7 +694,7 @@ impl AsFd for UnixStream {
     }
 }
 
-#[unstable(feature = "io_safety", issue = "87074")]
+#[stable(feature = "io_safety", since = "1.63.0")]
 impl From<UnixStream> for OwnedFd {
     #[inline]
     fn from(unix_stream: UnixStream) -> OwnedFd {
@@ -722,7 +702,7 @@ impl From<UnixStream> for OwnedFd {
     }
 }
 
-#[unstable(feature = "io_safety", issue = "87074")]
+#[stable(feature = "io_safety", since = "1.63.0")]
 impl From<OwnedFd> for UnixStream {
     #[inline]
     fn from(owned: OwnedFd) -> Self {

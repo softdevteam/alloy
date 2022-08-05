@@ -1,17 +1,10 @@
-error[E0381]: borrow of possibly-uninitialized variable: `x`
+error[E0381]: used binding `x` isn't initialized
   --> $DIR/issue-78655.rs:3:5
    |
+LL |     let x;
+   |         - binding declared here but left uninitialized
 LL |     &x
-   |     ^^ use of possibly-uninitialized `x`
-
-error: encountered dangling pointer in final constant
-  --> $DIR/issue-78655.rs:1:1
-   |
-LL | / const FOO: *const u32 = {
-LL | |     let x;
-LL | |     &x
-LL | | };
-   | |__^
+   |     ^^ `x` used here but it isn't initialized
 
 error: could not evaluate constant pattern
   --> $DIR/issue-78655.rs:7:9
@@ -25,6 +18,6 @@ error: could not evaluate constant pattern
 LL |     let FOO = FOO;
    |         ^^^
 
-error: aborting due to 4 previous errors
+error: aborting due to 3 previous errors
 
 For more information about this error, try `rustc --explain E0381`.

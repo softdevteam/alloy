@@ -57,6 +57,10 @@ impl<'a> ExtCtxt<'a> {
         P(ast::Ty { id: ast::DUMMY_NODE_ID, span, kind, tokens: None })
     }
 
+    pub fn ty_infer(&self, span: Span) -> P<ast::Ty> {
+        self.ty(span, ast::TyKind::Infer)
+    }
+
     pub fn ty_path(&self, path: ast::Path) -> P<ast::Ty> {
         self.ty(path.span, ast::TyKind::Path(None, path))
     }
@@ -113,6 +117,7 @@ impl<'a> ExtCtxt<'a> {
             bounds,
             kind: ast::GenericParamKind::Type { default },
             is_placeholder: false,
+            colon_span: None,
         }
     }
 
@@ -139,17 +144,15 @@ impl<'a> ExtCtxt<'a> {
         ast::Lifetime { id: ast::DUMMY_NODE_ID, ident: ident.with_span_pos(span) }
     }
 
+    pub fn lifetime_static(&self, span: Span) -> ast::Lifetime {
+        self.lifetime(span, Ident::new(kw::StaticLifetime, span))
+    }
+
     pub fn stmt_expr(&self, expr: P<ast::Expr>) -> ast::Stmt {
         ast::Stmt { id: ast::DUMMY_NODE_ID, span: expr.span, kind: ast::StmtKind::Expr(expr) }
     }
 
-    pub fn stmt_let(&self, sp: Span, mutbl: bool, ident: Ident, ex: P<ast::Expr>) -> ast::Stmt {
-        let pat = if mutbl {
-            let binding_mode = ast::BindingMode::ByValue(ast::Mutability::Mut);
-            self.pat_ident_binding_mode(sp, ident, binding_mode)
-        } else {
-            self.pat_ident(sp, ident)
-        };
+    pub fn stmt_let_pat(&self, sp: Span, pat: P<ast::Pat>, ex: P<ast::Expr>) -> ast::Stmt {
         let local = P(ast::Local {
             pat,
             ty: None,
@@ -159,7 +162,37 @@ impl<'a> ExtCtxt<'a> {
             attrs: AttrVec::new(),
             tokens: None,
         });
-        ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Local(local), span: sp }
+        self.stmt_local(local, sp)
+    }
+
+    pub fn stmt_let(&self, sp: Span, mutbl: bool, ident: Ident, ex: P<ast::Expr>) -> ast::Stmt {
+        self.stmt_let_ty(sp, mutbl, ident, None, ex)
+    }
+
+    pub fn stmt_let_ty(
+        &self,
+        sp: Span,
+        mutbl: bool,
+        ident: Ident,
+        ty: Option<P<ast::Ty>>,
+        ex: P<ast::Expr>,
+    ) -> ast::Stmt {
+        let pat = if mutbl {
+            let binding_mode = ast::BindingMode::ByValue(ast::Mutability::Mut);
+            self.pat_ident_binding_mode(sp, ident, binding_mode)
+        } else {
+            self.pat_ident(sp, ident)
+        };
+        let local = P(ast::Local {
+            pat,
+            ty,
+            id: ast::DUMMY_NODE_ID,
+            kind: LocalKind::Init(ex),
+            span: sp,
+            attrs: AttrVec::new(),
+            tokens: None,
+        });
+        self.stmt_local(local, sp)
     }
 
     // Generates `let _: Type;`, which is usually used for type assertions.
@@ -173,6 +206,10 @@ impl<'a> ExtCtxt<'a> {
             attrs: AttrVec::new(),
             tokens: None,
         });
+        self.stmt_local(local, span)
+    }
+
+    pub fn stmt_local(&self, local: P<ast::Local>, span: Span) -> ast::Stmt {
         ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Local(local), span }
     }
 
@@ -310,12 +347,16 @@ impl<'a> ExtCtxt<'a> {
         self.expr_lit(sp, ast::LitKind::Bool(value))
     }
 
-    pub fn expr_vec(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
+    /// `[expr1, expr2, ...]`
+    pub fn expr_array(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
         self.expr(sp, ast::ExprKind::Array(exprs))
     }
-    pub fn expr_vec_slice(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
-        self.expr_addr_of(sp, self.expr_vec(sp, exprs))
+
+    /// `&[expr1, expr2, ...]`
+    pub fn expr_array_ref(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
+        self.expr_addr_of(sp, self.expr_array(sp, exprs))
     }
+
     pub fn expr_str(&self, sp: Span, s: Symbol) -> P<ast::Expr> {
         self.expr_lit(sp, ast::LitKind::Str(s, ast::StrStyle::Cooked))
     }
@@ -329,6 +370,10 @@ impl<'a> ExtCtxt<'a> {
         self.expr_call_global(sp, some, vec![expr])
     }
 
+    pub fn expr_none(&self, sp: Span) -> P<ast::Expr> {
+        let none = self.std_path(&[sym::option, sym::Option, sym::None]);
+        self.expr_path(self.path_global(sp, none))
+    }
     pub fn expr_tuple(&self, sp: Span, exprs: Vec<P<ast::Expr>>) -> P<ast::Expr> {
         self.expr(sp, ast::ExprKind::Tup(exprs))
     }
@@ -475,6 +520,7 @@ impl<'a> ExtCtxt<'a> {
         self.expr(
             span,
             ast::ExprKind::Closure(
+                ast::ClosureBinder::NotPresent,
                 ast::CaptureBy::Ref,
                 ast::Async::No,
                 ast::Movability::Movable,
@@ -509,7 +555,7 @@ impl<'a> ExtCtxt<'a> {
         }
     }
 
-    // FIXME: unused `self`
+    // `self` is unused but keep it as method for the convenience use.
     pub fn fn_decl(&self, inputs: Vec<ast::Param>, output: ast::FnRetTy) -> P<ast::FnDecl> {
         P(ast::FnDecl { inputs, output })
     }

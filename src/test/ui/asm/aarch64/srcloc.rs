@@ -1,5 +1,6 @@
 // only-aarch64
 // build-fail
+// needs-asm-support
 // compile-flags: -Ccodegen-units=1
 
 use std::arch::asm;
@@ -117,5 +118,12 @@ fn main() {
         //~^^^^^^^^^^ ERROR: unrecognized instruction mnemonic
         //~^^^^^^^ ERROR: unrecognized instruction mnemonic
         //~^^^^^^^^ ERROR: unrecognized instruction mnemonic
+
+        asm!(
+            "",
+            "\n",
+            "invalid_instruction"
+        );
+        //~^^ ERROR: unrecognized instruction mnemonic
     }
 }

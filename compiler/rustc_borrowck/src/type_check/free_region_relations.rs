@@ -2,6 +2,7 @@ use rustc_data_structures::frozen::Frozen;
 use rustc_data_structures::transitive_relation::TransitiveRelation;
 use rustc_infer::infer::canonical::QueryRegionConstraints;
 use rustc_infer::infer::outlives;
+use rustc_infer::infer::outlives::env::RegionBoundPairs;
 use rustc_infer::infer::region_constraints::GenericKind;
 use rustc_infer::infer::InferCtxt;
 use rustc_middle::mir::ConstraintCategory;
@@ -19,7 +20,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-crate struct UniversalRegionRelations<'tcx> {
+pub(crate) struct UniversalRegionRelations<'tcx> {
     universal_regions: Rc<UniversalRegions<'tcx>>,
 
     /// Stores the outlives relations that are known to hold from the
@@ -34,34 +35,22 @@ crate struct UniversalRegionRelations<'tcx> {
     inverse_outlives: TransitiveRelation<RegionVid>,
 }
 
-/// Each RBP `('a, GK)` indicates that `GK: 'a` can be assumed to
-/// be true. These encode relationships like `T: 'a` that are
-/// added via implicit bounds.
-///
-/// Each region here is guaranteed to be a key in the `indices`
-/// map. We use the "original" regions (i.e., the keys from the
-/// map, and not the values) because the code in
-/// `process_registered_region_obligations` has some special-cased
-/// logic expecting to see (e.g.) `ReStatic`, and if we supplied
-/// our special inference variable there, we would mess that up.
-type RegionBoundPairs<'tcx> = Vec<(ty::Region<'tcx>, GenericKind<'tcx>)>;
-
 /// As part of computing the free region relations, we also have to
 /// normalize the input-output types, which we then need later. So we
 /// return those. This vector consists of first the input types and
 /// then the output type as the last element.
 type NormalizedInputsAndOutput<'tcx> = Vec<Ty<'tcx>>;
 
-crate struct CreateResult<'tcx> {
-    crate universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
-    crate region_bound_pairs: RegionBoundPairs<'tcx>,
-    crate normalized_inputs_and_output: NormalizedInputsAndOutput<'tcx>,
+pub(crate) struct CreateResult<'tcx> {
+    pub(crate) universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
+    pub(crate) region_bound_pairs: RegionBoundPairs<'tcx>,
+    pub(crate) normalized_inputs_and_output: NormalizedInputsAndOutput<'tcx>,
 }
 
-crate fn create<'tcx>(
+pub(crate) fn create<'tcx>(
     infcx: &InferCtxt<'_, 'tcx>,
     param_env: ty::ParamEnv<'tcx>,
-    implicit_region_bound: Option<ty::Region<'tcx>>,
+    implicit_region_bound: ty::Region<'tcx>,
     universal_regions: &Rc<UniversalRegions<'tcx>>,
     constraints: &mut MirTypeckRegionConstraints<'tcx>,
 ) -> CreateResult<'tcx> {
@@ -71,7 +60,7 @@ crate fn create<'tcx>(
         implicit_region_bound,
         constraints,
         universal_regions: universal_regions.clone(),
-        region_bound_pairs: Vec::new(),
+        region_bound_pairs: Default::default(),
         relations: UniversalRegionRelations {
             universal_regions: universal_regions.clone(),
             outlives: Default::default(),
@@ -96,13 +85,12 @@ impl UniversalRegionRelations<'_> {
     ///
     /// (See `TransitiveRelation::postdom_upper_bound` for details on
     /// the postdominating upper bound in general.)
-    crate fn postdom_upper_bound(&self, fr1: RegionVid, fr2: RegionVid) -> RegionVid {
+    pub(crate) fn postdom_upper_bound(&self, fr1: RegionVid, fr2: RegionVid) -> RegionVid {
         assert!(self.universal_regions.is_universal_region(fr1));
         assert!(self.universal_regions.is_universal_region(fr2));
-        *self
-            .inverse_outlives
-            .postdom_upper_bound(&fr1, &fr2)
-            .unwrap_or(&self.universal_regions.fr_static)
+        self.inverse_outlives
+            .postdom_upper_bound(fr1, fr2)
+            .unwrap_or(self.universal_regions.fr_static)
     }
 
     /// Finds an "upper bound" for `fr` that is not local. In other
@@ -110,7 +98,7 @@ impl UniversalRegionRelations<'_> {
     /// outlives `fr` and (b) is not local.
     ///
     /// (*) If there are multiple competing choices, we return all of them.
-    crate fn non_local_upper_bounds<'a>(&'a self, fr: &'a RegionVid) -> Vec<&'a RegionVid> {
+    pub(crate) fn non_local_upper_bounds<'a>(&'a self, fr: RegionVid) -> Vec<RegionVid> {
         debug!("non_local_upper_bound(fr={:?})", fr);
         let res = self.non_local_bounds(&self.inverse_outlives, fr);
         assert!(!res.is_empty(), "can't find an upper bound!?");
@@ -119,8 +107,8 @@ impl UniversalRegionRelations<'_> {
 
     /// Returns the "postdominating" bound of the set of
     /// `non_local_upper_bounds` for the given region.
-    crate fn non_local_upper_bound(&self, fr: RegionVid) -> RegionVid {
-        let upper_bounds = self.non_local_upper_bounds(&fr);
+    pub(crate) fn non_local_upper_bound(&self, fr: RegionVid) -> RegionVid {
+        let upper_bounds = self.non_local_upper_bounds(fr);
 
         // In case we find more than one, reduce to one for
         // convenience.  This is to prevent us from generating more
@@ -130,7 +118,7 @@ impl UniversalRegionRelations<'_> {
         debug!("non_local_bound: post_dom={:?}", post_dom);
 
         post_dom
-            .and_then(|&post_dom| {
+            .and_then(|post_dom| {
                 // If the mutual immediate postdom is not local, then
                 // there is no non-local result we can return.
                 if !self.universal_regions.is_local_free_region(post_dom) {
@@ -148,9 +136,9 @@ impl UniversalRegionRelations<'_> {
     ///
     /// (*) If there are multiple competing choices, we pick the "postdominating"
     /// one. See `TransitiveRelation::postdom_upper_bound` for details.
-    crate fn non_local_lower_bound(&self, fr: RegionVid) -> Option<RegionVid> {
+    pub(crate) fn non_local_lower_bound(&self, fr: RegionVid) -> Option<RegionVid> {
         debug!("non_local_lower_bound(fr={:?})", fr);
-        let lower_bounds = self.non_local_bounds(&self.outlives, &fr);
+        let lower_bounds = self.non_local_bounds(&self.outlives, fr);
 
         // In case we find more than one, reduce to one for
         // convenience.  This is to prevent us from generating more
@@ -159,7 +147,7 @@ impl UniversalRegionRelations<'_> {
 
         debug!("non_local_bound: post_dom={:?}", post_dom);
 
-        post_dom.and_then(|&post_dom| {
+        post_dom.and_then(|post_dom| {
             // If the mutual immediate postdom is not local, then
             // there is no non-local result we can return.
             if !self.universal_regions.is_local_free_region(post_dom) {
@@ -176,11 +164,11 @@ impl UniversalRegionRelations<'_> {
     fn non_local_bounds<'a>(
         &self,
         relation: &'a TransitiveRelation<RegionVid>,
-        fr0: &'a RegionVid,
-    ) -> Vec<&'a RegionVid> {
+        fr0: RegionVid,
+    ) -> Vec<RegionVid> {
         // This method assumes that `fr0` is one of the universally
         // quantified region variables.
-        assert!(self.universal_regions.is_universal_region(*fr0));
+        assert!(self.universal_regions.is_universal_region(fr0));
 
         let mut external_parents = vec![];
         let mut queue = vec![fr0];
@@ -188,7 +176,7 @@ impl UniversalRegionRelations<'_> {
         // Keep expanding `fr` into its parents until we reach
         // non-local regions.
         while let Some(fr) = queue.pop() {
-            if !self.universal_regions.is_local_free_region(*fr) {
+            if !self.universal_regions.is_local_free_region(fr) {
                 external_parents.push(fr);
                 continue;
             }
@@ -204,18 +192,18 @@ impl UniversalRegionRelations<'_> {
     /// Returns `true` if fr1 is known to outlive fr2.
     ///
     /// This will only ever be true for universally quantified regions.
-    crate fn outlives(&self, fr1: RegionVid, fr2: RegionVid) -> bool {
-        self.outlives.contains(&fr1, &fr2)
+    pub(crate) fn outlives(&self, fr1: RegionVid, fr2: RegionVid) -> bool {
+        self.outlives.contains(fr1, fr2)
     }
 
     /// Returns a vector of free regions `x` such that `fr1: x` is
     /// known to hold.
-    crate fn regions_outlived_by(&self, fr1: RegionVid) -> Vec<&RegionVid> {
-        self.outlives.reachable_from(&fr1)
+    pub(crate) fn regions_outlived_by(&self, fr1: RegionVid) -> Vec<RegionVid> {
+        self.outlives.reachable_from(fr1)
     }
 
     /// Returns the _non-transitive_ set of known `outlives` constraints between free regions.
-    crate fn known_outlives(&self) -> impl Iterator<Item = (&RegionVid, &RegionVid)> {
+    pub(crate) fn known_outlives(&self) -> impl Iterator<Item = (RegionVid, RegionVid)> + '_ {
         self.outlives.base_edges()
     }
 }
@@ -224,7 +212,7 @@ struct UniversalRegionRelationsBuilder<'this, 'tcx> {
     infcx: &'this InferCtxt<'this, 'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     universal_regions: Rc<UniversalRegions<'tcx>>,
-    implicit_region_bound: Option<ty::Region<'tcx>>,
+    implicit_region_bound: ty::Region<'tcx>,
     constraints: &'this mut MirTypeckRegionConstraints<'tcx>,
 
     // outputs:
@@ -233,7 +221,7 @@ struct UniversalRegionRelationsBuilder<'this, 'tcx> {
 }
 
 impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
-    crate fn create(mut self) -> CreateResult<'tcx> {
+    pub(crate) fn create(mut self) -> CreateResult<'tcx> {
         let unnormalized_input_output_tys = self
             .universal_regions
             .unnormalized_input_tys
@@ -254,8 +242,10 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
         let constraint_sets: Vec<_> = unnormalized_input_output_tys
             .flat_map(|ty| {
                 debug!("build: input_or_output={:?}", ty);
-                // We add implied bounds from both the unnormalized and normalized ty
-                // See issue #87748
+                // We only add implied bounds for the normalized type as the unnormalized
+                // type may not actually get checked by the caller.
+                //
+                // Can otherwise be unsound, see #91068.
                 let TypeOpOutput { output: norm_ty, constraints: constraints1, .. } = self
                     .param_env
                     .and(type_op::normalize::Normalize::new(ty))
@@ -268,7 +258,7 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
                         TypeOpOutput {
                             output: self.infcx.tcx.ty_error(),
                             constraints: None,
-                            canonicalized_query: None,
+                            error_info: None,
                         }
                     });
                 // Note: we need this in examples like
@@ -315,6 +305,7 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
                 self.implicit_region_bound,
                 self.param_env,
                 Locations::All(DUMMY_SP),
+                DUMMY_SP,
                 ConstraintCategory::Internal,
                 &mut self.constraints,
             )
@@ -332,8 +323,8 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
     /// either the return type of the MIR or one of its arguments. At
     /// the same time, compute and add any implied bounds that come
     /// from this local.
-    fn add_implied_bounds(&mut self, ty: Ty<'tcx>) -> Option<Rc<QueryRegionConstraints<'tcx>>> {
-        debug!("add_implied_bounds(ty={:?})", ty);
+    #[instrument(level = "debug", skip(self))]
+    fn add_implied_bounds(&mut self, ty: Ty<'tcx>) -> Option<&'tcx QueryRegionConstraints<'tcx>> {
         let TypeOpOutput { output: bounds, constraints, .. } = self
             .param_env
             .and(type_op::implied_outlives_bounds::ImpliedOutlivesBounds { ty })
@@ -358,7 +349,7 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
                     // `where Type:` is lowered to `where Type: 'empty` so that
                     // we check `Type` is well formed, but there's no use for
                     // this bound here.
-                    if let ty::ReEmpty(_) = r1 {
+                    if r1.is_empty() {
                         return;
                     }
 
@@ -369,11 +360,13 @@ impl<'tcx> UniversalRegionRelationsBuilder<'_, 'tcx> {
                 }
 
                 OutlivesBound::RegionSubParam(r_a, param_b) => {
-                    self.region_bound_pairs.push((r_a, GenericKind::Param(param_b)));
+                    self.region_bound_pairs
+                        .insert(ty::OutlivesPredicate(GenericKind::Param(param_b), r_a));
                 }
 
                 OutlivesBound::RegionSubProjection(r_a, projection_b) => {
-                    self.region_bound_pairs.push((r_a, GenericKind::Projection(projection_b)));
+                    self.region_bound_pairs
+                        .insert(ty::OutlivesPredicate(GenericKind::Projection(projection_b), r_a));
                 }
             }
         }

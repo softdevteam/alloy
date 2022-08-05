@@ -16,9 +16,8 @@ impl NodeCounter {
 }
 
 impl<'ast> Visitor<'ast> for NodeCounter {
-    fn visit_ident(&mut self, ident: Ident) {
+    fn visit_ident(&mut self, _ident: Ident) {
         self.count += 1;
-        walk_ident(self, ident);
     }
     fn visit_foreign_item(&mut self, i: &ForeignItem) {
         self.count += 1;
@@ -76,7 +75,7 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_trait_ref(self, t)
     }
-    fn visit_param_bound(&mut self, bounds: &GenericBound) {
+    fn visit_param_bound(&mut self, bounds: &GenericBound, _ctxt: BoundKind) {
         self.count += 1;
         walk_param_bound(self, bounds)
     }
@@ -106,7 +105,7 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_variant(self, v)
     }
-    fn visit_lifetime(&mut self, lifetime: &Lifetime) {
+    fn visit_lifetime(&mut self, lifetime: &Lifetime, _: visit::LifetimeCtxt) {
         self.count += 1;
         walk_lifetime(self, lifetime)
     }
@@ -126,9 +125,9 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_generic_args(self, path_span, generic_args)
     }
-    fn visit_assoc_ty_constraint(&mut self, constraint: &AssocTyConstraint) {
+    fn visit_assoc_constraint(&mut self, constraint: &AssocConstraint) {
         self.count += 1;
-        walk_assoc_ty_constraint(self, constraint)
+        walk_assoc_constraint(self, constraint)
     }
     fn visit_attribute(&mut self, _attr: &Attribute) {
         self.count += 1;

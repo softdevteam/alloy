@@ -3,7 +3,7 @@
 use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_hir as hir;
 use rustc_hir::def::Res;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{self, HirId};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
@@ -15,8 +15,8 @@ pub fn provide(providers: &mut Providers) {
             return None;
         }
 
-        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
-        let body = tcx.hir().body(tcx.hir().maybe_body_owned_by(hir_id)?);
+        let local_def_id = def_id.expect_local();
+        let body = tcx.hir().body(tcx.hir().maybe_body_owned_by(local_def_id)?);
 
         let mut local_collector = LocalCollector::default();
         local_collector.visit_body(body);
@@ -43,12 +43,6 @@ struct LocalCollector {
 }
 
 impl<'tcx> Visitor<'tcx> for LocalCollector {
-    type Map = intravisit::ErasedMap<'tcx>;
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
     fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
         if let hir::PatKind::Binding(_, hir_id, ..) = pat.kind {
             self.locals.insert(hir_id);
@@ -72,12 +66,6 @@ impl CaptureCollector<'_, '_> {
 }
 
 impl<'tcx> Visitor<'tcx> for CaptureCollector<'_, 'tcx> {
-    type Map = intravisit::ErasedMap<'tcx>;
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
     fn visit_path(&mut self, path: &'tcx hir::Path<'tcx>, _: hir::HirId) {
         if let Res::Local(var_id) = path.res {
             self.visit_local_use(var_id, path.span);
@@ -87,7 +75,7 @@ impl<'tcx> Visitor<'tcx> for CaptureCollector<'_, 'tcx> {
     }
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
-        if let hir::ExprKind::Closure(..) = expr.kind {
+        if let hir::ExprKind::Closure { .. } = expr.kind {
             let closure_def_id = self.tcx.hir().local_def_id(expr.hir_id);
             if let Some(upvars) = self.tcx.upvars_mentioned(closure_def_id) {
                 // Every capture of a closure expression is a local in scope,

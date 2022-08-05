@@ -18,17 +18,19 @@ impl<'tcx> MirPass<'tcx> for RemoveZsts {
             return;
         }
         let param_env = tcx.param_env(body.source.def_id());
-        let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
-        for block in basic_blocks.iter_mut() {
+        let basic_blocks = body.basic_blocks.as_mut_preserves_cfg();
+        let local_decls = &body.local_decls;
+        for block in basic_blocks {
             for statement in block.statements.iter_mut() {
-                if let StatementKind::Assign(box (place, _)) = statement.kind {
+                if let StatementKind::Assign(box (place, _)) | StatementKind::Deinit(box place) =
+                    statement.kind
+                {
                     let place_ty = place.ty(local_decls, tcx).ty;
                     if !maybe_zst(place_ty) {
                         continue;
                     }
-                    let layout = match tcx.layout_of(param_env.and(place_ty)) {
-                        Ok(layout) => layout,
-                        Err(_) => continue,
+                    let Ok(layout) = tcx.layout_of(param_env.and(place_ty)) else {
+                        continue;
                     };
                     if !layout.is_zst() {
                         continue;

@@ -35,8 +35,8 @@
 //!
 //! let version = parse_version(&[1, 2, 3, 4]);
 //! match version {
-//!     Ok(v) => println!("working with version: {:?}", v),
-//!     Err(e) => println!("error parsing header: {:?}", e),
+//!     Ok(v) => println!("working with version: {v:?}"),
+//!     Err(e) => println!("error parsing header: {e:?}"),
 //! }
 //! ```
 //!
@@ -436,7 +436,7 @@
 //! # use std::str::FromStr;
 //! let mut results = vec![];
 //! let mut errs = vec![];
-//! let nums: Vec<_> = vec!["17", "not a number", "99", "-27", "768"]
+//! let nums: Vec<_> = ["17", "not a number", "99", "-27", "768"]
 //!    .into_iter()
 //!    .map(u8::from_str)
 //!    // Save clones of the raw `Result` values to inspect
@@ -447,9 +447,9 @@
 //!    .collect();
 //! assert_eq!(errs.len(), 3);
 //! assert_eq!(nums, [17, 99]);
-//! println!("results {:?}", results);
-//! println!("errs {:?}", errs);
-//! println!("nums {:?}", nums);
+//! println!("results {results:?}");
+//! println!("errs {errs:?}");
+//! println!("nums {nums:?}");
 //! ```
 //!
 //! ## Collecting into `Result`
@@ -459,13 +459,13 @@
 //! [`Result`] of a collection of each contained value of the original
 //! [`Result`] values, or [`Err`] if any of the elements was [`Err`].
 //!
-//! [impl-FromIterator]: Result#impl-FromIterator%3CResult%3CA%2C%20E%3E%3E
+//! [impl-FromIterator]: Result#impl-FromIterator%3CResult%3CA%2C%20E%3E%3E-for-Result%3CV%2C%20E%3E
 //!
 //! ```
-//! let v = vec![Ok(2), Ok(4), Err("err!"), Ok(8)];
+//! let v = [Ok(2), Ok(4), Err("err!"), Ok(8)];
 //! let res: Result<Vec<_>, &str> = v.into_iter().collect();
 //! assert_eq!(res, Err("err!"));
-//! let v = vec![Ok(2), Ok(4), Ok(8)];
+//! let v = [Ok(2), Ok(4), Ok(8)];
 //! let res: Result<Vec<_>, &str> = v.into_iter().collect();
 //! assert_eq!(res, Ok(vec![2, 4, 8]));
 //! ```
@@ -475,14 +475,14 @@
 //! to provide the [`product`][Iterator::product] and
 //! [`sum`][Iterator::sum] methods.
 //!
-//! [impl-Product]: Result#impl-Product%3CResult%3CU%2C%20E%3E%3E
-//! [impl-Sum]: Result#impl-Sum%3CResult%3CU%2C%20E%3E%3E
+//! [impl-Product]: Result#impl-Product%3CResult%3CU%2C%20E%3E%3E-for-Result%3CT%2C%20E%3E
+//! [impl-Sum]: Result#impl-Sum%3CResult%3CU%2C%20E%3E%3E-for-Result%3CT%2C%20E%3E
 //!
 //! ```
-//! let v = vec![Err("error!"), Ok(1), Ok(2), Ok(3), Err("foo")];
+//! let v = [Err("error!"), Ok(1), Ok(2), Ok(3), Err("foo")];
 //! let res: Result<i32, &str> = v.into_iter().sum();
 //! assert_eq!(res, Err("error!"));
-//! let v: Vec<Result<i32, &str>> = vec![Ok(1), Ok(2), Ok(21)];
+//! let v = [Ok(1), Ok(2), Ok(21)];
 //! let res: Result<i32, &str> = v.into_iter().product();
 //! assert_eq!(res, Ok(42));
 //! ```
@@ -490,6 +490,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::iter::{self, FromIterator, FusedIterator, TrustedLen};
+use crate::marker::Destruct;
 use crate::ops::{self, ControlFlow, Deref, DerefMut};
 use crate::{convert, fmt, hint};
 
@@ -535,11 +536,34 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.is_ok(), false);
     /// ```
     #[must_use = "if you intended to assert that this is ok, consider `.unwrap()` instead"]
-    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
+    #[rustc_const_stable(feature = "const_result_basics", since = "1.48.0")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn is_ok(&self) -> bool {
         matches!(*self, Ok(_))
+    }
+
+    /// Returns `true` if the result is [`Ok`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(is_some_with)]
+    ///
+    /// let x: Result<u32, &str> = Ok(2);
+    /// assert_eq!(x.is_ok_and(|&x| x > 1), true);
+    ///
+    /// let x: Result<u32, &str> = Ok(0);
+    /// assert_eq!(x.is_ok_and(|&x| x > 1), false);
+    ///
+    /// let x: Result<u32, &str> = Err("hey");
+    /// assert_eq!(x.is_ok_and(|&x| x > 1), false);
+    /// ```
+    #[must_use]
+    #[inline]
+    #[unstable(feature = "is_some_with", issue = "93050")]
+    pub fn is_ok_and(&self, f: impl FnOnce(&T) -> bool) -> bool {
+        matches!(self, Ok(x) if f(x))
     }
 
     /// Returns `true` if the result is [`Err`].
@@ -556,11 +580,35 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.is_err(), true);
     /// ```
     #[must_use = "if you intended to assert that this is err, consider `.unwrap_err()` instead"]
-    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
+    #[rustc_const_stable(feature = "const_result_basics", since = "1.48.0")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn is_err(&self) -> bool {
         !self.is_ok()
+    }
+
+    /// Returns `true` if the result is [`Err`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(is_some_with)]
+    /// use std::io::{Error, ErrorKind};
+    ///
+    /// let x: Result<u32, Error> = Err(Error::new(ErrorKind::NotFound, "!"));
+    /// assert_eq!(x.is_err_and(|x| x.kind() == ErrorKind::NotFound), true);
+    ///
+    /// let x: Result<u32, Error> = Err(Error::new(ErrorKind::PermissionDenied, "!"));
+    /// assert_eq!(x.is_err_and(|x| x.kind() == ErrorKind::NotFound), false);
+    ///
+    /// let x: Result<u32, Error> = Ok(123);
+    /// assert_eq!(x.is_err_and(|x| x.kind() == ErrorKind::NotFound), false);
+    /// ```
+    #[must_use]
+    #[inline]
+    #[unstable(feature = "is_some_with", issue = "93050")]
+    pub fn is_err_and(&self, f: impl FnOnce(&E) -> bool) -> bool {
+        matches!(self, Err(x) if f(x))
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -585,10 +633,16 @@ impl<T, E> Result<T, E> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn ok(self) -> Option<T> {
+    #[rustc_const_unstable(feature = "const_result_drop", issue = "92384")]
+    pub const fn ok(self) -> Option<T>
+    where
+        E: ~const Destruct,
+    {
         match self {
             Ok(x) => Some(x),
-            Err(_) => None,
+            // FIXME: ~const Drop doesn't quite work right yet
+            #[allow(unused_variables)]
+            Err(x) => None,
         }
     }
 
@@ -610,9 +664,15 @@ impl<T, E> Result<T, E> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn err(self) -> Option<E> {
+    #[rustc_const_unstable(feature = "const_result_drop", issue = "92384")]
+    pub const fn err(self) -> Option<E>
+    where
+        T: ~const Destruct,
+    {
         match self {
-            Ok(_) => None,
+            // FIXME: ~const Drop doesn't quite work right yet
+            #[allow(unused_variables)]
+            Ok(x) => None,
             Err(x) => Some(x),
         }
     }
@@ -638,7 +698,7 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.as_ref(), Err(&"Error"));
     /// ```
     #[inline]
-    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
+    #[rustc_const_stable(feature = "const_result_basics", since = "1.48.0")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn as_ref(&self) -> Result<&T, &E> {
         match *self {
@@ -697,7 +757,7 @@ impl<T, E> Result<T, E> {
     ///
     /// for num in line.lines() {
     ///     match num.parse::<i32>().map(|i| i * 2) {
-    ///         Ok(n) => println!("{}", n),
+    ///         Ok(n) => println!("{n}"),
     ///         Err(..) => {}
     ///     }
     /// }
@@ -779,7 +839,7 @@ impl<T, E> Result<T, E> {
     /// Basic usage:
     ///
     /// ```
-    /// fn stringify(x: u32) -> String { format!("error code: {}", x) }
+    /// fn stringify(x: u32) -> String { format!("error code: {x}") }
     ///
     /// let x: Result<u32, u32> = Ok(2);
     /// assert_eq!(x.map_err(stringify), Ok(2));
@@ -805,7 +865,7 @@ impl<T, E> Result<T, E> {
     ///
     /// let x: u8 = "4"
     ///     .parse::<u8>()
-    ///     .inspect(|x| println!("original: {}", x))
+    ///     .inspect(|x| println!("original: {x}"))
     ///     .map(|x| x.pow(3))
     ///     .expect("failed to parse number");
     /// ```
@@ -830,7 +890,7 @@ impl<T, E> Result<T, E> {
     ///
     /// fn read() -> io::Result<String> {
     ///     fs::read_to_string("address.txt")
-    ///         .inspect_err(|e| eprintln!("failed to read file: {}", e))
+    ///         .inspect_err(|e| eprintln!("failed to read file: {e}"))
     /// }
     /// ```
     #[inline]
@@ -949,6 +1009,15 @@ impl<T, E> Result<T, E> {
 
     /// Returns the contained [`Ok`] value, consuming the `self` value.
     ///
+    /// Because this function may panic, its use is generally discouraged.
+    /// Instead, prefer to use pattern matching and handle the [`Err`]
+    /// case explicitly, or call [`unwrap_or`], [`unwrap_or_else`], or
+    /// [`unwrap_or_default`].
+    ///
+    /// [`unwrap_or`]: Result::unwrap_or
+    /// [`unwrap_or_else`]: Result::unwrap_or_else
+    /// [`unwrap_or_default`]: Result::unwrap_or_default
+    ///
     /// # Panics
     ///
     /// Panics if the value is an [`Err`], with a panic message including the
@@ -963,6 +1032,26 @@ impl<T, E> Result<T, E> {
     /// let x: Result<u32, &str> = Err("emergency failure");
     /// x.expect("Testing expect"); // panics with `Testing expect: emergency failure`
     /// ```
+    ///
+    /// # Recommended Message Style
+    ///
+    /// We recommend that `expect` messages are used to describe the reason you
+    /// _expect_ the `Result` should be `Ok`.
+    ///
+    /// ```should_panic
+    /// let path = std::env::var("IMPORTANT_PATH")
+    ///     .expect("env variable `IMPORTANT_PATH` should be set by `wrapper_script.sh`");
+    /// ```
+    ///
+    /// **Hint**: If you're having trouble remembering how to phrase expect
+    /// error messages remember to focus on the word "should" as in "env
+    /// variable should be set by blah" or "the given binary should be available
+    /// and executable by the current user".
+    ///
+    /// For more detail on expect message styles and the reasoning behind our recommendation please
+    /// refer to the section on ["Common Message
+    /// Styles"](../../std/error/index.html#common-message-styles) in the
+    /// [`std::error`](../../std/error/index.html) module docs.
     #[inline]
     #[track_caller]
     #[stable(feature = "result_expect", since = "1.4.0")]
@@ -1139,7 +1228,7 @@ impl<T, E> Result<T, E> {
     /// }
     ///
     /// let s: String = only_good_news().into_ok();
-    /// println!("{}", s);
+    /// println!("{s}");
     /// ```
     #[unstable(feature = "unwrap_infallible", reason = "newly added", issue = "61695")]
     #[inline]
@@ -1176,7 +1265,7 @@ impl<T, E> Result<T, E> {
     /// }
     ///
     /// let error: String = only_bad_news().into_err();
-    /// println!("{}", error);
+    /// println!("{error}");
     /// ```
     #[unstable(feature = "unwrap_infallible", reason = "newly added", issue = "61695")]
     #[inline]
@@ -1219,10 +1308,18 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.and(y), Ok("different result type"));
     /// ```
     #[inline]
+    #[rustc_const_unstable(feature = "const_result_drop", issue = "92384")]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn and<U>(self, res: Result<U, E>) -> Result<U, E> {
+    pub const fn and<U>(self, res: Result<U, E>) -> Result<U, E>
+    where
+        T: ~const Destruct,
+        U: ~const Destruct,
+        E: ~const Destruct,
+    {
         match self {
-            Ok(_) => res,
+            // FIXME: ~const Drop doesn't quite work right yet
+            #[allow(unused_variables)]
+            Ok(x) => res,
             Err(e) => Err(e),
         }
     }
@@ -1234,16 +1331,28 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
-    /// Basic usage:
+    /// ```
+    /// fn sq_then_to_string(x: u32) -> Result<String, &'static str> {
+    ///     x.checked_mul(x).map(|sq| sq.to_string()).ok_or("overflowed")
+    /// }
+    ///
+    /// assert_eq!(Ok(2).and_then(sq_then_to_string), Ok(4.to_string()));
+    /// assert_eq!(Ok(1_000_000).and_then(sq_then_to_string), Err("overflowed"));
+    /// assert_eq!(Err("not a number").and_then(sq_then_to_string), Err("not a number"));
+    /// ```
+    ///
+    /// Often used to chain fallible operations that may return [`Err`].
     ///
     /// ```
-    /// fn sq(x: u32) -> Result<u32, u32> { Ok(x * x) }
-    /// fn err(x: u32) -> Result<u32, u32> { Err(x) }
+    /// use std::{io::ErrorKind, path::Path};
     ///
-    /// assert_eq!(Ok(2).and_then(sq).and_then(sq), Ok(16));
-    /// assert_eq!(Ok(2).and_then(sq).and_then(err), Err(4));
-    /// assert_eq!(Ok(2).and_then(err).and_then(sq), Err(2));
-    /// assert_eq!(Err(3).and_then(sq).and_then(sq), Err(3));
+    /// // Note: on Windows "/" maps to "C:\"
+    /// let root_modified_time = Path::new("/").metadata().and_then(|md| md.modified());
+    /// assert!(root_modified_time.is_ok());
+    ///
+    /// let should_fail = Path::new("/bad/path").metadata().and_then(|md| md.modified());
+    /// assert!(should_fail.is_err());
+    /// assert_eq!(should_fail.unwrap_err().kind(), ErrorKind::NotFound);
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -1284,11 +1393,19 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.or(y), Ok(2));
     /// ```
     #[inline]
+    #[rustc_const_unstable(feature = "const_result_drop", issue = "92384")]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn or<F>(self, res: Result<T, F>) -> Result<T, F> {
+    pub const fn or<F>(self, res: Result<T, F>) -> Result<T, F>
+    where
+        T: ~const Destruct,
+        E: ~const Destruct,
+        F: ~const Destruct,
+    {
         match self {
             Ok(v) => Ok(v),
-            Err(_) => res,
+            // FIXME: ~const Drop doesn't quite work right yet
+            #[allow(unused_variables)]
+            Err(e) => res,
         }
     }
 
@@ -1340,11 +1457,18 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.unwrap_or(default), default);
     /// ```
     #[inline]
+    #[rustc_const_unstable(feature = "const_result_drop", issue = "92384")]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn unwrap_or(self, default: T) -> T {
+    pub const fn unwrap_or(self, default: T) -> T
+    where
+        T: ~const Destruct,
+        E: ~const Destruct,
+    {
         match self {
             Ok(t) => t,
-            Err(_) => default,
+            // FIXME: ~const Drop doesn't quite work right yet
+            #[allow(unused_variables)]
+            Err(e) => default,
         }
     }
 
@@ -1687,7 +1811,7 @@ impl<T> Result<T, T> {
 #[cold]
 #[track_caller]
 fn unwrap_failed(msg: &str, error: &dyn fmt::Debug) -> ! {
-    panic!("{}: {:?}", msg, error)
+    panic!("{msg}: {error:?}")
 }
 
 // This is a separate function to avoid constructing a `dyn Debug`
@@ -1707,7 +1831,12 @@ fn unwrap_failed<T>(_msg: &str, _error: &T) -> ! {
 /////////////////////////////////////////////////////////////////////////////
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: Clone, E: Clone> Clone for Result<T, E> {
+#[rustc_const_unstable(feature = "const_clone", issue = "91805")]
+impl<T, E> const Clone for Result<T, E>
+where
+    T: ~const Clone + ~const Destruct,
+    E: ~const Clone + ~const Destruct,
+{
     #[inline]
     fn clone(&self) -> Self {
         match self {
@@ -1969,7 +2098,7 @@ impl<A, E, V: FromIterator<A>> FromIterator<Result<A, E>> for Result<V, E> {
         // FIXME(#11084): This could be replaced with Iterator::scan when this
         // performance bug is closed.
 
-        iter::process_results(iter.into_iter(), |i| i.collect())
+        iter::try_process(iter.into_iter(), |i| i.collect())
     }
 }
 
@@ -2004,6 +2133,14 @@ impl<T, E, F: ~const From<E>> const ops::FromResidual<Result<convert::Infallible
         match residual {
             Err(e) => Err(From::from(e)),
         }
+    }
+}
+
+#[unstable(feature = "try_trait_v2_yeet", issue = "96374")]
+impl<T, E, F: From<E>> ops::FromResidual<ops::Yeet<E>> for Result<T, F> {
+    #[inline]
+    fn from_residual(ops::Yeet(e): ops::Yeet<E>) -> Self {
+        Err(From::from(e))
     }
 }
 

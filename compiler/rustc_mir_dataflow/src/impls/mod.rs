@@ -2,7 +2,7 @@
 //! bitvectors attached to each basic block, represented via a
 //! zero-sized structure.
 
-use rustc_index::bit_set::BitSet;
+use rustc_index::bit_set::{BitSet, ChunkedBitSet};
 use rustc_index::vec::Idx;
 use rustc_middle::mir::visit::{MirVisitable, Visitor};
 use rustc_middle::mir::{self, Body, Location};
@@ -23,9 +23,11 @@ mod init_locals;
 mod liveness;
 mod storage_liveness;
 
+pub use self::borrowed_locals::borrowed_locals;
 pub use self::borrowed_locals::MaybeBorrowedLocals;
 pub use self::init_locals::MaybeInitializedLocals;
 pub use self::liveness::MaybeLiveLocals;
+pub use self::liveness::MaybeTransitiveLiveLocals;
 pub use self::storage_liveness::{MaybeRequiresStorage, MaybeStorageLive};
 
 /// `MaybeInitializedPlaces` tracks all places that might be
@@ -37,21 +39,21 @@ pub use self::storage_liveness::{MaybeRequiresStorage, MaybeStorageLive};
 ///
 /// ```rust
 /// struct S;
-/// fn foo(pred: bool) {                       // maybe-init:
-///                                            // {}
-///     let a = S; let b = S; let c; let d;    // {a, b}
+/// fn foo(pred: bool) {                        // maybe-init:
+///                                             // {}
+///     let a = S; let mut b = S; let c; let d; // {a, b}
 ///
 ///     if pred {
-///         drop(a);                           // {   b}
-///         b = S;                             // {   b}
+///         drop(a);                            // {   b}
+///         b = S;                              // {   b}
 ///
 ///     } else {
-///         drop(b);                           // {a}
-///         d = S;                             // {a,       d}
+///         drop(b);                            // {a}
+///         d = S;                              // {a,       d}
 ///
-///     }                                      // {a, b,    d}
+///     }                                       // {a, b,    d}
 ///
-///     c = S;                                 // {a, b, c, d}
+///     c = S;                                  // {a, b, c, d}
 /// }
 /// ```
 ///
@@ -90,21 +92,21 @@ impl<'a, 'tcx> HasMoveData<'tcx> for MaybeInitializedPlaces<'a, 'tcx> {
 ///
 /// ```rust
 /// struct S;
-/// fn foo(pred: bool) {                       // maybe-uninit:
-///                                            // {a, b, c, d}
-///     let a = S; let b = S; let c; let d;    // {      c, d}
+/// fn foo(pred: bool) {                        // maybe-uninit:
+///                                             // {a, b, c, d}
+///     let a = S; let mut b = S; let c; let d; // {      c, d}
 ///
 ///     if pred {
-///         drop(a);                           // {a,    c, d}
-///         b = S;                             // {a,    c, d}
+///         drop(a);                            // {a,    c, d}
+///         b = S;                              // {a,    c, d}
 ///
 ///     } else {
-///         drop(b);                           // {   b, c, d}
-///         d = S;                             // {   b, c   }
+///         drop(b);                            // {   b, c, d}
+///         d = S;                              // {   b, c   }
 ///
-///     }                                      // {a, b, c, d}
+///     }                                       // {a, b, c, d}
 ///
-///     c = S;                                 // {a, b,    d}
+///     c = S;                                  // {a, b,    d}
 /// }
 /// ```
 ///
@@ -155,21 +157,21 @@ impl<'a, 'tcx> HasMoveData<'tcx> for MaybeUninitializedPlaces<'a, 'tcx> {
 ///
 /// ```rust
 /// struct S;
-/// fn foo(pred: bool) {                       // definite-init:
-///                                            // {          }
-///     let a = S; let b = S; let c; let d;    // {a, b      }
+/// fn foo(pred: bool) {                        // definite-init:
+///                                             // {          }
+///     let a = S; let mut b = S; let c; let d; // {a, b      }
 ///
 ///     if pred {
-///         drop(a);                           // {   b,     }
-///         b = S;                             // {   b,     }
+///         drop(a);                            // {   b,     }
+///         b = S;                              // {   b,     }
 ///
 ///     } else {
-///         drop(b);                           // {a,        }
-///         d = S;                             // {a,       d}
+///         drop(b);                            // {a,        }
+///         d = S;                              // {a,       d}
 ///
-///     }                                      // {          }
+///     }                                       // {          }
 ///
-///     c = S;                                 // {       c  }
+///     c = S;                                  // {       c  }
 /// }
 /// ```
 ///
@@ -210,21 +212,21 @@ impl<'a, 'tcx> HasMoveData<'tcx> for DefinitelyInitializedPlaces<'a, 'tcx> {
 ///
 /// ```rust
 /// struct S;
-/// fn foo(pred: bool) {                       // ever-init:
-///                                            // {          }
-///     let a = S; let b = S; let c; let d;    // {a, b      }
+/// fn foo(pred: bool) {                        // ever-init:
+///                                             // {          }
+///     let a = S; let mut b = S; let c; let d; // {a, b      }
 ///
 ///     if pred {
-///         drop(a);                           // {a, b,     }
-///         b = S;                             // {a, b,     }
+///         drop(a);                            // {a, b,     }
+///         b = S;                              // {a, b,     }
 ///
 ///     } else {
-///         drop(b);                           // {a, b,      }
-///         d = S;                             // {a, b,    d }
+///         drop(b);                            // {a, b,      }
+///         d = S;                              // {a, b,    d }
 ///
-///     }                                      // {a, b,    d }
+///     }                                       // {a, b,    d }
 ///
-///     c = S;                                 // {a, b, c, d }
+///     c = S;                                  // {a, b, c, d }
 /// }
 /// ```
 pub struct EverInitializedPlaces<'a, 'tcx> {
@@ -286,12 +288,12 @@ impl<'a, 'tcx> DefinitelyInitializedPlaces<'a, 'tcx> {
 }
 
 impl<'tcx> AnalysisDomain<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
-    type Domain = BitSet<MovePathIndex>;
+    type Domain = ChunkedBitSet<MovePathIndex>;
     const NAME: &'static str = "maybe_init";
 
     fn bottom_value(&self, _: &mir::Body<'tcx>) -> Self::Domain {
         // bottom = uninitialized
-        BitSet::new_empty(self.move_data().move_paths.len())
+        ChunkedBitSet::new_empty(self.move_data().move_paths.len())
     }
 
     fn initialize_start_block(&self, _: &mir::Body<'tcx>, state: &mut Self::Domain) {
@@ -315,7 +317,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
             Self::update_bits(trans, path, s)
         });
 
-        if !self.tcx.sess.opts.debugging_opts.precise_enum_drop_elaboration {
+        if !self.tcx.sess.opts.unstable_opts.precise_enum_drop_elaboration {
             return;
         }
 
@@ -338,7 +340,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
             Self::update_bits(trans, path, s)
         });
 
-        if !self.tcx.sess.opts.debugging_opts.precise_enum_drop_elaboration {
+        if !self.tcx.sess.opts.unstable_opts.precise_enum_drop_elaboration {
             return;
         }
 
@@ -377,7 +379,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
         discr: &mir::Operand<'tcx>,
         edge_effects: &mut impl SwitchIntEdgeEffects<G>,
     ) {
-        if !self.tcx.sess.opts.debugging_opts.precise_enum_drop_elaboration {
+        if !self.tcx.sess.opts.unstable_opts.precise_enum_drop_elaboration {
             return;
         }
 
@@ -385,16 +387,14 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
             switch_on_enum_discriminant(self.tcx, &self.body, &self.body[block], discr)
         });
 
-        let (enum_place, enum_def) = match enum_ {
-            Some(x) => x,
-            None => return,
+        let Some((enum_place, enum_def)) = enum_ else {
+            return;
         };
 
         let mut discriminants = enum_def.discriminants(self.tcx);
         edge_effects.apply(|trans, edge| {
-            let value = match edge.value {
-                Some(x) => x,
-                None => return,
+            let Some(value) = edge.value else {
+                return;
             };
 
             // MIR building adds discriminants to the `values` array in the same order as they
@@ -419,18 +419,18 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
 }
 
 impl<'tcx> AnalysisDomain<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
-    type Domain = BitSet<MovePathIndex>;
+    type Domain = ChunkedBitSet<MovePathIndex>;
 
     const NAME: &'static str = "maybe_uninit";
 
     fn bottom_value(&self, _: &mir::Body<'tcx>) -> Self::Domain {
         // bottom = initialized (start_block_effect counters this at outset)
-        BitSet::new_empty(self.move_data().move_paths.len())
+        ChunkedBitSet::new_empty(self.move_data().move_paths.len())
     }
 
     // sets on_entry bits for Arg places
     fn initialize_start_block(&self, _: &mir::Body<'tcx>, state: &mut Self::Domain) {
-        // set all bits to 1 (uninit) before gathering counterevidence
+        // set all bits to 1 (uninit) before gathering counter-evidence
         state.insert_all();
 
         drop_flag_effects_for_function_entry(self.tcx, self.body, self.mdpe, |path, s| {
@@ -495,7 +495,7 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
         discr: &mir::Operand<'tcx>,
         edge_effects: &mut impl SwitchIntEdgeEffects<G>,
     ) {
-        if !self.tcx.sess.opts.debugging_opts.precise_enum_drop_elaboration {
+        if !self.tcx.sess.opts.unstable_opts.precise_enum_drop_elaboration {
             return;
         }
 
@@ -507,16 +507,14 @@ impl<'tcx> GenKillAnalysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
             switch_on_enum_discriminant(self.tcx, &self.body, &self.body[block], discr)
         });
 
-        let (enum_place, enum_def) = match enum_ {
-            Some(x) => x,
-            None => return,
+        let Some((enum_place, enum_def)) = enum_ else {
+            return;
         };
 
         let mut discriminants = enum_def.discriminants(self.tcx);
         edge_effects.apply(|trans, edge| {
-            let value = match edge.value {
-                Some(x) => x,
-                None => return,
+            let Some(value) = edge.value else {
+                return;
             };
 
             // MIR building adds discriminants to the `values` array in the same order as they
@@ -610,13 +608,13 @@ impl<'tcx> GenKillAnalysis<'tcx> for DefinitelyInitializedPlaces<'_, 'tcx> {
 }
 
 impl<'tcx> AnalysisDomain<'tcx> for EverInitializedPlaces<'_, 'tcx> {
-    type Domain = BitSet<InitIndex>;
+    type Domain = ChunkedBitSet<InitIndex>;
 
     const NAME: &'static str = "ever_init";
 
     fn bottom_value(&self, _: &mir::Body<'tcx>) -> Self::Domain {
         // bottom = no initialized variables by default
-        BitSet::new_empty(self.move_data().inits.len())
+        ChunkedBitSet::new_empty(self.move_data().inits.len())
     }
 
     fn initialize_start_block(&self, body: &mir::Body<'tcx>, state: &mut Self::Domain) {
@@ -709,25 +707,28 @@ fn switch_on_enum_discriminant<'mir, 'tcx>(
     body: &'mir mir::Body<'tcx>,
     block: &'mir mir::BasicBlockData<'tcx>,
     switch_on: mir::Place<'tcx>,
-) -> Option<(mir::Place<'tcx>, &'tcx ty::AdtDef)> {
-    match block.statements.last().map(|stmt| &stmt.kind) {
-        Some(mir::StatementKind::Assign(box (lhs, mir::Rvalue::Discriminant(discriminated))))
-            if *lhs == switch_on =>
-        {
-            match &discriminated.ty(body, tcx).ty.kind() {
-                ty::Adt(def, _) => Some((*discriminated, def)),
+) -> Option<(mir::Place<'tcx>, ty::AdtDef<'tcx>)> {
+    for statement in block.statements.iter().rev() {
+        match &statement.kind {
+            mir::StatementKind::Assign(box (lhs, mir::Rvalue::Discriminant(discriminated)))
+                if *lhs == switch_on =>
+            {
+                match discriminated.ty(body, tcx).ty.kind() {
+                    ty::Adt(def, _) => return Some((*discriminated, *def)),
 
-                // `Rvalue::Discriminant` is also used to get the active yield point for a
-                // generator, but we do not need edge-specific effects in that case. This may
-                // change in the future.
-                ty::Generator(..) => None,
+                    // `Rvalue::Discriminant` is also used to get the active yield point for a
+                    // generator, but we do not need edge-specific effects in that case. This may
+                    // change in the future.
+                    ty::Generator(..) => return None,
 
-                t => bug!("`discriminant` called on unexpected type {:?}", t),
+                    t => bug!("`discriminant` called on unexpected type {:?}", t),
+                }
             }
+            mir::StatementKind::Coverage(_) => continue,
+            _ => return None,
         }
-
-        _ => None,
     }
+    None
 }
 
 struct OnMutBorrow<F>(F);

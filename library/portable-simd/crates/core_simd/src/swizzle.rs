@@ -1,46 +1,46 @@
 use crate::simd::intrinsics;
 use crate::simd::{LaneCount, Simd, SimdElement, SupportedLaneCount};
 
-/// Constructs a new vector by selecting values from the lanes of the source vector or vectors to use.
+/// Constructs a new SIMD vector by copying elements from selected lanes in other vectors.
 ///
-/// When swizzling one vector, the indices of the result vector are indicated by a `const` array
-/// of `usize`, like [`Swizzle`].
-/// When swizzling two vectors, the indices are indicated by a `const` array of [`Which`], like
-/// [`Swizzle2`].
+/// When swizzling one vector, lanes are selected by a `const` array of `usize`,
+/// like [`Swizzle`].
+///
+/// When swizzling two vectors, lanes are selected by a `const` array of [`Which`],
+/// like [`Swizzle2`].
 ///
 /// # Examples
-/// ## One source vector
+///
+/// With a single SIMD vector, the const array specifies lane indices in that vector:
 /// ```
 /// # #![feature(portable_simd)]
-/// # #[cfg(feature = "std")] use core_simd::{Simd, simd_swizzle};
-/// # #[cfg(not(feature = "std"))] use core::simd::{Simd, simd_swizzle};
-/// let v = Simd::<f32, 4>::from_array([0., 1., 2., 3.]);
+/// # use core::simd::{u32x2, u32x4, simd_swizzle};
+/// let v = u32x4::from_array([10, 11, 12, 13]);
 ///
 /// // Keeping the same size
-/// let r = simd_swizzle!(v, [3, 0, 1, 2]);
-/// assert_eq!(r.to_array(), [3., 0., 1., 2.]);
+/// let r: u32x4 = simd_swizzle!(v, [3, 0, 1, 2]);
+/// assert_eq!(r.to_array(), [13, 10, 11, 12]);
 ///
 /// // Changing the number of lanes
-/// let r = simd_swizzle!(v, [3, 1]);
-/// assert_eq!(r.to_array(), [3., 1.]);
+/// let r: u32x2 = simd_swizzle!(v, [3, 1]);
+/// assert_eq!(r.to_array(), [13, 11]);
 /// ```
 ///
-/// ## Two source vectors
+/// With two input SIMD vectors, the const array uses `Which` to specify the source of each index:
 /// ```
 /// # #![feature(portable_simd)]
-/// # #[cfg(feature = "std")] use core_simd::{Simd, simd_swizzle, Which};
-/// # #[cfg(not(feature = "std"))] use core::simd::{Simd, simd_swizzle, Which};
-/// use Which::*;
-/// let a = Simd::<f32, 4>::from_array([0., 1., 2., 3.]);
-/// let b = Simd::<f32, 4>::from_array([4., 5., 6., 7.]);
+/// # use core::simd::{u32x2, u32x4, simd_swizzle, Which};
+/// use Which::{First, Second};
+/// let a = u32x4::from_array([0, 1, 2, 3]);
+/// let b = u32x4::from_array([4, 5, 6, 7]);
 ///
 /// // Keeping the same size
-/// let r = simd_swizzle!(a, b, [First(0), First(1), Second(2), Second(3)]);
-/// assert_eq!(r.to_array(), [0., 1., 6., 7.]);
+/// let r: u32x4 = simd_swizzle!(a, b, [First(0), First(1), Second(2), Second(3)]);
+/// assert_eq!(r.to_array(), [0, 1, 6, 7]);
 ///
 /// // Changing the number of lanes
-/// let r = simd_swizzle!(a, b, [First(0), Second(0)]);
-/// assert_eq!(r.to_array(), [0., 4.]);
+/// let r: u32x2 = simd_swizzle!(a, b, [First(0), Second(0)]);
+/// assert_eq!(r.to_array(), [0, 4]);
 /// ```
 #[allow(unused_macros)]
 pub macro simd_swizzle {
@@ -70,12 +70,14 @@ pub macro simd_swizzle {
     }
 }
 
-/// An index into one of two vectors.
+/// Specifies a lane index into one of two SIMD vectors.
+///
+/// This is an input type for [Swizzle2] and helper macros like [simd_swizzle].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Which {
-    /// Indexes the first vector.
+    /// Index of a lane in the first input SIMD vector.
     First(usize),
-    /// Indexes the second vector.
+    /// Index of a lane in the second input SIMD vector.
     Second(usize),
 }
 
@@ -95,6 +97,7 @@ pub trait Swizzle<const INPUT_LANES: usize, const OUTPUT_LANES: usize> {
         LaneCount<INPUT_LANES>: SupportedLaneCount,
         LaneCount<OUTPUT_LANES>: SupportedLaneCount,
     {
+        // Safety: `vector` is a vector, and `INDEX_IMPL` is a const array of u32.
         unsafe { intrinsics::simd_shuffle(vector, vector, Self::INDEX_IMPL) }
     }
 }
@@ -119,6 +122,7 @@ pub trait Swizzle2<const INPUT_LANES: usize, const OUTPUT_LANES: usize> {
         LaneCount<INPUT_LANES>: SupportedLaneCount,
         LaneCount<OUTPUT_LANES>: SupportedLaneCount,
     {
+        // Safety: `first` and `second` are vectors, and `INDEX_IMPL` is a const array of u32.
         unsafe { intrinsics::simd_shuffle(first, second, Self::INDEX_IMPL) }
     }
 }
@@ -271,8 +275,7 @@ where
     ///
     /// ```
     /// #![feature(portable_simd)]
-    /// # #[cfg(feature = "std")] use core_simd::Simd;
-    /// # #[cfg(not(feature = "std"))] use core::simd::Simd;
+    /// # use core::simd::Simd;
     /// let a = Simd::from_array([0, 1, 2, 3]);
     /// let b = Simd::from_array([4, 5, 6, 7]);
     /// let (x, y) = a.interleave(b);
@@ -335,8 +338,7 @@ where
     ///
     /// ```
     /// #![feature(portable_simd)]
-    /// # #[cfg(feature = "std")] use core_simd::Simd;
-    /// # #[cfg(not(feature = "std"))] use core::simd::Simd;
+    /// # use core::simd::Simd;
     /// let a = Simd::from_array([0, 4, 1, 5]);
     /// let b = Simd::from_array([2, 6, 3, 7]);
     /// let (x, y) = a.deinterleave(b);

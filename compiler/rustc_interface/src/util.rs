@@ -1,7 +1,5 @@
 use libloading::Library;
-use rustc_ast::mut_visit::{visit_clobber, MutVisitor, *};
-use rustc_ast::ptr::P;
-use rustc_ast::{self as ast, AttrVec, BlockCheckMode};
+use rustc_ast as ast;
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 #[cfg(parallel_compiler)]
@@ -12,9 +10,9 @@ use rustc_errors::registry::Registry;
 use rustc_middle::ty::tls;
 use rustc_parse::validate_attr;
 #[cfg(parallel_compiler)]
-use rustc_query_impl::QueryCtxt;
-use rustc_resolve::{self, Resolver};
+use rustc_query_impl::{QueryContext, QueryCtxt};
 use rustc_session as session;
+use rustc_session::config::CheckCfg;
 use rustc_session::config::{self, CrateType};
 use rustc_session::config::{ErrorOutputType, Input, OutputFilenames};
 use rustc_session::lint::{self, BuiltinLintDiagnostics, LintBuffer};
@@ -24,18 +22,14 @@ use rustc_span::edition::Edition;
 use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::source_map::FileLoader;
 use rustc_span::symbol::{sym, Symbol};
-use smallvec::SmallVec;
 use std::env;
 use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
-use std::io;
-use std::lazy::SyncOnceCell;
 use std::mem;
-use std::ops::DerefMut;
 #[cfg(not(parallel_compiler))]
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
 use std::thread;
 use tracing::info;
 
@@ -54,7 +48,10 @@ pub fn add_configuration(
 ) {
     let tf = sym::target_feature;
 
-    let target_features = codegen_backend.target_features(sess);
+    let unstable_target_features = codegen_backend.target_features(sess, true);
+    sess.unstable_target_features.extend(unstable_target_features.iter().cloned());
+
+    let target_features = codegen_backend.target_features(sess, false);
     sess.target_features.extend(target_features.iter().cloned());
 
     cfg.extend(target_features.into_iter().map(|feat| (tf, Some(feat))));
@@ -67,6 +64,7 @@ pub fn add_configuration(
 pub fn create_session(
     sopts: config::Options,
     cfg: FxHashSet<(String, Option<String>)>,
+    check_cfg: CheckCfg,
     diagnostic_output: DiagnosticOutput,
     file_loader: Option<Box<dyn FileLoader + Send + Sync + 'static>>,
     input_path: Option<PathBuf>,
@@ -81,16 +79,30 @@ pub fn create_session(
     } else {
         get_codegen_backend(
             &sopts.maybe_sysroot,
-            sopts.debugging_opts.codegen_backend.as_ref().map(|name| &name[..]),
+            sopts.unstable_opts.codegen_backend.as_ref().map(|name| &name[..]),
         )
     };
 
     // target_override is documented to be called before init(), so this is okay
     let target_override = codegen_backend.target_override(&sopts);
 
+    let bundle = match rustc_errors::fluent_bundle(
+        sopts.maybe_sysroot.clone(),
+        sysroot_candidates(),
+        sopts.unstable_opts.translate_lang.clone(),
+        sopts.unstable_opts.translate_additional_ftl.as_deref(),
+        sopts.unstable_opts.translate_directionality_markers,
+    ) {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            early_error(sopts.error_format, &format!("failed to load fluent bundle: {e}"));
+        }
+    };
+
     let mut sess = session::build_session(
         sopts,
         input_path,
+        bundle,
         descriptions,
         diagnostic_output,
         lint_caps,
@@ -102,7 +114,12 @@ pub fn create_session(
 
     let mut cfg = config::build_configuration(&sess, config::to_crate_config(cfg));
     add_configuration(&mut cfg, &mut sess, &*codegen_backend);
+
+    let mut check_cfg = config::to_crate_check_config(check_cfg);
+    check_cfg.fill_well_known();
+
     sess.parse_sess.config = cfg;
+    sess.parse_sess.check_config = check_cfg;
 
     (Lrc::new(sess), Lrc::new(codegen_backend))
 }
@@ -118,7 +135,7 @@ fn get_stack_size() -> Option<usize> {
 /// Like a `thread::Builder::spawn` followed by a `join()`, but avoids the need
 /// for `'static` bounds.
 #[cfg(not(parallel_compiler))]
-pub fn scoped_thread<F: FnOnce() -> R + Send, R: Send>(cfg: thread::Builder, f: F) -> R {
+fn scoped_thread<F: FnOnce() -> R + Send, R: Send>(cfg: thread::Builder, f: F) -> R {
     // SAFETY: join() is called immediately, so any closure captures are still
     // alive.
     match unsafe { cfg.spawn_unchecked(f) }.unwrap().join() {
@@ -128,10 +145,9 @@ pub fn scoped_thread<F: FnOnce() -> R + Send, R: Send>(cfg: thread::Builder, f: 
 }
 
 #[cfg(not(parallel_compiler))]
-pub fn setup_callbacks_and_run_in_thread_pool_with_globals<F: FnOnce() -> R + Send, R: Send>(
+pub fn run_in_thread_pool_with_globals<F: FnOnce() -> R + Send, R: Send>(
     edition: Edition,
     _threads: usize,
-    stderr: &Option<Arc<Mutex<Vec<u8>>>>,
     f: F,
 ) -> R {
     let mut cfg = thread::Builder::new().name("rustc".to_string());
@@ -140,14 +156,7 @@ pub fn setup_callbacks_and_run_in_thread_pool_with_globals<F: FnOnce() -> R + Se
         cfg = cfg.stack_size(size);
     }
 
-    crate::callbacks::setup_callbacks();
-
-    let main_handler = move || {
-        rustc_span::create_session_globals_then(edition, || {
-            io::set_output_capture(stderr.clone());
-            f()
-        })
-    };
+    let main_handler = move || rustc_span::create_session_globals_then(edition, f);
 
     scoped_thread(cfg, main_handler)
 }
@@ -159,31 +168,20 @@ pub fn setup_callbacks_and_run_in_thread_pool_with_globals<F: FnOnce() -> R + Se
 unsafe fn handle_deadlock() {
     let registry = rustc_rayon_core::Registry::current();
 
-    let context = tls::get_tlv();
-    assert!(context != 0);
-    rustc_data_structures::sync::assert_sync::<tls::ImplicitCtxt<'_, '_>>();
-    let icx: &tls::ImplicitCtxt<'_, '_> = &*(context as *const tls::ImplicitCtxt<'_, '_>);
-
-    let session_globals = rustc_span::with_session_globals(|sg| sg as *const _);
-    let session_globals = &*session_globals;
-    thread::spawn(move || {
-        tls::enter_context(icx, |_| {
-            rustc_span::set_session_globals_then(session_globals, || {
-                tls::with(|tcx| QueryCtxt::from_tcx(tcx).deadlock(&registry))
-            })
-        });
+    let query_map = tls::with(|tcx| {
+        QueryCtxt::from_tcx(tcx)
+            .try_collect_active_jobs()
+            .expect("active jobs shouldn't be locked in deadlock handler")
     });
+    thread::spawn(move || rustc_query_impl::deadlock(query_map, &registry));
 }
 
 #[cfg(parallel_compiler)]
-pub fn setup_callbacks_and_run_in_thread_pool_with_globals<F: FnOnce() -> R + Send, R: Send>(
+pub fn run_in_thread_pool_with_globals<F: FnOnce() -> R + Send, R: Send>(
     edition: Edition,
     threads: usize,
-    stderr: &Option<Arc<Mutex<Vec<u8>>>>,
     f: F,
 ) -> R {
-    crate::callbacks::setup_callbacks();
-
     let mut config = rayon::ThreadPoolBuilder::new()
         .thread_name(|_| "rustc".to_string())
         .acquire_thread_handler(jobserver::acquire_thread)
@@ -203,10 +201,7 @@ pub fn setup_callbacks_and_run_in_thread_pool_with_globals<F: FnOnce() -> R + Se
             // the thread local rustc uses. `session_globals` is captured and set
             // on the new threads.
             let main_handler = move |thread: rayon::ThreadBuilder| {
-                rustc_span::set_session_globals_then(session_globals, || {
-                    io::set_output_capture(stderr.clone());
-                    thread.run()
-                })
+                rustc_span::set_session_globals_then(session_globals, || thread.run())
             };
 
             config.build_scoped(main_handler, with_pool).unwrap()
@@ -241,16 +236,12 @@ pub fn get_codegen_backend(
     maybe_sysroot: &Option<PathBuf>,
     backend_name: Option<&str>,
 ) -> Box<dyn CodegenBackend> {
-    static LOAD: SyncOnceCell<unsafe fn() -> Box<dyn CodegenBackend>> = SyncOnceCell::new();
+    static LOAD: OnceLock<unsafe fn() -> Box<dyn CodegenBackend>> = OnceLock::new();
 
     let load = LOAD.get_or_init(|| {
-        #[cfg(feature = "llvm")]
-        const DEFAULT_CODEGEN_BACKEND: &str = "llvm";
+        let default_codegen_backend = option_env!("CFG_DEFAULT_CODEGEN_BACKEND").unwrap_or("llvm");
 
-        #[cfg(not(feature = "llvm"))]
-        const DEFAULT_CODEGEN_BACKEND: &str = "cranelift";
-
-        match backend_name.unwrap_or(DEFAULT_CODEGEN_BACKEND) {
+        match backend_name.unwrap_or(default_codegen_backend) {
             filename if filename.contains('.') => load_backend_from_dylib(filename.as_ref()),
             #[cfg(feature = "llvm")]
             "llvm" => rustc_codegen_llvm::LlvmCodegenBackend::new,
@@ -268,7 +259,7 @@ pub fn get_codegen_backend(
 // loading, so we leave the code here. It is potentially useful for other tools
 // that want to invoke the rustc binary while linking to rustc as well.
 pub fn rustc_path<'a>() -> Option<&'a Path> {
-    static RUSTC_PATH: SyncOnceCell<Option<PathBuf>> = SyncOnceCell::new();
+    static RUSTC_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
     const BIN_PATH: &str = env!("RUSTC_INSTALL_BINDIR");
 
@@ -343,6 +334,7 @@ fn sysroot_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     fn current_dll_path() -> Option<PathBuf> {
         use std::ffi::OsString;
+        use std::io;
         use std::os::windows::prelude::*;
         use std::ptr;
 
@@ -379,7 +371,7 @@ fn sysroot_candidates() -> Vec<PathBuf> {
     }
 }
 
-pub fn get_codegen_sysroot(maybe_sysroot: &Option<PathBuf>, backend_name: &str) -> MakeBackendFn {
+fn get_codegen_sysroot(maybe_sysroot: &Option<PathBuf>, backend_name: &str) -> MakeBackendFn {
     // For now we only allow this function to be called once as it'll dlopen a
     // few things, which seems to work best if we only do that once. In
     // general this assertion never trips due to the once guard in `get_codegen_backend`,
@@ -437,10 +429,7 @@ pub fn get_codegen_sysroot(maybe_sysroot: &Option<PathBuf>, backend_name: &str) 
     ];
     for entry in d.filter_map(|e| e.ok()) {
         let path = entry.path();
-        let filename = match path.file_name().and_then(|s| s.to_str()) {
-            Some(s) => s,
-            None => continue,
-        };
+        let Some(filename) = path.file_name().and_then(|s| s.to_str()) else { continue };
         if !(filename.starts_with(DLL_PREFIX) && filename.ends_with(DLL_SUFFIX)) {
             continue;
         }
@@ -569,6 +558,8 @@ pub fn collect_crate_types(session: &Session, attrs: &[ast::Attribute]) -> Vec<C
     // Only check command line flags if present. If no types are specified by
     // command line, then reuse the empty `base` Vec to hold the types that
     // will be found in crate attributes.
+    // JUSTIFICATION: before wrapper fn is available
+    #[cfg_attr(not(bootstrap), allow(rustc::bad_opt_access))]
     let mut base = session.opts.crate_types.clone();
     if base.is_empty() {
         base.extend(attr_types);
@@ -656,227 +647,6 @@ pub fn build_output_filenames(
                 sess.opts.cg.extra_filename.clone(),
                 sess.opts.output_types.clone(),
             )
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn non_durable_rename(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::rename(src, dst)
-}
-
-/// This function attempts to bypass the auto_da_alloc heuristic implemented by some filesystems
-/// such as btrfs and ext4. When renaming over a file that already exists then they will "helpfully"
-/// write back the source file before committing the rename in case a developer forgot some of
-/// the fsyncs in the open/write/fsync(file)/rename/fsync(dir) dance for atomic file updates.
-///
-/// To avoid triggering this heuristic we delete the destination first, if it exists.
-/// The cost of an extra syscall is much lower than getting descheduled for the sync IO.
-#[cfg(target_os = "linux")]
-pub fn non_durable_rename(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let _ = std::fs::remove_file(dst);
-    std::fs::rename(src, dst)
-}
-
-/// Replaces function bodies with `loop {}` (an infinite loop). This gets rid of
-/// all semantic errors in the body while still satisfying the return type,
-/// except in certain cases, see below for more.
-///
-/// This pass is known as `everybody_loops`. Very punny.
-///
-/// As of March 2021, `everybody_loops` is only used for the
-/// `-Z unpretty=everybody_loops` debugging option.
-///
-/// FIXME: Currently the `everybody_loops` transformation is not applied to:
-///  * `const fn`; support could be added, but hasn't. Originally `const fn`
-///    was skipped due to issue #43636 that `loop` was not supported for
-///    const evaluation.
-///  * `impl Trait`, due to issue #43869 that functions returning impl Trait cannot be diverging.
-///    Solving this may require `!` to implement every trait, which relies on the an even more
-///    ambitious form of the closed RFC #1637. See also [#34511].
-///
-/// [#34511]: https://github.com/rust-lang/rust/issues/34511#issuecomment-322340401
-pub struct ReplaceBodyWithLoop<'a, 'b> {
-    within_static_or_const: bool,
-    nested_blocks: Option<Vec<ast::Block>>,
-    resolver: &'a mut Resolver<'b>,
-}
-
-impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
-    pub fn new(resolver: &'a mut Resolver<'b>) -> ReplaceBodyWithLoop<'a, 'b> {
-        ReplaceBodyWithLoop { within_static_or_const: false, nested_blocks: None, resolver }
-    }
-
-    fn run<R, F: FnOnce(&mut Self) -> R>(&mut self, is_const: bool, action: F) -> R {
-        let old_const = mem::replace(&mut self.within_static_or_const, is_const);
-        let old_blocks = self.nested_blocks.take();
-        let ret = action(self);
-        self.within_static_or_const = old_const;
-        self.nested_blocks = old_blocks;
-        ret
-    }
-
-    fn should_ignore_fn(ret_ty: &ast::FnRetTy) -> bool {
-        if let ast::FnRetTy::Ty(ref ty) = ret_ty {
-            fn involves_impl_trait(ty: &ast::Ty) -> bool {
-                match ty.kind {
-                    ast::TyKind::ImplTrait(..) => true,
-                    ast::TyKind::Slice(ref subty)
-                    | ast::TyKind::Array(ref subty, _)
-                    | ast::TyKind::Ptr(ast::MutTy { ty: ref subty, .. })
-                    | ast::TyKind::Rptr(_, ast::MutTy { ty: ref subty, .. })
-                    | ast::TyKind::Paren(ref subty) => involves_impl_trait(subty),
-                    ast::TyKind::Tup(ref tys) => any_involves_impl_trait(tys.iter()),
-                    ast::TyKind::Path(_, ref path) => {
-                        path.segments.iter().any(|seg| match seg.args.as_deref() {
-                            None => false,
-                            Some(&ast::GenericArgs::AngleBracketed(ref data)) => {
-                                data.args.iter().any(|arg| match arg {
-                                    ast::AngleBracketedArg::Arg(arg) => match arg {
-                                        ast::GenericArg::Type(ty) => involves_impl_trait(ty),
-                                        ast::GenericArg::Lifetime(_)
-                                        | ast::GenericArg::Const(_) => false,
-                                    },
-                                    ast::AngleBracketedArg::Constraint(c) => match c.kind {
-                                        ast::AssocTyConstraintKind::Bound { .. } => true,
-                                        ast::AssocTyConstraintKind::Equality { ref ty } => {
-                                            involves_impl_trait(ty)
-                                        }
-                                    },
-                                })
-                            }
-                            Some(&ast::GenericArgs::Parenthesized(ref data)) => {
-                                any_involves_impl_trait(data.inputs.iter())
-                                    || ReplaceBodyWithLoop::should_ignore_fn(&data.output)
-                            }
-                        })
-                    }
-                    _ => false,
-                }
-            }
-
-            fn any_involves_impl_trait<'a, I: Iterator<Item = &'a P<ast::Ty>>>(mut it: I) -> bool {
-                it.any(|subty| involves_impl_trait(subty))
-            }
-
-            involves_impl_trait(ty)
-        } else {
-            false
-        }
-    }
-
-    fn is_sig_const(sig: &ast::FnSig) -> bool {
-        matches!(sig.header.constness, ast::Const::Yes(_))
-            || ReplaceBodyWithLoop::should_ignore_fn(&sig.decl.output)
-    }
-}
-
-impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
-    fn visit_item_kind(&mut self, i: &mut ast::ItemKind) {
-        let is_const = match i {
-            ast::ItemKind::Static(..) | ast::ItemKind::Const(..) => true,
-            ast::ItemKind::Fn(box ast::Fn { ref sig, .. }) => Self::is_sig_const(sig),
-            _ => false,
-        };
-        self.run(is_const, |s| noop_visit_item_kind(i, s))
-    }
-
-    fn flat_map_trait_item(&mut self, i: P<ast::AssocItem>) -> SmallVec<[P<ast::AssocItem>; 1]> {
-        let is_const = match i.kind {
-            ast::AssocItemKind::Const(..) => true,
-            ast::AssocItemKind::Fn(box ast::Fn { ref sig, .. }) => Self::is_sig_const(sig),
-            _ => false,
-        };
-        self.run(is_const, |s| noop_flat_map_assoc_item(i, s))
-    }
-
-    fn flat_map_impl_item(&mut self, i: P<ast::AssocItem>) -> SmallVec<[P<ast::AssocItem>; 1]> {
-        self.flat_map_trait_item(i)
-    }
-
-    fn visit_anon_const(&mut self, c: &mut ast::AnonConst) {
-        self.run(true, |s| noop_visit_anon_const(c, s))
-    }
-
-    fn visit_block(&mut self, b: &mut P<ast::Block>) {
-        fn stmt_to_block(
-            rules: ast::BlockCheckMode,
-            s: Option<ast::Stmt>,
-            resolver: &mut Resolver<'_>,
-        ) -> ast::Block {
-            ast::Block {
-                stmts: s.into_iter().collect(),
-                rules,
-                id: resolver.next_node_id(),
-                span: rustc_span::DUMMY_SP,
-                tokens: None,
-                could_be_bare_literal: false,
-            }
-        }
-
-        fn block_to_stmt(b: ast::Block, resolver: &mut Resolver<'_>) -> ast::Stmt {
-            let expr = P(ast::Expr {
-                id: resolver.next_node_id(),
-                kind: ast::ExprKind::Block(P(b), None),
-                span: rustc_span::DUMMY_SP,
-                attrs: AttrVec::new(),
-                tokens: None,
-            });
-
-            ast::Stmt {
-                id: resolver.next_node_id(),
-                kind: ast::StmtKind::Expr(expr),
-                span: rustc_span::DUMMY_SP,
-            }
-        }
-
-        let empty_block = stmt_to_block(BlockCheckMode::Default, None, self.resolver);
-        let loop_expr = P(ast::Expr {
-            kind: ast::ExprKind::Loop(P(empty_block), None),
-            id: self.resolver.next_node_id(),
-            span: rustc_span::DUMMY_SP,
-            attrs: AttrVec::new(),
-            tokens: None,
-        });
-
-        let loop_stmt = ast::Stmt {
-            id: self.resolver.next_node_id(),
-            span: rustc_span::DUMMY_SP,
-            kind: ast::StmtKind::Expr(loop_expr),
-        };
-
-        if self.within_static_or_const {
-            noop_visit_block(b, self)
-        } else {
-            visit_clobber(b.deref_mut(), |b| {
-                let mut stmts = vec![];
-                for s in b.stmts {
-                    let old_blocks = self.nested_blocks.replace(vec![]);
-
-                    stmts.extend(self.flat_map_stmt(s).into_iter().filter(|s| s.is_item()));
-
-                    // we put a Some in there earlier with that replace(), so this is valid
-                    let new_blocks = self.nested_blocks.take().unwrap();
-                    self.nested_blocks = old_blocks;
-                    stmts.extend(new_blocks.into_iter().map(|b| block_to_stmt(b, self.resolver)));
-                }
-
-                let mut new_block = ast::Block { stmts, ..b };
-
-                if let Some(old_blocks) = self.nested_blocks.as_mut() {
-                    //push our fresh block onto the cache and yield an empty block with `loop {}`
-                    if !new_block.stmts.is_empty() {
-                        old_blocks.push(new_block);
-                    }
-
-                    stmt_to_block(b.rules, Some(loop_stmt), &mut self.resolver)
-                } else {
-                    //push `loop {}` onto the end of our fresh block and yield that
-                    new_block.stmts.push(loop_stmt);
-
-                    new_block
-                }
-            })
         }
     }
 }

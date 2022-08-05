@@ -3,27 +3,25 @@ use super::place::PlaceRef;
 use super::{FunctionCx, LocalRef};
 
 use crate::base;
-use crate::common::{self, IntPredicate, RealPredicate};
+use crate::common::{self, IntPredicate};
 use crate::traits::*;
 use crate::MemFlags;
 
-use rustc_apfloat::{ieee, Float, Round, Status};
 use rustc_middle::mir;
+use rustc_middle::mir::Operand;
 use rustc_middle::ty::cast::{CastTy, IntTy};
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutOf};
 use rustc_middle::ty::{self, adjustment::PointerCast, Instance, Ty, TyCtxt};
 use rustc_span::source_map::{Span, DUMMY_SP};
-use rustc_target::abi::{Abi, Int, Variants};
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
+    #[instrument(level = "trace", skip(self, bx))]
     pub fn codegen_rvalue(
         &mut self,
         mut bx: Bx,
         dest: PlaceRef<'tcx, Bx::Value>,
         rvalue: &mir::Rvalue<'tcx>,
     ) -> Bx {
-        debug!("codegen_rvalue(dest.llval={:?}, rvalue={:?})", dest.llval, rvalue);
-
         match *rvalue {
             mir::Rvalue::Use(ref operand) => {
                 let cg_operand = self.codegen_operand(&mut bx, operand);
@@ -126,7 +124,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     // Do not generate stores and GEPis for zero-sized fields.
                     if !op.layout.is_zst() {
                         let field_index = active_field_index.unwrap_or(i);
-                        let field = dest.project_field(&mut bx, field_index);
+                        let field = if let mir::AggregateKind::Array(_) = **kind {
+                            let llindex = bx.cx().const_usize(field_index as u64);
+                            dest.project_index(&mut bx, llindex)
+                        } else {
+                            dest.project_field(&mut bx, field_index)
+                        };
                         op.val.store(&mut bx, field);
                     }
                 }
@@ -182,6 +185,13 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let cast = bx.cx().layout_of(self.monomorphize(mir_cast_ty));
 
                 let val = match *kind {
+                    mir::CastKind::PointerExposeAddress => {
+                        assert!(bx.cx().is_backend_immediate(cast));
+                        let llptr = operand.immediate();
+                        let llcast_ty = bx.cx().immediate_backend_type(cast);
+                        let lladdr = bx.ptrtoint(llptr, llcast_ty);
+                        OperandValue::Immediate(lladdr)
+                    }
                     mir::CastKind::Pointer(PointerCast::ReifyFnPointer) => {
                         match *operand.layout.ty.kind() {
                             ty::FnDef(def_id, substs) => {
@@ -207,6 +217,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                     substs,
                                     ty::ClosureKind::FnOnce,
                                 )
+                                .expect("failed to normalize and resolve closure during codegen")
                                 .polymorphize(bx.cx().tcx());
                                 OperandValue::Immediate(bx.cx().get_fn_addr(instance))
                             }
@@ -263,7 +274,11 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     mir::CastKind::Pointer(
                         PointerCast::MutToConstPointer | PointerCast::ArrayToPointer,
                     )
-                    | mir::CastKind::Misc => {
+                    | mir::CastKind::Misc
+                    // Since int2ptr can have arbitrary integer types as input (so we have to do
+                    // sign extension and all that), it is currently best handled in the same code
+                    // path as the other integer-to-X casts.
+                    | mir::CastKind::PointerFromExposedAddress => {
                         assert!(bx.cx().is_backend_immediate(cast));
                         let ll_t_out = bx.cx().immediate_backend_type(cast);
                         if operand.layout.abi.is_uninhabited() {
@@ -274,71 +289,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             CastTy::from_ty(operand.layout.ty).expect("bad input type for cast");
                         let r_t_out = CastTy::from_ty(cast.ty).expect("bad output type for cast");
                         let ll_t_in = bx.cx().immediate_backend_type(operand.layout);
-                        match operand.layout.variants {
-                            Variants::Single { index } => {
-                                if let Some(discr) =
-                                    operand.layout.ty.discriminant_for_variant(bx.tcx(), index)
-                                {
-                                    let discr_layout = bx.cx().layout_of(discr.ty);
-                                    let discr_t = bx.cx().immediate_backend_type(discr_layout);
-                                    let discr_val = bx.cx().const_uint_big(discr_t, discr.val);
-                                    let discr_val =
-                                        bx.intcast(discr_val, ll_t_out, discr.ty.is_signed());
-
-                                    return (
-                                        bx,
-                                        OperandRef {
-                                            val: OperandValue::Immediate(discr_val),
-                                            layout: cast,
-                                        },
-                                    );
-                                }
-                            }
-                            Variants::Multiple { .. } => {}
-                        }
                         let llval = operand.immediate();
 
-                        let mut signed = false;
-                        if let Abi::Scalar(scalar) = operand.layout.abi {
-                            if let Int(_, s) = scalar.value {
-                                // We use `i1` for bytes that are always `0` or `1`,
-                                // e.g., `#[repr(i8)] enum E { A, B }`, but we can't
-                                // let LLVM interpret the `i1` as signed, because
-                                // then `i1 1` (i.e., E::B) is effectively `i8 -1`.
-                                signed = !scalar.is_bool() && s;
-
-                                if !scalar.is_always_valid(bx.cx())
-                                    && scalar.valid_range.end >= scalar.valid_range.start
-                                {
-                                    // We want `table[e as usize ± k]` to not
-                                    // have bound checks, and this is the most
-                                    // convenient place to put the `assume`s.
-                                    if scalar.valid_range.start > 0 {
-                                        let enum_value_lower_bound = bx
-                                            .cx()
-                                            .const_uint_big(ll_t_in, scalar.valid_range.start);
-                                        let cmp_start = bx.icmp(
-                                            IntPredicate::IntUGE,
-                                            llval,
-                                            enum_value_lower_bound,
-                                        );
-                                        bx.assume(cmp_start);
-                                    }
-
-                                    let enum_value_upper_bound =
-                                        bx.cx().const_uint_big(ll_t_in, scalar.valid_range.end);
-                                    let cmp_end = bx.icmp(
-                                        IntPredicate::IntULE,
-                                        llval,
-                                        enum_value_upper_bound,
-                                    );
-                                    bx.assume(cmp_end);
-                                }
-                            }
-                        }
-
                         let newval = match (r_t_in, r_t_out) {
-                            (CastTy::Int(_), CastTy::Int(_)) => bx.intcast(llval, ll_t_out, signed),
+                            (CastTy::Int(i), CastTy::Int(_)) => {
+                                bx.intcast(llval, ll_t_out, i.is_signed())
+                            }
                             (CastTy::Float, CastTy::Float) => {
                                 let srcsz = bx.cx().float_width(ll_t_in);
                                 let dstsz = bx.cx().float_width(ll_t_out);
@@ -350,8 +306,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                     llval
                                 }
                             }
-                            (CastTy::Int(_), CastTy::Float) => {
-                                if signed {
+                            (CastTy::Int(i), CastTy::Float) => {
+                                if i.is_signed() {
                                     bx.sitofp(llval, ll_t_out)
                                 } else {
                                     bx.uitofp(llval, ll_t_out)
@@ -360,18 +316,16 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             (CastTy::Ptr(_) | CastTy::FnPtr, CastTy::Ptr(_)) => {
                                 bx.pointercast(llval, ll_t_out)
                             }
-                            (CastTy::Ptr(_) | CastTy::FnPtr, CastTy::Int(_)) => {
-                                bx.ptrtoint(llval, ll_t_out)
-                            }
-                            (CastTy::Int(_), CastTy::Ptr(_)) => {
-                                let usize_llval = bx.intcast(llval, bx.cx().type_isize(), signed);
+                            (CastTy::Int(i), CastTy::Ptr(_)) => {
+                                let usize_llval =
+                                    bx.intcast(llval, bx.cx().type_isize(), i.is_signed());
                                 bx.inttoptr(usize_llval, ll_t_out)
                             }
                             (CastTy::Float, CastTy::Int(IntTy::I)) => {
-                                cast_float_to_int(&mut bx, true, llval, ll_t_in, ll_t_out)
+                                bx.cast_float_to_int(true, llval, ll_t_out)
                             }
                             (CastTy::Float, CastTy::Int(_)) => {
-                                cast_float_to_int(&mut bx, false, llval, ll_t_in, ll_t_out)
+                                bx.cast_float_to_int(false, llval, ll_t_out)
                             }
                             _ => bug!("unsupported cast: {:?} to {:?}", operand.layout.ty, cast.ty),
                         };
@@ -391,6 +345,10 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 self.codegen_place_to_pointer(bx, place, mk_ref)
             }
 
+            mir::Rvalue::CopyForDeref(place) => {
+                let operand = self.codegen_operand(&mut bx, &Operand::Copy(place));
+                (bx, operand)
+            }
             mir::Rvalue::AddressOf(mutability, place) => {
                 let mk_ptr = move |tcx: TyCtxt<'tcx>, ty: Ty<'tcx>| {
                     tcx.mk_ptr(ty::TypeAndMut { ty, mutbl: mutability })
@@ -744,6 +702,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn rvalue_creates_operand(&self, rvalue: &mir::Rvalue<'tcx>, span: Span) -> bool {
         match *rvalue {
             mir::Rvalue::Ref(..) |
+            mir::Rvalue::CopyForDeref(..) |
             mir::Rvalue::AddressOf(..) |
             mir::Rvalue::Len(..) |
             mir::Rvalue::Cast(..) | // (*)
@@ -765,148 +724,5 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
 
         // (*) this is only true if the type is suitable
-    }
-}
-
-fn cast_float_to_int<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
-    bx: &mut Bx,
-    signed: bool,
-    x: Bx::Value,
-    float_ty: Bx::Type,
-    int_ty: Bx::Type,
-) -> Bx::Value {
-    if let Some(false) = bx.cx().sess().opts.debugging_opts.saturating_float_casts {
-        return if signed { bx.fptosi(x, int_ty) } else { bx.fptoui(x, int_ty) };
-    }
-
-    let try_sat_result = if signed { bx.fptosi_sat(x, int_ty) } else { bx.fptoui_sat(x, int_ty) };
-    if let Some(try_sat_result) = try_sat_result {
-        return try_sat_result;
-    }
-
-    let int_width = bx.cx().int_width(int_ty);
-    let float_width = bx.cx().float_width(float_ty);
-    // LLVM's fpto[su]i returns undef when the input x is infinite, NaN, or does not fit into the
-    // destination integer type after rounding towards zero. This `undef` value can cause UB in
-    // safe code (see issue #10184), so we implement a saturating conversion on top of it:
-    // Semantically, the mathematical value of the input is rounded towards zero to the next
-    // mathematical integer, and then the result is clamped into the range of the destination
-    // integer type. Positive and negative infinity are mapped to the maximum and minimum value of
-    // the destination integer type. NaN is mapped to 0.
-    //
-    // Define f_min and f_max as the largest and smallest (finite) floats that are exactly equal to
-    // a value representable in int_ty.
-    // They are exactly equal to int_ty::{MIN,MAX} if float_ty has enough significand bits.
-    // Otherwise, int_ty::MAX must be rounded towards zero, as it is one less than a power of two.
-    // int_ty::MIN, however, is either zero or a negative power of two and is thus exactly
-    // representable. Note that this only works if float_ty's exponent range is sufficiently large.
-    // f16 or 256 bit integers would break this property. Right now the smallest float type is f32
-    // with exponents ranging up to 127, which is barely enough for i128::MIN = -2^127.
-    // On the other hand, f_max works even if int_ty::MAX is greater than float_ty::MAX. Because
-    // we're rounding towards zero, we just get float_ty::MAX (which is always an integer).
-    // This already happens today with u128::MAX = 2^128 - 1 > f32::MAX.
-    let int_max = |signed: bool, int_width: u64| -> u128 {
-        let shift_amount = 128 - int_width;
-        if signed { i128::MAX as u128 >> shift_amount } else { u128::MAX >> shift_amount }
-    };
-    let int_min = |signed: bool, int_width: u64| -> i128 {
-        if signed { i128::MIN >> (128 - int_width) } else { 0 }
-    };
-
-    let compute_clamp_bounds_single = |signed: bool, int_width: u64| -> (u128, u128) {
-        let rounded_min = ieee::Single::from_i128_r(int_min(signed, int_width), Round::TowardZero);
-        assert_eq!(rounded_min.status, Status::OK);
-        let rounded_max = ieee::Single::from_u128_r(int_max(signed, int_width), Round::TowardZero);
-        assert!(rounded_max.value.is_finite());
-        (rounded_min.value.to_bits(), rounded_max.value.to_bits())
-    };
-    let compute_clamp_bounds_double = |signed: bool, int_width: u64| -> (u128, u128) {
-        let rounded_min = ieee::Double::from_i128_r(int_min(signed, int_width), Round::TowardZero);
-        assert_eq!(rounded_min.status, Status::OK);
-        let rounded_max = ieee::Double::from_u128_r(int_max(signed, int_width), Round::TowardZero);
-        assert!(rounded_max.value.is_finite());
-        (rounded_min.value.to_bits(), rounded_max.value.to_bits())
-    };
-
-    let mut float_bits_to_llval = |bits| {
-        let bits_llval = match float_width {
-            32 => bx.cx().const_u32(bits as u32),
-            64 => bx.cx().const_u64(bits as u64),
-            n => bug!("unsupported float width {}", n),
-        };
-        bx.bitcast(bits_llval, float_ty)
-    };
-    let (f_min, f_max) = match float_width {
-        32 => compute_clamp_bounds_single(signed, int_width),
-        64 => compute_clamp_bounds_double(signed, int_width),
-        n => bug!("unsupported float width {}", n),
-    };
-    let f_min = float_bits_to_llval(f_min);
-    let f_max = float_bits_to_llval(f_max);
-    // To implement saturation, we perform the following steps:
-    //
-    // 1. Cast x to an integer with fpto[su]i. This may result in undef.
-    // 2. Compare x to f_min and f_max, and use the comparison results to select:
-    //  a) int_ty::MIN if x < f_min or x is NaN
-    //  b) int_ty::MAX if x > f_max
-    //  c) the result of fpto[su]i otherwise
-    // 3. If x is NaN, return 0.0, otherwise return the result of step 2.
-    //
-    // This avoids resulting undef because values in range [f_min, f_max] by definition fit into the
-    // destination type. It creates an undef temporary, but *producing* undef is not UB. Our use of
-    // undef does not introduce any non-determinism either.
-    // More importantly, the above procedure correctly implements saturating conversion.
-    // Proof (sketch):
-    // If x is NaN, 0 is returned by definition.
-    // Otherwise, x is finite or infinite and thus can be compared with f_min and f_max.
-    // This yields three cases to consider:
-    // (1) if x in [f_min, f_max], the result of fpto[su]i is returned, which agrees with
-    //     saturating conversion for inputs in that range.
-    // (2) if x > f_max, then x is larger than int_ty::MAX. This holds even if f_max is rounded
-    //     (i.e., if f_max < int_ty::MAX) because in those cases, nextUp(f_max) is already larger
-    //     than int_ty::MAX. Because x is larger than int_ty::MAX, the return value of int_ty::MAX
-    //     is correct.
-    // (3) if x < f_min, then x is smaller than int_ty::MIN. As shown earlier, f_min exactly equals
-    //     int_ty::MIN and therefore the return value of int_ty::MIN is correct.
-    // QED.
-
-    let int_max = bx.cx().const_uint_big(int_ty, int_max(signed, int_width));
-    let int_min = bx.cx().const_uint_big(int_ty, int_min(signed, int_width) as u128);
-    let zero = bx.cx().const_uint(int_ty, 0);
-
-    // Step 1 ...
-    let fptosui_result = if signed { bx.fptosi(x, int_ty) } else { bx.fptoui(x, int_ty) };
-    let less_or_nan = bx.fcmp(RealPredicate::RealULT, x, f_min);
-    let greater = bx.fcmp(RealPredicate::RealOGT, x, f_max);
-
-    // Step 2: We use two comparisons and two selects, with %s1 being the
-    // result:
-    //     %less_or_nan = fcmp ult %x, %f_min
-    //     %greater = fcmp olt %x, %f_max
-    //     %s0 = select %less_or_nan, int_ty::MIN, %fptosi_result
-    //     %s1 = select %greater, int_ty::MAX, %s0
-    // Note that %less_or_nan uses an *unordered* comparison. This
-    // comparison is true if the operands are not comparable (i.e., if x is
-    // NaN). The unordered comparison ensures that s1 becomes int_ty::MIN if
-    // x is NaN.
-    //
-    // Performance note: Unordered comparison can be lowered to a "flipped"
-    // comparison and a negation, and the negation can be merged into the
-    // select. Therefore, it not necessarily any more expensive than an
-    // ordered ("normal") comparison. Whether these optimizations will be
-    // performed is ultimately up to the backend, but at least x86 does
-    // perform them.
-    let s0 = bx.select(less_or_nan, int_min, fptosui_result);
-    let s1 = bx.select(greater, int_max, s0);
-
-    // Step 3: NaN replacement.
-    // For unsigned types, the above step already yielded int_ty::MIN == 0 if x is NaN.
-    // Therefore we only need to execute this step for signed integer types.
-    if signed {
-        // LLVM has no isNaN predicate, so we use (x == x) instead
-        let cmp = bx.fcmp(RealPredicate::RealOEQ, x, x);
-        bx.select(cmp, s1, zero)
-    } else {
-        s1
     }
 }

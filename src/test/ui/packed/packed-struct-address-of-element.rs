@@ -1,7 +1,6 @@
 // run-pass
 #![allow(dead_code)]
 #![allow(misaligned_gc_pointers)]
-#![deny(unaligned_references)]
 #![feature(raw_ref_op)]
 // ignore-emscripten weird assertion?
 

@@ -55,19 +55,24 @@ This API is completely unstable and subject to change.
 
 */
 
+#![allow(rustc::potential_query_instability)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(bool_to_option)]
-#![feature(crate_visibility_modifier)]
+#![feature(box_patterns)]
+#![feature(control_flow_enum)]
+#![feature(drain_filter)]
+#![feature(hash_drain_filter)]
 #![feature(if_let_guard)]
 #![feature(is_sorted)]
+#![feature(iter_intersperse)]
+#![feature(label_break_value)]
+#![cfg_attr(bootstrap, feature(let_chains))]
 #![feature(let_else)]
 #![feature(min_specialization)]
-#![feature(nll)]
-#![feature(try_blocks)]
 #![feature(never_type)]
+#![feature(once_cell)]
 #![feature(slice_partition_dedup)]
-#![feature(control_flow_enum)]
-#![feature(hash_drain_filter)]
+#![feature(try_blocks)]
+#![feature(is_some_with)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -94,7 +99,7 @@ mod outlives;
 mod structured_errors;
 mod variance;
 
-use rustc_errors::{struct_span_err, ErrorReported};
+use rustc_errors::{struct_span_err, ErrorGuaranteed};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::{Node, CRATE_HIR_ID};
@@ -121,7 +126,7 @@ use bounds::Bounds;
 fn require_c_abi_if_c_variadic(tcx: TyCtxt<'_>, decl: &hir::FnDecl<'_>, abi: Abi, span: Span) {
     match (decl.c_variadic, abi) {
         // The function has the correct calling convention, or isn't a "C-variadic" function.
-        (false, _) | (true, Abi::C { .. }) | (true, Abi::Cdecl) => {}
+        (false, _) | (true, Abi::C { .. }) | (true, Abi::Cdecl { .. }) => {}
         // The function is a "C-variadic" function with an incorrect calling convention.
         (true, _) => {
             let mut err = struct_span_err!(
@@ -207,7 +212,7 @@ fn check_main_fn_ty(tcx: TyCtxt<'_>, main_def_id: DefId) {
         let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
         match tcx.hir().find(hir_id) {
             Some(Node::Item(hir::Item { kind: hir::ItemKind::Fn(_, ref generics, _), .. })) => {
-                generics.where_clause.span()
+                Some(generics.where_clause_span)
             }
             _ => {
                 span_bug!(tcx.def_span(def_id), "main has a non-function type");
@@ -219,15 +224,7 @@ fn check_main_fn_ty(tcx: TyCtxt<'_>, main_def_id: DefId) {
         if !def_id.is_local() {
             return None;
         }
-        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
-        match tcx.hir().find(hir_id) {
-            Some(Node::Item(hir::Item { span: item_span, .. })) => {
-                Some(tcx.sess.source_map().guess_head_span(*item_span))
-            }
-            _ => {
-                span_bug!(tcx.def_span(def_id), "main has a non-function type");
-            }
-        }
+        Some(tcx.def_span(def_id))
     }
 
     fn main_fn_return_type_span(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Span> {
@@ -256,7 +253,7 @@ fn check_main_fn_ty(tcx: TyCtxt<'_>, main_def_id: DefId) {
         let mut diag =
             struct_span_err!(tcx.sess, generics_param_span.unwrap_or(main_span), E0131, "{}", msg);
         if let Some(generics_param_span) = generics_param_span {
-            let label = "`main` cannot have generic parameters".to_string();
+            let label = "`main` cannot have generic parameters";
             diag.span_label(generics_param_span, label);
         }
         diag.emit();
@@ -293,17 +290,12 @@ fn check_main_fn_ty(tcx: TyCtxt<'_>, main_def_id: DefId) {
         error = true;
     }
 
-    for attr in tcx.get_attrs(main_def_id) {
-        if attr.has_name(sym::track_caller) {
-            tcx.sess
-                .struct_span_err(
-                    attr.span,
-                    "`main` function is not allowed to be `#[track_caller]`",
-                )
-                .span_label(main_span, "`main` function is not allowed to be `#[track_caller]`")
-                .emit();
-            error = true;
-        }
+    for attr in tcx.get_attrs(main_def_id, sym::track_caller) {
+        tcx.sess
+            .struct_span_err(attr.span, "`main` function is not allowed to be `#[track_caller]`")
+            .span_label(main_span, "`main` function is not allowed to be `#[track_caller]`")
+            .emit();
+        error = true;
     }
 
     if error {
@@ -316,8 +308,7 @@ fn check_main_fn_ty(tcx: TyCtxt<'_>, main_def_id: DefId) {
         let return_ty_span = main_fn_return_type_span(tcx, main_def_id).unwrap_or(main_span);
         if !return_ty.bound_vars().is_empty() {
             let msg = "`main` function return type is not allowed to have generic \
-                    parameters"
-                .to_owned();
+                    parameters";
             struct_span_err!(tcx.sess, return_ty_span, E0131, "{}", msg).emit();
             error = true;
         }
@@ -402,19 +393,22 @@ fn check_start_fn_ty(tcx: TyCtxt<'_>, start_def_id: DefId) {
                         .emit();
                         error = true;
                     }
-                    if let Some(sp) = generics.where_clause.span() {
+                    if generics.has_where_clause_predicates {
                         struct_span_err!(
                             tcx.sess,
-                            sp,
+                            generics.where_clause_span,
                             E0647,
                             "start function is not allowed to have a `where` clause"
                         )
-                        .span_label(sp, "start function cannot have a `where` clause")
+                        .span_label(
+                            generics.where_clause_span,
+                            "start function cannot have a `where` clause",
+                        )
                         .emit();
                         error = true;
                     }
                     if let hir::IsAsync::Async = sig.header.asyncness {
-                        let span = tcx.sess.source_map().guess_head_span(it.span);
+                        let span = tcx.def_span(it.def_id);
                         struct_span_err!(
                             tcx.sess,
                             span,
@@ -488,7 +482,7 @@ pub fn provide(providers: &mut Providers) {
     hir_wf_check::provide(providers);
 }
 
-pub fn check_crate(tcx: TyCtxt<'_>) -> Result<(), ErrorReported> {
+pub fn check_crate(tcx: TyCtxt<'_>) -> Result<(), ErrorGuaranteed> {
     let _prof_timer = tcx.sess.timer("type_check_crate");
 
     // this ensures that later parts of type checking can assume that items
@@ -507,11 +501,21 @@ pub fn check_crate(tcx: TyCtxt<'_>) -> Result<(), ErrorReported> {
     }
 
     tcx.sess.track_errors(|| {
-        tcx.sess.time("impl_wf_inference", || impl_wf_check::impl_wf_check(tcx));
+        tcx.sess.time("impl_wf_inference", || {
+            tcx.hir().for_each_module(|module| tcx.ensure().check_mod_impl_wf(module))
+        });
     })?;
 
     tcx.sess.track_errors(|| {
-        tcx.sess.time("coherence_checking", || coherence::check_coherence(tcx));
+        tcx.sess.time("coherence_checking", || {
+            for &trait_def_id in tcx.all_local_trait_impls(()).keys() {
+                tcx.ensure().coherent_trait(trait_def_id);
+            }
+
+            // these queries are executed for side-effects (error reporting):
+            tcx.ensure().crate_inherent_impls(());
+            tcx.ensure().crate_inherent_impls_overlap_check(());
+        });
     })?;
 
     if tcx.features().rustc_attrs {
@@ -521,7 +525,9 @@ pub fn check_crate(tcx: TyCtxt<'_>) -> Result<(), ErrorReported> {
     }
 
     tcx.sess.track_errors(|| {
-        tcx.sess.time("wf_checking", || check::check_wf_new(tcx));
+        tcx.sess.time("wf_checking", || {
+            tcx.hir().par_for_each_module(|module| tcx.ensure().check_mod_type_wf(module))
+        });
     })?;
 
     // NOTE: This is copy/pasted in librustdoc/core.rs and should be kept in sync.
@@ -534,7 +540,7 @@ pub fn check_crate(tcx: TyCtxt<'_>) -> Result<(), ErrorReported> {
     check_unused::check_crate(tcx);
     check_for_entry_fn(tcx);
 
-    if tcx.sess.err_count() == 0 { Ok(()) } else { Err(ErrorReported) }
+    if let Some(reported) = tcx.sess.has_errors() { Err(reported) } else { Ok(()) }
 }
 
 /// A quasi-deprecated helper used in rustdoc and clippy to get
@@ -543,8 +549,7 @@ pub fn hir_ty_to_ty<'tcx>(tcx: TyCtxt<'tcx>, hir_ty: &hir::Ty<'_>) -> Ty<'tcx> {
     // In case there are any projections, etc., find the "environment"
     // def-ID that will be used to determine the traits/predicates in
     // scope.  This is derived from the enclosing item-like thing.
-    let env_node_id = tcx.hir().get_parent_item(hir_ty.hir_id);
-    let env_def_id = tcx.hir().local_def_id(env_node_id);
+    let env_def_id = tcx.hir().get_parent_item(hir_ty.hir_id);
     let item_cx = self::collect::ItemCtxt::new(tcx, env_def_id.to_def_id());
     <dyn AstConv<'_>>::ast_ty_to_ty(&item_cx, hir_ty)
 }
@@ -557,8 +562,7 @@ pub fn hir_trait_to_predicates<'tcx>(
     // In case there are any projections, etc., find the "environment"
     // def-ID that will be used to determine the traits/predicates in
     // scope.  This is derived from the enclosing item-like thing.
-    let env_hir_id = tcx.hir().get_parent_item(hir_trait.hir_ref_id);
-    let env_def_id = tcx.hir().local_def_id(env_hir_id);
+    let env_def_id = tcx.hir().get_parent_item(hir_trait.hir_ref_id);
     let item_cx = self::collect::ItemCtxt::new(tcx, env_def_id.to_def_id());
     let mut bounds = Bounds::default();
     let _ = <dyn AstConv<'_>>::instantiate_poly_trait_ref(

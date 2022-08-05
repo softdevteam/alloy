@@ -1,14 +1,13 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_sugg};
+use clippy_utils::get_parent_expr;
 use clippy_utils::higher;
 use clippy_utils::source::snippet_block_with_applicability;
 use clippy_utils::ty::implements_trait;
-use clippy_utils::{differing_macro_contexts, get_parent_expr};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc_hir::{BlockCheckMode, Expr, ExprKind};
+use rustc_hir::intravisit::{walk_expr, Visitor};
+use rustc_hir::{BlockCheckMode, Closure, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::sym;
@@ -23,21 +22,17 @@ declare_clippy_lint! {
     ///
     /// ### Examples
     /// ```rust
-    /// // Bad
+    /// # fn somefunc() -> bool { true };
     /// if { true } { /* ... */ }
     ///
-    /// // Good
-    /// if true { /* ... */ }
+    /// if { let x = somefunc(); x } { /* ... */ }
     /// ```
     ///
-    /// // or
-    ///
+    /// Use instead:
     /// ```rust
     /// # fn somefunc() -> bool { true };
-    /// // Bad
-    /// if { let x = somefunc(); x } { /* ... */ }
+    /// if true { /* ... */ }
     ///
-    /// // Good
     /// let res = { let x = somefunc(); x };
     /// if res { /* ... */ }
     /// ```
@@ -55,14 +50,12 @@ struct ExVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for ExVisitor<'a, 'tcx> {
-    type Map = Map<'tcx>;
-
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        if let ExprKind::Closure(_, _, eid, _, _) = expr.kind {
+        if let ExprKind::Closure(&Closure { body, .. }) = expr.kind {
             // do not lint if the closure is called using an iterator (see #1141)
             if_chain! {
                 if let Some(parent) = get_parent_expr(self.cx, expr);
-                if let ExprKind::MethodCall(_, _, [self_arg, ..], _) = &parent.kind;
+                if let ExprKind::MethodCall(_, [self_arg, ..], _) = &parent.kind;
                 let caller = self.cx.typeck_results().expr_ty(self_arg);
                 if let Some(iter_id) = self.cx.tcx.get_diagnostic_item(sym::Iterator);
                 if implements_trait(self.cx, caller, iter_id, &[]);
@@ -71,7 +64,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ExVisitor<'a, 'tcx> {
                 }
             }
 
-            let body = self.cx.tcx.hir().body(eid);
+            let body = self.cx.tcx.hir().body(body);
             let ex = &body.value;
             if let ExprKind::Block(block, _) = ex.kind {
                 if !body.value.span.from_expansion() && !block.stmts.is_empty() {
@@ -81,9 +74,6 @@ impl<'a, 'tcx> Visitor<'tcx> for ExVisitor<'a, 'tcx> {
             }
         }
         walk_expr(self, expr);
-    }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
     }
 }
 
@@ -103,7 +93,7 @@ impl<'tcx> LateLintPass<'tcx> for BlocksInIfConditions {
                         if let Some(ex) = &block.expr {
                             // don't dig into the expression here, just suggest that they remove
                             // the block
-                            if expr.span.from_expansion() || differing_macro_contexts(expr.span, ex.span) {
+                            if expr.span.from_expansion() || ex.span.from_expansion() {
                                 return;
                             }
                             let mut applicability = Applicability::MachineApplicable;
@@ -128,7 +118,7 @@ impl<'tcx> LateLintPass<'tcx> for BlocksInIfConditions {
                         }
                     } else {
                         let span = block.expr.as_ref().map_or_else(|| block.stmts[0].span, |e| e.span);
-                        if span.from_expansion() || differing_macro_contexts(expr.span, span) {
+                        if span.from_expansion() || expr.span.from_expansion() {
                             return;
                         }
                         // move block higher

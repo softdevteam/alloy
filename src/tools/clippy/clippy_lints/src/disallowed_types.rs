@@ -14,6 +14,9 @@ declare_clippy_lint! {
     /// ### What it does
     /// Denies the configured types in clippy.toml.
     ///
+    /// Note: Even though this lint is warn-by-default, it will only trigger if
+    /// types are defined in the clippy.toml file.
+    ///
     /// ### Why is this bad?
     /// Some types are undesirable in certain contexts.
     ///
@@ -44,7 +47,7 @@ declare_clippy_lint! {
     /// ```
     #[clippy::version = "1.55.0"]
     pub DISALLOWED_TYPES,
-    nursery,
+    style,
     "use of disallowed types"
 }
 #[derive(Clone, Debug)]
@@ -93,7 +96,7 @@ impl<'tcx> LateLintPass<'tcx> for DisallowedTypes {
                 ),
             };
             let segs: Vec<_> = path.split("::").collect();
-            match clippy_utils::path_to_res(cx, &segs) {
+            match clippy_utils::def_path_res(cx, &segs) {
                 Res::Def(_, id) => {
                     self.def_ids.insert(id, reason);
                 },

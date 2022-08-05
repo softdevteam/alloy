@@ -146,6 +146,10 @@ pub use crate::repro as repro2;
 /// ### Top-doc Prose sub-sub-heading
 ///
 /// Text below sub-sub-heading
+///
+/// #### You know the drill.
+///
+/// More text.
 pub struct HeavilyDocumentedStruct {
     /// # Title for field
     /// ## Sub-heading for field
@@ -259,4 +263,33 @@ impl HeavilyDocumentedUnion {
 #[macro_export]
 macro_rules! heavily_documented_macro {
     () => {};
+}
+
+pub trait EmptyTrait1 {}
+pub trait EmptyTrait2 {}
+pub trait EmptyTrait3 {}
+
+pub struct HasEmptyTraits{}
+
+impl EmptyTrait1 for HasEmptyTraits {}
+impl EmptyTrait2 for HasEmptyTraits {}
+#[doc(cfg(feature = "some-feature"))]
+impl EmptyTrait3 for HasEmptyTraits {}
+
+mod macros;
+pub use macros::*;
+
+#[doc(alias = "AliasForTheStdReexport")]
+pub use ::std as TheStdReexport;
+
+pub mod details {
+    /// We check the appearance of the `<details>`/`<summary>` in here.
+    ///
+    /// ## Hello
+    ///
+    /// <details>
+    /// <summary><h4>I'm a summary</h4></summary>
+    /// <div>I'm the content of the details!</div>
+    /// </details>
+    pub struct Details;
 }

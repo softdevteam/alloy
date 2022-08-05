@@ -61,7 +61,7 @@ impl<'tcx> MirPass<'tcx> for SeparateConstSwitch {
 /// Returns the amount of blocks that were duplicated
 pub fn separate_const_switch(body: &mut Body<'_>) -> usize {
     let mut new_blocks: SmallVec<[(BasicBlock, BasicBlock); 6]> = SmallVec::new();
-    let predecessors = body.predecessors();
+    let predecessors = body.basic_blocks.predecessors();
     'block_iter: for (block_id, block) in body.basic_blocks().iter_enumerated() {
         if let TerminatorKind::SwitchInt {
             discr: Operand::Copy(switch_place) | Operand::Move(switch_place),
@@ -218,6 +218,7 @@ fn is_likely_const<'tcx>(mut tracked_place: Place<'tcx>, block: &BasicBlockData<
                         // These rvalues move the place to track
                         Rvalue::Cast(_, Operand::Copy(place) | Operand::Move(place), _)
                         | Rvalue::Use(Operand::Copy(place) | Operand::Move(place))
+                        | Rvalue::CopyForDeref(place)
                         | Rvalue::UnaryOp(_, Operand::Copy(place) | Operand::Move(place))
                         | Rvalue::Discriminant(place) => tracked_place = place,
                     }
@@ -239,13 +240,10 @@ fn is_likely_const<'tcx>(mut tracked_place: Place<'tcx>, block: &BasicBlockData<
                 }
             }
 
-            // If inline assembly is found, we probably should
-            // not try to analyze the code
-            StatementKind::LlvmInlineAsm(_) => return false,
-
             // These statements have no influence on the place
             // we are interested in
             StatementKind::FakeRead(_)
+            | StatementKind::Deinit(_)
             | StatementKind::StorageLive(_)
             | StatementKind::Retag(_, _)
             | StatementKind::AscribeUserType(_, _)
@@ -282,6 +280,7 @@ fn find_determining_place<'tcx>(
                     // that may be const in the predecessor
                     Rvalue::Use(Operand::Move(new) | Operand::Copy(new))
                     | Rvalue::UnaryOp(_, Operand::Copy(new) | Operand::Move(new))
+                    | Rvalue::CopyForDeref(new)
                     | Rvalue::Cast(_, Operand::Move(new) | Operand::Copy(new), _)
                     | Rvalue::Repeat(Operand::Move(new) | Operand::Copy(new), _)
                     | Rvalue::Discriminant(new)
@@ -312,6 +311,7 @@ fn find_determining_place<'tcx>(
             // These statements have no influence on the place
             // we are interested in
             StatementKind::FakeRead(_)
+            | StatementKind::Deinit(_)
             | StatementKind::StorageLive(_)
             | StatementKind::StorageDead(_)
             | StatementKind::Retag(_, _)
@@ -319,10 +319,6 @@ fn find_determining_place<'tcx>(
             | StatementKind::Coverage(_)
             | StatementKind::CopyNonOverlapping(_)
             | StatementKind::Nop => {}
-
-            // If inline assembly is found, we probably should
-            // not try to analyze the code
-            StatementKind::LlvmInlineAsm(_) => return None,
 
             // If the discriminant is set, it is always set
             // as a constant, so the job is already done.

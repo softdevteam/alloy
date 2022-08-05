@@ -2,7 +2,7 @@ note: no external requirements
   --> $DIR/escape-argument.rs:26:38
    |
 LL |         let mut closure = expect_sig(|p, y| *p = y);
-   |                                      ^^^^^^^^^^^^^
+   |                                      ^^^^^^
    |
    = note: defining type: test::{closure#0} with closure substs [
                i16,
@@ -32,7 +32,7 @@ LL |         closure(&mut p, &y);
 LL |
 LL |     }
    |     - `y` dropped here while still borrowed
-LL | 
+LL |
 LL |     deref(p);
    |           - borrow later used here
 

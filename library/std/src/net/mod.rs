@@ -14,10 +14,14 @@
 //! * [`ToSocketAddrs`] is a trait that used for generic address resolution when interacting
 //!   with networking objects like [`TcpListener`], [`TcpStream`] or [`UdpSocket`]
 //! * Other types are return or parameter types for various methods in this module
+//!
+//! Rust disables inheritance of socket objects to child processes by default when possible.  For
+//! example, through the use of the `CLOEXEC` flag in UNIX systems or the `HANDLE_FLAG_INHERIT`
+//! flag on Windows.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use crate::io::{self, Error, ErrorKind};
+use crate::io::{self, ErrorKind};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
@@ -25,6 +29,8 @@ pub use self::addr::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 pub use self::ip::{IpAddr, Ipv4Addr, Ipv6Addr, Ipv6MulticastScope};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::parser::AddrParseError;
+#[unstable(feature = "tcplistener_into_incoming", issue = "88339")]
+pub use self::tcp::IntoIncoming;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::tcp::{Incoming, TcpListener, TcpStream};
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -63,15 +69,6 @@ pub enum Shutdown {
     Both,
 }
 
-#[inline]
-const fn htons(i: u16) -> u16 {
-    i.to_be()
-}
-#[inline]
-const fn ntohs(i: u16) -> u16 {
-    u16::from_be(i)
-}
-
 fn each_addr<A: ToSocketAddrs, F, T>(addr: A, mut f: F) -> io::Result<T>
 where
     F: FnMut(io::Result<&SocketAddr>) -> io::Result<T>,
@@ -88,6 +85,6 @@ where
         }
     }
     Err(last_err.unwrap_or_else(|| {
-        Error::new_const(ErrorKind::InvalidInput, &"could not resolve to any addresses")
+        io::const_io_error!(ErrorKind::InvalidInput, "could not resolve to any addresses")
     }))
 }

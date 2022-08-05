@@ -8,8 +8,7 @@
 use rustc_errors::struct_span_err;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, TyCtxt, TypeFoldable};
-use rustc_span::Span;
+use rustc_middle::ty::{self, TyCtxt, TypeVisitable};
 use rustc_trait_selection::traits;
 
 mod builtin;
@@ -17,11 +16,6 @@ mod inherent_impls;
 mod inherent_impls_overlap;
 mod orphan;
 mod unsafety;
-
-/// Obtains the span of just the impl header of `impl_def_id`.
-fn impl_header_span(tcx: TyCtxt<'_>, impl_def_id: LocalDefId) -> Span {
-    tcx.sess.source_map().guess_head_span(tcx.span_of_impl(impl_def_id.to_def_id()).unwrap())
-}
 
 fn check_impl(tcx: TyCtxt<'_>, impl_def_id: LocalDefId, trait_ref: ty::TraitRef<'_>) {
     debug!(
@@ -47,56 +41,53 @@ fn enforce_trait_manually_implementable(
 ) {
     let did = Some(trait_def_id);
     let li = tcx.lang_items();
+    let impl_header_span = tcx.def_span(impl_def_id);
 
     // Disallow *all* explicit impls of `Pointee`, `DiscriminantKind`, `Sized` and `Unsize` for now.
     if did == li.pointee_trait() {
-        let span = impl_header_span(tcx, impl_def_id);
         struct_span_err!(
             tcx.sess,
-            span,
+            impl_header_span,
             E0322,
             "explicit impls for the `Pointee` trait are not permitted"
         )
-        .span_label(span, "impl of 'Pointee' not allowed")
+        .span_label(impl_header_span, "impl of `Pointee` not allowed")
         .emit();
         return;
     }
 
     if did == li.discriminant_kind_trait() {
-        let span = impl_header_span(tcx, impl_def_id);
         struct_span_err!(
             tcx.sess,
-            span,
+            impl_header_span,
             E0322,
             "explicit impls for the `DiscriminantKind` trait are not permitted"
         )
-        .span_label(span, "impl of 'DiscriminantKind' not allowed")
+        .span_label(impl_header_span, "impl of `DiscriminantKind` not allowed")
         .emit();
         return;
     }
 
     if did == li.sized_trait() {
-        let span = impl_header_span(tcx, impl_def_id);
         struct_span_err!(
             tcx.sess,
-            span,
+            impl_header_span,
             E0322,
             "explicit impls for the `Sized` trait are not permitted"
         )
-        .span_label(span, "impl of 'Sized' not allowed")
+        .span_label(impl_header_span, "impl of `Sized` not allowed")
         .emit();
         return;
     }
 
     if did == li.unsize_trait() {
-        let span = impl_header_span(tcx, impl_def_id);
         struct_span_err!(
             tcx.sess,
-            span,
+            impl_header_span,
             E0328,
             "explicit impls for the `Unsize` trait are not permitted"
         )
-        .span_label(span, "impl of `Unsize` not allowed")
+        .span_label(impl_header_span, "impl of `Unsize` not allowed")
         .emit();
         return;
     }
@@ -110,10 +101,9 @@ fn enforce_trait_manually_implementable(
         tcx.trait_def(trait_def_id).specialization_kind
     {
         if !tcx.features().specialization && !tcx.features().min_specialization {
-            let span = impl_header_span(tcx, impl_def_id);
             tcx.sess
                 .struct_span_err(
-                    span,
+                    impl_header_span,
                     "implementing `rustc_specialization_trait` traits is unstable",
                 )
                 .help("add `#![feature(min_specialization)]` to the crate attributes to enable")
@@ -121,28 +111,6 @@ fn enforce_trait_manually_implementable(
             return;
         }
     }
-
-    let trait_name = if did == li.fn_trait() {
-        "Fn"
-    } else if did == li.fn_mut_trait() {
-        "FnMut"
-    } else if did == li.fn_once_trait() {
-        "FnOnce"
-    } else {
-        return; // everything OK
-    };
-
-    let span = impl_header_span(tcx, impl_def_id);
-    struct_span_err!(
-        tcx.sess,
-        span,
-        E0183,
-        "manual implementations of `{}` are experimental",
-        trait_name
-    )
-    .span_label(span, format!("manual implementations of `{}` are experimental", trait_name))
-    .help("add `#![feature(unboxed_closures)]` to the crate attributes to enable")
-    .emit();
 }
 
 /// We allow impls of marker traits to overlap, so they can't override impls
@@ -160,23 +128,29 @@ fn enforce_empty_impls_for_marker_traits(
         return;
     }
 
-    let span = impl_header_span(tcx, impl_def_id);
-    struct_span_err!(tcx.sess, span, E0715, "impls for marker traits cannot contain items").emit();
+    struct_span_err!(
+        tcx.sess,
+        tcx.def_span(impl_def_id),
+        E0715,
+        "impls for marker traits cannot contain items"
+    )
+    .emit();
 }
 
 pub fn provide(providers: &mut Providers) {
     use self::builtin::coerce_unsized_info;
-    use self::inherent_impls::{crate_inherent_impls, inherent_impls};
+    use self::inherent_impls::{crate_incoherent_impls, crate_inherent_impls, inherent_impls};
     use self::inherent_impls_overlap::crate_inherent_impls_overlap_check;
-    use self::orphan::orphan_check_crate;
+    use self::orphan::orphan_check_impl;
 
     *providers = Providers {
         coherent_trait,
         crate_inherent_impls,
+        crate_incoherent_impls,
         inherent_impls,
         crate_inherent_impls_overlap_check,
         coerce_unsized_info,
-        orphan_check_crate,
+        orphan_check_impl,
         ..*providers
     };
 }
@@ -192,21 +166,12 @@ fn coherent_trait(tcx: TyCtxt<'_>, def_id: DefId) {
 
         check_impl(tcx, impl_def_id, trait_ref);
         check_object_overlap(tcx, impl_def_id, trait_ref);
+
+        tcx.sess.time("unsafety_checking", || unsafety::check_item(tcx, impl_def_id));
+        tcx.sess.time("orphan_checking", || tcx.ensure().orphan_check_impl(impl_def_id));
     }
+
     builtin::check_trait(tcx, def_id);
-}
-
-pub fn check_coherence(tcx: TyCtxt<'_>) {
-    tcx.sess.time("unsafety_checking", || unsafety::check(tcx));
-    tcx.ensure().orphan_check_crate(());
-
-    for &trait_def_id in tcx.all_local_trait_impls(()).keys() {
-        tcx.ensure().coherent_trait(trait_def_id);
-    }
-
-    // these queries are executed for side-effects (error reporting):
-    tcx.ensure().crate_inherent_impls(());
-    tcx.ensure().crate_inherent_impls_overlap_check(());
 }
 
 /// Checks whether an impl overlaps with the automatic `impl Trait for dyn Trait`.
@@ -247,7 +212,7 @@ fn check_object_overlap<'tcx>(
             } else {
                 let mut supertrait_def_ids = traits::supertrait_def_ids(tcx, component_def_id);
                 if supertrait_def_ids.any(|d| d == trait_def_id) {
-                    let span = impl_header_span(tcx, impl_def_id);
+                    let span = tcx.def_span(impl_def_id);
                     struct_span_err!(
                         tcx.sess,
                         span,

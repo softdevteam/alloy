@@ -2,11 +2,14 @@
 //!
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/hir.html
 
+#![feature(associated_type_defaults)]
+#![feature(closure_track_caller)]
 #![feature(const_btree_new)]
-#![feature(crate_visibility_modifier)]
+#![feature(let_else)]
 #![feature(once_cell)]
 #![feature(min_specialization)]
 #![feature(never_type)]
+#![feature(rustc_attrs)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -14,6 +17,8 @@ extern crate rustc_macros;
 
 #[macro_use]
 extern crate rustc_data_structures;
+
+extern crate self as rustc_hir;
 
 mod arena;
 pub mod def;
@@ -24,7 +29,6 @@ pub use rustc_span::def_id;
 mod hir;
 pub mod hir_id;
 pub mod intravisit;
-pub mod itemlikevisit;
 pub mod lang_items;
 pub mod pat_util;
 mod stable_hash_impls;
@@ -39,3 +43,5 @@ pub use hir_id::*;
 pub use lang_items::{LangItem, LanguageItems};
 pub use stable_hash_impls::HashStableContext;
 pub use target::{MethodKind, Target};
+
+arena_types!(rustc_arena::declare_arena);

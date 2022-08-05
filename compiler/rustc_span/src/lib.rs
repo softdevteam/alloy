@@ -15,11 +15,11 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(array_windows)]
-#![feature(crate_visibility_modifier)]
+#![feature(let_else)]
 #![feature(if_let_guard)]
 #![feature(negative_impls)]
-#![feature(nll)]
 #![feature(min_specialization)]
+#![feature(rustc_attrs)]
 
 #[macro_use]
 extern crate rustc_macros;
@@ -55,6 +55,8 @@ pub use symbol::{sym, Symbol};
 mod analyze_source_file;
 pub mod fatal_error;
 
+pub mod profiling;
+
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::{Lock, Lrc};
 
@@ -65,9 +67,10 @@ use std::hash::Hash;
 use std::ops::{Add, Range, Sub};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
+use md5::Digest;
 use md5::Md5;
-use sha1::Digest;
 use sha1::Sha1;
 use sha2::Sha256;
 
@@ -190,25 +193,21 @@ impl Hash for RealFileName {
 // This is functionally identical to #[derive(Encodable)], with the exception of
 // an added assert statement
 impl<S: Encoder> Encodable<S> for RealFileName {
-    fn encode(&self, encoder: &mut S) -> Result<(), S::Error> {
-        encoder.emit_enum(|encoder| match *self {
-            RealFileName::LocalPath(ref local_path) => {
-                encoder.emit_enum_variant("LocalPath", 0, 1, |encoder| {
-                    encoder.emit_enum_variant_arg(true, |encoder| local_path.encode(encoder))?;
-                    Ok(())
-                })
-            }
+    fn encode(&self, encoder: &mut S) {
+        match *self {
+            RealFileName::LocalPath(ref local_path) => encoder.emit_enum_variant(0, |encoder| {
+                local_path.encode(encoder);
+            }),
 
             RealFileName::Remapped { ref local_path, ref virtual_name } => encoder
-                .emit_enum_variant("Remapped", 1, 2, |encoder| {
+                .emit_enum_variant(1, |encoder| {
                     // For privacy and build reproducibility, we must not embed host-dependant path in artifacts
                     // if they have been remapped by --remap-path-prefix
                     assert!(local_path.is_none());
-                    encoder.emit_enum_variant_arg(true, |encoder| local_path.encode(encoder))?;
-                    encoder.emit_enum_variant_arg(false, |encoder| virtual_name.encode(encoder))?;
-                    Ok(())
+                    local_path.encode(encoder);
+                    virtual_name.encode(encoder);
                 }),
-        })
+        }
     }
 }
 
@@ -329,11 +328,11 @@ impl fmt::Display for FileNameDisplay<'_> {
     }
 }
 
-impl FileNameDisplay<'_> {
-    pub fn to_string_lossy(&self) -> Cow<'_, str> {
+impl<'a> FileNameDisplay<'a> {
+    pub fn to_string_lossy(&self) -> Cow<'a, str> {
         match self.inner {
             FileName::Real(ref inner) => inner.to_string_lossy(self.display_pref),
-            _ => Cow::from(format!("{}", self)),
+            _ => Cow::from(self.to_string()),
         }
     }
 }
@@ -516,20 +515,6 @@ impl Ord for Span {
     }
 }
 
-/// A collection of `Span`s.
-///
-/// Spans have two orthogonal attributes:
-///
-/// - They can be *primary spans*. In this case they are the locus of
-///   the error, and would be rendered with `^^^`.
-/// - They can have a *label*. In this case, the label is written next
-///   to the mark in the snippet when we render.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Encodable, Decodable)]
-pub struct MultiSpan {
-    primary_spans: Vec<Span>,
-    span_labels: Vec<(Span, String)>,
-}
-
 impl Span {
     #[inline]
     pub fn lo(self) -> BytePos {
@@ -550,6 +535,9 @@ impl Span {
     #[inline]
     pub fn ctxt(self) -> SyntaxContext {
         self.data_untracked().ctxt
+    }
+    pub fn eq_ctxt(self, other: Span) -> bool {
+        self.data_untracked().ctxt == other.data_untracked().ctxt
     }
     #[inline]
     pub fn with_ctxt(self, ctxt: SyntaxContext) -> Span {
@@ -611,7 +599,7 @@ impl Span {
 
     #[inline]
     /// Returns `true` if `hi == lo`.
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(self) -> bool {
         let span = self.data_untracked();
         span.hi == span.lo
     }
@@ -639,7 +627,7 @@ impl Span {
     ///
     /// Use this instead of `==` when either span could be generated code,
     /// and you only care that they point to the same bytes of source text.
-    pub fn source_equal(&self, other: &Span) -> bool {
+    pub fn source_equal(self, other: Span) -> bool {
         let span = self.data();
         let other = other.data();
         span.lo == other.lo && span.hi == other.hi
@@ -680,18 +668,23 @@ impl Span {
     }
 
     #[inline]
-    pub fn rust_2015(&self) -> bool {
+    pub fn rust_2015(self) -> bool {
         self.edition() == edition::Edition::Edition2015
     }
 
     #[inline]
-    pub fn rust_2018(&self) -> bool {
+    pub fn rust_2018(self) -> bool {
         self.edition() >= edition::Edition::Edition2018
     }
 
     #[inline]
-    pub fn rust_2021(&self) -> bool {
+    pub fn rust_2021(self) -> bool {
         self.edition() >= edition::Edition::Edition2021
+    }
+
+    #[inline]
+    pub fn rust_2024(self) -> bool {
+        self.edition() >= edition::Edition::Edition2024
     }
 
     /// Returns the source callee.
@@ -711,7 +704,7 @@ impl Span {
     /// Checks if a span is "internal" to a macro in which `#[unstable]`
     /// items can be used (that is, a macro marked with
     /// `#[allow_internal_unstable]`).
-    pub fn allows_unstable(&self, feature: Symbol) -> bool {
+    pub fn allows_unstable(self, feature: Symbol) -> bool {
         self.ctxt()
             .outer_expn_data()
             .allow_internal_unstable
@@ -719,7 +712,7 @@ impl Span {
     }
 
     /// Checks if this span arises from a compiler desugaring of kind `kind`.
-    pub fn is_desugaring(&self, kind: DesugaringKind) -> bool {
+    pub fn is_desugaring(self, kind: DesugaringKind) -> bool {
         match self.ctxt().outer_expn_data().kind {
             ExpnKind::Desugaring(k) => k == kind,
             _ => false,
@@ -728,7 +721,7 @@ impl Span {
 
     /// Returns the compiler desugaring that created this span, or `None`
     /// if this span is not from a desugaring.
-    pub fn desugaring_kind(&self) -> Option<DesugaringKind> {
+    pub fn desugaring_kind(self) -> Option<DesugaringKind> {
         match self.ctxt().outer_expn_data().kind {
             ExpnKind::Desugaring(k) => Some(k),
             _ => None,
@@ -738,7 +731,7 @@ impl Span {
     /// Checks if a span is "internal" to a macro in which `unsafe`
     /// can be used without triggering the `unsafe_code` lint.
     //  (that is, a macro marked with `#[allow_internal_unsafe]`).
-    pub fn allows_unsafe(&self) -> bool {
+    pub fn allows_unsafe(self) -> bool {
         self.ctxt().outer_expn_data().allow_internal_unsafe
     }
 
@@ -751,7 +744,7 @@ impl Span {
                     return None;
                 }
 
-                let is_recursive = expn_data.call_site.source_equal(&prev_span);
+                let is_recursive = expn_data.call_site.source_equal(prev_span);
 
                 prev_span = self;
                 self = expn_data.call_site;
@@ -865,13 +858,13 @@ impl Span {
 
     /// Equivalent of `Span::call_site` from the proc macro API,
     /// except that the location is taken from the `self` span.
-    pub fn with_call_site_ctxt(&self, expn_id: ExpnId) -> Span {
+    pub fn with_call_site_ctxt(self, expn_id: ExpnId) -> Span {
         self.with_ctxt_from_mark(expn_id, Transparency::Transparent)
     }
 
     /// Equivalent of `Span::mixed_site` from the proc macro API,
     /// except that the location is taken from the `self` span.
-    pub fn with_mixed_site_ctxt(&self, expn_id: ExpnId) -> Span {
+    pub fn with_mixed_site_ctxt(self, expn_id: ExpnId) -> Span {
         self.with_ctxt_from_mark(expn_id, Transparency::SemiTransparent)
     }
 
@@ -945,20 +938,6 @@ impl Span {
     }
 }
 
-/// A span together with some additional data.
-#[derive(Clone, Debug)]
-pub struct SpanLabel {
-    /// The span we are going to include in the final snippet.
-    pub span: Span,
-
-    /// Is this a primary span? This is the "locus" of the message,
-    /// and is indicated with a `^^^^` underline, versus `----`.
-    pub is_primary: bool,
-
-    /// What label should we attach to this span (if any)?
-    pub label: Option<String>,
-}
-
 impl Default for Span {
     fn default() -> Self {
         DUMMY_SP
@@ -966,22 +945,18 @@ impl Default for Span {
 }
 
 impl<E: Encoder> Encodable<E> for Span {
-    default fn encode(&self, s: &mut E) -> Result<(), E::Error> {
+    default fn encode(&self, s: &mut E) {
         let span = self.data();
-        s.emit_struct(false, |s| {
-            s.emit_struct_field("lo", true, |s| span.lo.encode(s))?;
-            s.emit_struct_field("hi", false, |s| span.hi.encode(s))
-        })
+        span.lo.encode(s);
+        span.hi.encode(s);
     }
 }
 impl<D: Decoder> Decodable<D> for Span {
-    default fn decode(s: &mut D) -> Result<Span, D::Error> {
-        s.read_struct(|d| {
-            let lo = d.read_struct_field("lo", Decodable::decode)?;
-            let hi = d.read_struct_field("hi", Decodable::decode)?;
+    default fn decode(s: &mut D) -> Span {
+        let lo = Decodable::decode(s);
+        let hi = Decodable::decode(s);
 
-            Ok(Span::new(lo, hi, SyntaxContext::root(), None))
-        })
+        Span::new(lo, hi, SyntaxContext::root(), None)
     }
 }
 
@@ -1011,146 +986,25 @@ pub fn with_source_map<T, F: FnOnce() -> T>(source_map: Lrc<SourceMap>, f: F) ->
     f()
 }
 
-pub fn debug_with_source_map(
-    span: Span,
-    f: &mut fmt::Formatter<'_>,
-    source_map: &SourceMap,
-) -> fmt::Result {
-    write!(f, "{} ({:?})", source_map.span_to_diagnostic_string(span), span.ctxt())
-}
-
-pub fn default_span_debug(span: Span, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    with_session_globals(|session_globals| {
-        if let Some(source_map) = &*session_globals.source_map.borrow() {
-            debug_with_source_map(span, f, source_map)
-        } else {
-            f.debug_struct("Span")
-                .field("lo", &span.lo())
-                .field("hi", &span.hi())
-                .field("ctxt", &span.ctxt())
-                .finish()
-        }
-    })
-}
-
 impl fmt::Debug for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        (*SPAN_DEBUG)(*self, f)
+        with_session_globals(|session_globals| {
+            if let Some(source_map) = &*session_globals.source_map.borrow() {
+                write!(f, "{} ({:?})", source_map.span_to_diagnostic_string(*self), self.ctxt())
+            } else {
+                f.debug_struct("Span")
+                    .field("lo", &self.lo())
+                    .field("hi", &self.hi())
+                    .field("ctxt", &self.ctxt())
+                    .finish()
+            }
+        })
     }
 }
 
 impl fmt::Debug for SpanData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        (*SPAN_DEBUG)(Span::new(self.lo, self.hi, self.ctxt, self.parent), f)
-    }
-}
-
-impl MultiSpan {
-    #[inline]
-    pub fn new() -> MultiSpan {
-        MultiSpan { primary_spans: vec![], span_labels: vec![] }
-    }
-
-    pub fn from_span(primary_span: Span) -> MultiSpan {
-        MultiSpan { primary_spans: vec![primary_span], span_labels: vec![] }
-    }
-
-    pub fn from_spans(mut vec: Vec<Span>) -> MultiSpan {
-        vec.sort();
-        MultiSpan { primary_spans: vec, span_labels: vec![] }
-    }
-
-    pub fn push_span_label(&mut self, span: Span, label: String) {
-        self.span_labels.push((span, label));
-    }
-
-    /// Selects the first primary span (if any).
-    pub fn primary_span(&self) -> Option<Span> {
-        self.primary_spans.first().cloned()
-    }
-
-    /// Returns all primary spans.
-    pub fn primary_spans(&self) -> &[Span] {
-        &self.primary_spans
-    }
-
-    /// Returns `true` if any of the primary spans are displayable.
-    pub fn has_primary_spans(&self) -> bool {
-        self.primary_spans.iter().any(|sp| !sp.is_dummy())
-    }
-
-    /// Returns `true` if this contains only a dummy primary span with any hygienic context.
-    pub fn is_dummy(&self) -> bool {
-        let mut is_dummy = true;
-        for span in &self.primary_spans {
-            if !span.is_dummy() {
-                is_dummy = false;
-            }
-        }
-        is_dummy
-    }
-
-    /// Replaces all occurrences of one Span with another. Used to move `Span`s in areas that don't
-    /// display well (like std macros). Returns whether replacements occurred.
-    pub fn replace(&mut self, before: Span, after: Span) -> bool {
-        let mut replacements_occurred = false;
-        for primary_span in &mut self.primary_spans {
-            if *primary_span == before {
-                *primary_span = after;
-                replacements_occurred = true;
-            }
-        }
-        for span_label in &mut self.span_labels {
-            if span_label.0 == before {
-                span_label.0 = after;
-                replacements_occurred = true;
-            }
-        }
-        replacements_occurred
-    }
-
-    /// Returns the strings to highlight. We always ensure that there
-    /// is an entry for each of the primary spans -- for each primary
-    /// span `P`, if there is at least one label with span `P`, we return
-    /// those labels (marked as primary). But otherwise we return
-    /// `SpanLabel` instances with empty labels.
-    pub fn span_labels(&self) -> Vec<SpanLabel> {
-        let is_primary = |span| self.primary_spans.contains(&span);
-
-        let mut span_labels = self
-            .span_labels
-            .iter()
-            .map(|&(span, ref label)| SpanLabel {
-                span,
-                is_primary: is_primary(span),
-                label: Some(label.clone()),
-            })
-            .collect::<Vec<_>>();
-
-        for &span in &self.primary_spans {
-            if !span_labels.iter().any(|sl| sl.span == span) {
-                span_labels.push(SpanLabel { span, is_primary: true, label: None });
-            }
-        }
-
-        span_labels
-    }
-
-    /// Returns `true` if any of the span labels is displayable.
-    pub fn has_span_labels(&self) -> bool {
-        self.span_labels.iter().any(|(sp, _)| !sp.is_dummy())
-    }
-}
-
-impl From<Span> for MultiSpan {
-    fn from(span: Span) -> MultiSpan {
-        MultiSpan::from_span(span)
-    }
-}
-
-impl From<Vec<Span>> for MultiSpan {
-    fn from(spans: Vec<Span>) -> MultiSpan {
-        MultiSpan::from_spans(spans)
+        fmt::Debug::fmt(&Span::new(self.lo, self.hi, self.ctxt, self.parent), f)
     }
 }
 
@@ -1272,6 +1126,7 @@ impl ExternalSource {
 pub struct OffsetOverflowError;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Encodable, Decodable)]
+#[derive(HashStable_Generic)]
 pub enum SourceFileHashAlgorithm {
     Md5,
     Sha1,
@@ -1291,10 +1146,8 @@ impl FromStr for SourceFileHashAlgorithm {
     }
 }
 
-rustc_data_structures::impl_stable_hash_via_hash!(SourceFileHashAlgorithm);
-
 /// The hash of the on-disk source file used for debug info.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 #[derive(HashStable_Generic, Encodable, Decodable)]
 pub struct SourceFileHash {
     pub kind: SourceFileHashAlgorithm,
@@ -1341,6 +1194,75 @@ impl SourceFileHash {
     }
 }
 
+#[derive(HashStable_Generic)]
+#[derive(Copy, PartialEq, PartialOrd, Clone, Ord, Eq, Hash, Debug, Encodable, Decodable)]
+pub enum DebuggerVisualizerType {
+    Natvis,
+    GdbPrettyPrinter,
+}
+
+/// A single debugger visualizer file.
+#[derive(HashStable_Generic)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Encodable, Decodable)]
+pub struct DebuggerVisualizerFile {
+    /// The complete debugger visualizer source.
+    pub src: Arc<[u8]>,
+    /// Indicates which visualizer type this targets.
+    pub visualizer_type: DebuggerVisualizerType,
+}
+
+impl DebuggerVisualizerFile {
+    pub fn new(src: Arc<[u8]>, visualizer_type: DebuggerVisualizerType) -> Self {
+        DebuggerVisualizerFile { src, visualizer_type }
+    }
+}
+
+#[derive(Clone)]
+pub enum SourceFileLines {
+    /// The source file lines, in decoded (random-access) form.
+    Lines(Vec<BytePos>),
+
+    /// The source file lines, in undecoded difference list form.
+    Diffs(SourceFileDiffs),
+}
+
+impl SourceFileLines {
+    pub fn is_lines(&self) -> bool {
+        matches!(self, SourceFileLines::Lines(_))
+    }
+}
+
+/// The source file lines in difference list form. This matches the form
+/// used within metadata, which saves space by exploiting the fact that the
+/// lines list is sorted and individual lines are usually not that long.
+///
+/// We read it directly from metadata and only decode it into `Lines` form
+/// when necessary. This is a significant performance win, especially for
+/// small crates where very little of `std`'s metadata is used.
+#[derive(Clone)]
+pub struct SourceFileDiffs {
+    /// Position of the first line. Note that this is always encoded as a
+    /// `BytePos` because it is often much larger than any of the
+    /// differences.
+    line_start: BytePos,
+
+    /// Always 1, 2, or 4. Always as small as possible, while being big
+    /// enough to hold the length of the longest line in the source file.
+    /// The 1 case is by far the most common.
+    bytes_per_diff: usize,
+
+    /// The number of diffs encoded in `raw_diffs`. Always one less than
+    /// the number of lines in the source file.
+    num_diffs: usize,
+
+    /// The diffs in "raw" form. Each segment of `bytes_per_diff` length
+    /// encodes one little-endian diff. Note that they aren't LEB128
+    /// encoded. This makes for much faster decoding. Besides, the
+    /// bytes_per_diff==1 case is by far the most common, and LEB128
+    /// encoding has no effect on that case.
+    raw_diffs: Vec<u8>,
+}
+
 /// A single source in the [`SourceMap`].
 #[derive(Clone)]
 pub struct SourceFile {
@@ -1360,7 +1282,7 @@ pub struct SourceFile {
     /// The end position of this source in the `SourceMap`.
     pub end_pos: BytePos,
     /// Locations of lines beginnings in the source code.
-    pub lines: Vec<BytePos>,
+    pub lines: Lock<SourceFileLines>,
     /// Locations of multi-byte characters in the source code.
     pub multibyte_chars: Vec<MultiByteChar>,
     /// Width of characters that are not narrow in the source code.
@@ -1374,140 +1296,129 @@ pub struct SourceFile {
 }
 
 impl<S: Encoder> Encodable<S> for SourceFile {
-    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_struct(false, |s| {
-            s.emit_struct_field("name", true, |s| self.name.encode(s))?;
-            s.emit_struct_field("src_hash", false, |s| self.src_hash.encode(s))?;
-            s.emit_struct_field("start_pos", false, |s| self.start_pos.encode(s))?;
-            s.emit_struct_field("end_pos", false, |s| self.end_pos.encode(s))?;
-            s.emit_struct_field("lines", false, |s| {
-                let lines = &self.lines[..];
-                // Store the length.
-                s.emit_u32(lines.len() as u32)?;
+    fn encode(&self, s: &mut S) {
+        self.name.encode(s);
+        self.src_hash.encode(s);
+        self.start_pos.encode(s);
+        self.end_pos.encode(s);
 
-                if !lines.is_empty() {
-                    // In order to preserve some space, we exploit the fact that
-                    // the lines list is sorted and individual lines are
-                    // probably not that long. Because of that we can store lines
-                    // as a difference list, using as little space as possible
-                    // for the differences.
-                    let max_line_length = if lines.len() == 1 {
-                        0
-                    } else {
-                        lines
-                            .array_windows()
-                            .map(|&[fst, snd]| snd - fst)
-                            .map(|bp| bp.to_usize())
-                            .max()
-                            .unwrap()
-                    };
+        // We are always in `Lines` form by the time we reach here.
+        assert!(self.lines.borrow().is_lines());
+        self.lines(|lines| {
+            // Store the length.
+            s.emit_u32(lines.len() as u32);
 
-                    let bytes_per_diff: u8 = match max_line_length {
-                        0..=0xFF => 1,
-                        0x100..=0xFFFF => 2,
-                        _ => 4,
-                    };
+            // Compute and store the difference list.
+            if lines.len() != 0 {
+                let max_line_length = if lines.len() == 1 {
+                    0
+                } else {
+                    lines
+                        .array_windows()
+                        .map(|&[fst, snd]| snd - fst)
+                        .map(|bp| bp.to_usize())
+                        .max()
+                        .unwrap()
+                };
 
-                    // Encode the number of bytes used per diff.
-                    bytes_per_diff.encode(s)?;
+                let bytes_per_diff: usize = match max_line_length {
+                    0..=0xFF => 1,
+                    0x100..=0xFFFF => 2,
+                    _ => 4,
+                };
 
-                    // Encode the first element.
-                    lines[0].encode(s)?;
+                // Encode the number of bytes used per diff.
+                s.emit_u8(bytes_per_diff as u8);
 
-                    let diff_iter = lines.array_windows().map(|&[fst, snd]| snd - fst);
+                // Encode the first element.
+                lines[0].encode(s);
 
-                    match bytes_per_diff {
-                        1 => {
-                            for diff in diff_iter {
-                                (diff.0 as u8).encode(s)?
-                            }
+                // Encode the difference list.
+                let diff_iter = lines.array_windows().map(|&[fst, snd]| snd - fst);
+                let num_diffs = lines.len() - 1;
+                let mut raw_diffs;
+                match bytes_per_diff {
+                    1 => {
+                        raw_diffs = Vec::with_capacity(num_diffs);
+                        for diff in diff_iter {
+                            raw_diffs.push(diff.0 as u8);
                         }
-                        2 => {
-                            for diff in diff_iter {
-                                (diff.0 as u16).encode(s)?
-                            }
-                        }
-                        4 => {
-                            for diff in diff_iter {
-                                diff.0.encode(s)?
-                            }
-                        }
-                        _ => unreachable!(),
                     }
+                    2 => {
+                        raw_diffs = Vec::with_capacity(bytes_per_diff * num_diffs);
+                        for diff in diff_iter {
+                            raw_diffs.extend_from_slice(&(diff.0 as u16).to_le_bytes());
+                        }
+                    }
+                    4 => {
+                        raw_diffs = Vec::with_capacity(bytes_per_diff * num_diffs);
+                        for diff in diff_iter {
+                            raw_diffs.extend_from_slice(&(diff.0 as u32).to_le_bytes());
+                        }
+                    }
+                    _ => unreachable!(),
                 }
+                s.emit_raw_bytes(&raw_diffs);
+            }
+        });
 
-                Ok(())
-            })?;
-            s.emit_struct_field("multibyte_chars", false, |s| self.multibyte_chars.encode(s))?;
-            s.emit_struct_field("non_narrow_chars", false, |s| self.non_narrow_chars.encode(s))?;
-            s.emit_struct_field("name_hash", false, |s| self.name_hash.encode(s))?;
-            s.emit_struct_field("normalized_pos", false, |s| self.normalized_pos.encode(s))?;
-            s.emit_struct_field("cnum", false, |s| self.cnum.encode(s))
-        })
+        self.multibyte_chars.encode(s);
+        self.non_narrow_chars.encode(s);
+        self.name_hash.encode(s);
+        self.normalized_pos.encode(s);
+        self.cnum.encode(s);
     }
 }
 
 impl<D: Decoder> Decodable<D> for SourceFile {
-    fn decode(d: &mut D) -> Result<SourceFile, D::Error> {
-        d.read_struct(|d| {
-            let name: FileName = d.read_struct_field("name", |d| Decodable::decode(d))?;
-            let src_hash: SourceFileHash =
-                d.read_struct_field("src_hash", |d| Decodable::decode(d))?;
-            let start_pos: BytePos = d.read_struct_field("start_pos", |d| Decodable::decode(d))?;
-            let end_pos: BytePos = d.read_struct_field("end_pos", |d| Decodable::decode(d))?;
-            let lines: Vec<BytePos> = d.read_struct_field("lines", |d| {
-                let num_lines: u32 = Decodable::decode(d)?;
-                let mut lines = Vec::with_capacity(num_lines as usize);
+    fn decode(d: &mut D) -> SourceFile {
+        let name: FileName = Decodable::decode(d);
+        let src_hash: SourceFileHash = Decodable::decode(d);
+        let start_pos: BytePos = Decodable::decode(d);
+        let end_pos: BytePos = Decodable::decode(d);
+        let lines = {
+            let num_lines: u32 = Decodable::decode(d);
+            if num_lines > 0 {
+                // Read the number of bytes used per diff.
+                let bytes_per_diff = d.read_u8() as usize;
 
-                if num_lines > 0 {
-                    // Read the number of bytes used per diff.
-                    let bytes_per_diff: u8 = Decodable::decode(d)?;
+                // Read the first element.
+                let line_start: BytePos = Decodable::decode(d);
 
-                    // Read the first element.
-                    let mut line_start: BytePos = Decodable::decode(d)?;
-                    lines.push(line_start);
-
-                    for _ in 1..num_lines {
-                        let diff = match bytes_per_diff {
-                            1 => d.read_u8()? as u32,
-                            2 => d.read_u16()? as u32,
-                            4 => d.read_u32()?,
-                            _ => unreachable!(),
-                        };
-
-                        line_start = line_start + BytePos(diff);
-
-                        lines.push(line_start);
-                    }
-                }
-
-                Ok(lines)
-            })?;
-            let multibyte_chars: Vec<MultiByteChar> =
-                d.read_struct_field("multibyte_chars", |d| Decodable::decode(d))?;
-            let non_narrow_chars: Vec<NonNarrowChar> =
-                d.read_struct_field("non_narrow_chars", |d| Decodable::decode(d))?;
-            let name_hash: u128 = d.read_struct_field("name_hash", |d| Decodable::decode(d))?;
-            let normalized_pos: Vec<NormalizedPos> =
-                d.read_struct_field("normalized_pos", |d| Decodable::decode(d))?;
-            let cnum: CrateNum = d.read_struct_field("cnum", |d| Decodable::decode(d))?;
-            Ok(SourceFile {
-                name,
-                start_pos,
-                end_pos,
-                src: None,
-                src_hash,
-                // Unused - the metadata decoder will construct
-                // a new SourceFile, filling in `external_src` properly
-                external_src: Lock::new(ExternalSource::Unneeded),
-                lines,
-                multibyte_chars,
-                non_narrow_chars,
-                normalized_pos,
-                name_hash,
-                cnum,
-            })
-        })
+                // Read the difference list.
+                let num_diffs = num_lines as usize - 1;
+                let raw_diffs = d.read_raw_bytes(bytes_per_diff * num_diffs).to_vec();
+                SourceFileLines::Diffs(SourceFileDiffs {
+                    line_start,
+                    bytes_per_diff,
+                    num_diffs,
+                    raw_diffs,
+                })
+            } else {
+                SourceFileLines::Lines(vec![])
+            }
+        };
+        let multibyte_chars: Vec<MultiByteChar> = Decodable::decode(d);
+        let non_narrow_chars: Vec<NonNarrowChar> = Decodable::decode(d);
+        let name_hash: u128 = Decodable::decode(d);
+        let normalized_pos: Vec<NormalizedPos> = Decodable::decode(d);
+        let cnum: CrateNum = Decodable::decode(d);
+        SourceFile {
+            name,
+            start_pos,
+            end_pos,
+            src: None,
+            src_hash,
+            // Unused - the metadata decoder will construct
+            // a new SourceFile, filling in `external_src` properly
+            external_src: Lock::new(ExternalSource::Unneeded),
+            lines: Lock::new(lines),
+            multibyte_chars,
+            non_narrow_chars,
+            normalized_pos,
+            name_hash,
+            cnum,
+        }
     }
 }
 
@@ -1546,7 +1457,7 @@ impl SourceFile {
             external_src: Lock::new(ExternalSource::Unneeded),
             start_pos,
             end_pos: Pos::from_usize(end_pos),
-            lines,
+            lines: Lock::new(SourceFileLines::Lines(lines)),
             multibyte_chars,
             non_narrow_chars,
             normalized_pos,
@@ -1555,10 +1466,68 @@ impl SourceFile {
         }
     }
 
+    pub fn lines<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[BytePos]) -> R,
+    {
+        let mut guard = self.lines.borrow_mut();
+        match &*guard {
+            SourceFileLines::Lines(lines) => f(lines),
+            SourceFileLines::Diffs(SourceFileDiffs {
+                mut line_start,
+                bytes_per_diff,
+                num_diffs,
+                raw_diffs,
+            }) => {
+                // Convert from "diffs" form to "lines" form.
+                let num_lines = num_diffs + 1;
+                let mut lines = Vec::with_capacity(num_lines);
+                lines.push(line_start);
+
+                assert_eq!(*num_diffs, raw_diffs.len() / bytes_per_diff);
+                match bytes_per_diff {
+                    1 => {
+                        lines.extend(raw_diffs.into_iter().map(|&diff| {
+                            line_start = line_start + BytePos(diff as u32);
+                            line_start
+                        }));
+                    }
+                    2 => {
+                        lines.extend((0..*num_diffs).map(|i| {
+                            let pos = bytes_per_diff * i;
+                            let bytes = [raw_diffs[pos], raw_diffs[pos + 1]];
+                            let diff = u16::from_le_bytes(bytes);
+                            line_start = line_start + BytePos(diff as u32);
+                            line_start
+                        }));
+                    }
+                    4 => {
+                        lines.extend((0..*num_diffs).map(|i| {
+                            let pos = bytes_per_diff * i;
+                            let bytes = [
+                                raw_diffs[pos],
+                                raw_diffs[pos + 1],
+                                raw_diffs[pos + 2],
+                                raw_diffs[pos + 3],
+                            ];
+                            let diff = u32::from_le_bytes(bytes);
+                            line_start = line_start + BytePos(diff);
+                            line_start
+                        }));
+                    }
+                    _ => unreachable!(),
+                }
+                let res = f(&lines);
+                *guard = SourceFileLines::Lines(lines);
+                res
+            }
+        }
+    }
+
     /// Returns the `BytePos` of the beginning of the current line.
     pub fn line_begin_pos(&self, pos: BytePos) -> BytePos {
         let line_index = self.lookup_line(pos).unwrap();
-        self.lines[line_index]
+        self.lines(|lines| lines[line_index])
     }
 
     /// Add externally loaded source.
@@ -1615,8 +1584,8 @@ impl SourceFile {
         }
 
         let begin = {
-            let line = self.lines.get(line_number)?;
-            let begin: BytePos = *line - self.start_pos;
+            let line = self.lines(|lines| lines.get(line_number).copied())?;
+            let begin: BytePos = line - self.start_pos;
             begin.to_usize()
         };
 
@@ -1633,12 +1602,13 @@ impl SourceFile {
         self.name.is_real()
     }
 
+    #[inline]
     pub fn is_imported(&self) -> bool {
         self.src.is_none()
     }
 
     pub fn count_lines(&self) -> usize {
-        self.lines.len()
+        self.lines(|lines| lines.len())
     }
 
     /// Finds the line containing the given position. The return value is the
@@ -1646,11 +1616,11 @@ impl SourceFile {
     /// number. If the source_file is empty or the position is located before the
     /// first line, `None` is returned.
     pub fn lookup_line(&self, pos: BytePos) -> Option<usize> {
-        match self.lines.binary_search(&pos) {
+        self.lines(|lines| match lines.binary_search(&pos) {
             Ok(idx) => Some(idx),
             Err(0) => None,
             Err(idx) => Some(idx - 1),
-        }
+        })
     }
 
     pub fn line_bounds(&self, line_index: usize) -> Range<BytePos> {
@@ -1658,12 +1628,14 @@ impl SourceFile {
             return self.start_pos..self.end_pos;
         }
 
-        assert!(line_index < self.lines.len());
-        if line_index == (self.lines.len() - 1) {
-            self.lines[line_index]..self.end_pos
-        } else {
-            self.lines[line_index]..self.lines[line_index + 1]
-        }
+        self.lines(|lines| {
+            assert!(line_index < lines.len());
+            if line_index == (lines.len() - 1) {
+                lines[line_index]..self.end_pos
+            } else {
+                lines[line_index]..lines[line_index + 1]
+            }
+        })
     }
 
     /// Returns whether or not the file contains the given `SourceMap` byte
@@ -1725,7 +1697,7 @@ impl SourceFile {
         match self.lookup_line(pos) {
             Some(a) => {
                 let line = a + 1; // Line numbers start at 1
-                let linebpos = self.lines[a];
+                let linebpos = self.lines(|lines| lines[a]);
                 let linechpos = self.bytepos_to_file_charpos(linebpos);
                 let col = chpos - linechpos;
                 debug!("byte pos {:?} is on the line at byte pos {:?}", pos, linebpos);
@@ -1744,7 +1716,7 @@ impl SourceFile {
         let (line, col_or_chpos) = self.lookup_file_pos(pos);
         if line > 0 {
             let col = col_or_chpos;
-            let linebpos = self.lines[line - 1];
+            let linebpos = self.lines(|lines| lines[line - 1]);
             let col_display = {
                 let start_width_idx = self
                     .non_narrow_chars
@@ -1942,15 +1914,15 @@ impl_pos! {
     pub struct CharPos(pub usize);
 }
 
-impl<S: rustc_serialize::Encoder> Encodable<S> for BytePos {
-    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_u32(self.0)
+impl<S: Encoder> Encodable<S> for BytePos {
+    fn encode(&self, s: &mut S) {
+        s.emit_u32(self.0);
     }
 }
 
-impl<D: rustc_serialize::Decoder> Decodable<D> for BytePos {
-    fn decode(d: &mut D) -> Result<BytePos, D::Error> {
-        Ok(BytePos(d.read_u32()?))
+impl<D: Decoder> Decodable<D> for BytePos {
+    fn decode(d: &mut D) -> BytePos {
+        BytePos(d.read_u32())
     }
 }
 
@@ -2001,8 +1973,6 @@ pub struct FileLines {
     pub lines: Vec<LineInfo>,
 }
 
-pub static SPAN_DEBUG: AtomicRef<fn(Span, &mut fmt::Formatter<'_>) -> fmt::Result> =
-    AtomicRef::new(&(default_span_debug as fn(_, &mut fmt::Formatter<'_>) -> _));
 pub static SPAN_TRACK: AtomicRef<fn(LocalDefId)> = AtomicRef::new(&((|_| {}) as fn(_)));
 
 // _____________________________________________________________________________
@@ -2058,9 +2028,9 @@ impl InnerSpan {
 pub trait HashStableContext {
     fn def_path_hash(&self, def_id: DefId) -> DefPathHash;
     fn hash_spans(&self) -> bool;
-    /// Accesses `sess.opts.debugging_opts.incremental_ignore_spans` since
+    /// Accesses `sess.opts.unstable_opts.incremental_ignore_spans` since
     /// we don't have easy access to a `Session`
-    fn debug_opts_incremental_ignore_spans(&self) -> bool;
+    fn unstable_opts_incremental_ignore_spans(&self) -> bool;
     fn def_span(&self, def_id: LocalDefId) -> Span;
     fn span_data_to_lines_and_cols(
         &mut self,
@@ -2115,13 +2085,9 @@ where
         // If this is not an empty or invalid span, we want to hash the last
         // position that belongs to it, as opposed to hashing the first
         // position past it.
-        let (file, line_lo, col_lo, line_hi, col_hi) = match ctx.span_data_to_lines_and_cols(&span)
-        {
-            Some(pos) => pos,
-            None => {
-                Hash::hash(&TAG_INVALID_SPAN, hasher);
-                return;
-            }
+        let Some((file, line_lo, col_lo, line_hi, col_hi)) = ctx.span_data_to_lines_and_cols(&span) else {
+            Hash::hash(&TAG_INVALID_SPAN, hasher);
+            return;
         };
 
         Hash::hash(&TAG_VALID_SPAN, hasher);

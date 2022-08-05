@@ -1,190 +1,326 @@
 //! Errors emitted by typeck.
-use rustc_macros::SessionDiagnostic;
+use rustc_errors::{error_code, Applicability, DiagnosticBuilder, ErrorGuaranteed};
+use rustc_macros::{SessionDiagnostic, SessionSubdiagnostic};
+use rustc_middle::ty::Ty;
+use rustc_session::{parse::ParseSess, SessionDiagnostic};
 use rustc_span::{symbol::Ident, Span, Symbol};
 
 #[derive(SessionDiagnostic)]
-#[error = "E0062"]
+#[error(typeck::field_multiply_specified_in_initializer, code = "E0062")]
 pub struct FieldMultiplySpecifiedInInitializer {
-    #[message = "field `{ident}` specified more than once"]
-    #[label = "used more than once"]
+    #[primary_span]
+    #[label]
     pub span: Span,
-    #[label = "first use of `{ident}`"]
+    #[label(typeck::previous_use_label)]
     pub prev_span: Span,
     pub ident: Ident,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0092"]
+#[error(typeck::unrecognized_atomic_operation, code = "E0092")]
 pub struct UnrecognizedAtomicOperation<'a> {
-    #[message = "unrecognized atomic operation function: `{op}`"]
-    #[label = "unrecognized atomic operation"]
+    #[primary_span]
+    #[label]
     pub span: Span,
     pub op: &'a str,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0094"]
+#[error(typeck::wrong_number_of_generic_arguments_to_intrinsic, code = "E0094")]
 pub struct WrongNumberOfGenericArgumentsToIntrinsic<'a> {
-    #[message = "intrinsic has wrong number of {descr} \
-                         parameters: found {found}, expected {expected}"]
-    #[label = "expected {expected} {descr} parameter{expected_pluralize}"]
+    #[primary_span]
+    #[label]
     pub span: Span,
     pub found: usize,
     pub expected: usize,
-    pub expected_pluralize: &'a str,
     pub descr: &'a str,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0093"]
+#[error(typeck::unrecognized_intrinsic_function, code = "E0093")]
 pub struct UnrecognizedIntrinsicFunction {
-    #[message = "unrecognized intrinsic function: `{name}`"]
-    #[label = "unrecognized intrinsic"]
+    #[primary_span]
+    #[label]
     pub span: Span,
     pub name: Symbol,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0195"]
+#[error(typeck::lifetimes_or_bounds_mismatch_on_trait, code = "E0195")]
 pub struct LifetimesOrBoundsMismatchOnTrait {
-    #[message = "lifetime parameters or bounds on {item_kind} `{ident}` do not match the trait declaration"]
-    #[label = "lifetimes do not match {item_kind} in trait"]
+    #[primary_span]
+    #[label]
     pub span: Span,
-    #[label = "lifetimes in impl do not match this {item_kind} in trait"]
+    #[label(typeck::generics_label)]
     pub generics_span: Option<Span>,
     pub item_kind: &'static str,
     pub ident: Ident,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0120"]
+#[error(typeck::drop_impl_on_wrong_item, code = "E0120")]
 pub struct DropImplOnWrongItem {
-    #[message = "the `Drop` trait may only be implemented for structs, enums, and unions"]
-    #[label = "must be a struct, enum, or union"]
+    #[primary_span]
+    #[label]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0124"]
+#[error(typeck::field_already_declared, code = "E0124")]
 pub struct FieldAlreadyDeclared {
     pub field_name: Ident,
-    #[message = "field `{field_name}` is already declared"]
-    #[label = "field already declared"]
+    #[primary_span]
+    #[label]
     pub span: Span,
-    #[label = "`{field_name}` first declared here"]
+    #[label(typeck::previous_decl_label)]
     pub prev_span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0184"]
+#[error(typeck::copy_impl_on_type_with_dtor, code = "E0184")]
 pub struct CopyImplOnTypeWithDtor {
-    #[message = "the trait `Copy` may not be implemented for this type; the \
-                              type has a destructor"]
-    #[label = "Copy not allowed on types with destructors"]
+    #[primary_span]
+    #[label]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0203"]
+#[error(typeck::multiple_relaxed_default_bounds, code = "E0203")]
 pub struct MultipleRelaxedDefaultBounds {
-    #[message = "type parameter has more than one relaxed default bound, only one is supported"]
+    #[primary_span]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0206"]
+#[error(typeck::copy_impl_on_non_adt, code = "E0206")]
 pub struct CopyImplOnNonAdt {
-    #[message = "the trait `Copy` may not be implemented for this type"]
-    #[label = "type is not a structure or enumeration"]
+    #[primary_span]
+    #[label]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0224"]
+#[error(typeck::trait_object_declared_with_no_traits, code = "E0224")]
 pub struct TraitObjectDeclaredWithNoTraits {
-    #[message = "at least one trait is required for an object type"]
+    #[primary_span]
     pub span: Span,
+    #[label(typeck::alias_span)]
+    pub trait_alias_span: Option<Span>,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0227"]
+#[error(typeck::ambiguous_lifetime_bound, code = "E0227")]
 pub struct AmbiguousLifetimeBound {
-    #[message = "ambiguous lifetime bound, explicit lifetime bound required"]
+    #[primary_span]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0229"]
+#[error(typeck::assoc_type_binding_not_allowed, code = "E0229")]
 pub struct AssocTypeBindingNotAllowed {
-    #[message = "associated type bindings are not allowed here"]
-    #[label = "associated type not allowed here"]
+    #[primary_span]
+    #[label]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0436"]
+#[error(typeck::functional_record_update_on_non_struct, code = "E0436")]
 pub struct FunctionalRecordUpdateOnNonStruct {
-    #[message = "functional record update syntax requires a struct"]
+    #[primary_span]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0516"]
-pub struct TypeofReservedKeywordUsed {
-    #[message = "`typeof` is a reserved keyword but unimplemented"]
-    #[label = "reserved keyword"]
+#[error(typeck::typeof_reserved_keyword_used, code = "E0516")]
+pub struct TypeofReservedKeywordUsed<'tcx> {
+    pub ty: Ty<'tcx>,
+    #[primary_span]
+    #[label]
     pub span: Span,
+    #[suggestion_verbose(code = "{ty}")]
+    pub opt_sugg: Option<(Span, Applicability)>,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0572"]
+#[error(typeck::return_stmt_outside_of_fn_body, code = "E0572")]
 pub struct ReturnStmtOutsideOfFnBody {
-    #[message = "return statement outside of function body"]
+    #[primary_span]
     pub span: Span,
-    #[label = "the return is part of this body..."]
+    #[label(typeck::encl_body_label)]
     pub encl_body_span: Option<Span>,
-    #[label = "...not the enclosing function body"]
+    #[label(typeck::encl_fn_label)]
     pub encl_fn_span: Option<Span>,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0627"]
+#[error(typeck::yield_expr_outside_of_generator, code = "E0627")]
 pub struct YieldExprOutsideOfGenerator {
-    #[message = "yield expression outside of generator literal"]
+    #[primary_span]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0639"]
+#[error(typeck::struct_expr_non_exhaustive, code = "E0639")]
 pub struct StructExprNonExhaustive {
-    #[message = "cannot create non-exhaustive {what} using struct expression"]
+    #[primary_span]
     pub span: Span,
     pub what: &'static str,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0699"]
+#[error(typeck::method_call_on_unknown_type, code = "E0699")]
 pub struct MethodCallOnUnknownType {
-    #[message = "the type of this value must be known to call a method on a raw pointer on it"]
+    #[primary_span]
     pub span: Span,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0719"]
+#[error(typeck::value_of_associated_struct_already_specified, code = "E0719")]
 pub struct ValueOfAssociatedStructAlreadySpecified {
-    #[message = "the value of the associated type `{item_name}` (from trait `{def_path}`) is already specified"]
-    #[label = "re-bound here"]
+    #[primary_span]
+    #[label]
     pub span: Span,
-    #[label = "`{item_name}` bound here first"]
+    #[label(typeck::previous_bound_label)]
     pub prev_span: Span,
     pub item_name: Ident,
     pub def_path: String,
 }
 
 #[derive(SessionDiagnostic)]
-#[error = "E0745"]
+#[error(typeck::address_of_temporary_taken, code = "E0745")]
 pub struct AddressOfTemporaryTaken {
-    #[message = "cannot take address of a temporary"]
-    #[label = "temporary value"]
+    #[primary_span]
+    #[label]
+    pub span: Span,
+}
+
+#[derive(SessionSubdiagnostic)]
+pub enum AddReturnTypeSuggestion<'tcx> {
+    #[suggestion(
+        typeck::add_return_type_add,
+        code = "-> {found} ",
+        applicability = "machine-applicable"
+    )]
+    Add {
+        #[primary_span]
+        span: Span,
+        found: Ty<'tcx>,
+    },
+    #[suggestion(
+        typeck::add_return_type_missing_here,
+        code = "-> _ ",
+        applicability = "has-placeholders"
+    )]
+    MissingHere {
+        #[primary_span]
+        span: Span,
+    },
+}
+
+#[derive(SessionSubdiagnostic)]
+pub enum ExpectedReturnTypeLabel<'tcx> {
+    #[label(typeck::expected_default_return_type)]
+    Unit {
+        #[primary_span]
+        span: Span,
+    },
+    #[label(typeck::expected_return_type)]
+    Other {
+        #[primary_span]
+        span: Span,
+        expected: Ty<'tcx>,
+    },
+}
+
+#[derive(SessionDiagnostic)]
+#[error(typeck::unconstrained_opaque_type)]
+#[note]
+pub struct UnconstrainedOpaqueType {
+    #[primary_span]
+    pub span: Span,
+    pub name: Symbol,
+}
+
+pub struct MissingTypeParams {
+    pub span: Span,
+    pub def_span: Span,
+    pub missing_type_params: Vec<Symbol>,
+    pub empty_generic_args: bool,
+}
+
+// Manual implementation of `SessionDiagnostic` to be able to call `span_to_snippet`.
+impl<'a> SessionDiagnostic<'a> for MissingTypeParams {
+    fn into_diagnostic(self, sess: &'a ParseSess) -> DiagnosticBuilder<'a, ErrorGuaranteed> {
+        let mut err = sess.span_diagnostic.struct_span_err_with_code(
+            self.span,
+            rustc_errors::fluent::typeck::missing_type_params,
+            error_code!(E0393),
+        );
+        err.set_arg("parameterCount", self.missing_type_params.len());
+        err.set_arg(
+            "parameters",
+            self.missing_type_params
+                .iter()
+                .map(|n| format!("`{}`", n))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+
+        err.span_label(self.def_span, rustc_errors::fluent::typeck::label);
+
+        let mut suggested = false;
+        if let (Ok(snippet), true) = (
+            sess.source_map().span_to_snippet(self.span),
+            // Don't suggest setting the type params if there are some already: the order is
+            // tricky to get right and the user will already know what the syntax is.
+            self.empty_generic_args,
+        ) {
+            if snippet.ends_with('>') {
+                // The user wrote `Trait<'a, T>` or similar. To provide an accurate suggestion
+                // we would have to preserve the right order. For now, as clearly the user is
+                // aware of the syntax, we do nothing.
+            } else {
+                // The user wrote `Iterator`, so we don't have a type we can suggest, but at
+                // least we can clue them to the correct syntax `Iterator<Type>`.
+                err.span_suggestion(
+                    self.span,
+                    rustc_errors::fluent::typeck::suggestion,
+                    format!(
+                        "{}<{}>",
+                        snippet,
+                        self.missing_type_params
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    Applicability::HasPlaceholders,
+                );
+                suggested = true;
+            }
+        }
+        if !suggested {
+            err.span_label(self.span, rustc_errors::fluent::typeck::no_suggestion_label);
+        }
+
+        err.note(rustc_errors::fluent::typeck::note);
+        err
+    }
+}
+
+#[derive(SessionDiagnostic)]
+#[error(typeck::manual_implementation, code = "E0183")]
+#[help]
+pub struct ManualImplementation {
+    #[primary_span]
+    #[label]
+    pub span: Span,
+    pub trait_name: String,
+}
+
+#[derive(SessionDiagnostic)]
+#[error(typeck::substs_on_overridden_impl)]
+pub struct SubstsOnOverriddenImpl {
+    #[primary_span]
     pub span: Span,
 }

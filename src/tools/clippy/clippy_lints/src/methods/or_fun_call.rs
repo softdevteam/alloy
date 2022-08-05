@@ -1,6 +1,6 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::eager_or_lazy::switch_to_lazy_eval;
-use clippy_utils::source::{snippet, snippet_with_applicability, snippet_with_macro_callsite};
+use clippy_utils::source::{snippet, snippet_with_macro_callsite};
 use clippy_utils::ty::{implements_trait, match_type};
 use clippy_utils::{contains_return, is_trait_item, last_path_segment, paths};
 use if_chain::if_chain;
@@ -23,14 +23,15 @@ pub(super) fn check<'tcx>(
     args: &'tcx [hir::Expr<'_>],
 ) {
     /// Checks for `unwrap_or(T::new())` or `unwrap_or(T::default())`.
+    #[allow(clippy::too_many_arguments)]
     fn check_unwrap_or_default(
         cx: &LateContext<'_>,
         name: &str,
         fun: &hir::Expr<'_>,
-        self_expr: &hir::Expr<'_>,
         arg: &hir::Expr<'_>,
         or_has_args: bool,
         span: Span,
+        method_span: Span,
     ) -> bool {
         let is_default_default = || is_trait_item(cx, fun, sym::Default);
 
@@ -51,18 +52,14 @@ pub(super) fn check<'tcx>(
                 || (matches!(path, sym::new) && implements_default(arg, default_trait_id));
 
             then {
-                let mut applicability = Applicability::MachineApplicable;
                 span_lint_and_sugg(
                     cx,
                     OR_FUN_CALL,
-                    span,
+                    method_span.with_hi(span.hi()),
                     &format!("use of `{}` followed by a call to `{}`", name, path),
                     "try this",
-                    format!(
-                        "{}.unwrap_or_default()",
-                        snippet_with_applicability(cx, self_expr.span, "..", &mut applicability)
-                    ),
-                    applicability,
+                    "unwrap_or_default()".to_string(),
+                    Applicability::MachineApplicable,
                 );
 
                 true
@@ -164,7 +161,7 @@ pub(super) fn check<'tcx>(
         match inner_arg.kind {
             hir::ExprKind::Call(fun, or_args) => {
                 let or_has_args = !or_args.is_empty();
-                if !check_unwrap_or_default(cx, name, fun, self_arg, arg, or_has_args, expr.span) {
+                if !check_unwrap_or_default(cx, name, fun, arg, or_has_args, expr.span, method_span) {
                     let fun_span = if or_has_args { None } else { Some(fun.span) };
                     check_general_case(cx, name, method_span, self_arg, arg, expr.span, fun_span);
                 }

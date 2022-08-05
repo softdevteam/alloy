@@ -9,6 +9,7 @@ use rustc_data_structures::sync::{AtomicU32, AtomicU64, Lock, Lrc, Ordering};
 use rustc_index::vec::IndexVec;
 use rustc_serialize::opaque::{FileEncodeResult, FileEncoder};
 use smallvec::{smallvec, SmallVec};
+use std::assert_matches::assert_matches;
 use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -42,6 +43,7 @@ rustc_index::newtype_index! {
 impl DepNodeIndex {
     pub const INVALID: DepNodeIndex = DepNodeIndex::MAX;
     pub const SINGLETON_DEPENDENCYLESS_ANON_NODE: DepNodeIndex = DepNodeIndex::from_u32(0);
+    pub const FOREVER_RED_NODE: DepNodeIndex = DepNodeIndex::from_u32(1);
 }
 
 impl std::convert::From<DepNodeIndex> for QueryInvocationId {
@@ -58,6 +60,7 @@ pub enum DepNodeColor {
 }
 
 impl DepNodeColor {
+    #[inline]
     pub fn is_green(self) -> bool {
         match self {
             DepNodeColor::Red => false,
@@ -123,6 +126,8 @@ impl<K: DepKind> DepGraph<K> {
             record_stats,
         );
 
+        let colors = DepNodeColorMap::new(prev_graph_node_count);
+
         // Instantiate a dependy-less node only once for anonymous queries.
         let _green_node_index = current.intern_new_node(
             profiler,
@@ -130,7 +135,19 @@ impl<K: DepKind> DepGraph<K> {
             smallvec![],
             Fingerprint::ZERO,
         );
-        debug_assert_eq!(_green_node_index, DepNodeIndex::SINGLETON_DEPENDENCYLESS_ANON_NODE);
+        assert_eq!(_green_node_index, DepNodeIndex::SINGLETON_DEPENDENCYLESS_ANON_NODE);
+
+        // Instantiate a dependy-less red node only once for anonymous queries.
+        let (_red_node_index, _prev_and_index) = current.intern_node(
+            profiler,
+            &prev_graph,
+            DepNode { kind: DepKind::RED, hash: Fingerprint::ZERO.into() },
+            smallvec![],
+            None,
+            false,
+        );
+        assert_eq!(_red_node_index, DepNodeIndex::FOREVER_RED_NODE);
+        assert!(matches!(_prev_and_index, None | Some((_, DepNodeColor::Red))));
 
         DepGraph {
             data: Some(Lrc::new(DepGraphData {
@@ -139,7 +156,7 @@ impl<K: DepKind> DepGraph<K> {
                 current,
                 processed_side_effects: Default::default(),
                 previous: prev_graph,
-                colors: DepNodeColorMap::new(prev_graph_node_count),
+                colors,
                 debug_loaded_from_disk: Default::default(),
             })),
             virtual_dep_node_index: Lrc::new(AtomicU32::new(0)),
@@ -165,7 +182,11 @@ impl<K: DepKind> DepGraph<K> {
     pub fn assert_ignored(&self) {
         if let Some(..) = self.data {
             K::read_deps(|task_deps| {
-                assert!(task_deps.is_none(), "expected no task dependency tracking");
+                assert_matches!(
+                    task_deps,
+                    TaskDepsRef::Ignore,
+                    "expected no task dependency tracking"
+                );
             })
         }
     }
@@ -174,7 +195,7 @@ impl<K: DepKind> DepGraph<K> {
     where
         OP: FnOnce() -> R,
     {
-        K::with_deps(None, op)
+        K::with_deps(TaskDepsRef::Ignore, op)
     }
 
     /// Used to wrap the deserialization of a query result from disk,
@@ -227,10 +248,7 @@ impl<K: DepKind> DepGraph<K> {
     where
         OP: FnOnce() -> R,
     {
-        let mut deps = TaskDeps::default();
-        deps.read_allowed = false;
-        let deps = Lock::new(deps);
-        K::with_deps(Some(&deps), op)
+        K::with_deps(TaskDepsRef::Forbid, op)
     }
 
     /// Starts a new dep-graph task. Dep-graph tasks are specified
@@ -313,20 +331,23 @@ impl<K: DepKind> DepGraph<K> {
                 reads: SmallVec::new(),
                 read_set: Default::default(),
                 phantom_data: PhantomData,
-                read_allowed: true,
             }))
         };
-        let result = K::with_deps(task_deps.as_ref(), || task(cx, arg));
+
+        let task_deps_ref = match &task_deps {
+            Some(deps) => TaskDepsRef::Allow(deps),
+            None => TaskDepsRef::Ignore,
+        };
+
+        let result = K::with_deps(task_deps_ref, || task(cx, arg));
         let edges = task_deps.map_or_else(|| smallvec![], |lock| lock.into_inner().reads);
 
         let dcx = cx.dep_context();
         let hashing_timer = dcx.profiler().incr_result_hashing();
-        let current_fingerprint = hash_result.map(|f| {
-            let mut hcx = dcx.create_stable_hashing_context();
-            f(&mut hcx, &result)
-        });
+        let current_fingerprint =
+            hash_result.map(|f| dcx.with_stable_hashing_context(|mut hcx| f(&mut hcx, &result)));
 
-        let print_status = cfg!(debug_assertions) && dcx.sess().opts.debugging_opts.dep_tasks;
+        let print_status = cfg!(debug_assertions) && dcx.sess().opts.unstable_opts.dep_tasks;
 
         // Intern the new `DepNode`.
         let (dep_node_index, prev_and_color) = data.current.intern_node(
@@ -369,7 +390,7 @@ impl<K: DepKind> DepGraph<K> {
 
         if let Some(ref data) = self.data {
             let task_deps = Lock::new(TaskDeps::default());
-            let result = K::with_deps(Some(&task_deps), op);
+            let result = K::with_deps(TaskDepsRef::Allow(&task_deps), op);
             let task_deps = task_deps.into_inner();
             let task_deps = task_deps.reads;
 
@@ -422,47 +443,47 @@ impl<K: DepKind> DepGraph<K> {
     pub fn read_index(&self, dep_node_index: DepNodeIndex) {
         if let Some(ref data) = self.data {
             K::read_deps(|task_deps| {
-                if let Some(task_deps) = task_deps {
-                    let mut task_deps = task_deps.lock();
-                    let task_deps = &mut *task_deps;
+                let mut task_deps = match task_deps {
+                    TaskDepsRef::Allow(deps) => deps.lock(),
+                    TaskDepsRef::Ignore => return,
+                    TaskDepsRef::Forbid => {
+                        panic!("Illegal read of: {:?}", dep_node_index)
+                    }
+                };
+                let task_deps = &mut *task_deps;
 
-                    if !task_deps.read_allowed {
-                        panic!("Illegal read of: {:?}", dep_node_index);
+                if cfg!(debug_assertions) {
+                    data.current.total_read_count.fetch_add(1, Relaxed);
+                }
+
+                // As long as we only have a low number of reads we can avoid doing a hash
+                // insert and potentially allocating/reallocating the hashmap
+                let new_read = if task_deps.reads.len() < TASK_DEPS_READS_CAP {
+                    task_deps.reads.iter().all(|other| *other != dep_node_index)
+                } else {
+                    task_deps.read_set.insert(dep_node_index)
+                };
+                if new_read {
+                    task_deps.reads.push(dep_node_index);
+                    if task_deps.reads.len() == TASK_DEPS_READS_CAP {
+                        // Fill `read_set` with what we have so far so we can use the hashset
+                        // next time
+                        task_deps.read_set.extend(task_deps.reads.iter().copied());
                     }
 
-                    if cfg!(debug_assertions) {
-                        data.current.total_read_count.fetch_add(1, Relaxed);
-                    }
-
-                    // As long as we only have a low number of reads we can avoid doing a hash
-                    // insert and potentially allocating/reallocating the hashmap
-                    let new_read = if task_deps.reads.len() < TASK_DEPS_READS_CAP {
-                        task_deps.reads.iter().all(|other| *other != dep_node_index)
-                    } else {
-                        task_deps.read_set.insert(dep_node_index)
-                    };
-                    if new_read {
-                        task_deps.reads.push(dep_node_index);
-                        if task_deps.reads.len() == TASK_DEPS_READS_CAP {
-                            // Fill `read_set` with what we have so far so we can use the hashset
-                            // next time
-                            task_deps.read_set.extend(task_deps.reads.iter().copied());
-                        }
-
-                        #[cfg(debug_assertions)]
-                        {
-                            if let Some(target) = task_deps.node {
-                                if let Some(ref forbidden_edge) = data.current.forbidden_edge {
-                                    let src = forbidden_edge.index_to_node.lock()[&dep_node_index];
-                                    if forbidden_edge.test(&src, &target) {
-                                        panic!("forbidden edge {:?} -> {:?} created", src, target)
-                                    }
+                    #[cfg(debug_assertions)]
+                    {
+                        if let Some(target) = task_deps.node {
+                            if let Some(ref forbidden_edge) = data.current.forbidden_edge {
+                                let src = forbidden_edge.index_to_node.lock()[&dep_node_index];
+                                if forbidden_edge.test(&src, &target) {
+                                    panic!("forbidden edge {:?} -> {:?} created", src, target)
                                 }
                             }
                         }
-                    } else if cfg!(debug_assertions) {
-                        data.current.total_duplicate_read_count.fetch_add(1, Relaxed);
                     }
+                } else if cfg!(debug_assertions) {
+                    data.current.total_duplicate_read_count.fetch_add(1, Relaxed);
                 }
             })
         }
@@ -743,7 +764,7 @@ impl<K: DepKind> DepGraph<K> {
             dep_node
         );
 
-        if unlikely!(!side_effects.is_empty()) {
+        if !side_effects.is_empty() {
             self.emit_side_effects(tcx, data, dep_node_index, side_effects);
         }
 
@@ -777,8 +798,8 @@ impl<K: DepKind> DepGraph<K> {
 
             let handle = tcx.dep_context().sess().diagnostic();
 
-            for diagnostic in side_effects.diagnostics {
-                handle.emit_diagnostic(&diagnostic);
+            for mut diagnostic in side_effects.diagnostics {
+                handle.emit_diagnostic(&mut diagnostic);
             }
         }
     }
@@ -835,7 +856,7 @@ impl<K: DepKind> DepGraph<K> {
         if let Some(data) = &self.data {
             data.current.encoder.steal().finish(profiler)
         } else {
-            Ok(())
+            Ok(0)
         }
     }
 
@@ -879,8 +900,12 @@ impl<K: DepKind> DepGraph<K> {
 #[derive(Clone, Debug, Encodable, Decodable)]
 pub struct WorkProduct {
     pub cgu_name: String,
-    /// Saved file associated with this CGU.
-    pub saved_file: Option<String>,
+    /// Saved files associated with this CGU. In each key/value pair, the value is the path to the
+    /// saved file and the key is some identifier for the type of file being saved.
+    ///
+    /// By convention, file extensions are currently used as identifiers, i.e. the key "o" maps to
+    /// the object file's path, and "dwo" to the dwarf object file's path.
+    pub saved_files: FxHashMap<String, String>,
 }
 
 // Index type for `DepNodeData`'s edges.
@@ -960,6 +985,7 @@ impl<K: DepKind> CurrentDepGraph<K> {
         let nanos = duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as u64;
         let mut stable_hasher = StableHasher::new();
         nanos.hash(&mut stable_hasher);
+        let anon_id_seed = stable_hasher.finish();
 
         #[cfg(debug_assertions)]
         let forbidden_edge = match env::var("RUST_FORBID_DEP_GRAPH_EDGE") {
@@ -995,7 +1021,7 @@ impl<K: DepKind> CurrentDepGraph<K> {
                 )
             }),
             prev_index_to_index: Lock::new(IndexVec::from_elem_n(None, prev_graph_node_count)),
-            anon_id_seed: stable_hasher.finish(),
+            anon_id_seed,
             #[cfg(debug_assertions)]
             forbidden_edge,
             total_read_count: AtomicU64::new(0),
@@ -1185,21 +1211,34 @@ impl<K: DepKind> CurrentDepGraph<K> {
 const TASK_DEPS_READS_CAP: usize = 8;
 type EdgesVec = SmallVec<[DepNodeIndex; TASK_DEPS_READS_CAP]>;
 
-pub struct TaskDeps<K> {
+#[derive(Debug, Clone, Copy)]
+pub enum TaskDepsRef<'a, K: DepKind> {
+    /// New dependencies can be added to the
+    /// `TaskDeps`. This is used when executing a 'normal' query
+    /// (no `eval_always` modifier)
+    Allow(&'a Lock<TaskDeps<K>>),
+    /// New dependencies are ignored. This is used when
+    /// executing an `eval_always` query, since there's no
+    /// need to track dependencies for a query that's always
+    /// re-executed. This is also used for `dep_graph.with_ignore`
+    Ignore,
+    /// Any attempt to add new dependencies will cause a panic.
+    /// This is used when decoding a query result from disk,
+    /// to ensure that the decoding process doesn't itself
+    /// require the execution of any queries.
+    Forbid,
+}
+
+#[derive(Debug)]
+pub struct TaskDeps<K: DepKind> {
     #[cfg(debug_assertions)]
     node: Option<DepNode<K>>,
     reads: EdgesVec,
     read_set: FxHashSet<DepNodeIndex>,
     phantom_data: PhantomData<DepNode<K>>,
-    /// Whether or not we allow `DepGraph::read_index` to run.
-    /// This is normally true, except inside `with_query_deserialization`,
-    /// where it set to `false` to enforce that no new `DepNode` edges are
-    /// created. See the documentation of `with_query_deserialization` for
-    /// more details.
-    read_allowed: bool,
 }
 
-impl<K> Default for TaskDeps<K> {
+impl<K: DepKind> Default for TaskDeps<K> {
     fn default() -> Self {
         Self {
             #[cfg(debug_assertions)]
@@ -1207,7 +1246,6 @@ impl<K> Default for TaskDeps<K> {
             reads: EdgesVec::new(),
             read_set: FxHashSet::default(),
             phantom_data: PhantomData,
-            read_allowed: true,
         }
     }
 }

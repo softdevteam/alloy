@@ -1,6 +1,7 @@
 use crate::LateContext;
 use crate::LateLintPass;
 use crate::LintContext;
+use rustc_errors::fluent;
 use rustc_hir::{Expr, ExprKind, PathSegment};
 use rustc_middle::ty;
 use rustc_span::{symbol::sym, ExpnKind, Span};
@@ -44,7 +45,7 @@ fn in_macro(span: Span) -> bool {
 fn first_method_call<'tcx>(
     expr: &'tcx Expr<'tcx>,
 ) -> Option<(&'tcx PathSegment<'tcx>, &'tcx [Expr<'tcx>])> {
-    if let ExprKind::MethodCall(path, _, args, _) = &expr.kind {
+    if let ExprKind::MethodCall(path, args, _) = &expr.kind {
         if args.iter().any(|e| e.span.from_expansion()) { None } else { Some((path, *args)) }
     } else {
         None
@@ -84,20 +85,16 @@ fn lint_cstring_as_ptr(
 ) {
     let source_type = cx.typeck_results().expr_ty(source);
     if let ty::Adt(def, substs) = source_type.kind() {
-        if cx.tcx.is_diagnostic_item(sym::Result, def.did) {
+        if cx.tcx.is_diagnostic_item(sym::Result, def.did()) {
             if let ty::Adt(adt, _) = substs.type_at(0).kind() {
-                if cx.tcx.is_diagnostic_item(sym::cstring_type, adt.did) {
+                if cx.tcx.is_diagnostic_item(sym::cstring_type, adt.did()) {
                     cx.struct_span_lint(TEMPORARY_CSTRING_AS_PTR, as_ptr_span, |diag| {
-                        let mut diag = diag
-                            .build("getting the inner pointer of a temporary `CString`");
-                        diag.span_label(as_ptr_span, "this pointer will be invalid");
-                        diag.span_label(
-                            unwrap.span,
-                            "this `CString` is deallocated at the end of the statement, bind it to a variable to extend its lifetime",
-                        );
-                        diag.note("pointers do not have a lifetime; when calling `as_ptr` the `CString` will be deallocated at the end of the statement because nothing is referencing it as far as the type system is concerned");
-                        diag.help("for more information, see https://doc.rust-lang.org/reference/destructors.html");
-                        diag.emit();
+                        diag.build(fluent::lint::cstring_ptr)
+                            .span_label(as_ptr_span, fluent::lint::as_ptr_label)
+                            .span_label(unwrap.span, fluent::lint::unwrap_label)
+                            .note(fluent::lint::note)
+                            .help(fluent::lint::help)
+                            .emit();
                     });
                 }
             }

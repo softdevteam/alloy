@@ -1,6 +1,7 @@
 //! A helper class for dealing with static archives
 
-use std::ffi::{CStr, CString};
+use std::env;
+use std::ffi::{CStr, CString, OsString};
 use std::io;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -9,25 +10,15 @@ use std::str;
 
 use crate::llvm::archive_ro::{ArchiveRO, Child};
 use crate::llvm::{self, ArchiveKind, LLVMMachineType, LLVMRustCOFFShortExport};
-use rustc_codegen_ssa::back::archive::ArchiveBuilder;
-use rustc_data_structures::temp_dir::MaybeTempDir;
+use rustc_codegen_ssa::back::archive::{ArchiveBuilder, ArchiveBuilderBuilder};
 use rustc_session::cstore::{DllCallingConvention, DllImport};
 use rustc_session::Session;
-
-struct ArchiveConfig<'a> {
-    pub sess: &'a Session,
-    pub dst: PathBuf,
-    pub src: Option<PathBuf>,
-}
 
 /// Helper for adding many files to an archive.
 #[must_use = "must call build() to finish building the archive"]
 pub struct LlvmArchiveBuilder<'a> {
-    config: ArchiveConfig<'a>,
-    removals: Vec<String>,
+    sess: &'a Session,
     additions: Vec<Addition>,
-    should_update_symbols: bool,
-    src_archive: Option<Option<ArchiveRO>>,
 }
 
 enum Addition {
@@ -50,10 +41,6 @@ fn is_relevant_child(c: &Child<'_>) -> bool {
     }
 }
 
-fn archive_config<'a>(sess: &'a Session, output: &Path, input: Option<&Path>) -> ArchiveConfig<'a> {
-    ArchiveConfig { sess, dst: output.to_path_buf(), src: input.map(|p| p.to_path_buf()) }
-}
-
 /// Map machine type strings to values of LLVM's MachineTypes enum.
 fn llvm_machine_type(cpu: &str) -> LLVMMachineType {
     match cpu {
@@ -66,46 +53,11 @@ fn llvm_machine_type(cpu: &str) -> LLVMMachineType {
 }
 
 impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
-    /// Creates a new static archive, ready for modifying the archive specified
-    /// by `config`.
-    fn new(sess: &'a Session, output: &Path, input: Option<&Path>) -> LlvmArchiveBuilder<'a> {
-        let config = archive_config(sess, output, input);
-        LlvmArchiveBuilder {
-            config,
-            removals: Vec::new(),
-            additions: Vec::new(),
-            should_update_symbols: false,
-            src_archive: None,
-        }
-    }
-
-    /// Removes a file from this archive
-    fn remove_file(&mut self, file: &str) {
-        self.removals.push(file.to_string());
-    }
-
-    /// Lists all files in an archive
-    fn src_files(&mut self) -> Vec<String> {
-        if self.src_archive().is_none() {
-            return Vec::new();
-        }
-
-        let archive = self.src_archive.as_ref().unwrap().as_ref().unwrap();
-
-        archive
-            .iter()
-            .filter_map(|child| child.ok())
-            .filter(is_relevant_child)
-            .filter_map(|child| child.name())
-            .filter(|name| !self.removals.iter().any(|x| x == name))
-            .map(|name| name.to_owned())
-            .collect()
-    }
-
-    fn add_archive<F>(&mut self, archive: &Path, skip: F) -> io::Result<()>
-    where
-        F: FnMut(&str) -> bool + 'static,
-    {
+    fn add_archive(
+        &mut self,
+        archive: &Path,
+        skip: Box<dyn FnMut(&str) -> bool + 'static>,
+    ) -> io::Result<()> {
         let archive_ro = match ArchiveRO::open(archive) {
             Ok(ar) => ar,
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
@@ -128,140 +80,179 @@ impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
             .push(Addition::File { path: file.to_path_buf(), name_in_archive: name.to_owned() });
     }
 
-    /// Indicate that the next call to `build` should update all symbols in
-    /// the archive (equivalent to running 'ar s' over it).
-    fn update_symbols(&mut self) {
-        self.should_update_symbols = true;
-    }
-
     /// Combine the provided files, rlibs, and native libraries into a single
     /// `Archive`.
-    fn build(mut self) {
-        let kind = self.llvm_archive_kind().unwrap_or_else(|kind| {
-            self.config.sess.fatal(&format!("Don't know how to build archive of type: {}", kind))
-        });
-
-        if let Err(e) = self.build_with_llvm(kind) {
-            self.config.sess.fatal(&format!("failed to build archive: {}", e));
+    fn build(mut self: Box<Self>, output: &Path) -> bool {
+        match self.build_with_llvm(output) {
+            Ok(any_members) => any_members,
+            Err(e) => self.sess.fatal(&format!("failed to build archive: {}", e)),
         }
     }
+}
 
-    fn inject_dll_import_lib(
-        &mut self,
+pub struct LlvmArchiveBuilderBuilder;
+
+impl ArchiveBuilderBuilder for LlvmArchiveBuilderBuilder {
+    fn new_archive_builder<'a>(&self, sess: &'a Session) -> Box<dyn ArchiveBuilder<'a> + 'a> {
+        Box::new(LlvmArchiveBuilder { sess, additions: Vec::new() })
+    }
+
+    fn create_dll_import_lib(
+        &self,
+        sess: &Session,
         lib_name: &str,
         dll_imports: &[DllImport],
-        tmpdir: &MaybeTempDir,
-    ) {
+        tmpdir: &Path,
+    ) -> PathBuf {
         let output_path = {
-            let mut output_path: PathBuf = tmpdir.as_ref().to_path_buf();
+            let mut output_path: PathBuf = tmpdir.to_path_buf();
             output_path.push(format!("{}_imports", lib_name));
             output_path.with_extension("lib")
         };
 
-        // we've checked for \0 characters in the library name already
-        let dll_name_z = CString::new(lib_name).unwrap();
-        // All import names are Rust identifiers and therefore cannot contain \0 characters.
-        // FIXME: when support for #[link_name] implemented, ensure that import.name values don't
-        // have any \0 characters
-        let import_name_and_ordinal_vector: Vec<(CString, Option<u16>)> = dll_imports
+        let target = &sess.target;
+        let mingw_gnu_toolchain = target.vendor == "pc"
+            && target.os == "windows"
+            && target.env == "gnu"
+            && target.abi.is_empty();
+
+        let import_name_and_ordinal_vector: Vec<(String, Option<u16>)> = dll_imports
             .iter()
             .map(|import: &DllImport| {
-                if self.config.sess.target.arch == "x86" {
-                    (LlvmArchiveBuilder::i686_decorated_name(import), import.ordinal)
+                if sess.target.arch == "x86" {
+                    (
+                        LlvmArchiveBuilder::i686_decorated_name(import, mingw_gnu_toolchain),
+                        import.ordinal,
+                    )
                 } else {
-                    (CString::new(import.name.to_string()).unwrap(), import.ordinal)
+                    (import.name.to_string(), import.ordinal)
                 }
             })
             .collect();
 
-        let output_path_z = rustc_fs_util::path_to_c_string(&output_path);
+        if mingw_gnu_toolchain {
+            // The binutils linker used on -windows-gnu targets cannot read the import
+            // libraries generated by LLVM: in our attempts, the linker produced an .EXE
+            // that loaded but crashed with an AV upon calling one of the imported
+            // functions.  Therefore, use binutils to create the import library instead,
+            // by writing a .DEF file to the temp dir and calling binutils's dlltool.
+            let def_file_path = tmpdir.join(format!("{}_imports", lib_name)).with_extension("def");
 
-        tracing::trace!("invoking LLVMRustWriteImportLibrary");
-        tracing::trace!("  dll_name {:#?}", dll_name_z);
-        tracing::trace!("  output_path {}", output_path.display());
-        tracing::trace!(
-            "  import names: {}",
-            dll_imports.iter().map(|import| import.name.to_string()).collect::<Vec<_>>().join(", "),
-        );
+            let def_file_content = format!(
+                "EXPORTS\n{}",
+                import_name_and_ordinal_vector
+                    .into_iter()
+                    .map(|(name, ordinal)| {
+                        match ordinal {
+                            Some(n) => format!("{} @{} NONAME", name, n),
+                            None => name,
+                        }
+                    })
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            );
 
-        let ffi_exports: Vec<LLVMRustCOFFShortExport> = import_name_and_ordinal_vector
-            .iter()
-            .map(|(name_z, ordinal)| LLVMRustCOFFShortExport::new(name_z.as_ptr(), *ordinal))
-            .collect();
-        let result = unsafe {
-            crate::llvm::LLVMRustWriteImportLibrary(
-                dll_name_z.as_ptr(),
-                output_path_z.as_ptr(),
-                ffi_exports.as_ptr(),
-                ffi_exports.len(),
-                llvm_machine_type(&self.config.sess.target.arch) as u16,
-                !self.config.sess.target.is_like_msvc,
-            )
+            match std::fs::write(&def_file_path, def_file_content) {
+                Ok(_) => {}
+                Err(e) => {
+                    sess.fatal(&format!("Error writing .DEF file: {}", e));
+                }
+            };
+
+            let dlltool = find_binutils_dlltool(sess);
+            let result = std::process::Command::new(dlltool)
+                .args([
+                    "-d",
+                    def_file_path.to_str().unwrap(),
+                    "-D",
+                    lib_name,
+                    "-l",
+                    output_path.to_str().unwrap(),
+                ])
+                .output();
+
+            match result {
+                Err(e) => {
+                    sess.fatal(&format!("Error calling dlltool: {}", e));
+                }
+                Ok(output) if !output.status.success() => sess.fatal(&format!(
+                    "Dlltool could not create import library: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+                _ => {}
+            }
+        } else {
+            // we've checked for \0 characters in the library name already
+            let dll_name_z = CString::new(lib_name).unwrap();
+
+            let output_path_z = rustc_fs_util::path_to_c_string(&output_path);
+
+            tracing::trace!("invoking LLVMRustWriteImportLibrary");
+            tracing::trace!("  dll_name {:#?}", dll_name_z);
+            tracing::trace!("  output_path {}", output_path.display());
+            tracing::trace!(
+                "  import names: {}",
+                dll_imports
+                    .iter()
+                    .map(|import| import.name.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+
+            // All import names are Rust identifiers and therefore cannot contain \0 characters.
+            // FIXME: when support for #[link_name] is implemented, ensure that the import names
+            // still don't contain any \0 characters.  Also need to check that the names don't
+            // contain substrings like " @" or "NONAME" that are keywords or otherwise reserved
+            // in definition files.
+            let cstring_import_name_and_ordinal_vector: Vec<(CString, Option<u16>)> =
+                import_name_and_ordinal_vector
+                    .into_iter()
+                    .map(|(name, ordinal)| (CString::new(name).unwrap(), ordinal))
+                    .collect();
+
+            let ffi_exports: Vec<LLVMRustCOFFShortExport> = cstring_import_name_and_ordinal_vector
+                .iter()
+                .map(|(name_z, ordinal)| LLVMRustCOFFShortExport::new(name_z.as_ptr(), *ordinal))
+                .collect();
+            let result = unsafe {
+                crate::llvm::LLVMRustWriteImportLibrary(
+                    dll_name_z.as_ptr(),
+                    output_path_z.as_ptr(),
+                    ffi_exports.as_ptr(),
+                    ffi_exports.len(),
+                    llvm_machine_type(&sess.target.arch) as u16,
+                    !sess.target.is_like_msvc,
+                )
+            };
+
+            if result == crate::llvm::LLVMRustResult::Failure {
+                sess.fatal(&format!(
+                    "Error creating import library for {}: {}",
+                    lib_name,
+                    llvm::last_error().unwrap_or("unknown LLVM error".to_string())
+                ));
+            }
         };
 
-        if result == crate::llvm::LLVMRustResult::Failure {
-            self.config.sess.fatal(&format!(
-                "Error creating import library for {}: {}",
-                lib_name,
-                llvm::last_error().unwrap_or("unknown LLVM error".to_string())
-            ));
-        }
-
-        self.add_archive(&output_path, |_| false).unwrap_or_else(|e| {
-            self.config.sess.fatal(&format!(
-                "failed to add native library {}: {}",
-                output_path.display(),
-                e
-            ));
-        });
+        output_path
     }
 }
 
 impl<'a> LlvmArchiveBuilder<'a> {
-    fn src_archive(&mut self) -> Option<&ArchiveRO> {
-        if let Some(ref a) = self.src_archive {
-            return a.as_ref();
-        }
-        let src = self.config.src.as_ref()?;
-        self.src_archive = Some(ArchiveRO::open(src).ok());
-        self.src_archive.as_ref().unwrap().as_ref()
-    }
+    fn build_with_llvm(&mut self, output: &Path) -> io::Result<bool> {
+        let kind = &*self.sess.target.archive_format;
+        let kind = kind.parse::<ArchiveKind>().map_err(|_| kind).unwrap_or_else(|kind| {
+            self.sess.fatal(&format!("Don't know how to build archive of type: {}", kind))
+        });
 
-    fn llvm_archive_kind(&self) -> Result<ArchiveKind, &str> {
-        let kind = &*self.config.sess.target.archive_format;
-        kind.parse().map_err(|_| kind)
-    }
-
-    fn build_with_llvm(&mut self, kind: ArchiveKind) -> io::Result<()> {
-        let removals = mem::take(&mut self.removals);
         let mut additions = mem::take(&mut self.additions);
         let mut strings = Vec::new();
         let mut members = Vec::new();
 
-        let dst = CString::new(self.config.dst.to_str().unwrap())?;
-        let should_update_symbols = self.should_update_symbols;
+        let dst = CString::new(output.to_str().unwrap())?;
 
         unsafe {
-            if let Some(archive) = self.src_archive() {
-                for child in archive.iter() {
-                    let child = child.map_err(string_to_io_error)?;
-                    let child_name = match child.name() {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    if removals.iter().any(|r| r == child_name) {
-                        continue;
-                    }
-
-                    let name = CString::new(child_name)?;
-                    members.push(llvm::LLVMRustArchiveMemberNew(
-                        ptr::null(),
-                        name.as_ptr(),
-                        Some(child.raw),
-                    ));
-                    strings.push(name);
-                }
-            }
             for addition in &mut additions {
                 match addition {
                     Addition::File { path, name_in_archive } => {
@@ -311,7 +302,7 @@ impl<'a> LlvmArchiveBuilder<'a> {
                 dst.as_ptr(),
                 members.len() as libc::size_t,
                 members.as_ptr() as *const &_,
-                should_update_symbols,
+                true,
                 kind,
             );
             let ret = if r.into_result().is_err() {
@@ -323,7 +314,7 @@ impl<'a> LlvmArchiveBuilder<'a> {
                 };
                 Err(io::Error::new(io::ErrorKind::Other, msg))
             } else {
-                Ok(())
+                Ok(!members.is_empty())
             };
             for member in members {
                 llvm::LLVMRustArchiveMemberFree(member);
@@ -332,22 +323,61 @@ impl<'a> LlvmArchiveBuilder<'a> {
         }
     }
 
-    fn i686_decorated_name(import: &DllImport) -> CString {
+    fn i686_decorated_name(import: &DllImport, mingw: bool) -> String {
         let name = import.name;
-        // We verified during construction that `name` does not contain any NULL characters, so the
-        // conversion to CString is guaranteed to succeed.
-        CString::new(match import.calling_convention {
-            DllCallingConvention::C => format!("_{}", name),
-            DllCallingConvention::Stdcall(arg_list_size) => format!("_{}@{}", name, arg_list_size),
+        let prefix = if mingw { "" } else { "_" };
+
+        match import.calling_convention {
+            DllCallingConvention::C => format!("{}{}", prefix, name),
+            DllCallingConvention::Stdcall(arg_list_size) => {
+                format!("{}{}@{}", prefix, name, arg_list_size)
+            }
             DllCallingConvention::Fastcall(arg_list_size) => format!("@{}@{}", name, arg_list_size),
             DllCallingConvention::Vectorcall(arg_list_size) => {
                 format!("{}@@{}", name, arg_list_size)
             }
-        })
-        .unwrap()
+        }
     }
 }
 
 fn string_to_io_error(s: String) -> io::Error {
     io::Error::new(io::ErrorKind::Other, format!("bad archive: {}", s))
+}
+
+fn find_binutils_dlltool(sess: &Session) -> OsString {
+    assert!(sess.target.options.is_like_windows && !sess.target.options.is_like_msvc);
+    if let Some(dlltool_path) = &sess.opts.unstable_opts.dlltool {
+        return dlltool_path.clone().into_os_string();
+    }
+
+    let mut tool_name: OsString = if sess.host.arch != sess.target.arch {
+        // We are cross-compiling, so we need the tool with the prefix matching our target
+        if sess.target.arch == "x86" {
+            "i686-w64-mingw32-dlltool"
+        } else {
+            "x86_64-w64-mingw32-dlltool"
+        }
+    } else {
+        // We are not cross-compiling, so we just want `dlltool`
+        "dlltool"
+    }
+    .into();
+
+    if sess.host.options.is_like_windows {
+        // If we're compiling on Windows, add the .exe suffix
+        tool_name.push(".exe");
+    }
+
+    // NOTE: it's not clear how useful it is to explicitly search PATH.
+    for dir in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
+        let full_path = dir.join(&tool_name);
+        if full_path.is_file() {
+            return full_path.into_os_string();
+        }
+    }
+
+    // The user didn't specify the location of the dlltool binary, and we weren't able
+    // to find the appropriate one on the PATH.  Just return the name of the tool
+    // and let the invocation fail with a hopefully useful error message.
+    tool_name
 }

@@ -9,6 +9,7 @@ use rustc_middle::ty::subst::GenericArg;
 use rustc_middle::ty::subst::{Subst, SubstsRef};
 use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::AdtDef;
+use rustc_middle::ty::EarlyBinder;
 use rustc_span::DUMMY_SP;
 
 use crate::builder::Builder;
@@ -35,7 +36,7 @@ fn codegen_collectable_calls_for_value<'ll, 'tcx>(
     place: PlaceRef<'tcx, &'ll Value>,
     substs: SubstsRef<'tcx>,
 ) {
-    let ty = place.layout.ty.subst(builder.tcx, substs);
+    let ty = EarlyBinder(place.layout.ty).subst(builder.tcx, substs);
     match ty.kind() {
         ty::Infer(ty::FreshIntTy(_))
             | ty::Infer(ty::FreshFloatTy(_))
@@ -85,10 +86,7 @@ fn codegen_collectable_calls_for_value<'ll, 'tcx>(
                 }
 
                 if adt_def.is_enum() {
-                    // This terminates the current basic block with a switch
-                    // statement, so the builder must be updated to use the
-                    // successor.
-                    *builder = codegen_collectable_calls_for_enum(builder, place, substs, *adt_def);
+                    codegen_collectable_calls_for_enum(builder, place, substs, *adt_def);
                     return;
                 }
 
@@ -141,10 +139,10 @@ fn codegen_collectable_calls_for_enum<'a, 'll, 'tcx>(
     builder: &mut Builder<'a, 'll, 'tcx>,
     place: PlaceRef<'tcx, &'ll Value>,
     substs: SubstsRef<'tcx>,
-    adt_def: &'tcx AdtDef,
-) -> Builder<'a, 'll, 'tcx> {
+    adt_def: AdtDef<'tcx>,
+) {
     // Codegen loading the enum discriminant.
-    let discr_ty = adt_def.repr.discr_type().to_ty(builder.tcx);
+    let discr_ty = adt_def.repr().discr_type().to_ty(builder.tcx);
     let discr = place.codegen_get_discr(builder, discr_ty);
     let discr_rv = OperandRef {
         val: OperandValue::Immediate(discr),
@@ -152,35 +150,32 @@ fn codegen_collectable_calls_for_enum<'a, 'll, 'tcx>(
     };
 
     // Build the successor block.
-    let name = format!("successor_{:?}", adt_def.did);
-    let successor = builder.build_sibling_block(&name);
+    let name = format!("successor_{:?}", adt_def.did());
+    let successor = builder.append_sibling_block(&name);
 
     // Codegen a basic block for each enum variant. Variants with multiple
     // fields use the same variant block.
-    let mut variants = Vec::with_capacity(adt_def.variants.len());
+    let mut variants = Vec::with_capacity(adt_def.variants().len());
     for (idx, discr) in adt_def.discriminants(builder.tcx) {
-        let name = format!("adt_{:?}_variant_{}", adt_def.did, discr.val);
-        let vbx = builder.build_sibling_block(&name);
+        let name = format!("adt_{:?}_variant_{}", adt_def.did(), discr.val);
+        let vbx = builder.append_sibling_block(&name);
         variants.push((idx, discr.val, vbx));
     }
 
     // Terminate the current block in the builder context with a switch on the
     // variants.
-    builder.switch(
-        discr_rv.immediate(),
-        successor.llbb(),
-        variants.iter().map(|v| (v.1, v.2.llbb())),
-    );
+    builder.switch(discr_rv.immediate(), successor, variants.iter().map(|v| (v.1, v.2)));
 
     // Build set_collectable calls for each variant
     for (idx, _discr, vbx) in variants.iter_mut() {
-        let place = place.project_downcast(vbx, *idx);
-        let variant = &adt_def.variants[*idx];
+        builder.switch_to_block(vbx);
+        let place = place.project_downcast(builder, *idx);
+        let variant = &adt_def.variants()[*idx];
         for (idx, _) in variant.fields.iter().enumerate() {
-            let field = place.project_field(vbx, idx);
-            codegen_collectable_calls_for_value(vbx, field, substs);
+            let field = place.project_field(builder, idx);
+            codegen_collectable_calls_for_value(builder, field, substs);
         }
-        vbx.br(successor.llbb());
+        builder.br(successor);
     }
-    successor
+    builder.switch_to_block(successor);
 }

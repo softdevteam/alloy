@@ -9,7 +9,11 @@ LL |     struct Outer<T>(Inner<T>);
    = help: the trait `Debug` is not implemented for `a::Inner<T>`
    = note: add `#[derive(Debug)]` to `a::Inner<T>` or manually `impl Debug for a::Inner<T>`
    = note: this error originates in the derive macro `Debug` (in Nightly builds, run with -Z macro-backtrace for more info)
-help: consider introducing a `where` bound, but there might be an alternative better way to express this requirement
+help: consider annotating `a::Inner<T>` with `#[derive(Debug)]`
+   |
+LL |     #[derive(Debug)]
+   |
+help: consider introducing a `where` clause, but there might be an alternative better way to express this requirement
    |
 LL |     struct Outer<T>(Inner<T>) where a::Inner<T>: Debug;
    |                               ++++++++++++++++++++++++
@@ -29,7 +33,7 @@ LL |     impl<T: Debug + Trait> Debug for Inner<T> {
    |                            ^^^^^     ^^^^^^^^
    = note: 1 redundant requirement hidden
    = note: required because of the requirements on the impl of `Debug` for `&c::Inner<T>`
-   = note: required for the cast to the object type `dyn Debug`
+   = note: required for the cast from `&c::Inner<T>` to the object type `dyn Debug`
    = note: this error originates in the derive macro `Debug` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider restricting type parameter `T`
    |
@@ -51,7 +55,7 @@ LL |     impl<T> Debug for Inner<T> where T: Debug, T: Trait {
    |             ^^^^^     ^^^^^^^^
    = note: 1 redundant requirement hidden
    = note: required because of the requirements on the impl of `Debug` for `&d::Inner<T>`
-   = note: required for the cast to the object type `dyn Debug`
+   = note: required for the cast from `&d::Inner<T>` to the object type `dyn Debug`
    = note: this error originates in the derive macro `Debug` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider restricting type parameter `T`
    |
@@ -73,7 +77,7 @@ LL |     impl<T> Debug for Inner<T> where T: Debug + Trait {
    |             ^^^^^     ^^^^^^^^
    = note: 1 redundant requirement hidden
    = note: required because of the requirements on the impl of `Debug` for `&e::Inner<T>`
-   = note: required for the cast to the object type `dyn Debug`
+   = note: required for the cast from `&e::Inner<T>` to the object type `dyn Debug`
    = note: this error originates in the derive macro `Debug` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider restricting type parameter `T`
    |
@@ -95,7 +99,7 @@ LL |     impl<T: Debug> Debug for Inner<T> where T: Trait {
    |                    ^^^^^     ^^^^^^^^
    = note: 1 redundant requirement hidden
    = note: required because of the requirements on the impl of `Debug` for `&f::Inner<T>`
-   = note: required for the cast to the object type `dyn Debug`
+   = note: required for the cast from `&f::Inner<T>` to the object type `dyn Debug`
    = note: this error originates in the derive macro `Debug` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider restricting type parameter `T`
    |

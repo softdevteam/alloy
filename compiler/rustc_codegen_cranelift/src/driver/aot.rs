@@ -33,7 +33,7 @@ fn make_module(sess: &Session, isa: Box<dyn TargetIsa>, name: String) -> ObjectM
     // Unlike cg_llvm, cg_clif defaults to disabling -Zfunction-sections. For cg_llvm binary size
     // is important, while cg_clif cares more about compilation times. Enabling -Zfunction-sections
     // can easily double the amount of time necessary to perform linking.
-    builder.per_function_section(sess.opts.debugging_opts.function_sections.unwrap_or(false));
+    builder.per_function_section(sess.opts.unstable_opts.function_sections.unwrap_or(false));
     ObjectModule::new(builder)
 }
 
@@ -56,6 +56,9 @@ fn emit_module(
 
     let tmp_file = tcx.output_filenames(()).temp_path(OutputType::Object, Some(&name));
     let obj = product.object.write().unwrap();
+
+    tcx.sess.prof.artifact_size("object_file", name.clone(), obj.len().try_into().unwrap());
+
     if let Err(err) = std::fs::write(&tmp_file, obj) {
         tcx.sess.fatal(&format!("error writing object file: {}", err));
     }
@@ -66,7 +69,7 @@ fn emit_module(
         rustc_incremental::copy_cgu_workproduct_to_incr_comp_cache_dir(
             tcx.sess,
             &name,
-            &Some(tmp_file.clone()),
+            &[("o", &tmp_file)],
         )
     };
 
@@ -81,21 +84,19 @@ fn reuse_workproduct_for_cgu(
     cgu: &CodegenUnit<'_>,
     work_products: &mut FxHashMap<WorkProductId, WorkProduct>,
 ) -> CompiledModule {
-    let mut object = None;
-    let work_product = cgu.work_product(tcx);
-    if let Some(saved_file) = &work_product.saved_file {
-        let obj_out =
-            tcx.output_filenames(()).temp_path(OutputType::Object, Some(cgu.name().as_str()));
-        object = Some(obj_out.clone());
-        let source_file = rustc_incremental::in_incr_comp_dir_sess(&tcx.sess, &saved_file);
-        if let Err(err) = rustc_fs_util::link_or_copy(&source_file, &obj_out) {
-            tcx.sess.err(&format!(
-                "unable to copy {} to {}: {}",
-                source_file.display(),
-                obj_out.display(),
-                err
-            ));
-        }
+    let work_product = cgu.previous_work_product(tcx);
+    let obj_out = tcx.output_filenames(()).temp_path(OutputType::Object, Some(cgu.name().as_str()));
+    let source_file = rustc_incremental::in_incr_comp_dir_sess(
+        &tcx.sess,
+        &work_product.saved_files.get("o").expect("no saved object file in work product"),
+    );
+    if let Err(err) = rustc_fs_util::link_or_copy(&source_file, &obj_out) {
+        tcx.sess.err(&format!(
+            "unable to copy {} to {}: {}",
+            source_file.display(),
+            obj_out.display(),
+            err
+        ));
     }
 
     work_products.insert(cgu.work_product_id(), work_product);
@@ -103,7 +104,7 @@ fn reuse_workproduct_for_cgu(
     CompiledModule {
         name: cgu.name().to_string(),
         kind: ModuleKind::Regular,
-        object,
+        object: Some(obj_out),
         dwarf_object: None,
         bytecode: None,
     }
@@ -301,8 +302,12 @@ pub(crate) fn run_aot(
     };
 
     // FIXME handle `-Ctarget-cpu=native`
-    let target_cpu =
-        tcx.sess.opts.cg.target_cpu.as_ref().unwrap_or(&tcx.sess.target.cpu).to_owned();
+    let target_cpu = match tcx.sess.opts.cg.target_cpu {
+        Some(ref name) => name,
+        None => tcx.sess.target.cpu.as_ref(),
+    }
+    .to_owned();
+
     Box::new((
         CodegenResults {
             modules,

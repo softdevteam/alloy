@@ -31,7 +31,7 @@
 //! }
 //!
 //! let list: List<i32> = List::Cons(1, Box::new(List::Cons(2, Box::new(List::Nil))));
-//! println!("{:?}", list);
+//! println!("{list:?}");
 //! ```
 //!
 //! This will print `Cons(1, Cons(2, Nil))`.
@@ -122,7 +122,21 @@
 //! definition is just using `T*` can lead to undefined behavior, as
 //! described in [rust-lang/unsafe-code-guidelines#198][ucg#198].
 //!
+//! # Considerations for unsafe code
+//!
+//! **Warning: This section is not normative and is subject to change, possibly
+//! being relaxed in the future! It is a simplified summary of the rules
+//! currently implemented in the compiler.**
+//!
+//! The aliasing rules for `Box<T>` are the same as for `&mut T`. `Box<T>`
+//! asserts uniqueness over its content. Using raw pointers derived from a box
+//! after that box has been mutated through, moved or borrowed as `&mut T`
+//! is not allowed. For more guidance on working with box from unsafe code, see
+//! [rust-lang/unsafe-code-guidelines#326][ucg#326].
+//!
+//!
 //! [ucg#198]: https://github.com/rust-lang/unsafe-code-guidelines/issues/198
+//! [ucg#326]: https://github.com/rust-lang/unsafe-code-guidelines/issues/326
 //! [dereferencing]: core::ops::Deref
 //! [`Box::<T>::from_raw(value)`]: Box::from_raw
 //! [`Global`]: crate::alloc::Global
@@ -133,6 +147,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use core::any::Any;
+use core::async_iter::AsyncIterator;
 use core::borrow;
 use core::cmp::Ordering;
 use core::convert::{From, TryFrom};
@@ -144,14 +159,13 @@ use core::hash::{Hash, Hasher};
 #[cfg(not(no_global_oom_handling))]
 use core::iter::FromIterator;
 use core::iter::{FusedIterator, Iterator};
-use core::marker::{Unpin, Unsize};
+use core::marker::{Destruct, Unpin, Unsize};
 use core::mem;
 use core::ops::{
     CoerceUnsized, Deref, DerefMut, DispatchFromDyn, Generator, GeneratorState, Receiver,
 };
 use core::pin::Pin;
 use core::ptr::{self, Unique};
-use core::stream::Stream;
 use core::task::{Context, Poll};
 
 #[cfg(not(no_global_oom_handling))]
@@ -164,6 +178,11 @@ use crate::raw_vec::RawVec;
 use crate::str::from_boxed_utf8_unchecked;
 #[cfg(not(no_global_oom_handling))]
 use crate::vec::Vec;
+
+#[unstable(feature = "thin_box", issue = "92791")]
+pub use thin::ThinBox;
+
+mod thin;
 
 /// A pointer type for heap allocation.
 ///
@@ -189,12 +208,13 @@ impl<T> Box<T> {
     /// ```
     /// let five = Box::new(5);
     /// ```
-    #[cfg(not(no_global_oom_handling))]
+    #[cfg(all(not(no_global_oom_handling)))]
     #[inline(always)]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[must_use]
     pub fn new(x: T) -> Self {
-        box x
+        #[rustc_box]
+        Box::new(x)
     }
 
     /// Constructs a new box with uninitialized contents.
@@ -249,14 +269,21 @@ impl<T> Box<T> {
         Self::new_zeroed_in(Global)
     }
 
-    /// Constructs a new `Pin<Box<T>>`. If `T` does not implement `Unpin`, then
+    /// Constructs a new `Pin<Box<T>>`. If `T` does not implement [`Unpin`], then
     /// `x` will be pinned in memory and unable to be moved.
+    ///
+    /// Constructing and pinning of the `Box` can also be done in two steps: `Box::pin(x)`
+    /// does the same as <code>[Box::into_pin]\([Box::new]\(x))</code>. Consider using
+    /// [`into_pin`](Box::into_pin) if you already have a `Box<T>`, or if you want to
+    /// construct a (pinned) `Box` in a different way than with [`Box::new`].
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "pin", since = "1.33.0")]
     #[must_use]
     #[inline(always)]
     pub fn pin(x: T) -> Pin<Box<T>> {
-        (box x).into()
+        (#[rustc_box]
+        Box::new(x))
+        .into()
     }
 
     /// Allocates memory on the heap then places `x` into it,
@@ -353,7 +380,7 @@ impl<T, A: Allocator> Box<T, A> {
     #[inline]
     pub const fn new_in(x: T, alloc: A) -> Self
     where
-        A: ~const Allocator + ~const Drop,
+        A: ~const Allocator + ~const Destruct,
     {
         let mut boxed = Self::new_uninit_in(alloc);
         unsafe {
@@ -382,8 +409,8 @@ impl<T, A: Allocator> Box<T, A> {
     #[inline]
     pub const fn try_new_in(x: T, alloc: A) -> Result<Self, AllocError>
     where
-        T: ~const Drop,
-        A: ~const Allocator + ~const Drop,
+        T: ~const Destruct,
+        A: ~const Allocator + ~const Destruct,
     {
         let mut boxed = Self::try_new_uninit_in(alloc)?;
         unsafe {
@@ -419,7 +446,7 @@ impl<T, A: Allocator> Box<T, A> {
     // #[unstable(feature = "new_uninit", issue = "63291")]
     pub const fn new_uninit_in(alloc: A) -> Box<mem::MaybeUninit<T>, A>
     where
-        A: ~const Allocator + ~const Drop,
+        A: ~const Allocator + ~const Destruct,
     {
         let layout = Layout::new::<mem::MaybeUninit<T>>();
         // NOTE: Prefer match over unwrap_or_else since closure sometimes not inlineable.
@@ -457,7 +484,7 @@ impl<T, A: Allocator> Box<T, A> {
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
     pub const fn try_new_uninit_in(alloc: A) -> Result<Box<mem::MaybeUninit<T>, A>, AllocError>
     where
-        A: ~const Allocator + ~const Drop,
+        A: ~const Allocator + ~const Destruct,
     {
         let layout = Layout::new::<mem::MaybeUninit<T>>();
         let ptr = alloc.allocate(layout)?.cast();
@@ -491,7 +518,7 @@ impl<T, A: Allocator> Box<T, A> {
     #[must_use]
     pub const fn new_zeroed_in(alloc: A) -> Box<mem::MaybeUninit<T>, A>
     where
-        A: ~const Allocator + ~const Drop,
+        A: ~const Allocator + ~const Destruct,
     {
         let layout = Layout::new::<mem::MaybeUninit<T>>();
         // NOTE: Prefer match over unwrap_or_else since closure sometimes not inlineable.
@@ -529,15 +556,20 @@ impl<T, A: Allocator> Box<T, A> {
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
     pub const fn try_new_zeroed_in(alloc: A) -> Result<Box<mem::MaybeUninit<T>, A>, AllocError>
     where
-        A: ~const Allocator + ~const Drop,
+        A: ~const Allocator + ~const Destruct,
     {
         let layout = Layout::new::<mem::MaybeUninit<T>>();
         let ptr = alloc.allocate_zeroed(layout)?.cast();
         unsafe { Ok(Box::from_raw_in(ptr.as_ptr(), alloc)) }
     }
 
-    /// Constructs a new `Pin<Box<T, A>>`. If `T` does not implement `Unpin`, then
+    /// Constructs a new `Pin<Box<T, A>>`. If `T` does not implement [`Unpin`], then
     /// `x` will be pinned in memory and unable to be moved.
+    ///
+    /// Constructing and pinning of the `Box` can also be done in two steps: `Box::pin_in(x, alloc)`
+    /// does the same as <code>[Box::into_pin]\([Box::new_in]\(x, alloc))</code>. Consider using
+    /// [`into_pin`](Box::into_pin) if you already have a `Box<T, A>`, or if you want to
+    /// construct a (pinned) `Box` in a different way than with [`Box::new_in`].
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
@@ -545,7 +577,7 @@ impl<T, A: Allocator> Box<T, A> {
     #[inline(always)]
     pub const fn pin_in(x: T, alloc: A) -> Pin<Self>
     where
-        A: 'static + ~const Allocator + ~const Drop,
+        A: 'static + ~const Allocator + ~const Destruct,
     {
         Self::into_pin(Self::new_in(x, alloc))
     }
@@ -576,7 +608,7 @@ impl<T, A: Allocator> Box<T, A> {
     #[inline]
     pub const fn into_inner(boxed: Self) -> T
     where
-        Self: ~const Drop,
+        Self: ~const Destruct,
     {
         *boxed
     }
@@ -919,6 +951,7 @@ impl<T: ?Sized> Box<T> {
     /// [`Layout`]: crate::Layout
     #[stable(feature = "box_raw", since = "1.4.0")]
     #[inline]
+    #[must_use = "call `drop(from_raw(ptr))` if you intend to drop the `Box`"]
     pub unsafe fn from_raw(raw: *mut T) -> Self {
         unsafe { Self::from_raw_in(raw, Global) }
     }
@@ -1153,27 +1186,51 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
         unsafe { &mut *mem::ManuallyDrop::new(b).0.as_ptr() }
     }
 
-    /// Converts a `Box<T>` into a `Pin<Box<T>>`
+    /// Converts a `Box<T>` into a `Pin<Box<T>>`. If `T` does not implement [`Unpin`], then
+    /// `*boxed` will be pinned in memory and unable to be moved.
     ///
     /// This conversion does not allocate on the heap and happens in place.
     ///
     /// This is also available via [`From`].
-    #[unstable(feature = "box_into_pin", issue = "62370")]
+    ///
+    /// Constructing and pinning a `Box` with <code>Box::into_pin([Box::new]\(x))</code>
+    /// can also be written more concisely using <code>[Box::pin]\(x)</code>.
+    /// This `into_pin` method is useful if you already have a `Box<T>`, or you are
+    /// constructing a (pinned) `Box` in a different way than with [`Box::new`].
+    ///
+    /// # Notes
+    ///
+    /// It's not recommended that crates add an impl like `From<Box<T>> for Pin<T>`,
+    /// as it'll introduce an ambiguity when calling `Pin::from`.
+    /// A demonstration of such a poor impl is shown below.
+    ///
+    /// ```compile_fail
+    /// # use std::pin::Pin;
+    /// struct Foo; // A type defined in this crate.
+    /// impl From<Box<()>> for Pin<Foo> {
+    ///     fn from(_: Box<()>) -> Pin<Foo> {
+    ///         Pin::new(Foo)
+    ///     }
+    /// }
+    ///
+    /// let foo = Box::new(());
+    /// let bar = Pin::from(foo);
+    /// ```
+    #[stable(feature = "box_into_pin", since = "1.63.0")]
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
     pub const fn into_pin(boxed: Self) -> Pin<Self>
     where
         A: 'static,
     {
         // It's not possible to move or replace the insides of a `Pin<Box<T>>`
-        // when `T: !Unpin`,  so it's safe to pin it directly without any
+        // when `T: !Unpin`, so it's safe to pin it directly without any
         // additional requirements.
         unsafe { Pin::new_unchecked(boxed) }
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_const_unstable(feature = "const_box", issue = "92521")]
-unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> const Drop for Box<T, A> {
+unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> Drop for Box<T, A> {
     fn drop(&mut self) {
         // FIXME: Do nothing, drop is currently performed by compiler.
     }
@@ -1184,23 +1241,32 @@ unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> const Drop for Box<T, A> {
 impl<T: Default> Default for Box<T> {
     /// Creates a `Box<T>`, with the `Default` value for T.
     fn default() -> Self {
-        box T::default()
+        #[rustc_box]
+        Box::new(T::default())
     }
 }
 
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Default for Box<[T]> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for Box<[T]> {
     fn default() -> Self {
-        Box::<[T; 0]>::new([])
+        let ptr: Unique<[T]> = Unique::<[T; 0]>::dangling();
+        Box(ptr, Global)
     }
 }
 
 #[cfg(not(no_global_oom_handling))]
 #[stable(feature = "default_box_extra", since = "1.17.0")]
-impl Default for Box<str> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl const Default for Box<str> {
     fn default() -> Self {
-        unsafe { from_boxed_utf8_unchecked(Default::default()) }
+        // SAFETY: This is the same as `Unique::cast<U>` but with an unsized `U = str`.
+        let ptr: Unique<str> = unsafe {
+            let bytes: Unique<[u8]> = Unique::<[u8; 0]>::dangling();
+            Unique::new_unchecked(bytes.as_ptr() as *mut str)
+        };
+        Box(ptr, Global)
     }
 }
 
@@ -1359,6 +1425,12 @@ impl<T: ?Sized + Hasher, A: Allocator> Hasher for Box<T, A> {
     fn write_isize(&mut self, i: isize) {
         (**self).write_isize(i)
     }
+    fn write_length_prefix(&mut self, len: usize) {
+        (**self).write_length_prefix(len)
+    }
+    fn write_str(&mut self, s: &str) {
+        (**self).write_str(s)
+    }
 }
 
 #[cfg(not(no_global_oom_handling))]
@@ -1388,9 +1460,17 @@ impl<T: ?Sized, A: Allocator> const From<Box<T, A>> for Pin<Box<T, A>>
 where
     A: 'static,
 {
-    /// Converts a `Box<T>` into a `Pin<Box<T>>`
+    /// Converts a `Box<T>` into a `Pin<Box<T>>`. If `T` does not implement [`Unpin`], then
+    /// `*boxed` will be pinned in memory and unable to be moved.
     ///
     /// This conversion does not allocate on the heap and happens in place.
+    ///
+    /// This is also available via [`Box::into_pin`].
+    ///
+    /// Constructing and pinning a `Box` with <code><Pin<Box\<T>>>::from([Box::new]\(x))</code>
+    /// can also be written more concisely using <code>[Box::pin]\(x)</code>.
+    /// This `From` implementation is useful if you already have a `Box<T>`, or you are
+    /// constructing a (pinned) `Box` in a different way than with [`Box::new`].
     fn from(boxed: Box<T, A>) -> Self {
         Box::into_pin(boxed)
     }
@@ -1410,7 +1490,7 @@ impl<T: Copy> From<&[T]> for Box<[T]> {
     /// let slice: &[u8] = &[104, 101, 108, 108, 111];
     /// let boxed_slice: Box<[u8]> = Box::from(slice);
     ///
-    /// println!("{:?}", boxed_slice);
+    /// println!("{boxed_slice:?}");
     /// ```
     fn from(slice: &[T]) -> Box<[T]> {
         let len = slice.len();
@@ -1452,7 +1532,7 @@ impl From<&str> for Box<str> {
     ///
     /// ```rust
     /// let boxed: Box<str> = Box::from("hello");
-    /// println!("{}", boxed);
+    /// println!("{boxed}");
     /// ```
     #[inline]
     fn from(s: &str) -> Box<str> {
@@ -1477,14 +1557,14 @@ impl From<Cow<'_, str>> for Box<str> {
     ///
     /// let unboxed = Cow::Borrowed("hello");
     /// let boxed: Box<str> = Box::from(unboxed);
-    /// println!("{}", boxed);
+    /// println!("{boxed}");
     /// ```
     ///
     /// ```rust
     /// # use std::borrow::Cow;
     /// let unboxed = Cow::Owned("hello".to_string());
     /// let boxed: Box<str> = Box::from(unboxed);
-    /// println!("{}", boxed);
+    /// println!("{boxed}");
     /// ```
     #[inline]
     fn from(cow: Cow<'_, str>) -> Box<str> {
@@ -1531,10 +1611,11 @@ impl<T, const N: usize> From<[T; N]> for Box<[T]> {
     ///
     /// ```rust
     /// let boxed: Box<[u8]> = Box::from([4, 2]);
-    /// println!("{:?}", boxed);
+    /// println!("{boxed:?}");
     /// ```
     fn from(array: [T; N]) -> Box<[T]> {
-        box array
+        #[rustc_box]
+        Box::new(array)
     }
 }
 
@@ -1994,8 +2075,8 @@ where
     }
 }
 
-#[unstable(feature = "async_stream", issue = "79024")]
-impl<S: ?Sized + Stream + Unpin> Stream for Box<S> {
+#[unstable(feature = "async_iterator", issue = "79024")]
+impl<S: ?Sized + AsyncIterator + Unpin> AsyncIterator for Box<S> {
     type Item = S::Item;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

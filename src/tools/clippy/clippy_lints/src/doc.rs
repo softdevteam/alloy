@@ -1,8 +1,9 @@
 use clippy_utils::attrs::is_doc_hidden;
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help, span_lint_and_note, span_lint_and_then};
+use clippy_utils::macros::{is_panic, root_macro_call_first_node};
 use clippy_utils::source::{first_line_of_span, snippet_with_applicability};
 use clippy_utils::ty::{implements_trait, is_type_diagnostic_item};
-use clippy_utils::{is_entrypoint_fn, is_expn_of, match_panic_def_id, method_chain_args, return_ty};
+use clippy_utils::{is_entrypoint_fn, method_chain_args, return_ty};
 use if_chain::if_chain;
 use itertools::Itertools;
 use rustc_ast::ast::{Async, AttrKind, Attribute, Fn, FnRetTy, ItemKind};
@@ -10,12 +11,12 @@ use rustc_ast::token::CommentKind;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::emitter::EmitterWriter;
-use rustc_errors::{Applicability, Handler, SuggestionStyle};
+use rustc_errors::{Applicability, Handler, MultiSpan, SuggestionStyle};
 use rustc_hir as hir;
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
-use rustc_hir::{AnonConst, Expr, ExprKind, QPath};
+use rustc_hir::intravisit::{self, Visitor};
+use rustc_hir::{AnonConst, Expr};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::hir::map::Map;
+use rustc_middle::hir::nested_filter;
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty;
 use rustc_parse::maybe_new_parser_from_source_str;
@@ -24,7 +25,7 @@ use rustc_session::parse::ParseSess;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::def_id::LocalDefId;
 use rustc_span::edition::Edition;
-use rustc_span::source_map::{BytePos, FilePathMapping, MultiSpan, SourceMap, Span};
+use rustc_span::source_map::{BytePos, FilePathMapping, SourceMap, Span};
 use rustc_span::{sym, FileName, Pos};
 use std::io;
 use std::ops::Range;
@@ -162,7 +163,7 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
-    #[clippy::version = "1.52.0"]
+    #[clippy::version = "1.51.0"]
     pub MISSING_PANICS_DOC,
     pedantic,
     "`pub fn` may panic without `# Panics` in doc comment"
@@ -177,7 +178,7 @@ declare_clippy_lint! {
     /// if the `fn main()` is left implicit.
     ///
     /// ### Examples
-    /// ``````rust
+    /// ```rust
     /// /// An example of a doctest with a `main()` function
     /// ///
     /// /// # Examples
@@ -190,14 +191,14 @@ declare_clippy_lint! {
     /// fn needless_main() {
     ///     unimplemented!();
     /// }
-    /// ``````
+    /// ```
     #[clippy::version = "1.40.0"]
     pub NEEDLESS_DOCTEST_MAIN,
     style,
     "presence of `fn main() {` in code examples"
 }
 
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 #[derive(Clone)]
 pub struct DocMarkdown {
     valid_idents: FxHashSet<String>,
@@ -239,7 +240,7 @@ impl<'tcx> LateLintPass<'tcx> for DocMarkdown {
                     lint_for_missing_headers(cx, item.def_id, item.span, sig, headers, Some(body_id), fpu.panic_span);
                 }
             },
-            hir::ItemKind::Impl(ref impl_) => {
+            hir::ItemKind::Impl(impl_) => {
                 self.in_trait_impl = impl_.of_trait.is_some();
             },
             hir::ItemKind::Trait(_, unsafety, ..) => {
@@ -372,7 +373,7 @@ fn lint_for_missing_headers<'tcx>(
 /// `rustc_ast::parse::lexer::comments::strip_doc_comment_decoration` because we
 /// need to keep track of
 /// the spans but this function is inspired from the later.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 #[must_use]
 pub fn strip_doc_comment_decoration(doc: &str, comment_kind: CommentKind, span: Span) -> (String, Vec<(usize, Span)>) {
     // one-line comments lose their prefix
@@ -427,7 +428,7 @@ fn check_attrs<'a>(cx: &LateContext<'_>, valid_idents: &FxHashSet<String>, attrs
     /// We don't want the parser to choke on intra doc links. Since we don't
     /// actually care about rendering them, just pretend that all broken links are
     /// point to a fake address.
-    #[allow(clippy::unnecessary_wraps)] // we're following a type signature
+    #[expect(clippy::unnecessary_wraps)] // we're following a type signature
     fn fake_broken_link_callback<'a>(_: BrokenLink<'_>) -> Option<(CowStr<'a>, CowStr<'a>)> {
         Some(("fake".into(), "fake".into()))
     }
@@ -620,16 +621,26 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
                 let filename = FileName::anon_source_code(&code);
 
                 let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-                let emitter = EmitterWriter::new(Box::new(io::sink()), None, false, false, false, None, false);
+                let fallback_bundle =
+                    rustc_errors::fallback_fluent_bundle(rustc_errors::DEFAULT_LOCALE_RESOURCES, false);
+                let emitter = EmitterWriter::new(
+                    Box::new(io::sink()),
+                    None,
+                    None,
+                    fallback_bundle,
+                    false,
+                    false,
+                    false,
+                    None,
+                    false,
+                );
                 let handler = Handler::with_emitter(false, None, Box::new(emitter));
                 let sess = ParseSess::with_span_handler(handler, sm);
 
                 let mut parser = match maybe_new_parser_from_source_str(&sess, filename, code) {
                     Ok(p) => p,
                     Err(errs) => {
-                        for mut err in errs {
-                            err.cancel();
-                        }
+                        drop(errs);
                         return false;
                     },
                 };
@@ -638,12 +649,6 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
                 loop {
                     match parser.parse_item(ForceCollect::No) {
                         Ok(Some(item)) => match &item.kind {
-                            // Tests with one of these items are ignored
-                            ItemKind::Static(..)
-                            | ItemKind::Const(..)
-                            | ItemKind::ExternCrate(..)
-                            | ItemKind::ForeignMod(..) => return false,
-                            // We found a main function ...
                             ItemKind::Fn(box Fn {
                                 sig, body: Some(block), ..
                             }) if item.ident.name == sym::main => {
@@ -662,12 +667,17 @@ fn check_code(cx: &LateContext<'_>, text: &str, edition: Edition, span: Span) {
                                     return false;
                                 }
                             },
-                            // Another function was found; this case is ignored too
-                            ItemKind::Fn(..) => return false,
+                            // Tests with one of these items are ignored
+                            ItemKind::Static(..)
+                            | ItemKind::Const(..)
+                            | ItemKind::ExternCrate(..)
+                            | ItemKind::ForeignMod(..)
+                            // Another function was found; this case is ignored
+                            | ItemKind::Fn(..) => return false,
                             _ => {},
                         },
                         Ok(None) => break,
-                        Err(mut e) => {
+                        Err(e) => {
                             e.cancel();
                             return false;
                         },
@@ -729,7 +739,7 @@ fn check_word(cx: &LateContext<'_>, word: &str, span: Span) {
     /// letters (`Clippy` is ok) and one lower-case letter (`NASA` is ok).
     /// Plurals are also excluded (`IDs` is ok).
     fn is_camel_case(s: &str) -> bool {
-        if s.starts_with(|c: char| c.is_digit(10)) {
+        if s.starts_with(|c: char| c.is_ascii_digit()) {
             return false;
         }
 
@@ -798,29 +808,22 @@ struct FindPanicUnwrap<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for FindPanicUnwrap<'a, 'tcx> {
-    type Map = Map<'tcx>;
+    type NestedFilter = nested_filter::OnlyBodies;
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if self.panic_span.is_some() {
             return;
         }
 
-        // check for `begin_panic`
-        if_chain! {
-            if let ExprKind::Call(func_expr, _) = expr.kind;
-            if let ExprKind::Path(QPath::Resolved(_, path)) = func_expr.kind;
-            if let Some(path_def_id) = path.res.opt_def_id();
-            if match_panic_def_id(self.cx, path_def_id);
-            if is_expn_of(expr.span, "unreachable").is_none();
-            if !is_expn_of_debug_assertions(expr.span);
-            then {
-                self.panic_span = Some(expr.span);
+        if let Some(macro_call) = root_macro_call_first_node(self.cx, expr) {
+            if is_panic(self.cx, macro_call.def_id)
+                || matches!(
+                    self.cx.tcx.item_name(macro_call.def_id).as_str(),
+                    "assert" | "assert_eq" | "assert_ne" | "todo"
+                )
+            {
+                self.panic_span = Some(macro_call.span);
             }
-        }
-
-        // check for `assert_eq` or `assert_ne`
-        if is_expn_of(expr.span, "assert_eq").is_some() || is_expn_of(expr.span, "assert_ne").is_some() {
-            self.panic_span = Some(expr.span);
         }
 
         // check for `unwrap`
@@ -840,12 +843,7 @@ impl<'a, 'tcx> Visitor<'tcx> for FindPanicUnwrap<'a, 'tcx> {
     // Panics in const blocks will cause compilation to fail.
     fn visit_anon_const(&mut self, _: &'tcx AnonConst) {}
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::OnlyBodies(self.cx.tcx.hir())
+    fn nested_visit_map(&mut self) -> Self::Map {
+        self.cx.tcx.hir()
     }
-}
-
-fn is_expn_of_debug_assertions(span: Span) -> bool {
-    const MACRO_NAMES: &[&str] = &["debug_assert", "debug_assert_eq", "debug_assert_ne"];
-    MACRO_NAMES.iter().any(|name| is_expn_of(span, name).is_some())
 }

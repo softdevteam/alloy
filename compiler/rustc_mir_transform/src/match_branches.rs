@@ -14,7 +14,7 @@ pub struct MatchBranchSimplification;
 ///
 /// For example:
 ///
-/// ```rust
+/// ```ignore (MIR)
 /// bb0: {
 ///     switchInt(move _3) -> [42_isize: bb1, otherwise: bb2];
 /// }
@@ -32,7 +32,7 @@ pub struct MatchBranchSimplification;
 ///
 /// into:
 ///
-/// ```rust
+/// ```ignore (MIR)
 /// bb0: {
 ///    _2 = Eq(move _3, const 42_isize);
 ///    goto -> bb3;
@@ -48,7 +48,7 @@ impl<'tcx> MirPass<'tcx> for MatchBranchSimplification {
         let def_id = body.source.def_id();
         let param_env = tcx.param_env(def_id);
 
-        let (bbs, local_decls) = body.basic_blocks_and_local_decls_mut();
+        let bbs = body.basic_blocks.as_mut();
         let mut should_cleanup = false;
         'outer: for bb_idx in bbs.indices() {
             if !tcx.consider_optimizing(|| format!("MatchBranchSimplification {:?} ", def_id)) {
@@ -108,7 +108,7 @@ impl<'tcx> MirPass<'tcx> for MatchBranchSimplification {
 
             // Introduce a temporary for the discriminant value.
             let source_info = bbs[bb_idx].terminator().source_info;
-            let discr_local = local_decls.push(LocalDecl::new(switch_ty, source_info.span));
+            let discr_local = body.local_decls.push(LocalDecl::new(switch_ty, source_info.span));
 
             // We already checked that first and second are different blocks,
             // and bb_idx has a different terminator from both of them.

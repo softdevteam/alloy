@@ -15,7 +15,7 @@ pub fn non_ssa_locals<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     fx: &FunctionCx<'a, 'tcx, Bx>,
 ) -> BitSet<mir::Local> {
     let mir = fx.mir;
-    let dominators = mir.dominators();
+    let dominators = mir.basic_blocks.dominators();
     let locals = mir
         .local_decls
         .iter()
@@ -40,9 +40,9 @@ pub fn non_ssa_locals<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     }
 
     // If there exists a local definition that dominates all uses of that local,
-    // the definition should be visited first. Traverse blocks in preorder which
+    // the definition should be visited first. Traverse blocks in an order that
     // is a topological sort of dominance partial order.
-    for (bb, data) in traversal::preorder(&mir) {
+    for (bb, data) in traversal::reverse_postorder(&mir) {
         analyzer.visit_basic_block_data(bb, data);
     }
 
@@ -143,13 +143,13 @@ impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx,
             // now that we have moved to the "slice of projections" representation.
             if let mir::ProjectionElem::Index(local) = elem {
                 self.visit_local(
-                    &local,
+                    local,
                     PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy),
                     location,
                 );
             }
         } else {
-            self.visit_local(&place_ref.local, context, location);
+            self.visit_local(place_ref.local, context, location);
         }
     }
 }
@@ -185,7 +185,7 @@ impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
         self.process_place(&place.as_ref(), context, location);
     }
 
-    fn visit_local(&mut self, &local: &mir::Local, context: PlaceContext, location: Location) {
+    fn visit_local(&mut self, local: mir::Local, context: PlaceContext, location: Location) {
         match context {
             PlaceContext::MutatingUse(MutatingUseContext::Call)
             | PlaceContext::MutatingUse(MutatingUseContext::Yield) => {
@@ -211,7 +211,8 @@ impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
 
             PlaceContext::MutatingUse(
                 MutatingUseContext::Store
-                | MutatingUseContext::LlvmAsmOutput
+                | MutatingUseContext::Deinit
+                | MutatingUseContext::SetDiscriminant
                 | MutatingUseContext::AsmOutput
                 | MutatingUseContext::Borrow
                 | MutatingUseContext::AddressOf
@@ -327,7 +328,7 @@ pub fn cleanup_kinds(mir: &mir::Body<'_>) -> IndexVec<mir::BasicBlock, CleanupKi
                 bb, data, result[bb], funclet
             );
 
-            for &succ in data.terminator().successors() {
+            for succ in data.terminator().successors() {
                 let kind = result[succ];
                 debug!("cleanup_kinds: propagating {:?} to {:?}/{:?}", funclet, succ, kind);
                 match kind {

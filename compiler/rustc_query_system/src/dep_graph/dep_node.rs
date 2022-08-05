@@ -79,8 +79,8 @@ impl<K: DepKind> DepNode<K> {
         #[cfg(debug_assertions)]
         {
             if !tcx.fingerprint_style(kind).reconstructible()
-                && (tcx.sess().opts.debugging_opts.incremental_info
-                    || tcx.sess().opts.debugging_opts.query_dep_graph)
+                && (tcx.sess().opts.unstable_opts.incremental_info
+                    || tcx.sess().opts.unstable_opts.query_dep_graph)
             {
                 tcx.dep_graph().register_dep_node_debug_str(dep_node, || arg.to_debug_str(tcx));
             }
@@ -131,12 +131,11 @@ where
 
     #[inline(always)]
     default fn to_fingerprint(&self, tcx: Ctxt) -> Fingerprint {
-        let mut hcx = tcx.create_stable_hashing_context();
-        let mut hasher = StableHasher::new();
-
-        self.hash_stable(&mut hcx, &mut hasher);
-
-        hasher.finish()
+        tcx.with_stable_hashing_context(|mut hcx| {
+            let mut hasher = StableHasher::new();
+            self.hash_stable(&mut hcx, &mut hasher);
+            hasher.finish()
+        })
     }
 
     #[inline(always)]
@@ -164,7 +163,6 @@ pub struct WorkProductId {
 impl WorkProductId {
     pub fn from_cgu_name(cgu_name: &str) -> WorkProductId {
         let mut hasher = StableHasher::new();
-        cgu_name.len().hash(&mut hasher);
         cgu_name.hash(&mut hasher);
         WorkProductId { hash: hasher.finish() }
     }

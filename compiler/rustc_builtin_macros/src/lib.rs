@@ -1,12 +1,15 @@
 //! This crate contains implementations of built-in macros and other code generating facilities
 //! injecting code into the crate before it is lowered to HIR.
 
+#![allow(rustc::potential_query_instability)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![feature(array_windows)]
 #![feature(box_patterns)]
-#![feature(bool_to_option)]
-#![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
-#![feature(nll)]
+#![feature(if_let_guard)]
+#![feature(is_sorted)]
+#![cfg_attr(bootstrap, feature(let_chains))]
+#![feature(let_else)]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_quote)]
 #![recursion_limit = "256"]
@@ -29,13 +32,12 @@ mod concat_bytes;
 mod concat_idents;
 mod derive;
 mod deriving;
+mod edition_panic;
 mod env;
 mod format;
 mod format_foreign;
 mod global_allocator;
-mod llvm_asm;
 mod log_syntax;
-mod panic;
 mod source_util;
 mod test;
 mod trace_macros;
@@ -78,12 +80,12 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
         include_str: source_util::expand_include_str,
         include: source_util::expand_include,
         line: source_util::expand_line,
-        llvm_asm: llvm_asm::expand_llvm_asm,
         log_syntax: log_syntax::expand_log_syntax,
         module_path: source_util::expand_mod,
         option_env: env::expand_option_env,
-        core_panic: panic::expand_panic,
-        std_panic: panic::expand_panic,
+        core_panic: edition_panic::expand_panic,
+        std_panic: edition_panic::expand_panic,
+        unreachable: edition_panic::expand_unreachable,
         stringify: source_util::expand_stringify,
         trace_macros: trace_macros::expand_trace_macros,
     }

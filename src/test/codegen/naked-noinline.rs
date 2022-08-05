@@ -7,7 +7,6 @@
 
 use std::arch::asm;
 
-#[inline(always)]
 #[naked]
 #[no_mangle]
 pub unsafe extern "C" fn f() {
@@ -29,4 +28,4 @@ pub unsafe fn g() {
     f();
 }
 
-// CHECK: attributes [[ATTR]] = { naked noinline{{.*}} }
+// CHECK: attributes [[ATTR]] = { naked{{.*}}noinline{{.*}} }

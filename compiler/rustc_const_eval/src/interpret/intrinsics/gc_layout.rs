@@ -1,12 +1,12 @@
-use rustc_middle::mir::interpret::Allocation;
+use rustc_middle::mir::interpret::{Allocation, ConstAllocation};
 use rustc_middle::ty::{ParamEnv, Ty, TyCtxt};
 
 /// Directly returns an `Allocation` containing bitmap of a type's GC layout.
-crate fn alloc_gc_layout<'tcx>(
+pub fn alloc_gc_layout<'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
     param_env: ParamEnv<'tcx>,
-) -> &'tcx Allocation {
+) -> ConstAllocation<'tcx> {
     if ty.ty_adt_def().is_none() {
         unimplemented!("core::intrinsics::gc_layout::<T>() is currently only supported for ADTs");
     }

@@ -4,24 +4,23 @@ use crate::infer::error_reporting::nice_region_error::NiceRegionError;
 use crate::infer::lexical_region_resolve::RegionResolutionError;
 use crate::infer::{SubregionOrigin, TypeTrace};
 use crate::traits::{ObligationCauseCode, UnifyReceiverContext};
-use rustc_data_structures::stable_set::FxHashSet;
-use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder, ErrorReported};
+use rustc_data_structures::fx::FxHashSet;
+use rustc_errors::{struct_span_err, Applicability, Diagnostic, ErrorGuaranteed, MultiSpan};
 use rustc_hir::def_id::DefId;
-use rustc_hir::intravisit::{walk_ty, ErasedMap, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{walk_ty, Visitor};
 use rustc_hir::{self as hir, GenericBound, Item, ItemKind, Lifetime, LifetimeName, Node, TyKind};
 use rustc_middle::ty::{
-    self, AssocItemContainer, RegionKind, StaticLifetimeVisitor, Ty, TyCtxt, TypeFoldable,
-    TypeVisitor,
+    self, AssocItemContainer, StaticLifetimeVisitor, Ty, TyCtxt, TypeSuperVisitable, TypeVisitor,
 };
 use rustc_span::symbol::Ident;
-use rustc_span::{MultiSpan, Span};
+use rustc_span::Span;
 
 use std::ops::ControlFlow;
 
 impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// Print the error message for lifetime errors when the return type is a static `impl Trait`,
     /// `dyn Trait` or if a method call on a trait object introduces a static requirement.
-    pub(super) fn try_report_static_impl_trait(&self) -> Option<ErrorReported> {
+    pub(super) fn try_report_static_impl_trait(&self) -> Option<ErrorGuaranteed> {
         debug!("try_report_static_impl_trait(error={:?})", self.error);
         let tcx = self.tcx();
         let (var_origin, sub_origin, sub_r, sup_origin, sup_r, spans) = match self.error.as_ref()? {
@@ -33,25 +32,23 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                 sup_origin,
                 sup_r,
                 spans,
-            ) if **sub_r == RegionKind::ReStatic => {
-                (var_origin, sub_origin, sub_r, sup_origin, sup_r, spans)
-            }
+            ) if sub_r.is_static() => (var_origin, sub_origin, sub_r, sup_origin, sup_r, spans),
             RegionResolutionError::ConcreteFailure(
                 SubregionOrigin::Subtype(box TypeTrace { cause, .. }),
                 sub_r,
                 sup_r,
-            ) if **sub_r == RegionKind::ReStatic => {
+            ) if sub_r.is_static() => {
                 // This is for an implicit `'static` requirement coming from `impl dyn Trait {}`.
                 if let ObligationCauseCode::UnifyReceiver(ctxt) = cause.code() {
                     // This may have a closure and it would cause ICE
                     // through `find_param_with_region` (#78262).
-                    let anon_reg_sup = tcx.is_suitable_region(sup_r)?;
+                    let anon_reg_sup = tcx.is_suitable_region(*sup_r)?;
                     let fn_returns = tcx.return_type_impl_or_dyn_traits(anon_reg_sup.def_id);
                     if fn_returns.is_empty() {
                         return None;
                     }
 
-                    let param = self.find_param_with_region(sup_r, sub_r)?;
+                    let param = self.find_param_with_region(*sup_r, *sub_r)?;
                     let lifetime = if sup_r.has_name() {
                         format!("lifetime `{}`", sup_r)
                     } else {
@@ -70,7 +67,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                             .map(|s| format!("`{}`", s))
                             .unwrap_or_else(|| "`fn` parameter".to_string()),
                         lifetime,
-                        ctxt.assoc_item.ident,
+                        ctxt.assoc_item.name,
                     );
                     err.span_label(param.param_ty_span, &format!("this data with {}...", lifetime));
                     err.span_label(
@@ -87,8 +84,8 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                         ),
                     );
                     if self.find_impl_on_dyn_trait(&mut err, param.param_ty, &ctxt) {
-                        err.emit();
-                        return Some(ErrorReported);
+                        let reported = err.emit();
+                        return Some(reported);
                     } else {
                         err.cancel();
                     }
@@ -101,11 +98,11 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             "try_report_static_impl_trait(var={:?}, sub={:?} {:?} sup={:?} {:?})",
             var_origin, sub_origin, sub_r, sup_origin, sup_r
         );
-        let anon_reg_sup = tcx.is_suitable_region(sup_r)?;
+        let anon_reg_sup = tcx.is_suitable_region(*sup_r)?;
         debug!("try_report_static_impl_trait: anon_reg_sup={:?}", anon_reg_sup);
         let sp = var_origin.span();
         let return_sp = sub_origin.span();
-        let param = self.find_param_with_region(sup_r, sub_r)?;
+        let param = self.find_param_with_region(*sup_r, *sub_r)?;
         let (lifetime_name, lifetime) = if sup_r.has_name() {
             (sup_r.to_string(), format!("lifetime `{}`", sup_r))
         } else {
@@ -187,6 +184,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             | ObligationCauseCode::BlockTailExpression(hir_id) = cause.code()
             {
                 let parent_id = tcx.hir().get_parent_item(*hir_id);
+                let parent_id = tcx.hir().local_def_id_to_hir_id(parent_id);
                 if let Some(fn_decl) = tcx.hir().fn_decl_by_hir_id(parent_id) {
                     let mut span: MultiSpan = fn_decl.output.span().into();
                     let mut add_label = true;
@@ -196,10 +194,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                         if !v.0.is_empty() {
                             span = v.0.clone().into();
                             for sp in v.0 {
-                                span.push_span_label(
-                                    sp,
-                                    "`'static` requirement introduced here".to_string(),
-                                );
+                                span.push_span_label(sp, "`'static` requirement introduced here");
                             }
                             add_label = false;
                         }
@@ -207,13 +202,10 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                     if add_label {
                         span.push_span_label(
                             fn_decl.output.span(),
-                            "requirement introduced by this return type".to_string(),
+                            "requirement introduced by this return type",
                         );
                     }
-                    span.push_span_label(
-                        cause.span,
-                        "because of this returned expression".to_string(),
-                    );
+                    span.push_span_label(cause.span, "because of this returned expression");
                     err.span_note(
                         span,
                         "`'static` lifetime requirement introduced by the return type",
@@ -225,35 +217,32 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         let fn_returns = tcx.return_type_impl_or_dyn_traits(anon_reg_sup.def_id);
 
         let mut override_error_code = None;
-        if let SubregionOrigin::Subtype(box TypeTrace { cause, .. }) = &sup_origin {
-            if let ObligationCauseCode::UnifyReceiver(ctxt) = cause.code() {
-                // Handle case of `impl Foo for dyn Bar { fn qux(&self) {} }` introducing a
-                // `'static` lifetime when called as a method on a binding: `bar.qux()`.
-                if self.find_impl_on_dyn_trait(&mut err, param.param_ty, &ctxt) {
-                    override_error_code = Some(ctxt.assoc_item.ident);
-                }
-            }
+        if let SubregionOrigin::Subtype(box TypeTrace { cause, .. }) = &sup_origin
+            && let ObligationCauseCode::UnifyReceiver(ctxt) = cause.code()
+            // Handle case of `impl Foo for dyn Bar { fn qux(&self) {} }` introducing a
+            // `'static` lifetime when called as a method on a binding: `bar.qux()`.
+            && self.find_impl_on_dyn_trait(&mut err, param.param_ty, &ctxt)
+        {
+            override_error_code = Some(ctxt.assoc_item.name);
         }
-        if let SubregionOrigin::Subtype(box TypeTrace { cause, .. }) = &sub_origin {
-            let code = match cause.code() {
+
+        if let SubregionOrigin::Subtype(box TypeTrace { cause, .. }) = &sub_origin
+            && let code = match cause.code() {
                 ObligationCauseCode::MatchImpl(parent, ..) => parent.code(),
                 _ => cause.code(),
-            };
-            if let (ObligationCauseCode::ItemObligation(item_def_id), None) =
-                (code, override_error_code)
+            }
+            && let (&ObligationCauseCode::ItemObligation(item_def_id), None) = (code, override_error_code)
+        {
+            // Same case of `impl Foo for dyn Bar { fn qux(&self) {} }` introducing a `'static`
+            // lifetime as above, but called using a fully-qualified path to the method:
+            // `Foo::qux(bar)`.
+            let mut v = TraitObjectVisitor(FxHashSet::default());
+            v.visit_ty(param.param_ty);
+            if let Some((ident, self_ty)) =
+                self.get_impl_ident_and_self_ty_from_trait(item_def_id, &v.0)
+                && self.suggest_constrain_dyn_trait_in_impl(&mut err, &v.0, ident, self_ty)
             {
-                // Same case of `impl Foo for dyn Bar { fn qux(&self) {} }` introducing a `'static`
-                // lifetime as above, but called using a fully-qualified path to the method:
-                // `Foo::qux(bar)`.
-                let mut v = TraitObjectVisitor(FxHashSet::default());
-                v.visit_ty(param.param_ty);
-                if let Some((ident, self_ty)) =
-                    self.get_impl_ident_and_self_ty_from_trait(*item_def_id, &v.0)
-                {
-                    if self.suggest_constrain_dyn_trait_in_impl(&mut err, &v.0, ident, self_ty) {
-                        override_error_code = Some(ident);
-                    }
-                }
+                override_error_code = Some(ident.name);
             }
         }
         if let (Some(ident), true) = (override_error_code, fn_returns.is_empty()) {
@@ -281,14 +270,14 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             Some((param.param_ty_span, param.param_ty.to_string())),
         );
 
-        err.emit();
-        Some(ErrorReported)
+        let reported = err.emit();
+        Some(reported)
     }
 }
 
 pub fn suggest_new_region_bound(
     tcx: TyCtxt<'_>,
-    err: &mut DiagnosticBuilder<'_>,
+    err: &mut Diagnostic,
     fn_returns: Vec<&rustc_hir::Ty<'_>>,
     lifetime_name: String,
     arg: Option<String>,
@@ -333,7 +322,7 @@ pub fn suggest_new_region_bound(
                         err.span_suggestion_verbose(
                             span,
                             &format!("{} `impl Trait`'s {}", consider, explicit_static),
-                            lifetime_name.clone(),
+                            &lifetime_name,
                             Applicability::MaybeIncorrect,
                         );
                     }
@@ -368,7 +357,7 @@ pub fn suggest_new_region_bound(
                             captures = captures,
                             explicit = explicit,
                         ),
-                        plus_lt.clone(),
+                        &plus_lt,
                         Applicability::MaybeIncorrect,
                     );
                 }
@@ -383,7 +372,7 @@ pub fn suggest_new_region_bound(
                             captures = captures,
                             explicit = explicit,
                         ),
-                        plus_lt.clone(),
+                        &plus_lt,
                         Applicability::MaybeIncorrect,
                     );
                 }
@@ -396,7 +385,7 @@ pub fn suggest_new_region_bound(
                         err.span_suggestion_verbose(
                             lt.span,
                             &format!("{} trait object's {}", consider, explicit_static),
-                            lifetime_name.clone(),
+                            &lifetime_name,
                             Applicability::MaybeIncorrect,
                         );
                     }
@@ -425,7 +414,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         let tcx = self.tcx();
         match tcx.hir().get_if_local(def_id) {
             Some(Node::ImplItem(impl_item)) => {
-                match tcx.hir().find(tcx.hir().get_parent_item(impl_item.hir_id())) {
+                match tcx.hir().find_by_def_id(tcx.hir().get_parent_item(impl_item.hir_id())) {
                     Some(Node::Item(Item {
                         kind: ItemKind::Impl(hir::Impl { self_ty, .. }),
                         ..
@@ -434,13 +423,13 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                 }
             }
             Some(Node::TraitItem(trait_item)) => {
-                let parent_id = tcx.hir().get_parent_item(trait_item.hir_id());
-                match tcx.hir().find(parent_id) {
+                let trait_did = tcx.hir().get_parent_item(trait_item.hir_id());
+                match tcx.hir().find_by_def_id(trait_did) {
                     Some(Node::Item(Item { kind: ItemKind::Trait(..), .. })) => {
                         // The method being called is defined in the `trait`, but the `'static`
                         // obligation comes from the `impl`. Find that `impl` so that we can point
                         // at it in the suggestion.
-                        let trait_did = tcx.hir().local_def_id(parent_id).to_def_id();
+                        let trait_did = trait_did.to_def_id();
                         match tcx
                             .hir()
                             .trait_impls(trait_did)
@@ -485,21 +474,20 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// `'static` obligation. Suggest relaxing that implicit bound.
     fn find_impl_on_dyn_trait(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diagnostic,
         ty: Ty<'_>,
         ctxt: &UnifyReceiverContext<'tcx>,
     ) -> bool {
         let tcx = self.tcx();
 
         // Find the method being called.
-        let instance = match ty::Instance::resolve(
+        let Ok(Some(instance)) = ty::Instance::resolve(
             tcx,
             ctxt.param_env,
             ctxt.assoc_item.def_id,
             self.infcx.resolve_vars_if_possible(ctxt.substs),
-        ) {
-            Ok(Some(instance)) => instance,
-            _ => return false,
+        ) else {
+            return false;
         };
 
         let mut v = TraitObjectVisitor(FxHashSet::default());
@@ -507,11 +495,9 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
 
         // Get the `Ident` of the method being called and the corresponding `impl` (to point at
         // `Bar` in `impl Foo for dyn Bar {}` and the definition of the method being called).
-        let (ident, self_ty) =
-            match self.get_impl_ident_and_self_ty_from_trait(instance.def_id(), &v.0) {
-                Some((ident, self_ty)) => (ident, self_ty),
-                None => return false,
-            };
+        let Some((ident, self_ty)) = self.get_impl_ident_and_self_ty_from_trait(instance.def_id(), &v.0) else {
+            return false;
+        };
 
         // Find the trait object types in the argument, so we point at *only* the trait object.
         self.suggest_constrain_dyn_trait_in_impl(err, &v.0, ident, self_ty)
@@ -519,7 +505,7 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
 
     fn suggest_constrain_dyn_trait_in_impl(
         &self,
-        err: &mut DiagnosticBuilder<'_>,
+        err: &mut Diagnostic,
         found_dids: &FxHashSet<DefId>,
         ident: Ident,
         self_ty: &hir::Ty<'_>,
@@ -531,19 +517,17 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
             hir_v.visit_ty(&self_ty);
             for span in &traits {
                 let mut multi_span: MultiSpan = vec![*span].into();
-                multi_span.push_span_label(
-                    *span,
-                    "this has an implicit `'static` lifetime requirement".to_string(),
-                );
+                multi_span
+                    .push_span_label(*span, "this has an implicit `'static` lifetime requirement");
                 multi_span.push_span_label(
                     ident.span,
-                    "calling this method introduces the `impl`'s 'static` requirement".to_string(),
+                    "calling this method introduces the `impl`'s 'static` requirement",
                 );
                 err.span_note(multi_span, "the used `impl` has a `'static` requirement");
                 err.span_suggestion_verbose(
                     span.shrink_to_hi(),
                     "consider relaxing the implicit `'static` requirement",
-                    " + '_".to_string(),
+                    " + '_",
                     Applicability::MaybeIncorrect,
                 );
                 suggested = true;
@@ -554,18 +538,12 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
 }
 
 /// Collect all the trait objects in a type that could have received an implicit `'static` lifetime.
-pub(super) struct TraitObjectVisitor(pub(super) FxHashSet<DefId>);
+pub struct TraitObjectVisitor(pub FxHashSet<DefId>);
 
 impl<'tcx> TypeVisitor<'tcx> for TraitObjectVisitor {
-    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
-        // The default anon const substs cannot include
-        // trait objects, so we don't have to bother looking.
-        None
-    }
-
     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         match t.kind() {
-            ty::Dynamic(preds, RegionKind::ReStatic) => {
+            ty::Dynamic(preds, re) if re.is_static() => {
                 if let Some(def_id) = preds.principal_def_id() {
                     self.0.insert(def_id);
                 }
@@ -577,15 +555,9 @@ impl<'tcx> TypeVisitor<'tcx> for TraitObjectVisitor {
 }
 
 /// Collect all `hir::Ty<'_>` `Span`s for trait objects with an implicit lifetime.
-pub(super) struct HirTraitObjectVisitor<'a>(pub(super) &'a mut Vec<Span>, pub(super) DefId);
+pub struct HirTraitObjectVisitor<'a>(pub &'a mut Vec<Span>, pub DefId);
 
 impl<'a, 'tcx> Visitor<'tcx> for HirTraitObjectVisitor<'a> {
-    type Map = ErasedMap<'tcx>;
-
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-        NestedVisitorMap::None
-    }
-
     fn visit_ty(&mut self, t: &'tcx hir::Ty<'tcx>) {
         if let TyKind::TraitObject(
             poly_trait_refs,

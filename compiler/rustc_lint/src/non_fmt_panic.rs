@@ -1,6 +1,6 @@
 use crate::{LateContext, LateLintPass, LintContext};
 use rustc_ast as ast;
-use rustc_errors::{pluralize, Applicability};
+use rustc_errors::{fluent, Applicability};
 use rustc_hir as hir;
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::lint::in_external_macro;
@@ -49,9 +49,11 @@ impl<'tcx> LateLintPass<'tcx> for NonPanicFmt {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'tcx>) {
         if let hir::ExprKind::Call(f, [arg]) = &expr.kind {
             if let &ty::FnDef(def_id, _) = cx.typeck_results().expr_ty(f).kind() {
+                let f_diagnostic_name = cx.tcx.get_diagnostic_name(def_id);
+
                 if Some(def_id) == cx.tcx.lang_items().begin_panic_fn()
                     || Some(def_id) == cx.tcx.lang_items().panic_fn()
-                    || Some(def_id) == cx.tcx.lang_items().panic_str()
+                    || f_diagnostic_name == Some(sym::panic_str)
                 {
                     if let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id {
                         if matches!(
@@ -59,6 +61,22 @@ impl<'tcx> LateLintPass<'tcx> for NonPanicFmt {
                             Some(sym::core_panic_2015_macro | sym::std_panic_2015_macro)
                         ) {
                             check_panic(cx, f, arg);
+                        }
+                    }
+                } else if f_diagnostic_name == Some(sym::unreachable_display) {
+                    if let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id {
+                        if cx.tcx.is_diagnostic_item(sym::unreachable_2015_macro, id) {
+                            check_panic(
+                                cx,
+                                f,
+                                // This is safe because we checked above that the callee is indeed
+                                // unreachable_display
+                                match &arg.kind {
+                                    // Get the borrowed arg not the borrow
+                                    hir::ExprKind::AddrOf(ast::BorrowKind::Ref, _, arg) => arg,
+                                    _ => bug!("call to unreachable_display without borrow"),
+                                },
+                            );
                         }
                     }
                 }
@@ -85,8 +103,8 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
         return;
     }
 
-    // Find the span of the argument to `panic!()`, before expansion in the
-    // case of `panic!(some_macro!())`.
+    // Find the span of the argument to `panic!()` or `unreachable!`, before expansion in the
+    // case of `panic!(some_macro!())` or `unreachable!(some_macro!())`.
     // We don't use source_callsite(), because this `panic!(..)` might itself
     // be expanded from another macro, in which case we want to stop at that
     // expansion.
@@ -102,9 +120,10 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
     }
 
     cx.struct_span_lint(NON_FMT_PANICS, arg_span, |lint| {
-        let mut l = lint.build("panic message is not a string literal");
-        l.note(&format!("this usage of {}!() is deprecated; it will be a hard error in Rust 2021", symbol));
-        l.note("for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/panic-macro-consistency.html>");
+        let mut l = lint.build(fluent::lint::non_fmt_panic);
+        l.set_arg("name", symbol);
+        l.note(fluent::lint::note);
+        l.note(fluent::lint::more_info_note);
         if !is_arg_inside_call(arg_span, span) {
             // No clue where this argument is coming from.
             l.emit();
@@ -112,10 +131,10 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
         }
         if arg_macro.map_or(false, |id| cx.tcx.is_diagnostic_item(sym::format_macro, id)) {
             // A case of `panic!(format!(..))`.
-            l.note(format!("the {}!() macro supports formatting, so there's no need for the format!() macro here", symbol).as_str());
+            l.note(fluent::lint::supports_fmt_note);
             if let Some((open, close, _)) = find_delimiters(cx, arg_span) {
                 l.multipart_suggestion(
-                    "remove the `format!(..)` macro call",
+                    fluent::lint::supports_fmt_suggestion,
                     vec![
                         (arg_span.until(open.shrink_to_hi()), "".into()),
                         (close.until(arg_span.shrink_to_hi()), "".into()),
@@ -131,16 +150,22 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
                 ty::Ref(_, r, _) if *r.kind() == ty::Str,
             ) || matches!(
                 ty.ty_adt_def(),
-                Some(ty_def) if cx.tcx.is_diagnostic_item(sym::String, ty_def.did),
+                Some(ty_def) if cx.tcx.is_diagnostic_item(sym::String, ty_def.did()),
             );
 
             let (suggest_display, suggest_debug) = cx.tcx.infer_ctxt().enter(|infcx| {
-                let display = is_str || cx.tcx.get_diagnostic_item(sym::Display).map(|t| {
-                    infcx.type_implements_trait(t, ty, InternalSubsts::empty(), cx.param_env).may_apply()
-                }) == Some(true);
-                let debug = !display && cx.tcx.get_diagnostic_item(sym::Debug).map(|t| {
-                    infcx.type_implements_trait(t, ty, InternalSubsts::empty(), cx.param_env).may_apply()
-                }) == Some(true);
+                let display = is_str
+                    || cx.tcx.get_diagnostic_item(sym::Display).map(|t| {
+                        infcx
+                            .type_implements_trait(t, ty, InternalSubsts::empty(), cx.param_env)
+                            .may_apply()
+                    }) == Some(true);
+                let debug = !display
+                    && cx.tcx.get_diagnostic_item(sym::Debug).map(|t| {
+                        infcx
+                            .type_implements_trait(t, ty, InternalSubsts::empty(), cx.param_env)
+                            .may_apply()
+                    }) == Some(true);
                 (display, debug)
             });
 
@@ -157,33 +182,25 @@ fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tc
             if suggest_display {
                 l.span_suggestion_verbose(
                     arg_span.shrink_to_lo(),
-                    "add a \"{}\" format string to Display the message",
-                    "\"{}\", ".into(),
+                    fluent::lint::display_suggestion,
+                    "\"{}\", ",
                     fmt_applicability,
                 );
             } else if suggest_debug {
+                l.set_arg("ty", ty);
                 l.span_suggestion_verbose(
                     arg_span.shrink_to_lo(),
-                    &format!(
-                        "add a \"{{:?}}\" format string to use the Debug implementation of `{}`",
-                        ty,
-                    ),
-                    "\"{:?}\", ".into(),
+                    fluent::lint::debug_suggestion,
+                    "\"{:?}\", ",
                     fmt_applicability,
                 );
             }
 
             if suggest_panic_any {
                 if let Some((open, close, del)) = find_delimiters(cx, span) {
+                    l.set_arg("already_suggested", suggest_display || suggest_debug);
                     l.multipart_suggestion(
-                        &format!(
-                            "{}use std::panic::panic_any instead",
-                            if suggest_display || suggest_debug {
-                                "or "
-                            } else {
-                                ""
-                            },
-                        ),
+                        fluent::lint::panic_suggestion,
                         if del == '(' {
                             vec![(span.until(open), "std::panic::panic_any".into())]
                         } else {
@@ -236,25 +253,26 @@ fn check_panic_str<'tcx>(
     if n_arguments > 0 && fmt_parser.errors.is_empty() {
         let arg_spans: Vec<_> = match &fmt_parser.arg_places[..] {
             [] => vec![fmt_span],
-            v => v.iter().map(|span| fmt_span.from_inner(*span)).collect(),
+            v => v
+                .iter()
+                .map(|span| fmt_span.from_inner(InnerSpan::new(span.start, span.end)))
+                .collect(),
         };
         cx.struct_span_lint(NON_FMT_PANICS, arg_spans, |lint| {
-            let mut l = lint.build(match n_arguments {
-                1 => "panic message contains an unused formatting placeholder",
-                _ => "panic message contains unused formatting placeholders",
-            });
-            l.note("this message is not used as a format string when given without arguments, but will be in Rust 2021");
+            let mut l = lint.build(fluent::lint::non_fmt_panic_unused);
+            l.set_arg("count", n_arguments);
+            l.note(fluent::lint::note);
             if is_arg_inside_call(arg.span, span) {
                 l.span_suggestion(
                     arg.span.shrink_to_hi(),
-                    &format!("add the missing argument{}", pluralize!(n_arguments)),
-                    ", ...".into(),
+                    fluent::lint::add_args_suggestion,
+                    ", ...",
                     Applicability::HasPlaceholders,
                 );
                 l.span_suggestion(
                     arg.span.shrink_to_lo(),
-                    "or add a \"{}\" format string to use the message literally",
-                    "\"{}\", ".into(),
+                    fluent::lint::add_fmt_suggestion,
+                    "\"{}\", ",
                     Applicability::MachineApplicable,
                 );
             }
@@ -268,18 +286,16 @@ fn check_panic_str<'tcx>(
                     .map(|(i, _)| fmt_span.from_inner(InnerSpan { start: i, end: i + 1 }))
                     .collect()
             });
-        let msg = match &brace_spans {
-            Some(v) if v.len() == 1 => "panic message contains a brace",
-            _ => "panic message contains braces",
-        };
+        let count = brace_spans.as_ref().map(|v| v.len()).unwrap_or(/* any number >1 */ 2);
         cx.struct_span_lint(NON_FMT_PANICS, brace_spans.unwrap_or_else(|| vec![span]), |lint| {
-            let mut l = lint.build(msg);
-            l.note("this message is not used as a format string, but will be in Rust 2021");
+            let mut l = lint.build(fluent::lint::non_fmt_panic_braces);
+            l.set_arg("count", count);
+            l.note(fluent::lint::note);
             if is_arg_inside_call(arg.span, span) {
                 l.span_suggestion(
                     arg.span.shrink_to_lo(),
-                    "add a \"{}\" format string to use the message literally",
-                    "\"{}\", ".into(),
+                    fluent::lint::suggestion,
+                    "\"{}\", ",
                     Applicability::MachineApplicable,
                 );
             }
@@ -319,6 +335,7 @@ fn panic_call<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>) -> (Span, 
                 | sym::std_panic_macro
                 | sym::assert_macro
                 | sym::debug_assert_macro
+                | sym::unreachable_macro
         ) {
             break;
         }
@@ -336,5 +353,5 @@ fn is_arg_inside_call(arg: Span, call: Span) -> bool {
     // panic call in the source file, to avoid invalid suggestions when macros are involved.
     // We specifically check for the spans to not be identical, as that happens sometimes when
     // proc_macros lie about spans and apply the same span to all the tokens they produce.
-    call.contains(arg) && !call.source_equal(&arg)
+    call.contains(arg) && !call.source_equal(arg)
 }

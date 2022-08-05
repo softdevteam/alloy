@@ -1,14 +1,15 @@
+#![allow(rustc::potential_query_instability)]
 #![feature(box_patterns)]
-#![feature(box_syntax)]
-#![feature(crate_visibility_modifier)]
+#![cfg_attr(bootstrap, feature(let_chains))]
 #![feature(let_else)]
 #![feature(map_try_insert)]
 #![feature(min_specialization)]
-#![feature(option_get_or_insert_default)]
-#![feature(once_cell)]
 #![feature(never_type)]
+#![feature(once_cell)]
+#![feature(option_get_or_insert_default)]
 #![feature(trusted_step)]
 #![feature(try_blocks)]
+#![feature(yeet_expr)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -18,16 +19,16 @@ extern crate rustc_middle;
 
 use required_consts::RequiredConstsVisitor;
 use rustc_const_eval::util;
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::FxIndexSet;
 use rustc_data_structures::steal::Steal;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::intravisit::{self, Visitor};
 use rustc_index::vec::IndexVec;
 use rustc_middle::mir::visit::Visitor as _;
 use rustc_middle::mir::{traversal, Body, ConstQualifs, MirPass, MirPhase, Promoted};
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{self, TyCtxt, TypeVisitable};
 use rustc_span::{Span, Symbol};
 
 #[macro_use]
@@ -42,17 +43,23 @@ mod add_retag;
 mod check_const_item_mutation;
 mod check_packed_ref;
 pub mod check_unsafety;
-mod cleanup_post_borrowck;
+// This pass is public to allow external drivers to perform MIR cleanup
+pub mod cleanup_post_borrowck;
 mod const_debuginfo;
 mod const_goto;
 mod const_prop;
+mod const_prop_lint;
 mod coverage;
+mod dead_store_elimination;
 mod deaggregator;
 mod deduplicate_blocks;
+mod deref_separator;
 mod dest_prop;
 pub mod dump_mir;
 mod early_otherwise_branch;
+mod elaborate_box_derefs;
 mod elaborate_drops;
+mod ffi_unwind_calls;
 mod function_item_references;
 mod generator;
 mod inline;
@@ -64,8 +71,9 @@ mod match_branches;
 mod multiple_return_terminators;
 mod normalize_array_len;
 mod nrvo;
-mod prevent_early_finalization;
-mod remove_false_edges;
+// mod prevent_early_finalization;
+// This pass is public to allow external drivers to perform MIR cleanup
+pub mod remove_false_edges;
 mod remove_noop_landing_pads;
 mod remove_storage_markers;
 mod remove_uninit_drops;
@@ -75,7 +83,8 @@ mod required_consts;
 mod reveal_all;
 mod separate_const_switch;
 mod shim;
-mod simplify;
+// This pass is public to allow external drivers to perform MIR cleanup
+pub mod simplify;
 mod simplify_branches;
 mod simplify_comparison_integral;
 mod simplify_try;
@@ -91,6 +100,7 @@ pub fn provide(providers: &mut Providers) {
     check_unsafety::provide(providers);
     check_packed_ref::provide(providers);
     coverage::query::provide(providers);
+    ffi_unwind_calls::provide(providers);
     shim::provide(providers);
     *providers = Providers {
         mir_keys,
@@ -137,8 +147,8 @@ fn is_mir_available(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
 
 /// Finds the full set of `DefId`s within the current crate that have
 /// MIR associated with them.
-fn mir_keys(tcx: TyCtxt<'_>, (): ()) -> FxHashSet<LocalDefId> {
-    let mut set = FxHashSet::default();
+fn mir_keys(tcx: TyCtxt<'_>, (): ()) -> FxIndexSet<LocalDefId> {
+    let mut set = FxIndexSet::default();
 
     // All body-owners have MIR associated with them.
     set.extend(tcx.hir().body_owners());
@@ -147,7 +157,7 @@ fn mir_keys(tcx: TyCtxt<'_>, (): ()) -> FxHashSet<LocalDefId> {
     // they don't have a BodyId, so we need to build them separately.
     struct GatherCtors<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
-        set: &'a mut FxHashSet<LocalDefId>,
+        set: &'a mut FxIndexSet<LocalDefId>,
     }
     impl<'tcx> Visitor<'tcx> for GatherCtors<'_, 'tcx> {
         fn visit_variant_data(
@@ -163,12 +173,8 @@ fn mir_keys(tcx: TyCtxt<'_>, (): ()) -> FxHashSet<LocalDefId> {
             }
             intravisit::walk_struct_def(self, v)
         }
-        type Map = intravisit::ErasedMap<'tcx>;
-        fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
-            NestedVisitorMap::None
-        }
     }
-    tcx.hir().visit_all_item_likes(&mut GatherCtors { tcx, set: &mut set }.as_deep_visitor());
+    tcx.hir().visit_all_item_likes_in_crate(&mut GatherCtors { tcx, set: &mut set });
 
     set
 }
@@ -212,13 +218,16 @@ fn mir_const<'tcx>(
     }
 
     // Unsafety check uses the raw mir, so make sure it is run.
-    if !tcx.sess.opts.debugging_opts.thir_unsafeck {
+    if !tcx.sess.opts.unstable_opts.thir_unsafeck {
         if let Some(param_did) = def.const_param_did {
             tcx.ensure().unsafety_check_result_for_const_arg((def.did, param_did));
         } else {
             tcx.ensure().unsafety_check_result(def.did);
         }
     }
+
+    // has_ffi_unwind_calls query uses the raw mir, so make sure it is run.
+    tcx.ensure().has_ffi_unwind_calls(def.did);
 
     let mut body = tcx.mir_built(def).steal();
 
@@ -234,7 +243,7 @@ fn mir_const<'tcx>(
             &Lint(function_item_references::FunctionItemReferences),
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
-            &prevent_early_finalization::PreventEarlyFinalization,
+            // &prevent_early_finalization::PreventEarlyFinalization,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],
@@ -254,8 +263,11 @@ fn mir_promoted<'tcx>(
     // Ensure that we compute the `mir_const_qualif` for constants at
     // this point, before we steal the mir-const result.
     // Also this means promotion can rely on all const checks having been done.
-    let _ = tcx.mir_const_qualif_opt_const_arg(def);
+    let const_qualifs = tcx.mir_const_qualif_opt_const_arg(def);
     let mut body = tcx.mir_const(def).steal();
+    if let Some(error_reported) = const_qualifs.tainted_by_errors {
+        body.tainted_by_errors = Some(error_reported);
+    }
 
     let mut required_consts = Vec::new();
     let mut required_consts_visitor = RequiredConstsVisitor::new(&mut required_consts);
@@ -339,12 +351,12 @@ fn inner_mir_for_ctfe(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -
             pm::run_passes(
                 tcx,
                 &mut body,
-                &[&const_prop::ConstProp, &marker::PhaseChange(MirPhase::Optimization)],
+                &[&const_prop::ConstProp, &marker::PhaseChange(MirPhase::Optimized)],
             );
         }
     }
 
-    debug_assert!(!body.has_free_regions(tcx), "Free regions in MIR for CTFE");
+    debug_assert!(!body.has_free_regions(), "Free regions in MIR for CTFE");
 
     body
 }
@@ -360,16 +372,9 @@ fn mir_drops_elaborated_and_const_checked<'tcx>(
         return tcx.mir_drops_elaborated_and_const_checked(def);
     }
 
-    // (Mir-)Borrowck uses `mir_promoted`, so we have to force it to
-    // execute before we can steal.
-    if let Some(param_did) = def.const_param_did {
-        tcx.ensure().mir_borrowck_const_arg((def.did, param_did));
-    } else {
-        tcx.ensure().mir_borrowck(def.did);
-    }
+    let mir_borrowck = tcx.mir_borrowck_opt_const_arg(def);
 
-    let hir_id = tcx.hir().local_def_id_to_hir_id(def.did);
-    let is_fn_like = tcx.hir().get(hir_id).fn_kind().is_some();
+    let is_fn_like = tcx.def_kind(def.did).is_fn_like();
     if is_fn_like {
         let did = def.did.to_def_id();
         let def = ty::WithOptConstParam::unknown(did);
@@ -382,6 +387,9 @@ fn mir_drops_elaborated_and_const_checked<'tcx>(
 
     let (body, _) = tcx.mir_promoted(def);
     let mut body = body.steal();
+    if let Some(error_reported) = mir_borrowck.tainted_by_errors {
+        body.tainted_by_errors = Some(error_reported);
+    }
 
     // IMPORTANT
     pm::run_passes(tcx, &mut body, &[&remove_false_edges::RemoveFalseEdges]);
@@ -400,7 +408,7 @@ fn mir_drops_elaborated_and_const_checked<'tcx>(
     }
 
     run_post_borrowck_cleanup_passes(tcx, &mut body);
-    assert!(body.phase == MirPhase::DropLowering);
+    assert!(body.phase == MirPhase::Deaggregated);
     tcx.alloc_steal_mir(body)
 }
 
@@ -414,6 +422,7 @@ fn run_post_borrowck_cleanup_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tc
         &remove_noop_landing_pads::RemoveNoopLandingPads,
         &cleanup_post_borrowck::CleanupNonCodegenStatements,
         &simplify::SimplifyCfg::new("early-opt"),
+        &deref_separator::Derefer,
         // These next passes must be executed together
         &add_call_guards::CriticalCallEdges,
         &elaborate_drops::ElaborateDrops,
@@ -426,12 +435,14 @@ fn run_post_borrowck_cleanup_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tc
         &add_moves_for_packed_drops::AddMovesForPackedDrops,
         // `AddRetag` needs to run after `ElaborateDrops`. Otherwise it should run fairly late,
         // but before optimizations begin.
+        &elaborate_box_derefs::ElaborateBoxDerefs,
         &add_retag::AddRetag,
         &lower_intrinsics::LowerIntrinsics,
         &simplify::SimplifyCfg::new("elaborate-drops"),
         // `Deaggregator` is conceptually part of MIR building, some backends rely on it happening
         // and it can help optimizations.
         &deaggregator::Deaggregator,
+        &Lint(const_prop_lint::ConstProp),
     ];
 
     pm::run_passes(tcx, body, post_borrowck_cleanup);
@@ -460,7 +471,7 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         ],
     );
 
-    assert!(body.phase == MirPhase::GeneratorLowering);
+    assert!(body.phase == MirPhase::GeneratorsLowered);
 
     // The main optimizations that we do on MIR.
     pm::run_passes(
@@ -481,23 +492,24 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             &const_prop::ConstProp,
             //
             // Const-prop runs unconditionally, but doesn't mutate the MIR at mir-opt-level=0.
+            &const_debuginfo::ConstDebugInfo,
             &o1(simplify_branches::SimplifyConstCondition::new("after-const-prop")),
             &early_otherwise_branch::EarlyOtherwiseBranch,
             &simplify_comparison_integral::SimplifyComparisonIntegral,
             &simplify_try::SimplifyArmIdentity,
             &simplify_try::SimplifyBranchSame,
+            &dead_store_elimination::DeadStoreElimination,
             &dest_prop::DestinationPropagation,
             &o1(simplify_branches::SimplifyConstCondition::new("final")),
             &o1(remove_noop_landing_pads::RemoveNoopLandingPads),
             &o1(simplify::SimplifyCfg::new("final")),
             &nrvo::RenameReturnPlace,
-            &const_debuginfo::ConstDebugInfo,
             &simplify::SimplifyLocals,
             &multiple_return_terminators::MultipleReturnTerminators,
             &deduplicate_blocks::DeduplicateBlocks,
             // Some cleanup necessary at least for LLVM and potentially other codegen backends.
             &add_call_guards::CriticalCallEdges,
-            &marker::PhaseChange(MirPhase::Optimization),
+            &marker::PhaseChange(MirPhase::Optimized),
             // Dump the end result for testing and debugging purposes.
             &dump_mir::Marker("PreCodegen"),
         ],
@@ -528,11 +540,13 @@ fn inner_optimized_mir(tcx: TyCtxt<'_>, did: LocalDefId) -> Body<'_> {
         None => {}
         Some(other) => panic!("do not use `optimized_mir` for constants: {:?}", other),
     }
+    debug!("about to call mir_drops_elaborated...");
     let mut body =
         tcx.mir_drops_elaborated_and_const_checked(ty::WithOptConstParam::unknown(did)).steal();
+    debug!("body: {:#?}", body);
     run_optimization_passes(tcx, &mut body);
 
-    debug_assert!(!body.has_free_regions(tcx), "Free regions in optimized MIR");
+    debug_assert!(!body.has_free_regions(), "Free regions in optimized MIR");
 
     body
 }
@@ -547,19 +561,17 @@ fn promoted_mir<'tcx>(
         return tcx.arena.alloc(IndexVec::new());
     }
 
-    if let Some(param_did) = def.const_param_did {
-        tcx.ensure().mir_borrowck_const_arg((def.did, param_did));
-    } else {
-        tcx.ensure().mir_borrowck(def.did);
-    }
-    let (_, promoted) = tcx.mir_promoted(def);
-    let mut promoted = promoted.steal();
+    let tainted_by_errors = tcx.mir_borrowck_opt_const_arg(def).tainted_by_errors;
+    let mut promoted = tcx.mir_promoted(def).1.steal();
 
     for body in &mut promoted {
+        if let Some(error_reported) = tainted_by_errors {
+            body.tainted_by_errors = Some(error_reported);
+        }
         run_post_borrowck_cleanup_passes(tcx, body);
     }
 
-    debug_assert!(!promoted.has_free_regions(tcx), "Free regions in promoted MIR");
+    debug_assert!(!promoted.has_free_regions(), "Free regions in promoted MIR");
 
     tcx.arena.alloc(promoted)
 }

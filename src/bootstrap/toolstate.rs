@@ -1,5 +1,5 @@
 use crate::builder::{Builder, RunConfig, ShouldRun, Step};
-use build_helper::t;
+use crate::util::t;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -24,7 +24,7 @@ const OS: Option<&str> = None;
 
 type ToolstateData = HashMap<Box<str>, ToolState>;
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 /// Whether a tool can be compiled, tested or neither
 pub enum ToolState {
@@ -47,13 +47,6 @@ impl fmt::Display for ToolState {
                 ToolState::BuildFail => "build-fail",
             }
         )
-    }
-}
-
-impl Default for ToolState {
-    fn default() -> Self {
-        // err on the safe side
-        ToolState::BuildFail
     }
 }
 
@@ -100,7 +93,7 @@ fn print_error(tool: &str, submodule: &str) {
     eprintln!("If you do NOT intend to update '{}', please ensure you did not accidentally", tool);
     eprintln!("change the submodule at '{}'. You may ask your reviewer for the", submodule);
     eprintln!("proper steps.");
-    std::process::exit(3);
+    crate::detail_exit(3);
 }
 
 fn check_changed_files(toolstates: &HashMap<Box<str>, ToolState>) {
@@ -115,7 +108,7 @@ fn check_changed_files(toolstates: &HashMap<Box<str>, ToolState>) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Failed to get changed files: {:?}", e);
-            std::process::exit(1);
+            crate::detail_exit(1);
         }
     };
 
@@ -186,7 +179,7 @@ impl Step for ToolStateCheck {
         }
 
         if did_error {
-            std::process::exit(1);
+            crate::detail_exit(1);
         }
 
         check_changed_files(&toolstates);
@@ -232,7 +225,7 @@ impl Step for ToolStateCheck {
         }
 
         if did_error {
-            std::process::exit(1);
+            crate::detail_exit(1);
         }
 
         if builder.config.channel == "nightly" && env::var_os("TOOLSTATE_PUBLISH").is_some() {
@@ -241,7 +234,7 @@ impl Step for ToolStateCheck {
     }
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("check-tools")
+        run.alias("check-tools")
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -466,13 +459,11 @@ fn publish_test_results(current_toolstate: &ToolstateData) {
     t!(fs::write(&history_path, file));
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct RepoState {
     tool: String,
     windows: ToolState,
     linux: ToolState,
-    commit: String,
-    datetime: String,
 }
 
 impl RepoState {

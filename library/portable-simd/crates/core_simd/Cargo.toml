@@ -9,7 +9,8 @@ categories = ["hardware-support", "no-std"]
 license = "MIT OR Apache-2.0"
 
 [features]
-default = ["std", "generic_const_exprs"]
+default = ["as_crate"]
+as_crate = []
 std = []
 generic_const_exprs = []
 
@@ -26,3 +27,6 @@ features = ["alloc"]
 
 [dev-dependencies.test_helpers]
 path = "../test_helpers"
+
+[dev-dependencies]
+std_float = { path = "../std_float/", features = ["as_crate"] }

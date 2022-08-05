@@ -29,7 +29,7 @@ pub struct BorrowSet<'tcx> {
     /// Map from local to all the borrows on that local.
     pub local_map: FxHashMap<mir::Local, FxHashSet<BorrowIndex>>,
 
-    crate locals_state_at_exit: LocalsStateAtExit,
+    pub(crate) locals_state_at_exit: LocalsStateAtExit,
 }
 
 impl<'tcx> Index<BorrowIndex> for BorrowSet<'tcx> {
@@ -92,9 +92,9 @@ impl LocalsStateAtExit {
         struct HasStorageDead(BitSet<Local>);
 
         impl<'tcx> Visitor<'tcx> for HasStorageDead {
-            fn visit_local(&mut self, local: &Local, ctx: PlaceContext, _: Location) {
+            fn visit_local(&mut self, local: Local, ctx: PlaceContext, _: Location) {
                 if ctx == PlaceContext::NonUse(NonUseContext::StorageDead) {
-                    self.0.insert(*local);
+                    self.0.insert(local);
                 }
             }
         }
@@ -148,28 +148,24 @@ impl<'tcx> BorrowSet<'tcx> {
         }
     }
 
-    crate fn activations_at_location(&self, location: Location) -> &[BorrowIndex] {
+    pub(crate) fn activations_at_location(&self, location: Location) -> &[BorrowIndex] {
         self.activation_map.get(&location).map_or(&[], |activations| &activations[..])
     }
 
-    crate fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.location_map.len()
     }
 
-    crate fn indices(&self) -> impl Iterator<Item = BorrowIndex> {
+    pub(crate) fn indices(&self) -> impl Iterator<Item = BorrowIndex> {
         BorrowIndex::from_usize(0)..BorrowIndex::from_usize(self.len())
     }
 
-    crate fn iter_enumerated(&self) -> impl Iterator<Item = (BorrowIndex, &BorrowData<'tcx>)> {
+    pub(crate) fn iter_enumerated(&self) -> impl Iterator<Item = (BorrowIndex, &BorrowData<'tcx>)> {
         self.indices().zip(self.location_map.values())
     }
 
-    crate fn get_index_of(&self, location: &Location) -> Option<BorrowIndex> {
+    pub(crate) fn get_index_of(&self, location: &Location) -> Option<BorrowIndex> {
         self.location_map.get_index_of(location).map(BorrowIndex::from)
-    }
-
-    crate fn contains(&self, location: &Location) -> bool {
-        self.location_map.contains_key(location)
     }
 }
 
@@ -227,7 +223,7 @@ impl<'a, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'tcx> {
         self.super_assign(assigned_place, rvalue, location)
     }
 
-    fn visit_local(&mut self, temp: &Local, context: PlaceContext, location: Location) {
+    fn visit_local(&mut self, temp: Local, context: PlaceContext, location: Location) {
         if !context.is_use() {
             return;
         }
@@ -236,7 +232,7 @@ impl<'a, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'tcx> {
         // check whether we (earlier) saw a 2-phase borrow like
         //
         //     TMP = &mut place
-        if let Some(&borrow_index) = self.pending_activations.get(temp) {
+        if let Some(&borrow_index) = self.pending_activations.get(&temp) {
             let borrow_data = &mut self.location_map[borrow_index.as_usize()];
 
             // Watch out: the use of TMP in the borrow itself

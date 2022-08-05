@@ -48,6 +48,8 @@ declare_features! (
     (removed, advanced_slice_patterns, "1.0.0", Some(62254), None,
      Some("merged into `#![feature(slice_patterns)]`")),
     (removed, allocator, "1.0.0", None, None, None),
+    /// Allows a test to fail without failing the whole suite.
+    (removed, allow_fail, "1.19.0", Some(46488), None, Some("removed due to no clear use cases")),
     (removed, await_macro, "1.38.0", Some(50547), None,
      Some("subsumed by `.await` syntax")),
     /// Allows comparing raw pointers during const eval.
@@ -70,6 +72,8 @@ declare_features! (
     /// Allows `T: ?const Trait` syntax in bounds.
     (removed, const_trait_bound_opt_out, "1.42.0", Some(67794), None,
      Some("Removed in favor of `~const` bound in #![feature(const_trait_impl)]")),
+    /// Allows using `crate` as visibility modifier, synonymous with `pub(crate)`.
+    (removed, crate_visibility_modifier, "1.63.0", Some(53120), None, Some("removed in favor of `pub(crate)`")),
     /// Allows using custom attributes (RFC 572).
     (removed, custom_attribute, "1.0.0", Some(29642), None,
      Some("removed in favor of `#![register_tool]` and `#![register_attr]`")),
@@ -102,6 +106,12 @@ declare_features! (
     (removed, impl_trait_in_bindings, "1.55.0", Some(63065), None,
      Some("the implementation was not maintainable, the feature may get reintroduced once the current refactorings are done")),
     (removed, import_shadowing, "1.0.0", None, None, None),
+    /// Allows in-band quantification of lifetime bindings (e.g., `fn foo(x: &'a u8) -> &'a u8`).
+    (removed, in_band_lifetimes, "1.23.0", Some(44524), None,
+     Some("removed due to unsolved ergonomic questions and added lifetime resolution complexity")),
+    /// Allows inferring `'static` outlives requirements (RFC 2093).
+    (removed, infer_static_outlives_requirements, "1.63.0", Some(54185), None,
+     Some("removed as it caused some confusion and discussion was inactive for years")),
     /// Lazily evaluate constants. This allows constants to depend on type parameters.
     (removed, lazy_normalization_consts, "1.46.0", Some(72219), None, Some("superseded by `generic_const_exprs`")),
     /// Allows using the `#[link_args]` attribute.
@@ -162,11 +172,17 @@ declare_features! (
     (removed, sanitizer_runtime, "1.17.0", None, None, None),
     (removed, simd, "1.0.0", Some(27731), None,
      Some("removed in favor of `#[repr(simd)]`")),
+    /// Allows `#[link(kind = "static-nobundle", ...)]`.
+    (removed, static_nobundle, "1.16.0", Some(37403), None,
+     Some(r#"subsumed by `#[link(kind = "static", modifiers = "-bundle", ...)]`"#)),
     (removed, struct_inherit, "1.0.0", None, None, None),
     (removed, test_removed_feature, "1.0.0", None, None, None),
     /// Allows using items which are missing stability attributes
     (removed, unmarked_api, "1.0.0", None, None, None),
     (removed, unsafe_no_drop_flag, "1.0.0", None, None, None),
+    /// Allows `union` fields that don't implement `Copy` as long as they don't have any drop glue.
+    (removed, untagged_unions, "1.13.0", Some(55149), None,
+     Some("unions with `Copy` and `ManuallyDrop` fields are stable; there is no intent to stabilize more")),
     /// Allows `#[unwind(..)]`.
     ///
     /// Permits specifying whether a function should permit unwinding or abort on unwind.

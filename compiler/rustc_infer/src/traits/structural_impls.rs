@@ -1,7 +1,8 @@
 use crate::traits;
 use crate::traits::project::Normalized;
 use rustc_middle::ty;
-use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFoldable, TypeVisitor};
+use rustc_middle::ty::fold::{FallibleTypeFolder, TypeFoldable};
+use rustc_middle::ty::visit::{TypeVisitable, TypeVisitor};
 
 use std::fmt;
 use std::ops::ControlFlow;
@@ -60,10 +61,7 @@ impl<'tcx> fmt::Debug for traits::MismatchedProjectionTypes<'tcx> {
 // TypeFoldable implementations.
 
 impl<'tcx, O: TypeFoldable<'tcx>> TypeFoldable<'tcx> for traits::Obligation<'tcx, O> {
-    fn try_super_fold_with<F: FallibleTypeFolder<'tcx>>(
-        self,
-        folder: &mut F,
-    ) -> Result<Self, F::Error> {
+    fn try_fold_with<F: FallibleTypeFolder<'tcx>>(self, folder: &mut F) -> Result<Self, F::Error> {
         Ok(traits::Obligation {
             cause: self.cause,
             recursion_depth: self.recursion_depth,
@@ -71,8 +69,10 @@ impl<'tcx, O: TypeFoldable<'tcx>> TypeFoldable<'tcx> for traits::Obligation<'tcx
             param_env: self.param_env.try_fold_with(folder)?,
         })
     }
+}
 
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
+impl<'tcx, O: TypeVisitable<'tcx>> TypeVisitable<'tcx> for traits::Obligation<'tcx, O> {
+    fn visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
         self.predicate.visit_with(visitor)?;
         self.param_env.visit_with(visitor)
     }

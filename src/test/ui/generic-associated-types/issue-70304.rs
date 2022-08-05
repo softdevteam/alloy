@@ -2,6 +2,7 @@
 
 trait Document {
     type Cursor<'a>: DocCursor<'a>;
+    //~^ ERROR: missing required bound on `Cursor`
 
     fn cursor(&self) -> Self::Cursor<'_>;
 }
@@ -12,12 +13,9 @@ impl Document for DocumentImpl {
     type Cursor<'a> = DocCursorImpl<'a>;
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        DocCursorImpl {
-            document: &self,
-        }
+        DocCursorImpl { document: &self }
     }
 }
-
 
 trait DocCursor<'a> {}
 
@@ -35,7 +33,6 @@ where
     _phantom: std::marker::PhantomData<&'d ()>,
 }
 
-
 impl<'d, Cursor> Lexer<'d, Cursor>
 where
     Cursor: DocCursor<'d>,
@@ -44,15 +41,13 @@ where
     where
         Doc: Document<Cursor<'d> = Cursor>,
     {
-        Lexer {
-            cursor: document.cursor(),
-            _phantom: std::marker::PhantomData,
-        }
+        Lexer { cursor: document.cursor(), _phantom: std::marker::PhantomData }
     }
 }
 
 fn create_doc() -> impl Document<Cursor<'_> = DocCursorImpl<'_>> {
-                                       //~^ ERROR: missing lifetime specifier
+    //~^ ERROR `'_` cannot be used here [E0637]
+    //~| ERROR: missing lifetime specifier
     DocumentImpl {}
 }
 

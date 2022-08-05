@@ -1,18 +1,18 @@
 use rustc_infer::infer::outlives::components::{push_outlives_components, Component};
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
-use rustc_middle::ty::{self, Region, RegionKind, Ty, TyCtxt};
+use rustc_middle::ty::{self, Region, Ty, TyCtxt};
 use rustc_span::Span;
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 
 /// Tracks the `T: 'a` or `'a: 'a` predicates that we have inferred
 /// must be added to the struct header.
-pub type RequiredPredicates<'tcx> =
+pub(crate) type RequiredPredicates<'tcx> =
     BTreeMap<ty::OutlivesPredicate<GenericArg<'tcx>, ty::Region<'tcx>>, Span>;
 
 /// Given a requirement `T: 'a` or `'b: 'a`, deduce the
 /// outlives_component and add it to `required_predicates`
-pub fn insert_outlives_predicate<'tcx>(
+pub(crate) fn insert_outlives_predicate<'tcx>(
     tcx: TyCtxt<'tcx>,
     kind: GenericArg<'tcx>,
     outlived_region: Region<'tcx>,
@@ -21,7 +21,7 @@ pub fn insert_outlives_predicate<'tcx>(
 ) {
     // If the `'a` region is bound within the field type itself, we
     // don't want to propagate this constraint to the header.
-    if !is_free_region(tcx, outlived_region) {
+    if !is_free_region(outlived_region) {
         return;
     }
 
@@ -119,7 +119,7 @@ pub fn insert_outlives_predicate<'tcx>(
         }
 
         GenericArgKind::Lifetime(r) => {
-            if !is_free_region(tcx, r) {
+            if !is_free_region(r) {
                 return;
             }
             required_predicates.entry(ty::OutlivesPredicate(kind, outlived_region)).or_insert(span);
@@ -131,9 +131,9 @@ pub fn insert_outlives_predicate<'tcx>(
     }
 }
 
-fn is_free_region(tcx: TyCtxt<'_>, region: Region<'_>) -> bool {
+fn is_free_region(region: Region<'_>) -> bool {
     // First, screen for regions that might appear in a type header.
-    match region {
+    match *region {
         // These correspond to `T: 'a` relationships:
         //
         //     struct Foo<'a, T> {
@@ -141,16 +141,15 @@ fn is_free_region(tcx: TyCtxt<'_>, region: Region<'_>) -> bool {
         //     }
         //
         // We care about these, so fall through.
-        RegionKind::ReEarlyBound(_) => true,
+        ty::ReEarlyBound(_) => true,
 
         // These correspond to `T: 'static` relationships which can be
-        // rather surprising. We are therefore putting this behind a
-        // feature flag:
+        // rather surprising.
         //
         //     struct Foo<'a, T> {
         //         field: &'static T, // this would generate a ReStatic
         //     }
-        RegionKind::ReStatic => tcx.sess.features_untracked().infer_static_outlives_requirements,
+        ty::ReStatic => false,
 
         // Late-bound regions can appear in `fn` types:
         //
@@ -160,19 +159,16 @@ fn is_free_region(tcx: TyCtxt<'_>, region: Region<'_>) -> bool {
         //
         // The type above might generate a `T: 'b` bound, but we can
         // ignore it.  We can't put it on the struct header anyway.
-        RegionKind::ReLateBound(..) => false,
+        ty::ReLateBound(..) => false,
 
         // This can appear in `where Self: ` bounds (#64855):
         //
         //     struct Bar<T>(<Self as Foo>::Type) where Self: ;
         //     struct Baz<'a>(&'a Self) where Self: ;
-        RegionKind::ReEmpty(_) => false,
+        ty::ReEmpty(_) => false,
 
         // These regions don't appear in types from type declarations:
-        RegionKind::ReErased
-        | RegionKind::ReVar(..)
-        | RegionKind::RePlaceholder(..)
-        | RegionKind::ReFree(..) => {
+        ty::ReErased | ty::ReVar(..) | ty::RePlaceholder(..) | ty::ReFree(..) => {
             bug!("unexpected region in outlives inference: {:?}", region);
         }
     }

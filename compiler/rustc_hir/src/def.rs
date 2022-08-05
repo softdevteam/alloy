@@ -1,9 +1,9 @@
-use crate::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use crate::hir;
 
 use rustc_ast as ast;
 use rustc_ast::NodeId;
 use rustc_macros::HashStable_Generic;
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::hygiene::MacroKind;
 use rustc_span::Symbol;
 
@@ -78,7 +78,7 @@ pub enum DefKind {
     Const,
     /// Constant generic parameter: `struct Foo<const N: usize> { ... }`
     ConstParam,
-    Static,
+    Static(ast::Mutability),
     /// Refers to the struct or enum variant's constructor.
     ///
     /// The reason `Ctor` exists in addition to [`DefKind::Struct`] and
@@ -92,6 +92,7 @@ pub enum DefKind {
     /// [RFC 2593]: https://github.com/rust-lang/rfcs/pull/2593
     Ctor(CtorOf, CtorKind),
     /// Associated function: `impl MyStruct { fn associated() {} }`
+    /// or `trait Foo { fn associated() {} }`
     AssocFn,
     /// Associated constant: `trait MyTrait { const ASSOC: usize; }`
     AssocConst,
@@ -124,11 +125,9 @@ impl DefKind {
     pub fn descr(self, def_id: DefId) -> &'static str {
         match self {
             DefKind::Fn => "function",
-            DefKind::Mod if def_id.index == CRATE_DEF_INDEX && def_id.krate != LOCAL_CRATE => {
-                "crate"
-            }
+            DefKind::Mod if def_id.is_crate_root() && !def_id.is_local() => "crate",
             DefKind::Mod => "module",
-            DefKind::Static => "static",
+            DefKind::Static(..) => "static",
             DefKind::Enum => "enum",
             DefKind::Variant => "variant",
             DefKind::Ctor(CtorOf::Variant, CtorKind::Fn) => "tuple variant",
@@ -202,7 +201,7 @@ impl DefKind {
             DefKind::Fn
             | DefKind::Const
             | DefKind::ConstParam
-            | DefKind::Static
+            | DefKind::Static(..)
             | DefKind::Ctor(..)
             | DefKind::AssocFn
             | DefKind::AssocConst => Some(Namespace::ValueNS),
@@ -221,6 +220,51 @@ impl DefKind {
             | DefKind::ForeignMod
             | DefKind::GlobalAsm
             | DefKind::Impl => None,
+        }
+    }
+
+    #[inline]
+    pub fn is_fn_like(self) -> bool {
+        match self {
+            DefKind::Fn | DefKind::AssocFn | DefKind::Closure | DefKind::Generator => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `query get_codegen_attrs` should be used with this definition.
+    pub fn has_codegen_attrs(self) -> bool {
+        match self {
+            DefKind::Fn
+            | DefKind::AssocFn
+            | DefKind::Ctor(..)
+            | DefKind::Closure
+            | DefKind::Generator
+            | DefKind::Static(_) => true,
+            DefKind::Mod
+            | DefKind::Struct
+            | DefKind::Union
+            | DefKind::Enum
+            | DefKind::Variant
+            | DefKind::Trait
+            | DefKind::TyAlias
+            | DefKind::ForeignTy
+            | DefKind::TraitAlias
+            | DefKind::AssocTy
+            | DefKind::Const
+            | DefKind::AssocConst
+            | DefKind::Macro(..)
+            | DefKind::Use
+            | DefKind::ForeignMod
+            | DefKind::OpaqueTy
+            | DefKind::Impl
+            | DefKind::Field
+            | DefKind::TyParam
+            | DefKind::ConstParam
+            | DefKind::LifetimeParam
+            | DefKind::AnonConst
+            | DefKind::InlineConst
+            | DefKind::GlobalAsm
+            | DefKind::ExternCrate => false,
         }
     }
 }
@@ -266,59 +310,68 @@ pub enum Res<Id = hir::HirId> {
     ///
     /// **Belongs to the type namespace.**
     PrimTy(hir::PrimTy),
-    /// The `Self` type, optionally with the trait it is associated with
-    /// and optionally with the [`DefId`] of the impl it is associated with.
+    /// The `Self` type, optionally with the [`DefId`] of the trait it belongs to and
+    /// optionally with the [`DefId`] of the item introducing the `Self` type alias.
     ///
     /// **Belongs to the type namespace.**
     ///
-    /// For example, the `Self` in
-    ///
+    /// Examples:
     /// ```
+    /// struct Bar(Box<Self>);
+    /// // `Res::SelfTy { trait_: None, alias_of: Some(Bar) }`
+    ///
     /// trait Foo {
     ///     fn foo() -> Box<Self>;
+    ///     // `Res::SelfTy { trait_: Some(Foo), alias_of: None }`
     /// }
-    /// ```
-    ///
-    /// would have the [`DefId`] of `Foo` associated with it. The `Self` in
-    ///
-    /// ```
-    /// struct Bar;
     ///
     /// impl Bar {
-    ///     fn new() -> Self { Bar }
+    ///     fn blah() {
+    ///         let _: Self;
+    ///         // `Res::SelfTy { trait_: None, alias_of: Some(::{impl#0}) }`
+    ///     }
     /// }
-    /// ```
     ///
-    /// would have the [`DefId`] of the impl associated with it. Finally, the `Self` in
-    ///
-    /// ```
     /// impl Foo for Bar {
-    ///     fn foo() -> Box<Self> { Box::new(Bar) }
+    ///     fn foo() -> Box<Self> {
+    ///     // `Res::SelfTy { trait_: Some(Foo), alias_of: Some(::{impl#1}) }`
+    ///         let _: Self;
+    ///         // `Res::SelfTy { trait_: Some(Foo), alias_of: Some(::{impl#1}) }`
+    ///
+    ///         todo!()
+    ///     }
     /// }
     /// ```
-    ///
-    /// would have both the [`DefId`] of `Foo` and the [`DefId`] of the impl
-    /// associated with it.
     ///
     /// *See also [`Res::SelfCtor`].*
     ///
     /// -----
     ///
-    /// HACK(min_const_generics): impl self types also have an optional requirement to **not** mention
+    /// HACK(min_const_generics): self types also have an optional requirement to **not** mention
     /// any generic parameters to allow the following with `min_const_generics`:
     /// ```
+    /// # struct Foo;
     /// impl Foo { fn test() -> [u8; std::mem::size_of::<Self>()] { todo!() } }
+    ///
+    /// struct Bar([u8; baz::<Self>()]);
+    /// const fn baz<T>() -> usize { 10 }
     /// ```
     /// We do however allow `Self` in repeat expression even if it is generic to not break code
-    /// which already works on stable while causing the `const_evaluatable_unchecked` future compat lint.
-    ///
-    /// FIXME(generic_const_exprs): Remove this bodge once that feature is stable.
-    SelfTy(
-        /// Optionally, the trait associated with this `Self` type.
-        Option<DefId>,
-        /// Optionally, the impl associated with this `Self` type.
-        Option<(DefId, bool)>,
-    ),
+    /// which already works on stable while causing the `const_evaluatable_unchecked` future compat lint:
+    /// ```
+    /// fn foo<T>() {
+    ///     let _bar = [1_u8; std::mem::size_of::<*mut T>()];
+    /// }
+    /// ```
+    // FIXME(generic_const_exprs): Remove this bodge once that feature is stable.
+    SelfTy {
+        /// The trait this `Self` is a generic arg for.
+        trait_: Option<DefId>,
+        /// The item introducing the `Self` type alias. Can be used in the `type_of` query
+        /// to get the underlying type. Additionally whether the `Self` type is disallowed
+        /// from mentioning generics (i.e. when used in an anonymous constant).
+        alias_to: Option<(DefId, bool)>,
+    },
     /// A tool attribute module; e.g., the `rustfmt` in `#[rustfmt::skip]`.
     ///
     /// **Belongs to the type namespace.**
@@ -550,7 +603,7 @@ impl<Id> Res<Id> {
 
             Res::Local(..)
             | Res::PrimTy(..)
-            | Res::SelfTy(..)
+            | Res::SelfTy { .. }
             | Res::SelfCtor(..)
             | Res::ToolMod
             | Res::NonMacroAttr(..)
@@ -573,7 +626,7 @@ impl<Id> Res<Id> {
             Res::SelfCtor(..) => "self constructor",
             Res::PrimTy(..) => "builtin type",
             Res::Local(..) => "local variable",
-            Res::SelfTy(..) => "self type",
+            Res::SelfTy { .. } => "self type",
             Res::ToolMod => "tool module",
             Res::NonMacroAttr(attr_kind) => attr_kind.descr(),
             Res::Err => "unresolved item",
@@ -596,16 +649,32 @@ impl<Id> Res<Id> {
             Res::SelfCtor(id) => Res::SelfCtor(id),
             Res::PrimTy(id) => Res::PrimTy(id),
             Res::Local(id) => Res::Local(map(id)),
-            Res::SelfTy(a, b) => Res::SelfTy(a, b),
+            Res::SelfTy { trait_, alias_to } => Res::SelfTy { trait_, alias_to },
             Res::ToolMod => Res::ToolMod,
             Res::NonMacroAttr(attr_kind) => Res::NonMacroAttr(attr_kind),
             Res::Err => Res::Err,
         }
     }
 
+    pub fn apply_id<R, E>(self, mut map: impl FnMut(Id) -> Result<R, E>) -> Result<Res<R>, E> {
+        Ok(match self {
+            Res::Def(kind, id) => Res::Def(kind, id),
+            Res::SelfCtor(id) => Res::SelfCtor(id),
+            Res::PrimTy(id) => Res::PrimTy(id),
+            Res::Local(id) => Res::Local(map(id)?),
+            Res::SelfTy { trait_, alias_to } => Res::SelfTy { trait_, alias_to },
+            Res::ToolMod => Res::ToolMod,
+            Res::NonMacroAttr(attr_kind) => Res::NonMacroAttr(attr_kind),
+            Res::Err => Res::Err,
+        })
+    }
+
     #[track_caller]
     pub fn expect_non_local<OtherId>(self) -> Res<OtherId> {
-        self.map_id(|_| panic!("unexpected `Res::Local`"))
+        self.map_id(
+            #[track_caller]
+            |_| panic!("unexpected `Res::Local`"),
+        )
     }
 
     pub fn macro_kind(self) -> Option<MacroKind> {
@@ -620,7 +689,7 @@ impl<Id> Res<Id> {
     pub fn ns(&self) -> Option<Namespace> {
         match self {
             Res::Def(kind, ..) => kind.ns(),
-            Res::PrimTy(..) | Res::SelfTy(..) | Res::ToolMod => Some(Namespace::TypeNS),
+            Res::PrimTy(..) | Res::SelfTy { .. } | Res::ToolMod => Some(Namespace::TypeNS),
             Res::SelfCtor(..) | Res::Local(..) => Some(Namespace::ValueNS),
             Res::NonMacroAttr(..) => Some(Namespace::MacroNS),
             Res::Err => None,
@@ -636,4 +705,45 @@ impl<Id> Res<Id> {
     pub fn expected_in_tuple_struct_pat(&self) -> bool {
         matches!(self, Res::Def(DefKind::Ctor(_, CtorKind::Fn), _) | Res::SelfCtor(..))
     }
+
+    /// Returns whether such a resolved path can occur in a unit struct/variant pattern
+    pub fn expected_in_unit_struct_pat(&self) -> bool {
+        matches!(self, Res::Def(DefKind::Ctor(_, CtorKind::Const), _) | Res::SelfCtor(..))
+    }
+}
+
+/// Resolution for a lifetime appearing in a type.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LifetimeRes {
+    /// Successfully linked the lifetime to a generic parameter.
+    Param {
+        /// Id of the generic parameter that introduced it.
+        param: LocalDefId,
+        /// Id of the introducing place. That can be:
+        /// - an item's id, for the item's generic parameters;
+        /// - a TraitRef's ref_id, identifying the `for<...>` binder;
+        /// - a BareFn type's id.
+        ///
+        /// This information is used for impl-trait lifetime captures, to know when to or not to
+        /// capture any given lifetime.
+        binder: NodeId,
+    },
+    /// Created a generic parameter for an anonymous lifetime.
+    Fresh {
+        /// Id of the generic parameter that introduced it.
+        ///
+        /// Creating the associated `LocalDefId` is the responsibility of lowering.
+        param: NodeId,
+        /// Id of the introducing place. See `Param`.
+        binder: NodeId,
+    },
+    /// This variant is used for anonymous lifetimes that we did not resolve during
+    /// late resolution.  Those lifetimes will be inferred by typechecking.
+    Infer,
+    /// Explicit `'static` lifetime.
+    Static,
+    /// Resolution failure.
+    Error,
+    /// HACK: This is used to recover the NodeId of an elided lifetime.
+    ElidedAnchor { start: NodeId, end: NodeId },
 }

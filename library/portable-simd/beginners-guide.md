@@ -33,7 +33,7 @@ SIMD has a few special vocabulary terms you should know:
 
 * **Vertical:** When an operation is "vertical", each lane processes individually without regard to the other lanes in the same vector. For example, a "vertical add" between two vectors would add lane 0 in `a` with lane 0 in `b`, with the total in lane 0 of `out`, and then the same thing for lanes 1, 2, etc. Most SIMD operations are vertical operations, so if your problem is a vertical problem then you can probably solve it with SIMD.
 
-* **Horizontal:** When an operation is "horizontal", the lanes within a single vector interact in some way. A "horizontal add" might add up lane 0 of `a` with lane 1 of `a`, with the total in lane 0 of `out`.
+* **Reducing/Reduce:** When an operation is "reducing" (functions named `reduce_*`), the lanes within a single vector are merged using some operation such as addition, returning the merged value as a scalar. For instance, a reducing add would return the sum of all the lanes' values.
 
 * **Target Feature:** Rust calls a CPU architecture extension a `target_feature`. Proper SIMD requires various CPU extensions to be enabled (details below). Don't confuse this with `feature`, which is a Cargo crate concept.
 
@@ -82,5 +82,10 @@ Fortunately, most SIMD types have a fairly predictable size. `i32x4` is bit-equi
 
 However, this is not the same as alignment. Computer architectures generally prefer aligned accesses, especially when moving data between memory and vector registers, and while some support specialized operations that can bend the rules to help with this, unaligned access is still typically slow, or even undefined behavior. In addition, different architectures can require different alignments when interacting with their native SIMD types. For this reason, any `#[repr(simd)]` type has a non-portable alignment. If it is necessary to directly interact with the alignment of these types, it should be via [`mem::align_of`].
 
+When working with slices, data correctly aligned for SIMD can be acquired using the [`as_simd`] and [`as_simd_mut`] methods of the slice primitive.
+
 [`mem::transmute`]: https://doc.rust-lang.org/core/mem/fn.transmute.html
 [`mem::align_of`]: https://doc.rust-lang.org/core/mem/fn.align_of.html
+[`as_simd`]: https://doc.rust-lang.org/nightly/std/primitive.slice.html#method.as_simd
+[`as_simd_mut`]: https://doc.rust-lang.org/nightly/std/primitive.slice.html#method.as_simd_mut
+

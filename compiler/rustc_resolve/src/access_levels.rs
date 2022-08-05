@@ -5,7 +5,6 @@ use rustc_ast::Crate;
 use rustc_ast::EnumDef;
 use rustc_ast::ForeignMod;
 use rustc_ast::NodeId;
-use rustc_ast_lowering::ResolverAstLowering;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_middle::middle::privacy::AccessLevel;
@@ -133,7 +132,7 @@ impl<'r, 'ast> Visitor<'ast> for AccessLevelsVisitor<'ast, 'r> {
             ast::ItemKind::Impl(..) => return,
 
             // Only exported `macro_rules!` items are public, but they always are
-            ast::ItemKind::MacroDef(..) => {
+            ast::ItemKind::MacroDef(ref macro_def) if macro_def.macro_rules => {
                 let is_macro_export =
                     item.attrs.iter().any(|attr| attr.has_name(sym::macro_export));
                 if is_macro_export { Some(AccessLevel::Public) } else { None }
@@ -155,7 +154,8 @@ impl<'r, 'ast> Visitor<'ast> for AccessLevelsVisitor<'ast, 'r> {
             | ast::ItemKind::Struct(..)
             | ast::ItemKind::Union(..)
             | ast::ItemKind::Trait(..)
-            | ast::ItemKind::TraitAlias(..) => {
+            | ast::ItemKind::TraitAlias(..)
+            | ast::ItemKind::MacroDef(..) => {
                 if item.vis.kind.is_pub() {
                     self.prev_level
                 } else {

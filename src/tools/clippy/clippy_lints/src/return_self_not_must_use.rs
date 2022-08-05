@@ -1,5 +1,6 @@
+use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::ty::is_must_use_ty;
-use clippy_utils::{diagnostics::span_lint, nth_arg, return_ty};
+use clippy_utils::{nth_arg, return_ty};
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{Body, FnDecl, HirId, TraitItem, TraitItemKind};
@@ -13,7 +14,12 @@ declare_clippy_lint! {
     /// This lint warns when a method returning `Self` doesn't have the `#[must_use]` attribute.
     ///
     /// ### Why is this bad?
-    /// It prevents to "forget" to use the newly created value.
+    /// Methods returning `Self` often create new values, having the `#[must_use]` attribute
+    /// prevents users from "forgetting" to use the newly created value.
+    ///
+    /// The `#[must_use]` attribute can be added to the type itself to ensure that instances
+    /// are never forgotten. Functions returning a type marked with `#[must_use]` will not be
+    /// linted, as the usage is already enforced by the type attribute.
     ///
     /// ### Limitations
     /// This lint is only applied on methods taking a `self` argument. It would be mostly noise
@@ -22,29 +28,47 @@ declare_clippy_lint! {
     /// ### Example
     /// ```rust
     /// pub struct Bar;
-    ///
     /// impl Bar {
-    ///     // Bad
+    ///     // Missing attribute
     ///     pub fn bar(&self) -> Self {
-    ///         Self
-    ///     }
-    ///
-    ///     // Good
-    ///     #[must_use]
-    ///     pub fn foo(&self) -> Self {
     ///         Self
     ///     }
     /// }
     /// ```
+    ///
+    /// Use instead:
+    /// ```rust
+    /// # {
+    /// // It's better to have the `#[must_use]` attribute on the method like this:
+    /// pub struct Bar;
+    /// impl Bar {
+    ///     #[must_use]
+    ///     pub fn bar(&self) -> Self {
+    ///         Self
+    ///     }
+    /// }
+    /// # }
+    ///
+    /// # {
+    /// // Or on the type definition like this:
+    /// #[must_use]
+    /// pub struct Bar;
+    /// impl Bar {
+    ///     pub fn bar(&self) -> Self {
+    ///         Self
+    ///     }
+    /// }
+    /// # }
+    /// ```
     #[clippy::version = "1.59.0"]
     pub RETURN_SELF_NOT_MUST_USE,
-    suspicious,
+    pedantic,
     "missing `#[must_use]` annotation on a method returning `Self`"
 }
 
 declare_lint_pass!(ReturnSelfNotMustUse => [RETURN_SELF_NOT_MUST_USE]);
 
-fn check_method(cx: &LateContext<'tcx>, decl: &'tcx FnDecl<'tcx>, fn_def: LocalDefId, span: Span, hir_id: HirId) {
+fn check_method(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_def: LocalDefId, span: Span, hir_id: HirId) {
     if_chain! {
         // If it comes from an external macro, better ignore it.
         if !in_external_macro(cx.sess(), span);
@@ -65,11 +89,13 @@ fn check_method(cx: &LateContext<'tcx>, decl: &'tcx FnDecl<'tcx>, fn_def: LocalD
         if !is_must_use_ty(cx, ret_ty);
 
         then {
-            span_lint(
+            span_lint_and_help(
                 cx,
                 RETURN_SELF_NOT_MUST_USE,
                 span,
                 "missing `#[must_use]` attribute on a method returning `Self`",
+                None,
+                "consider adding the `#[must_use]` attribute to the method or directly to the `Self` type"
             );
         }
     }
@@ -87,7 +113,7 @@ impl<'tcx> LateLintPass<'tcx> for ReturnSelfNotMustUse {
     ) {
         if_chain! {
             // We are only interested in methods, not in functions or associated functions.
-            if matches!(kind, FnKind::Method(_, _, _));
+            if matches!(kind, FnKind::Method(_, _));
             if let Some(fn_def) = cx.tcx.hir().opt_local_def_id(hir_id);
             if let Some(impl_def) = cx.tcx.impl_of_method(fn_def.to_def_id());
             // We don't want this method to be te implementation of a trait because the

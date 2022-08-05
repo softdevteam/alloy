@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 use super::MaskElement;
 use crate::simd::intrinsics;
-use crate::simd::{LaneCount, Simd, SupportedLaneCount};
+use crate::simd::{LaneCount, Simd, SupportedLaneCount, ToBitMask};
 use core::marker::PhantomData;
 
 /// A mask where each lane is represented by a single bit.
@@ -118,17 +118,39 @@ where
     #[cfg(feature = "generic_const_exprs")]
     #[inline]
     #[must_use = "method returns a new array and does not mutate the original value"]
-    pub fn to_bitmask(self) -> [u8; LaneCount::<LANES>::BITMASK_LEN] {
-        // Safety: these are the same type and we are laundering the generic
+    pub fn to_bitmask_array<const N: usize>(self) -> [u8; N] {
+        assert!(core::mem::size_of::<Self>() == N);
+
+        // Safety: converting an integer to an array of bytes of the same size is safe
         unsafe { core::mem::transmute_copy(&self.0) }
     }
 
     #[cfg(feature = "generic_const_exprs")]
     #[inline]
     #[must_use = "method returns a new mask and does not mutate the original value"]
-    pub fn from_bitmask(bitmask: [u8; LaneCount::<LANES>::BITMASK_LEN]) -> Self {
-        // Safety: these are the same type and we are laundering the generic
+    pub fn from_bitmask_array<const N: usize>(bitmask: [u8; N]) -> Self {
+        assert!(core::mem::size_of::<Self>() == N);
+
+        // Safety: converting an array of bytes to an integer of the same size is safe
         Self(unsafe { core::mem::transmute_copy(&bitmask) }, PhantomData)
+    }
+
+    #[inline]
+    pub fn to_bitmask_integer<U>(self) -> U
+    where
+        super::Mask<T, LANES>: ToBitMask<BitMask = U>,
+    {
+        // Safety: these are the same types
+        unsafe { core::mem::transmute_copy(&self.0) }
+    }
+
+    #[inline]
+    pub fn from_bitmask_integer<U>(bitmask: U) -> Self
+    where
+        super::Mask<T, LANES>: ToBitMask<BitMask = U>,
+    {
+        // Safety: these are the same types
+        unsafe { Self(core::mem::transmute_copy(&bitmask), PhantomData) }
     }
 
     #[inline]
@@ -137,6 +159,7 @@ where
     where
         U: MaskElement,
     {
+        // Safety: bitmask layout does not depend on the element width
         unsafe { core::mem::transmute_copy(&self) }
     }
 
