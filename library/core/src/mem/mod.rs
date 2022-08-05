@@ -612,11 +612,9 @@ pub const fn needs_finalizer<T>() -> bool {
     intrinsics::needs_finalizer::<T>()
 }
 
-#[inline(never)]
 #[unstable(feature = "gc", issue = "none")]
 #[cfg(not(bootstrap))]
 #[allow(missing_docs)]
-#[cfg_attr(not(bootstrap), lang = "make_collectable_lang")]
 pub unsafe fn make_collectable<T>(value: &T) {
     intrinsics::make_collectable::<T>(value)
 }

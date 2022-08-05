@@ -278,7 +278,6 @@ language_item_table! {
     ConstEvalSelect,         sym::const_eval_select,   const_eval_select,          Target::Fn,             GenericRequirement::Exact(4);
     ConstConstEvalSelect,    sym::const_eval_select_ct,const_eval_select_ct,       Target::Fn,             GenericRequirement::Exact(4);
 
-    MakeCollectableLang,     sym::make_collectable_lang, make_collectable_lang_fn,        Target::Fn,             GenericRequirement::Minimum(1);
     Start,                   sym::start,               start_fn,                   Target::Fn,             GenericRequirement::Exact(1);
 
     EhPersonality,           sym::eh_personality,      eh_personality,             Target::Fn,             GenericRequirement::None;

@@ -911,7 +911,6 @@ symbols! {
         macros_in_extern,
         main,
         make_collectable,
-        make_collectable_lang,
         manageable_contents,
         managed_boxes,
         manually_drop,

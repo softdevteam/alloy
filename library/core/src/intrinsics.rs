@@ -1492,6 +1492,7 @@ extern "rust-intrinsic" {
 
     #[unstable(feature = "gc", issue = "none")]
     #[cfg(not(bootstrap))]
+    #[rustc_diagnostic_item = "make_collectable"]
     pub fn make_collectable<T>(value: *const T);
 
     #[rustc_const_unstable(feature = "gc", issue = "none")]
