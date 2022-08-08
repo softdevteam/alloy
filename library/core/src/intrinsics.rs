@@ -2314,6 +2314,7 @@ extern "rust-intrinsic" {
     ///
     /// [`std::hint::black_box`]: crate::hint::black_box
     #[rustc_const_unstable(feature = "const_black_box", issue = "none")]
+    #[rustc_diagnostic_item = "black_box"]
     pub fn black_box<T>(dummy: T) -> T;
 
     /// `ptr` must point to a vtable.
