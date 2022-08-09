@@ -71,7 +71,7 @@ mod match_branches;
 mod multiple_return_terminators;
 mod normalize_array_len;
 mod nrvo;
-// mod prevent_early_finalization;
+mod prevent_early_finalization;
 // This pass is public to allow external drivers to perform MIR cleanup
 pub mod remove_false_edges;
 mod remove_noop_landing_pads;
@@ -243,7 +243,7 @@ fn mir_const<'tcx>(
             &Lint(function_item_references::FunctionItemReferences),
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
-            // &prevent_early_finalization::PreventEarlyFinalization,
+            &prevent_early_finalization::PreventEarlyFinalization,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],
