@@ -205,17 +205,7 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 impl<T> GcBox<T> {
     fn new(value: T) -> *mut GcBox<T> {
         let layout = Layout::new::<T>();
-
-        #[cfg(bootstrap)]
         let ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut GcBox<T>;
-
-        #[cfg(not(bootstrap))]
-        let ptr = if core::gc::needs_tracing::<T>() {
-            ALLOCATOR.allocate(layout).unwrap().as_ptr()
-        } else {
-            ALLOCATOR.alloc_untraceable(layout).unwrap().as_ptr()
-        } as *mut GcBox<T>;
-
         let gcbox = GcBox(ManuallyDrop::new(value));
 
         unsafe {
