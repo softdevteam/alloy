@@ -1583,7 +1583,6 @@ symbols! {
         variant_count,
         vec,
         vec_macro,
-        vec_push_gc,
         vec_type,
         vec_with_capacity_gc,
         vecdeque_type,
