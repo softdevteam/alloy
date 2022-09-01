@@ -1,3 +1,40 @@
+//! Multi-threaded garbage-collected pointers. 'Gc' stands for 'Garbage
+//! Collected'.
+//!
+//! The type [`Gc<T>`][`Gc`] provides shared ownership of a value of type `T`,
+//! allocated in the heap. [`Gc`] pointers are copyable, with copied [`Gc`]s
+//! pointing to the same allocation in the heap.
+//!
+//! The allocation referenced by a [`Gc`] pointer is guaranteed not to be
+//! dropped while there are still references to it. When there are no longer any
+//! references, the garbage collector will drop it, calling any finalisers (in
+//! non-deterministic order) in another thread. The garbage collector runs
+//! intermittently in the background, so [`Gc`] pointers may live longer than
+//! they need to, and cannot be relied on to drop values deterministically.
+//!
+//! Shared references in Rust disallow mutation by default, and [`Gc`] is no
+//! exception: you cannot generally obtain a mutable reference to something
+//! inside an [`Gc`]. If you need mutability, put a [`Cell`] or [`RefCell`]
+//! inside the [`Gc`].
+//!
+//! Unlike [`Rc`], cycles between [`Gc`] pointers are allowed and can be
+//! deallocated without issue.
+//!
+//! If the `T` in a [`Gc`] has a [`Drop`] method, it will be run using a
+//! finalizer before being deallocated.
+//!
+//! `Gc<T>` automatically dereferences to `T` (via the [`Deref`] trait), so you
+//! can call `T`'s methods on a value of type [`Gc<T>`][`Gc`]. To avoid name
+//! clashes with `T`'s methods, the methods of [`Gc<T>`][`Gc`] itself are
+//! associated functions, called using [fully qualified syntax].
+//!
+//! [`Cell`]: core::cell::Cell
+//! [`RefCell`]: core::cell::RefCell
+//! [send]: core::marker::Send
+//! [`Rc`]: core::rc::Rc
+//! [`Deref`]: core::ops::Deref
+//! [mutability]: core::cell#introducing-mutability-inside-of-something-immutable
+//! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
 use crate::alloc::{Allocator, Layout};
 
@@ -21,30 +58,9 @@ mod tests;
 #[unstable(feature = "gc", issue = "none")]
 static ALLOCATOR: GcAllocator = GcAllocator;
 
-/// A garbage collected pointer.
+/// A multi-threaded garbage collected pointer.
 ///
-/// The type `Gc<T>` provides shared ownership of a value of type `T`,
-/// allocted in the heap. `Gc` pointers are `Copyable`, so new pointers to
-/// the same value in the heap can be produced trivially. The lifetime of
-/// `T` is tracked automatically: it is freed when the application
-/// determines that no references to `T` are in scope. This does not happen
-/// deterministically, and no guarantees are given about when a value
-/// managed by `Gc` is freed.
-///
-/// Shared references in Rust disallow mutation by default, and `Gc` is no
-/// exception: you cannot generally obtain a mutable reference to something
-/// inside an `Gc`. If you need mutability, put a `Cell` or `RefCell` inside
-/// the `Gc`.
-///
-/// Unlike `Rc<T>`, cycles between `Gc` pointers are allowed and can be
-/// deallocated without issue.
-///
-/// `Gc<T>` automatically dereferences to `T` (via the `Deref` trait), so
-/// you can call `T`'s methods on a value of type `Gc<T>`.
-///
-/// `Gc<T>` will implement `Sync` as long as `T` implements `Sync`. `Gc<T>`
-/// will always implement `Send` because it requires `T` to implement `Send`.
-/// This is because if `T` has a finalizer, it will be run on a seperate thread.
+/// See the [module-level documentation](./index.html) for more details.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
 #[derive(PartialEq, Eq)]
@@ -67,6 +83,15 @@ impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<Gc<U>> for 
 
 impl<T: Send> Gc<T> {
     /// Constructs a new `Gc<T>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    /// ```
     #[unstable(feature = "gc", issue = "none")]
     pub fn new(v: T) -> Self {
         Gc { ptr: unsafe { NonNull::new_unchecked(GcBox::new(v)) }, _phantom: PhantomData }
