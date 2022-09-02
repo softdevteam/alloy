@@ -39,8 +39,10 @@
 use crate::alloc::{Allocator, Layout};
 
 #[cfg(not(test))]
+#[cfg(not(no_global_oom_handling))]
 use crate::boxed::Box;
 #[cfg(test)]
+#[cfg(not(no_global_oom_handling))]
 use std::boxed::Box;
 
 use core::{
@@ -71,7 +73,7 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
 #[derive(PartialEq, Eq)]
-pub struct Gc<T: ?Sized + Send> {
+pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
     _phantom: PhantomData<T>,
 }
@@ -81,14 +83,14 @@ unsafe impl<T: Sync + Send> Sync for Gc<T> {}
 
 impl<T: ?Sized> !NoTrace for Gc<T> {}
 
-unsafe impl<T: ?Sized + Send> NoFinalize for Gc<T> {}
+unsafe impl<T: ?Sized> NoFinalize for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc<T> {}
+impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<Gc<U>> for Gc<T> {}
+impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 
-impl<T: ?Sized + Send> Gc<T> {
+impl<T: ?Sized> Gc<T> {
     unsafe fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
         Self { ptr, _phantom: PhantomData }
     }
@@ -130,6 +132,7 @@ impl<T: Send> Gc<T> {
     ///
     /// let five = Gc::new(5);
     /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub fn new(value: T) -> Self {
         let mut gc = unsafe {
@@ -211,9 +214,51 @@ impl<T: Send> Gc<T> {
     }
 }
 
-impl Gc<dyn Any + Send> {
+impl<T> Gc<T> {
+    /// Constructs a new `Gc<T>` which will never finalize the value of `T`.
+    /// This means that if `T` implements [`Drop`], its [drop method] will never
+    /// be called.
+    ///
+    /// This is useful when you need a `Gc<T>` where `T` does not implement
+    /// [`Send`]. The requirement that `T: Send` is only necessary for
+    /// finalization because the garbage collector finalizes values on a
+    /// separate thread.
+    ///
+    /// This method should be used with caution: while it is safe to omit
+    /// running `drop`, it is a common way to unintentionally cause memory
+    /// leaks.
+    ///
+    /// [`Drop`]: core::ops::Drop
+    /// [`drop method`]: core::ops::Drop#tymethod.drop
+    /// [`Send`]: core::marker::Send
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// # #![feature(negative_impls)]
+    /// use std::gc::Gc;
+    ///
+    /// struct Unsend(usize);
+    ///
+    /// impl !Send for Unsend {}
+    ///
+    /// let five = Gc::new_unfinalizable(Unsend(5));
+    /// ```
+    #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
-    pub fn downcast<T: Any + Send>(self) -> Result<Gc<T>, Gc<dyn Any + Send>> {
+    pub fn new_unfinalizable(value: T) -> Self {
+        unsafe {
+            Self::from_inner(
+                Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
+            )
+        }
+    }
+}
+
+impl Gc<dyn Any> {
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn downcast<T: Any>(self) -> Result<Gc<T>, Gc<dyn Any>> {
         if (*self).is::<T>() {
             unsafe {
                 let ptr = self.ptr.cast::<GcBox<T>>();
@@ -281,7 +326,7 @@ impl<T> GcBox<T> {
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Send> Deref for Gc<T> {
+impl<T: ?Sized> Deref for Gc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -293,17 +338,17 @@ impl<T: ?Sized + Send> Deref for Gc<T> {
 /// should be copyable regardless of `T`. It differs subtly from `#[derive(Copy,
 /// Clone)]` in that the latter only makes `Gc<T>` copyable if `T` is.
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Send> Copy for Gc<T> {}
+impl<T: ?Sized> Copy for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Send> Clone for Gc<T> {
+impl<T: ?Sized> Clone for Gc<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Hash + Send> Hash for Gc<T> {
+impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
     }
