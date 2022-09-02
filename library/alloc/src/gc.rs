@@ -38,12 +38,17 @@
 #![allow(missing_docs)]
 use crate::alloc::{Allocator, Layout};
 
+#[cfg(not(test))]
+use crate::boxed::Box;
+#[cfg(test)]
+use std::boxed::Box;
+
 use core::{
     any::Any,
     fmt,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unsize},
-    mem::{forget, ManuallyDrop, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit},
     ops::{CoerceUnsized, Deref, DispatchFromDyn},
     ptr::{null_mut, NonNull},
 };
@@ -57,6 +62,8 @@ mod tests;
 
 #[unstable(feature = "gc", issue = "none")]
 static ALLOCATOR: GcAllocator = GcAllocator;
+
+struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 
 /// A multi-threaded garbage collected pointer.
 ///
@@ -81,6 +88,37 @@ impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> CoerceUnsized<Gc<U>> for Gc
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U> + Send, U: ?Sized + Send> DispatchFromDyn<Gc<U>> for Gc<T> {}
 
+impl<T: ?Sized + Send> Gc<T> {
+    unsafe fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
+        Self { ptr, _phantom: PhantomData }
+    }
+
+    /// Get a `Gc<T>` from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `raw` was allocated with `Gc::new()` or
+    /// u8 `Gc::new_from_layout()`.
+    ///
+    /// It is legal for `raw` to be an interior pointer if `T` is valid for the
+    /// size and alignment of the originally allocated block.
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn from_raw(raw: *const T) -> Gc<T> {
+        Gc { ptr: unsafe { NonNull::new_unchecked(raw as *mut GcBox<T>) }, _phantom: PhantomData }
+    }
+
+    /// Get a raw pointer to the underlying value `T`.
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn into_raw(this: Self) -> *const T {
+        this.ptr.as_ptr() as *const T
+    }
+
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
+        this.ptr.as_ptr() == other.ptr.as_ptr()
+    }
+}
+
 impl<T: Send> Gc<T> {
     /// Constructs a new `Gc<T>`.
     ///
@@ -93,8 +131,44 @@ impl<T: Send> Gc<T> {
     /// let five = Gc::new(5);
     /// ```
     #[unstable(feature = "gc", issue = "none")]
-    pub fn new(v: T) -> Self {
-        Gc { ptr: unsafe { NonNull::new_unchecked(GcBox::new(v)) }, _phantom: PhantomData }
+    pub fn new(value: T) -> Self {
+        let mut gc = unsafe {
+            Self::from_inner(
+                Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
+            )
+        };
+        gc.register_finalizer();
+        gc
+    }
+
+    fn register_finalizer(&mut self) {
+        #[cfg(feature = "gc_stats")]
+        crate::stats::NUM_REGISTERED_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        #[cfg(not(bootstrap))]
+        if !core::mem::needs_finalizer::<T>() {
+            return;
+        }
+
+        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
+            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
+        }
+
+        unsafe {
+            ALLOCATOR.register_finalizer(
+                self as *mut _ as *mut u8,
+                Some(fshim::<T>),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        }
+    }
+
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn unregister_finalizer(&mut self) {
+        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
+        ALLOCATOR.unregister_finalizer(ptr);
     }
 
     /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
@@ -133,58 +207,21 @@ impl<T: Send> Gc<T> {
     /// alignment must match or exceed that required to store `T`.
     #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn new_from_layout_unchecked(layout: Layout) -> Gc<MaybeUninit<T>> {
-        Gc::from_inner(GcBox::new_from_layout(layout))
-    }
-
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn unregister_finalizer(&mut self) {
-        let ptr = self.ptr.as_ptr() as *mut GcBox<T>;
-        unsafe {
-            GcBox::unregister_finalizer(&mut *ptr);
-        }
+        unsafe { Gc::from_inner(GcBox::new_from_layout(layout)) }
     }
 }
 
 impl Gc<dyn Any + Send> {
     #[unstable(feature = "gc", issue = "none")]
-    pub fn downcast<T: Any + Send>(&self) -> Result<Gc<T>, Gc<dyn Any + Send>> {
+    pub fn downcast<T: Any + Send>(self) -> Result<Gc<T>, Gc<dyn Any + Send>> {
         if (*self).is::<T>() {
-            let ptr = self.ptr.cast::<GcBox<T>>();
-            Ok(Gc::from_inner(ptr))
+            unsafe {
+                let ptr = self.ptr.cast::<GcBox<T>>();
+                Ok(Gc::from_inner(ptr))
+            }
         } else {
-            Err(Gc::from_inner(self.ptr))
+            Err(self)
         }
-    }
-}
-
-impl<T: ?Sized + Send> Gc<T> {
-    /// Get a raw pointer to the underlying value `T`.
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn into_raw(this: Self) -> *const T {
-        this.ptr.as_ptr() as *const T
-    }
-
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
-        this.ptr.as_ptr() == other.ptr.as_ptr()
-    }
-
-    /// Get a `Gc<T>` from a raw pointer.
-    ///
-    /// # Safety
-    ///
-    /// The caller must guarantee that `raw` was allocated with `Gc::new()` or
-    /// u8 `Gc::new_from_layout()`.
-    ///
-    /// It is legal for `raw` to be an interior pointer if `T` is valid for the
-    /// size and alignment of the originally allocated block.
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn from_raw(raw: *const T) -> Gc<T> {
-        Gc { ptr: unsafe { NonNull::new_unchecked(raw as *mut GcBox<T>) }, _phantom: PhantomData }
-    }
-
-    fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
-        Self { ptr, _phantom: PhantomData }
     }
 }
 
@@ -196,7 +233,20 @@ impl<T: Send> Gc<MaybeUninit<T>> {
     #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn assume_init(self) -> Gc<T> {
         let ptr = self.ptr.as_ptr() as *mut GcBox<MaybeUninit<T>>;
-        unsafe { Gc::from_inner((&mut *ptr).assume_init()) }
+        let mut gc = unsafe { Gc::from_inner((&mut *ptr).assume_init()) };
+        // Now that T is initialized, we must make sure that it's dropped when
+        // `GcBox<T>` is freed.
+        gc.register_finalizer();
+        gc
+    }
+}
+
+impl<T> GcBox<MaybeUninit<T>> {
+    unsafe fn assume_init(&mut self) -> NonNull<GcBox<T>> {
+        unsafe {
+            let init = self as *mut GcBox<MaybeUninit<T>> as *mut GcBox<T>;
+            NonNull::new_unchecked(init)
+        }
     }
 }
 
@@ -221,71 +271,11 @@ impl<T: ?Sized + Send> fmt::Pointer for Gc<T> {
     }
 }
 
-/// A `GcBox` is a 0-cost wrapper which allows a single `Drop` implementation
-/// while also permitting multiple, copyable `Gc` references. The `drop` method
-/// on `GcBox` acts as a guard, preventing the destructors on its contents from
-/// running unless the object is really dead.
-struct GcBox<T: ?Sized>(ManuallyDrop<T>);
-
 impl<T> GcBox<T> {
-    fn new(value: T) -> *mut GcBox<T> {
-        let layout = Layout::new::<T>();
-        let ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut GcBox<T>;
-        let gcbox = GcBox(ManuallyDrop::new(value));
-
-        unsafe {
-            ptr.copy_from_nonoverlapping(&gcbox, 1);
-            GcBox::register_finalizer(&mut *ptr);
-        }
-
-        forget(gcbox);
-        ptr
-    }
-
     fn new_from_layout(layout: Layout) -> NonNull<GcBox<MaybeUninit<T>>> {
         unsafe {
             let base_ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut usize;
             NonNull::new_unchecked(base_ptr as *mut GcBox<MaybeUninit<T>>)
-        }
-    }
-
-    fn register_finalizer(&mut self) {
-        #[cfg(feature = "gc_stats")]
-        crate::stats::NUM_REGISTERED_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        #[cfg(not(bootstrap))]
-        if !core::mem::needs_finalizer::<T>() {
-            return;
-        }
-
-        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
-            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
-        }
-
-        unsafe {
-            ALLOCATOR.register_finalizer(
-                self as *mut _ as *mut u8,
-                Some(fshim::<T>),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        }
-    }
-
-    fn unregister_finalizer(&mut self) {
-        ALLOCATOR.unregister_finalizer(self as *mut _ as *mut u8);
-    }
-}
-
-impl<T> GcBox<MaybeUninit<T>> {
-    unsafe fn assume_init(&mut self) -> NonNull<GcBox<T>> {
-        // Now that T is initialized, we must make sure that it's dropped when
-        // `GcBox<T>` is freed.
-        let init = self as *mut _ as *mut GcBox<T>;
-        unsafe {
-            GcBox::register_finalizer(&mut *init);
-            NonNull::new_unchecked(init)
         }
     }
 }
