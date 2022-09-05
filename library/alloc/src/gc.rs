@@ -614,3 +614,9 @@ impl<T: ?Sized> borrow::Borrow<T> for Gc<T> {
         &**self
     }
 }
+
+impl<T: ?Sized> AsRef<T> for Gc<T> {
+    fn as_ref(&self) -> &T {
+        &**self
+    }
+}
