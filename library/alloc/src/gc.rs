@@ -47,6 +47,7 @@ use std::boxed::Box;
 
 use core::{
     any::Any,
+    cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unsize},
@@ -72,7 +73,6 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 /// See the [module-level documentation](./index.html) for more details.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
-#[derive(PartialEq, Eq)]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
     _phantom: PhantomData<T>,
@@ -292,6 +292,180 @@ impl<T> GcBox<MaybeUninit<T>> {
             let init = self as *mut GcBox<MaybeUninit<T>> as *mut GcBox<T>;
             NonNull::new_unchecked(init)
         }
+    }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
+    /// Equality for two `Gc`s.
+    ///
+    /// Two `Gc`s are equal if their inner values are equal, even if they are
+    /// stored in different allocations.
+    ///
+    /// If `T` also implements `Eq` (implying reflexivity of equality),
+    /// two `Gc`s that point to the same allocation are
+    /// always equal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five == Gc::new(5));
+    /// ```
+    #[inline]
+    fn eq(&self, other: &Gc<T>) -> bool {
+        **self == **other
+    }
+
+    /// Inequality for two `Gc`s.
+    ///
+    /// Two `Gc`s are unequal if their inner values are unequal.
+    ///
+    /// If `T` also implements `Eq` (implying reflexivity of equality),
+    /// two `Gc`s that point to the same allocation are
+    /// never unequal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five != Gc::new(6));
+    /// ```
+    #[inline]
+    fn ne(&self, other: &Gc<T>) -> bool {
+        **self != **other
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + Eq> Eq for Gc<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + PartialOrd> PartialOrd for Gc<T> {
+    /// Partial comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `partial_cmp()` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    /// use std::cmp::Ordering;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert_eq!(Some(Ordering::Less), five.partial_cmp(&Gc::new(6)));
+    /// ```
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Gc<T>) -> Option<Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+
+    /// Less-than comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `<` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five < Gc::new(6));
+    /// ```
+    #[inline(always)]
+    fn lt(&self, other: &Gc<T>) -> bool {
+        **self < **other
+    }
+
+    /// 'Less than or equal to' comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `<=` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five <= Gc::new(5));
+    /// ```
+    #[inline(always)]
+    fn le(&self, other: &Gc<T>) -> bool {
+        **self <= **other
+    }
+
+    /// Greater-than comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `>` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five > Gc::new(4));
+    /// ```
+    #[inline(always)]
+    fn gt(&self, other: &Gc<T>) -> bool {
+        **self > **other
+    }
+
+    /// 'Greater than or equal to' comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `>=` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five >= Gc::new(5));
+    /// ```
+    #[inline(always)]
+    fn ge(&self, other: &Gc<T>) -> bool {
+        **self >= **other
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + Ord> Ord for Gc<T> {
+    /// Comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `cmp()` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    /// use std::cmp::Ordering;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert_eq!(Ordering::Less, five.cmp(&Gc::new(6)));
+    /// ```
+    #[inline]
+    fn cmp(&self, other: &Gc<T>) -> Ordering {
+        (**self).cmp(&**other)
     }
 }
 
