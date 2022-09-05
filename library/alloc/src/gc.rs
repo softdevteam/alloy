@@ -257,6 +257,26 @@ impl<T> Gc<T> {
 }
 
 impl Gc<dyn Any> {
+    /// Attempt to downcast the `Gc<dyn Any>` to a concrete type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::any::Any;
+    /// use std::gc::Gc;
+    ///
+    /// fn print_if_string(value: Gc<dyn Any>) {
+    ///     if let Ok(string) = value.downcast::<String>() {
+    ///         println!("String ({}): {}", string.len(), string);
+    ///     }
+    /// }
+    ///
+    /// let my_string = "Hello World".to_string();
+    /// print_if_string(Gc::new(my_string));
+    /// print_if_string(Gc::new(0i8));
+    /// ```
+    #[inline]
     #[unstable(feature = "gc", issue = "none")]
     pub fn downcast<T: Any>(self) -> Result<Gc<T>, Gc<dyn Any>> {
         if (*self).is::<T>() {
@@ -266,6 +286,42 @@ impl Gc<dyn Any> {
             }
         } else {
             Err(self)
+        }
+    }
+
+    /// Downcasts the `Gc<dyn Any>` to a concrete type.
+    ///
+    /// For a safe alternative see [`downcast`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// #![feature(downcast_unchecked)]
+    ///
+    /// use std::any::Any;
+    /// use std::gc::Gc;
+    ///
+    /// let x: Gc<dyn Any> = Gc::new(1_usize);
+    ///
+    /// unsafe {
+    ///     assert_eq!(*x.downcast_unchecked::<usize>(), 1);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The contained value must be of type `T`. Calling this method
+    /// with the incorrect type is *undefined behavior*.
+    ///
+    ///
+    /// [`downcast`]: Self::downcast
+    #[inline]
+    #[unstable(feature = "downcast_unchecked", issue = "90850")]
+    pub unsafe fn downcast_unchecked<T: Any>(self) -> Gc<T> {
+        unsafe {
+            let ptr = self.ptr.cast::<GcBox<T>>();
+            Gc::from_inner(ptr)
         }
     }
 }
