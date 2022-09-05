@@ -52,7 +52,7 @@ use core::{
     hash::{Hash, Hasher},
     marker::{PhantomData, Unsize},
     mem::{ManuallyDrop, MaybeUninit},
-    ops::{CoerceUnsized, Deref, DispatchFromDyn},
+    ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
     ptr::{null_mut, NonNull},
 };
 
@@ -583,6 +583,9 @@ impl<T: ?Sized> Deref for Gc<T> {
         unsafe { &*(self.ptr.as_ptr() as *const T) }
     }
 }
+
+#[unstable(feature = "receiver_trait", issue = "none")]
+impl<T: ?Sized> Receiver for Gc<T> {}
 
 /// `Copy` and `Clone` are implemented manually because a reference to `Gc<T>`
 /// should be copyable regardless of `T`. It differs subtly from `#[derive(Copy,
