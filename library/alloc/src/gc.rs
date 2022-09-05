@@ -351,6 +351,26 @@ impl<T> GcBox<MaybeUninit<T>> {
     }
 }
 
+#[cfg(not(no_global_oom_handling))]
+#[unstable(feature = "gc", issue = "none")]
+impl<T: Default + Send> Default for Gc<T> {
+    /// Creates a new `Gc<T>`, with the `Default` value for `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let x: Gc<i32> = Default::default();
+    /// assert_eq!(*x, 0);
+    /// ```
+    #[inline]
+    fn default() -> Gc<T> {
+        Gc::new(Default::default())
+    }
+}
+
 impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
     /// Equality for two `Gc`s.
     ///
