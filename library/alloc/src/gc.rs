@@ -47,6 +47,7 @@ use std::boxed::Box;
 
 use core::{
     any::Any,
+    borrow,
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
@@ -604,5 +605,12 @@ impl<T: ?Sized> Clone for Gc<T> {
 impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> borrow::Borrow<T> for Gc<T> {
+    fn borrow(&self) -> &T {
+        &**self
     }
 }
