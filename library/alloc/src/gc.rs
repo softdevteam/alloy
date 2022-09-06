@@ -76,8 +76,8 @@ pub struct Gc<T: ?Sized> {
     _phantom: PhantomData<T>,
 }
 
-unsafe impl<T: Send> Send for Gc<T> {}
-unsafe impl<T: Sync + Send> Sync for Gc<T> {}
+unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
+unsafe impl<T: ?Sized + Sync + Send> Sync for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
