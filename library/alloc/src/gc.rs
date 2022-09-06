@@ -47,11 +47,13 @@ use std::boxed::Box;
 
 use core::{
     any::Any,
+    borrow,
+    cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
     marker::{PhantomData, Unsize},
     mem::{ManuallyDrop, MaybeUninit},
-    ops::{CoerceUnsized, Deref, DispatchFromDyn},
+    ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
     ptr::{null_mut, NonNull},
 };
 
@@ -72,7 +74,6 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 /// See the [module-level documentation](./index.html) for more details.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
-#[derive(PartialEq, Eq)]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
     _phantom: PhantomData<T>,
@@ -257,6 +258,26 @@ impl<T> Gc<T> {
 }
 
 impl Gc<dyn Any> {
+    /// Attempt to downcast the `Gc<dyn Any>` to a concrete type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::any::Any;
+    /// use std::gc::Gc;
+    ///
+    /// fn print_if_string(value: Gc<dyn Any>) {
+    ///     if let Ok(string) = value.downcast::<String>() {
+    ///         println!("String ({}): {}", string.len(), string);
+    ///     }
+    /// }
+    ///
+    /// let my_string = "Hello World".to_string();
+    /// print_if_string(Gc::new(my_string));
+    /// print_if_string(Gc::new(0i8));
+    /// ```
+    #[inline]
     #[unstable(feature = "gc", issue = "none")]
     pub fn downcast<T: Any>(self) -> Result<Gc<T>, Gc<dyn Any>> {
         if (*self).is::<T>() {
@@ -266,6 +287,42 @@ impl Gc<dyn Any> {
             }
         } else {
             Err(self)
+        }
+    }
+
+    /// Downcasts the `Gc<dyn Any>` to a concrete type.
+    ///
+    /// For a safe alternative see [`downcast`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// #![feature(downcast_unchecked)]
+    ///
+    /// use std::any::Any;
+    /// use std::gc::Gc;
+    ///
+    /// let x: Gc<dyn Any> = Gc::new(1_usize);
+    ///
+    /// unsafe {
+    ///     assert_eq!(*x.downcast_unchecked::<usize>(), 1);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The contained value must be of type `T`. Calling this method
+    /// with the incorrect type is *undefined behavior*.
+    ///
+    ///
+    /// [`downcast`]: Self::downcast
+    #[inline]
+    #[unstable(feature = "downcast_unchecked", issue = "90850")]
+    pub unsafe fn downcast_unchecked<T: Any>(self) -> Gc<T> {
+        unsafe {
+            let ptr = self.ptr.cast::<GcBox<T>>();
+            Gc::from_inner(ptr)
         }
     }
 }
@@ -292,6 +349,200 @@ impl<T> GcBox<MaybeUninit<T>> {
             let init = self as *mut GcBox<MaybeUninit<T>> as *mut GcBox<T>;
             NonNull::new_unchecked(init)
         }
+    }
+}
+
+#[cfg(not(no_global_oom_handling))]
+#[unstable(feature = "gc", issue = "none")]
+impl<T: Default + Send> Default for Gc<T> {
+    /// Creates a new `Gc<T>`, with the `Default` value for `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let x: Gc<i32> = Default::default();
+    /// assert_eq!(*x, 0);
+    /// ```
+    #[inline]
+    fn default() -> Gc<T> {
+        Gc::new(Default::default())
+    }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
+    /// Equality for two `Gc`s.
+    ///
+    /// Two `Gc`s are equal if their inner values are equal, even if they are
+    /// stored in different allocations.
+    ///
+    /// If `T` also implements `Eq` (implying reflexivity of equality),
+    /// two `Gc`s that point to the same allocation are
+    /// always equal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five == Gc::new(5));
+    /// ```
+    #[inline]
+    fn eq(&self, other: &Gc<T>) -> bool {
+        **self == **other
+    }
+
+    /// Inequality for two `Gc`s.
+    ///
+    /// Two `Gc`s are unequal if their inner values are unequal.
+    ///
+    /// If `T` also implements `Eq` (implying reflexivity of equality),
+    /// two `Gc`s that point to the same allocation are
+    /// never unequal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five != Gc::new(6));
+    /// ```
+    #[inline]
+    fn ne(&self, other: &Gc<T>) -> bool {
+        **self != **other
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + Eq> Eq for Gc<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + PartialOrd> PartialOrd for Gc<T> {
+    /// Partial comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `partial_cmp()` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    /// use std::cmp::Ordering;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert_eq!(Some(Ordering::Less), five.partial_cmp(&Gc::new(6)));
+    /// ```
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Gc<T>) -> Option<Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+
+    /// Less-than comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `<` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five < Gc::new(6));
+    /// ```
+    #[inline(always)]
+    fn lt(&self, other: &Gc<T>) -> bool {
+        **self < **other
+    }
+
+    /// 'Less than or equal to' comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `<=` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five <= Gc::new(5));
+    /// ```
+    #[inline(always)]
+    fn le(&self, other: &Gc<T>) -> bool {
+        **self <= **other
+    }
+
+    /// Greater-than comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `>` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five > Gc::new(4));
+    /// ```
+    #[inline(always)]
+    fn gt(&self, other: &Gc<T>) -> bool {
+        **self > **other
+    }
+
+    /// 'Greater than or equal to' comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `>=` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert!(five >= Gc::new(5));
+    /// ```
+    #[inline(always)]
+    fn ge(&self, other: &Gc<T>) -> bool {
+        **self >= **other
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized + Ord> Ord for Gc<T> {
+    /// Comparison for two `Gc`s.
+    ///
+    /// The two are compared by calling `cmp()` on their inner values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// use std::gc::Gc;
+    /// use std::cmp::Ordering;
+    ///
+    /// let five = Gc::new(5);
+    ///
+    /// assert_eq!(Ordering::Less, five.cmp(&Gc::new(6)));
+    /// ```
+    #[inline]
+    fn cmp(&self, other: &Gc<T>) -> Ordering {
+        (**self).cmp(&**other)
     }
 }
 
@@ -334,6 +585,9 @@ impl<T: ?Sized> Deref for Gc<T> {
     }
 }
 
+#[unstable(feature = "receiver_trait", issue = "none")]
+impl<T: ?Sized> Receiver for Gc<T> {}
+
 /// `Copy` and `Clone` are implemented manually because a reference to `Gc<T>`
 /// should be copyable regardless of `T`. It differs subtly from `#[derive(Copy,
 /// Clone)]` in that the latter only makes `Gc<T>` copyable if `T` is.
@@ -351,5 +605,18 @@ impl<T: ?Sized> Clone for Gc<T> {
 impl<T: ?Sized + Hash> Hash for Gc<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (**self).hash(state);
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> borrow::Borrow<T> for Gc<T> {
+    fn borrow(&self) -> &T {
+        &**self
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for Gc<T> {
+    fn as_ref(&self) -> &T {
+        &**self
     }
 }
