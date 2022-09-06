@@ -547,21 +547,21 @@ impl<T: ?Sized + Ord> Ord for Gc<T> {
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + fmt::Display + Send> fmt::Display for Gc<T> {
+impl<T: ?Sized + fmt::Display> fmt::Display for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + fmt::Debug + Send> fmt::Debug for Gc<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
 #[unstable(feature = "gc", issue = "none")]
-impl<T: ?Sized + Send> fmt::Pointer for Gc<T> {
+impl<T: ?Sized> fmt::Pointer for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
     }
