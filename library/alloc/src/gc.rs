@@ -36,7 +36,6 @@
 //! [mutability]: core::cell#introducing-mutability-inside-of-something-immutable
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
-use crate::alloc::{Allocator, Layout};
 
 #[cfg(not(test))]
 #[cfg(not(no_global_oom_handling))]
@@ -100,8 +99,7 @@ impl<T: ?Sized> Gc<T> {
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that `raw` was allocated with `Gc::new()` or
-    /// u8 `Gc::new_from_layout()`.
+    /// The caller must guarantee that `raw` was allocated with `Gc::new()`.
     ///
     /// It is legal for `raw` to be an interior pointer if `T` is valid for the
     /// size and alignment of the originally allocated block.
@@ -173,45 +171,6 @@ impl<T: Send> Gc<T> {
     pub fn unregister_finalizer(&mut self) {
         let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
         ALLOCATOR.unregister_finalizer(ptr);
-    }
-
-    /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
-    /// up-to the size permissible by `layout`.
-    ///
-    /// This can be useful if you want to store a value with a custom layout,
-    /// but have the collector treat the value as if it were T.
-    ///
-    /// # Panics
-    ///
-    /// If `layout` is smaller than that required by `T` and/or has an alignment
-    /// which is smaller than that required by `T`.
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn new_from_layout(layout: Layout) -> Gc<MaybeUninit<T>> {
-        let tl = Layout::new::<T>();
-        if layout.size() < tl.size() || layout.align() < tl.align() {
-            panic!(
-                "Requested layout {:?} is either smaller than size {} and/or not aligned to {}",
-                layout,
-                tl.size(),
-                tl.align()
-            );
-        }
-        unsafe { Gc::new_from_layout_unchecked(layout) }
-    }
-
-    /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
-    /// up-to the size permissible by `layout`.
-    ///
-    /// This can be useful if you want to store a value with a custom layout,
-    /// but have the collector treat the value as if it were T.
-    ///
-    /// # Safety
-    ///
-    /// The caller is responsible for ensuring that both `layout`'s size and
-    /// alignment must match or exceed that required to store `T`.
-    #[unstable(feature = "gc", issue = "none")]
-    pub unsafe fn new_from_layout_unchecked(layout: Layout) -> Gc<MaybeUninit<T>> {
-        unsafe { Gc::from_inner(GcBox::new_from_layout(layout)) }
     }
 }
 
@@ -564,15 +523,6 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Gc<T> {
 impl<T: ?Sized> fmt::Pointer for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
-    }
-}
-
-impl<T> GcBox<T> {
-    fn new_from_layout(layout: Layout) -> NonNull<GcBox<MaybeUninit<T>>> {
-        unsafe {
-            let base_ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut usize;
-            NonNull::new_unchecked(base_ptr as *mut GcBox<MaybeUninit<T>>)
-        }
     }
 }
 
