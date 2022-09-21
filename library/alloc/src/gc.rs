@@ -114,7 +114,7 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
-impl<T: Send> Gc<T> {
+impl<T: Send + Sync> Gc<T> {
     /// Constructs a new `Gc<T>`.
     ///
     /// # Examples
@@ -280,7 +280,7 @@ impl Gc<dyn Any> {
     }
 }
 
-impl<T: Send> Gc<MaybeUninit<T>> {
+impl<T: Send + Sync> Gc<MaybeUninit<T>> {
     /// As with `MaybeUninit::assume_init`, it is up to the caller to guarantee
     /// that the inner value really is in an initialized state. Calling this
     /// when the content is not yet fully initialized causes immediate undefined
@@ -307,7 +307,7 @@ impl<T> GcBox<MaybeUninit<T>> {
 
 #[cfg(not(no_global_oom_handling))]
 #[unstable(feature = "gc", issue = "none")]
-impl<T: Default + Send> Default for Gc<T> {
+impl<T: Default + Send + Sync> Default for Gc<T> {
     /// Creates a new `Gc<T>`, with the `Default` value for `T`.
     ///
     /// # Examples
