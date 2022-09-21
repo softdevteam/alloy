@@ -128,43 +128,9 @@ impl<T: Send + Sync> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub fn new(value: T) -> Self {
-        let mut gc = unsafe {
-            Self::from_inner(
-                Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
-            )
-        };
+        let mut gc = unsafe { Self::new_internal(value) };
         gc.register_finalizer();
         gc
-    }
-
-    fn register_finalizer(&mut self) {
-        #[cfg(feature = "gc_stats")]
-        crate::stats::NUM_REGISTERED_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        #[cfg(not(bootstrap))]
-        if !core::mem::needs_finalizer::<T>() {
-            return;
-        }
-
-        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
-            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
-        }
-
-        unsafe {
-            ALLOCATOR.register_finalizer(
-                self as *mut _ as *mut u8,
-                Some(fshim::<T>),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        }
-    }
-
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn unregister_finalizer(&mut self) {
-        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
-        ALLOCATOR.unregister_finalizer(ptr);
     }
 }
 
@@ -202,11 +168,70 @@ impl<T> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub fn new_unfinalizable(value: T) -> Self {
+        unsafe { Self::new_internal(value) }
+    }
+
+    /// Constructs a new `Gc<T>` which will finalize the value of `T` (if it
+    /// needs dropping) on a separate thread, even if `T` does not implement
+    /// [`Sync`].
+    ///
+    /// This is useful for when you need a `Gc<T>` with interior mutabilty, but
+    /// do not want to use the more expensive mutabilty containers such as
+    /// `RWLock` or `Mutex`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the drop implementation can not introduce
+    /// a race condition. If the allocation points to shared data (e.g. via a
+    /// field of type `Arc<RefCell<U>>`), then that field cannot be used inside
+    /// the drop implementation. This is because the finalisation thread could
+    /// run concurrently while that shared data is accessed without
+    /// synchronisation elsewhere.
+    ///
+    /// [`Sync`]: core::marker::Sync
+    #[cfg(not(no_global_oom_handling))]
+    #[unstable(feature = "gc", issue = "none")]
+    pub unsafe fn new_unsynchronised(value: T) -> Self {
+        let mut gc = unsafe { Self::new_internal(value) };
+        gc.register_finalizer();
+        gc
+    }
+
+    #[inline(always)]
+    #[cfg(not(no_global_oom_handling))]
+    unsafe fn new_internal(value: T) -> Self {
         unsafe {
             Self::from_inner(
                 Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
             )
         }
+    }
+
+    fn register_finalizer(&mut self) {
+        #[cfg(not(bootstrap))]
+        if !core::mem::needs_finalizer::<T>() {
+            return;
+        }
+
+        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
+            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
+        }
+
+        unsafe {
+            ALLOCATOR.register_finalizer(
+                self as *mut _ as *mut u8,
+                Some(fshim::<T>),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        }
+    }
+
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn unregister_finalizer(&mut self) {
+        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
+        ALLOCATOR.unregister_finalizer(ptr);
     }
 }
 
