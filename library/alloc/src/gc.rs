@@ -204,6 +204,7 @@ impl<T> Gc<T> {
     }
 
     #[inline(always)]
+    #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
         unsafe {
             Self::from_inner(
