@@ -36,7 +36,6 @@
 //! [mutability]: core::cell#introducing-mutability-inside-of-something-immutable
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
-use crate::alloc::{Allocator, Layout};
 
 #[cfg(not(test))]
 #[cfg(not(no_global_oom_handling))]
@@ -100,8 +99,7 @@ impl<T: ?Sized> Gc<T> {
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that `raw` was allocated with `Gc::new()` or
-    /// u8 `Gc::new_from_layout()`.
+    /// The caller must guarantee that `raw` was allocated with `Gc::new()`.
     ///
     /// It is legal for `raw` to be an interior pointer if `T` is valid for the
     /// size and alignment of the originally allocated block.
@@ -122,7 +120,7 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
-impl<T: Send> Gc<T> {
+impl<T: Send + Sync> Gc<T> {
     /// Constructs a new `Gc<T>`.
     ///
     /// # Examples
@@ -136,82 +134,9 @@ impl<T: Send> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub fn new(value: T) -> Self {
-        let mut gc = unsafe {
-            Self::from_inner(
-                Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
-            )
-        };
+        let mut gc = unsafe { Self::new_internal(value) };
         gc.register_finalizer();
         gc
-    }
-
-    fn register_finalizer(&mut self) {
-        #[cfg(feature = "gc_stats")]
-        crate::stats::NUM_REGISTERED_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        #[cfg(not(bootstrap))]
-        if !core::mem::needs_finalizer::<T>() {
-            return;
-        }
-
-        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
-            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
-        }
-
-        unsafe {
-            ALLOCATOR.register_finalizer(
-                self as *mut _ as *mut u8,
-                Some(fshim::<T>),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        }
-    }
-
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn unregister_finalizer(&mut self) {
-        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
-        ALLOCATOR.unregister_finalizer(ptr);
-    }
-
-    /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
-    /// up-to the size permissible by `layout`.
-    ///
-    /// This can be useful if you want to store a value with a custom layout,
-    /// but have the collector treat the value as if it were T.
-    ///
-    /// # Panics
-    ///
-    /// If `layout` is smaller than that required by `T` and/or has an alignment
-    /// which is smaller than that required by `T`.
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn new_from_layout(layout: Layout) -> Gc<MaybeUninit<T>> {
-        let tl = Layout::new::<T>();
-        if layout.size() < tl.size() || layout.align() < tl.align() {
-            panic!(
-                "Requested layout {:?} is either smaller than size {} and/or not aligned to {}",
-                layout,
-                tl.size(),
-                tl.align()
-            );
-        }
-        unsafe { Gc::new_from_layout_unchecked(layout) }
-    }
-
-    /// Constructs a new `Gc<MaybeUninit<T>>` which is capable of storing data
-    /// up-to the size permissible by `layout`.
-    ///
-    /// This can be useful if you want to store a value with a custom layout,
-    /// but have the collector treat the value as if it were T.
-    ///
-    /// # Safety
-    ///
-    /// The caller is responsible for ensuring that both `layout`'s size and
-    /// alignment must match or exceed that required to store `T`.
-    #[unstable(feature = "gc", issue = "none")]
-    pub unsafe fn new_from_layout_unchecked(layout: Layout) -> Gc<MaybeUninit<T>> {
-        unsafe { Gc::from_inner(GcBox::new_from_layout(layout)) }
     }
 }
 
@@ -249,11 +174,70 @@ impl<T> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub fn new_unfinalizable(value: T) -> Self {
+        unsafe { Self::new_internal(value) }
+    }
+
+    /// Constructs a new `Gc<T>` which will finalize the value of `T` (if it
+    /// needs dropping) on a separate thread, even if `T` does not implement
+    /// [`Sync`].
+    ///
+    /// This is useful for when you need a `Gc<T>` with interior mutabilty, but
+    /// do not want to use the more expensive mutabilty containers such as
+    /// `RWLock` or `Mutex`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the drop implementation can not introduce
+    /// a race condition. If the allocation points to shared data (e.g. via a
+    /// field of type `Arc<RefCell<U>>`), then that field cannot be used inside
+    /// the drop implementation. This is because the finalisation thread could
+    /// run concurrently while that shared data is accessed without
+    /// synchronisation elsewhere.
+    ///
+    /// [`Sync`]: core::marker::Sync
+    #[cfg(not(no_global_oom_handling))]
+    #[unstable(feature = "gc", issue = "none")]
+    pub unsafe fn new_unsynchronised(value: T) -> Self {
+        let mut gc = unsafe { Self::new_internal(value) };
+        gc.register_finalizer();
+        gc
+    }
+
+    #[inline(always)]
+    #[cfg(not(no_global_oom_handling))]
+    unsafe fn new_internal(value: T) -> Self {
         unsafe {
             Self::from_inner(
                 Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
             )
         }
+    }
+
+    fn register_finalizer(&mut self) {
+        #[cfg(not(bootstrap))]
+        if !core::mem::needs_finalizer::<T>() {
+            return;
+        }
+
+        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
+            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
+        }
+
+        unsafe {
+            ALLOCATOR.register_finalizer(
+                self as *mut _ as *mut u8,
+                Some(fshim::<T>),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        }
+    }
+
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn unregister_finalizer(&mut self) {
+        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
+        ALLOCATOR.unregister_finalizer(ptr);
     }
 }
 
@@ -327,7 +311,7 @@ impl Gc<dyn Any> {
     }
 }
 
-impl<T: Send> Gc<MaybeUninit<T>> {
+impl<T: Send + Sync> Gc<MaybeUninit<T>> {
     /// As with `MaybeUninit::assume_init`, it is up to the caller to guarantee
     /// that the inner value really is in an initialized state. Calling this
     /// when the content is not yet fully initialized causes immediate undefined
@@ -354,7 +338,7 @@ impl<T> GcBox<MaybeUninit<T>> {
 
 #[cfg(not(no_global_oom_handling))]
 #[unstable(feature = "gc", issue = "none")]
-impl<T: Default + Send> Default for Gc<T> {
+impl<T: Default + Send + Sync> Default for Gc<T> {
     /// Creates a new `Gc<T>`, with the `Default` value for `T`.
     ///
     /// # Examples
@@ -564,15 +548,6 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Gc<T> {
 impl<T: ?Sized> fmt::Pointer for Gc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
-    }
-}
-
-impl<T> GcBox<T> {
-    fn new_from_layout(layout: Layout) -> NonNull<GcBox<MaybeUninit<T>>> {
-        unsafe {
-            let base_ptr = ALLOCATOR.allocate(layout).unwrap().as_ptr() as *mut usize;
-            NonNull::new_unchecked(base_ptr as *mut GcBox<MaybeUninit<T>>)
-        }
     }
 }
 
