@@ -785,6 +785,7 @@ symbols! {
         future,
         future_trait,
         gc,
+        gc_ctor,
         gdb_script_file,
         ge,
         gen_future,
