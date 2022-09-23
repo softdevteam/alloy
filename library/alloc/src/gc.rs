@@ -71,6 +71,7 @@ struct GcBox<T: ?Sized>(ManuallyDrop<T>);
 /// See the [module-level documentation](./index.html) for more details.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "gc")]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
     _phantom: PhantomData<T>,
@@ -123,7 +124,7 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
-impl<T: Send + Sync> Gc<T> {
+impl<T> Gc<T> {
     /// Constructs a new `Gc<T>`.
     ///
     /// # Examples
@@ -136,6 +137,7 @@ impl<T: Send + Sync> Gc<T> {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "gc_ctor")]
     pub fn new(value: T) -> Self {
         let mut gc = unsafe { Self::new_internal(value) };
         gc.register_finalizer();
