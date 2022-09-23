@@ -1,0 +1,24 @@
+error: `Hello(123 as *mut u8)` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:15:13
+   |
+LL |     Gc::new(Hello(123 as *mut u8));
+   |     --------^^^^^^^^^^^^^^^^^^^^^-
+   |     |       |
+   |     |       has a drop method which cannot be safely finalized.
+   |     `Gc::new` requires that it implements the `Send` trait.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so `Hello(123 as *mut u8)` must implement `Send` in order to be safely dropped
+
+error: `Hello(123 as *mut u8)` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:15:13
+   |
+LL |     Gc::new(Hello(123 as *mut u8));
+   |     --------^^^^^^^^^^^^^^^^^^^^^-
+   |     |       |
+   |     |       has a drop method which cannot be safely finalized.
+   |     `Gc::new` requires that it implements the `Sync` trait.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so `Hello(123 as *mut u8)` must implement `Sync` in order to be safely dropped
+
+error: aborting due to 2 previous errors
+
