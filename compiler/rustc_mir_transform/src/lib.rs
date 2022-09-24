@@ -41,6 +41,7 @@ mod add_call_guards;
 mod add_moves_for_packed_drops;
 mod add_retag;
 mod check_const_item_mutation;
+mod check_finalizers;
 mod check_packed_ref;
 pub mod check_unsafety;
 // This pass is public to allow external drivers to perform MIR cleanup
@@ -244,6 +245,7 @@ fn mir_const<'tcx>(
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
             &prevent_early_finalization::PreventEarlyFinalization,
+            &check_finalizers::CheckFinalizers,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],
