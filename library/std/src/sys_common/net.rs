@@ -166,6 +166,7 @@ impl Iterator for LookupHost {
 
 unsafe impl Sync for LookupHost {}
 unsafe impl Send for LookupHost {}
+unsafe impl FinalizerSafe for LookupHost {}
 
 impl Drop for LookupHost {
     fn drop(&mut self) {

@@ -184,6 +184,8 @@ pub struct Mutex<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized + FinalizerSafe> FinalizerSafe for Mutex<T> {}
 
 /// An RAII implementation of a "scoped lock" of a mutex. When this structure is
 /// dropped (falls out of scope), the lock will be unlocked.
@@ -212,6 +214,8 @@ pub struct MutexGuard<'a, T: ?Sized + 'a> {
 impl<T: ?Sized> !Send for MutexGuard<'_, T> {}
 #[stable(feature = "mutexguard", since = "1.19.0")]
 unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> !FinalizerSafe for MutexGuard<'_, T> {}
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.

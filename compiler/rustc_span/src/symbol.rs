@@ -189,6 +189,7 @@ symbols! {
         Error,
         File,
         FileType,
+        FinalizerSafe,
         FormatSpec,
         Formatter,
         From,

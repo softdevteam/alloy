@@ -21,6 +21,7 @@ pub struct Symbol(NonZeroU32);
 
 impl !Send for Symbol {}
 impl !Sync for Symbol {}
+impl !FinalizerSafe for Symbol {}
 
 impl Symbol {
     /// Intern a new `Symbol`

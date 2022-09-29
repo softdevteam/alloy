@@ -88,6 +88,9 @@ pub struct Exclusive<T: ?Sized> {
 #[unstable(feature = "exclusive_wrapper", issue = "98407")]
 unsafe impl<T: ?Sized> Sync for Exclusive<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized> FinalizerSafe for Exclusive<T> {}
+
 #[unstable(feature = "exclusive_wrapper", issue = "98407")]
 impl<T: ?Sized> fmt::Debug for Exclusive<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {

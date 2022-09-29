@@ -130,6 +130,7 @@ pub(super) struct Repr(NonNull<()>, PhantomData<ErrorData<Box<Custom>>>);
 // All the types `Repr` stores internally are Send + Sync, and so is it.
 unsafe impl Send for Repr {}
 unsafe impl Sync for Repr {}
+unsafe impl FinalizerSafe for Repr {}
 
 impl Repr {
     pub(super) fn new(dat: ErrorData<Box<Custom>>) -> Self {

@@ -245,6 +245,8 @@ impl Unpin for Waker {}
 unsafe impl Send for Waker {}
 #[stable(feature = "futures_api", since = "1.36.0")]
 unsafe impl Sync for Waker {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl FinalizerSafe for Waker {}
 
 impl Waker {
     /// Wake up the task associated with this `Waker`.

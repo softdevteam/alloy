@@ -534,6 +534,7 @@ impl fmt::Debug for Env {
 
 impl !Send for Env {}
 impl !Sync for Env {}
+impl !FinalizerSafe for Env {}
 
 impl Iterator for Env {
     type Item = (OsString, OsString);

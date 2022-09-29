@@ -2090,11 +2090,17 @@ unsafe impl<T: Send, A: Allocator + Send> Send for LinkedList<T, A> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync, A: Allocator + Sync> Sync for LinkedList<T, A> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for LinkedList<T> {}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync> Send for Iter<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync> Sync for Iter<'_, T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for Iter<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Send> Send for IterMut<'_, T> {}
@@ -2102,14 +2108,23 @@ unsafe impl<T: Send> Send for IterMut<'_, T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for IterMut<'_, T> {}
+
 #[unstable(feature = "linked_list_cursors", issue = "58533")]
 unsafe impl<T: Sync, A: Allocator + Sync> Send for Cursor<'_, T, A> {}
 
 #[unstable(feature = "linked_list_cursors", issue = "58533")]
 unsafe impl<T: Sync, A: Allocator + Sync> Sync for Cursor<'_, T, A> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for Cursor<'_, T> {}
+
 #[unstable(feature = "linked_list_cursors", issue = "58533")]
 unsafe impl<T: Send, A: Allocator + Send> Send for CursorMut<'_, T, A> {}
 
 #[unstable(feature = "linked_list_cursors", issue = "58533")]
 unsafe impl<T: Sync, A: Allocator + Sync> Sync for CursorMut<'_, T, A> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for CursorMut<'_, T> {}

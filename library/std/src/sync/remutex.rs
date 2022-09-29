@@ -47,6 +47,7 @@ pub struct ReentrantMutex<T> {
 
 unsafe impl<T: Send> Send for ReentrantMutex<T> {}
 unsafe impl<T: Send> Sync for ReentrantMutex<T> {}
+unsafe impl<T: Send + FinalizerSafe> FinalizerSafe for ReentrantMutex<T> {}
 
 impl<T> UnwindSafe for ReentrantMutex<T> {}
 impl<T> RefUnwindSafe for ReentrantMutex<T> {}

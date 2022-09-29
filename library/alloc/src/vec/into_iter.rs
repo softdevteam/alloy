@@ -179,6 +179,8 @@ impl<T, A: Allocator> AsRef<[T]> for IntoIter<T, A> {
 unsafe impl<T: Send, A: Allocator + Send> Send for IntoIter<T, A> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync, A: Allocator + Sync> Sync for IntoIter<T, A> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe, A: Allocator + FinalizerSafe> FinalizerSafe for IntoIter<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T, A: Allocator> Iterator for IntoIter<T, A> {

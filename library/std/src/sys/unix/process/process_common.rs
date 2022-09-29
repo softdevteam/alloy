@@ -116,6 +116,7 @@ struct Argv(Vec<*const c_char>);
 // pointers to memory owned by `Command.args`
 unsafe impl Send for Argv {}
 unsafe impl Sync for Argv {}
+unsafe impl FinalizerSafe for Argv {}
 
 // passed back to std::process with the pipes connected to the child, if any
 // were requested

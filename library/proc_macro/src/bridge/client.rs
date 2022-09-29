@@ -262,6 +262,7 @@ struct Bridge<'a> {
 
 impl<'a> !Send for Bridge<'a> {}
 impl<'a> !Sync for Bridge<'a> {}
+impl<'a> !FinalizerSafe for Bridge<'a> {}
 
 enum BridgeState<'a> {
     /// No server is currently connected to this client.

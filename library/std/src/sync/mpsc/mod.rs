@@ -193,6 +193,9 @@ unsafe impl<T: Send> Send for Receiver<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> !Sync for Receiver<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
+impl<T> !FinalizerSafe for Receiver<T> {}
+
 /// An iterator over messages on a [`Receiver`], created by [`iter`].
 ///
 /// This iterator will block whenever [`next`] is called,
@@ -348,6 +351,9 @@ unsafe impl<T: Send> Send for Sender<T> {}
 
 #[stable(feature = "mpsc_sender_sync", since = "1.72.0")]
 unsafe impl<T: Send> Sync for Sender<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T> !FinalizerSafe for Sender<T> {}
 
 /// The sending-half of Rust's synchronous [`sync_channel`] type.
 ///

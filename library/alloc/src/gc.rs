@@ -31,7 +31,7 @@
 //! [`Cell`]: core::cell::Cell
 //! [`RefCell`]: core::cell::RefCell
 //! [send]: core::marker::Send
-//! [`Rc`]: core::rc::Rc
+//! [`Rc`]: crate::rc::Rc
 //! [`Deref`]: core::ops::Deref
 //! [mutability]: core::cell#introducing-mutability-inside-of-something-immutable
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
@@ -50,7 +50,7 @@ use core::{
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
-    marker::{PhantomData, Unsize},
+    marker::{FinalizerSafe, PhantomData, Unsize},
     mem::{ManuallyDrop, MaybeUninit},
     ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
     ptr::{null_mut, NonNull},
@@ -78,6 +78,15 @@ pub struct Gc<T: ?Sized> {
 
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync + Send> Sync for Gc<T> {}
+
+// In non-topological finalization, it is unsound to deref any fields of type
+// `Gc` from within a finalizer. This is because it could have been finalized
+// first, thus resulting in a dangling reference. Marking this as
+// `!FinalizerSafe` will give a nice compiler error if the user does so.
+//
+// FIXME: Make this conditional based on whether -DTOPOLOGICAL_FINALIZATION flag
+// is passed to the compiler.
+impl<T: ?Sized> !FinalizerSafe for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
