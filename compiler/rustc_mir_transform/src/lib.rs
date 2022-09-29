@@ -245,7 +245,6 @@ fn mir_const<'tcx>(
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
             &prevent_early_finalization::PreventEarlyFinalization,
-            &check_finalizers::CheckFinalizers,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],
@@ -287,6 +286,7 @@ fn mir_promoted<'tcx>(
             &promote_pass,
             &simplify::SimplifyCfg::new("promote-consts"),
             &coverage::InstrumentCoverage,
+            &check_finalizers::CheckFinalizers,
         ],
     );
 
