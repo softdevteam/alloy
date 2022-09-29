@@ -12,6 +12,7 @@ use crate::sys::locks as imp;
 pub struct StaticMutex(imp::Mutex);
 
 unsafe impl Sync for StaticMutex {}
+unsafe impl FinalizerSafe for StaticMutex {}
 
 impl StaticMutex {
     /// Creates a new mutex for use.
@@ -57,6 +58,8 @@ impl Drop for StaticMutexGuard {
 pub struct MovableMutex(imp::MovableMutex);
 
 unsafe impl Sync for MovableMutex {}
+
+unsafe impl FinalizerSafe for MovableMutex {}
 
 impl MovableMutex {
     /// Creates a new mutex.

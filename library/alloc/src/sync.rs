@@ -241,6 +241,8 @@ pub struct Arc<T: ?Sized> {
 unsafe impl<T: ?Sized + Sync + Send> Send for Arc<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Sync + Send> Sync for Arc<T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized + FinalizerSafe> FinalizerSafe for Arc<T> {}
 
 #[stable(feature = "catch_unwind", since = "1.9.0")]
 impl<T: RefUnwindSafe + ?Sized> UnwindSafe for Arc<T> {}
@@ -326,6 +328,7 @@ struct ArcInner<T: ?Sized> {
 
 unsafe impl<T: ?Sized + Sync + Send> Send for ArcInner<T> {}
 unsafe impl<T: ?Sized + Sync + Send> Sync for ArcInner<T> {}
+unsafe impl<T: ?Sized + FinalizerSafe> FinalizerSafe for ArcInner<T> {}
 
 impl<T> Arc<T> {
     /// Constructs a new `Arc<T>`.

@@ -1058,6 +1058,8 @@ pub mod os {
 
     unsafe impl<T> Sync for Key<T> {}
 
+    unsafe impl<T> FinalizerSafe for Key<T> {}
+
     struct Value<T: 'static> {
         inner: LazyKeyInner<T>,
         key: &'static Key<T>,

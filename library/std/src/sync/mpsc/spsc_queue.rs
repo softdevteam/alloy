@@ -58,6 +58,11 @@ unsafe impl<T: Send, P: Send + Sync, C: Send + Sync> Send for Queue<T, P, C> {}
 
 unsafe impl<T: Send, P: Send + Sync, C: Send + Sync> Sync for Queue<T, P, C> {}
 
+unsafe impl<T: Send, P: Send + FinalizerSafe, C: Send + FinalizerSafe> FinalizerSafe
+    for Queue<T, P, C>
+{
+}
+
 impl<T> Node<T> {
     fn new() -> *mut Node<T> {
         Box::into_raw(box Node {

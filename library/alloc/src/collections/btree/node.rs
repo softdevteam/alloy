@@ -205,6 +205,10 @@ impl<'a, K: 'a, V: 'a, Type> Clone for NodeRef<marker::Immut<'a>, K, V, Type> {
 }
 
 unsafe impl<BorrowType, K: Sync, V: Sync, Type> Sync for NodeRef<BorrowType, K, V, Type> {}
+unsafe impl<BorrowType, K: FinalizerSafe, V: FinalizerSafe, Type> FinalizerSafe
+    for NodeRef<BorrowType, K, V, Type>
+{
+}
 
 unsafe impl<'a, K: Sync + 'a, V: Sync + 'a, Type> Send for NodeRef<marker::Immut<'a>, K, V, Type> {}
 unsafe impl<'a, K: Send + 'a, V: Send + 'a, Type> Send for NodeRef<marker::Mut<'a>, K, V, Type> {}

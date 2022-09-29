@@ -32,6 +32,7 @@
 #![feature(rustc_attrs)]
 #![feature(min_specialization)]
 #![feature(strict_provenance)]
+#![feature(gc)]
 #![recursion_limit = "256"]
 
 #[unstable(feature = "proc_macro_internals", issue = "27812")]
@@ -82,6 +83,8 @@ pub struct TokenStream(Option<bridge::client::TokenStream>);
 impl !Send for TokenStream {}
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl !Sync for TokenStream {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for TokenStream {}
 
 /// Error returned from `TokenStream::from_str`.
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
@@ -103,6 +106,8 @@ impl error::Error for LexError {}
 impl !Send for LexError {}
 #[stable(feature = "proc_macro_lib", since = "1.15.0")]
 impl !Sync for LexError {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for LexError {}
 
 /// Error returned from `TokenStream::expand_expr`.
 #[unstable(feature = "proc_macro_expand", issue = "90765")]
@@ -125,6 +130,9 @@ impl !Send for ExpandError {}
 
 #[unstable(feature = "proc_macro_expand", issue = "90765")]
 impl !Sync for ExpandError {}
+
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for ExpandError {}
 
 impl TokenStream {
     /// Returns an empty `TokenStream` containing no token trees.
@@ -429,7 +437,8 @@ pub struct Span(bridge::client::Span);
 impl !Send for Span {}
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl !Sync for Span {}
-
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for Span {}
 macro_rules! diagnostic_method {
     ($name:ident, $level:expr) => {
         /// Creates a new `Diagnostic` with the given `message` at the span
@@ -602,6 +611,8 @@ impl LineColumn {
 impl !Send for LineColumn {}
 #[unstable(feature = "proc_macro_span", issue = "54725")]
 impl !Sync for LineColumn {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for LineColumn {}
 
 #[unstable(feature = "proc_macro_span", issue = "54725")]
 impl Ord for LineColumn {
@@ -691,6 +702,8 @@ pub enum TokenTree {
 impl !Send for TokenTree {}
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl !Sync for TokenTree {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for TokenTree {}
 
 impl TokenTree {
     /// Returns the span of this tree, delegating to the `span` method of
@@ -799,6 +812,8 @@ pub struct Group(bridge::Group<bridge::client::TokenStream, bridge::client::Span
 impl !Send for Group {}
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl !Sync for Group {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for Group {}
 
 /// Describes how a sequence of token trees is delimited.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -940,6 +955,8 @@ pub struct Punct(bridge::Punct<bridge::client::Span>);
 impl !Send for Punct {}
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl !Sync for Punct {}
+#[unstable(feature = "gc", issue = "none")]
+impl !FinalizerSafe for Punct {}
 
 /// Describes whether a `Punct` is followed immediately by another `Punct` ([`Spacing::Joint`]) or
 /// by a different token or whitespace ([`Spacing::Alone`]).

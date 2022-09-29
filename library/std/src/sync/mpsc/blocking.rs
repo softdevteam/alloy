@@ -12,6 +12,7 @@ struct Inner {
 
 unsafe impl Send for Inner {}
 unsafe impl Sync for Inner {}
+unsafe impl FinalizerSafe for Inner {}
 
 #[derive(Clone)]
 pub struct SignalToken {
@@ -25,6 +26,8 @@ pub struct WaitToken {
 impl !Send for WaitToken {}
 
 impl !Sync for WaitToken {}
+
+impl !FinalizerSafe for WaitToken {}
 
 pub fn tokens() -> (WaitToken, SignalToken) {
     let inner = Arc::new(Inner { thread: thread::current(), woken: AtomicBool::new(false) });

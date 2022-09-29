@@ -112,6 +112,9 @@ impl<T: fmt::Debug, F> fmt::Debug for LazyLock<T, F> {
 unsafe impl<T, F: Send> Sync for LazyLock<T, F> where OnceLock<T>: Sync {}
 // auto-derived `Send` impl is OK.
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, F: FinalizerSafe> FinalizerSafe for LazyLock<T, F> where OnceLock<T>: FinalizerSafe {}
+
 #[unstable(feature = "once_cell", issue = "74465")]
 impl<T, F: UnwindSafe> RefUnwindSafe for LazyLock<T, F> where OnceLock<T>: RefUnwindSafe {}
 #[unstable(feature = "once_cell", issue = "74465")]

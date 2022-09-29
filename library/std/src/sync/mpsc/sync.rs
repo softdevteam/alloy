@@ -48,6 +48,8 @@ unsafe impl<T: Send> Send for Packet<T> {}
 
 unsafe impl<T: Send> Sync for Packet<T> {}
 
+unsafe impl<T: Send + FinalizerSafe> FinalizerSafe for Packet<T> {}
+
 struct State<T> {
     disconnected: bool, // Is the channel disconnected yet?
     queue: Queue,       // queue of senders waiting to send data
