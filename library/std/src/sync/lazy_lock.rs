@@ -237,6 +237,9 @@ impl<T: fmt::Debug, F> fmt::Debug for LazyLock<T, F> {
 unsafe impl<T: Sync + Send, F: Send> Sync for LazyLock<T, F> {}
 // auto-derived `Send` impl is OK.
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, F: FinalizerSafe> FinalizerSafe for LazyLock<T, F> {}
+
 #[unstable(feature = "lazy_cell", issue = "109736")]
 impl<T: RefUnwindSafe + UnwindSafe, F: UnwindSafe> RefUnwindSafe for LazyLock<T, F> {}
 #[unstable(feature = "lazy_cell", issue = "109736")]

@@ -18,6 +18,7 @@ pub struct DormantMutRef<'a, T> {
 
 unsafe impl<'a, T> Sync for DormantMutRef<'a, T> where &'a mut T: Sync {}
 unsafe impl<'a, T> Send for DormantMutRef<'a, T> where &'a mut T: Send {}
+unsafe impl<'a, T> FinalizerSafe for DormantMutRef<'a, T> where &'a mut T: FinalizerSafe {}
 
 impl<'a, T> DormantMutRef<'a, T> {
     /// Capture a unique borrow, and immediately reborrow it. For the compiler,

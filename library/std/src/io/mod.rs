@@ -1101,6 +1101,9 @@ unsafe impl<'a> Send for IoSliceMut<'a> {}
 #[stable(feature = "iovec-send-sync", since = "1.44.0")]
 unsafe impl<'a> Sync for IoSliceMut<'a> {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<'a> core::marker::FinalizerSafe for IoSliceMut<'a> {}
+
 #[stable(feature = "iovec", since = "1.36.0")]
 impl<'a> fmt::Debug for IoSliceMut<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1243,6 +1246,9 @@ unsafe impl<'a> Send for IoSlice<'a> {}
 
 #[stable(feature = "iovec-send-sync", since = "1.44.0")]
 unsafe impl<'a> Sync for IoSlice<'a> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<'a> FinalizerSafe for IoSlice<'a> {}
 
 #[stable(feature = "iovec", since = "1.36.0")]
 impl<'a> fmt::Debug for IoSlice<'a> {

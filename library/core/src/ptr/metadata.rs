@@ -222,6 +222,7 @@ impl<Dyn: ?Sized> DynMetadata<Dyn> {
 
 unsafe impl<Dyn: ?Sized> Send for DynMetadata<Dyn> {}
 unsafe impl<Dyn: ?Sized> Sync for DynMetadata<Dyn> {}
+unsafe impl<Dyn: ?Sized> FinalizerSafe for DynMetadata<Dyn> {}
 
 impl<Dyn: ?Sized> fmt::Debug for DynMetadata<Dyn> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

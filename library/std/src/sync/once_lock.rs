@@ -337,6 +337,8 @@ impl<T> OnceLock<T> {
 unsafe impl<T: Sync + Send> Sync for OnceLock<T> {}
 #[stable(feature = "once_cell", since = "1.70.0")]
 unsafe impl<T: Send> Send for OnceLock<T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for OnceLock<T> {}
 
 #[stable(feature = "once_cell", since = "1.70.0")]
 impl<T: RefUnwindSafe + UnwindSafe> RefUnwindSafe for OnceLock<T> {}

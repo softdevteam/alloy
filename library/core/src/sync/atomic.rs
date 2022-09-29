@@ -202,6 +202,8 @@ unsafe impl<T> Send for AtomicPtr<T> {}
 #[cfg(target_has_atomic_load_store = "ptr")]
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T> Sync for AtomicPtr<T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T> FinalizerSafe for AtomicPtr<T> {}
 
 /// Atomic memory orderings
 ///
@@ -2057,6 +2059,9 @@ macro_rules! atomic_int {
         // Send is implicitly implemented.
         #[$stable]
         unsafe impl Sync for $atomic_type {}
+
+        #[unstable(feature = "gc", issue = "none")]
+        unsafe impl core::marker::FinalizerSafe for $atomic_type {}
 
         impl $atomic_type {
             /// Creates a new atomic integer.

@@ -325,6 +325,9 @@ pub struct Rc<
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized, A: Allocator> !Send for Rc<T, A> {}
 
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> !FinalizerSafe for Rc<T> {}
+
 // Note that this negative impl isn't strictly necessary for correctness,
 // as `Rc` transitively contains a `Cell`, which is itself `!Sync`.
 // However, given how important `Rc`'s `!Sync`-ness is,
@@ -2696,6 +2699,8 @@ pub struct Weak<
 impl<T: ?Sized, A: Allocator> !Send for Weak<T, A> {}
 #[stable(feature = "rc_weak", since = "1.4.0")]
 impl<T: ?Sized, A: Allocator> !Sync for Weak<T, A> {}
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized, A: Allocator> !FinalizerSafe for Weak<T, A> {}
 
 #[unstable(feature = "coerce_unsized", issue = "18598")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized, A: Allocator> CoerceUnsized<Weak<U, A>> for Weak<T, A> {}

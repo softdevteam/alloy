@@ -258,6 +258,8 @@ pub struct Arc<
 unsafe impl<T: ?Sized + Sync + Send, A: Allocator + Send> Send for Arc<T, A> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized + Sync + Send, A: Allocator + Sync> Sync for Arc<T, A> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized + FinalizerSafe, A: Allocator> FinalizerSafe for Arc<T, A> {}
 
 #[stable(feature = "catch_unwind", since = "1.9.0")]
 impl<T: RefUnwindSafe + ?Sized, A: Allocator + UnwindSafe> UnwindSafe for Arc<T, A> {}
@@ -368,6 +370,7 @@ fn arcinner_layout_for_value_layout(layout: Layout) -> Layout {
 
 unsafe impl<T: ?Sized + Sync + Send> Send for ArcInner<T> {}
 unsafe impl<T: ?Sized + Sync + Send> Sync for ArcInner<T> {}
+unsafe impl<T: ?Sized + FinalizerSafe> FinalizerSafe for ArcInner<T> {}
 
 impl<T> Arc<T> {
     /// Constructs a new `Arc<T>`.

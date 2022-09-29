@@ -1410,6 +1410,8 @@ struct Packet<'scope, T> {
 // `UnsafeCell` synchronized (by the `join()` boundary), and `ScopeData` is Sync.
 unsafe impl<'scope, T: Sync> Sync for Packet<'scope, T> {}
 
+unsafe impl<'scope, T: FinalizerSafe> FinalizerSafe for Packet<'scope, T> {}
+
 impl<'scope, T> Drop for Packet<'scope, T> {
     fn drop(&mut self) {
         // If this packet was for a thread that ran in a scope, the thread
@@ -1525,6 +1527,8 @@ pub struct JoinHandle<T>(JoinInner<'static, T>);
 unsafe impl<T> Send for JoinHandle<T> {}
 #[stable(feature = "joinhandle_impl_send_sync", since = "1.29.0")]
 unsafe impl<T> Sync for JoinHandle<T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T> FinalizerSafe for JoinHandle<T> {}
 
 impl<T> JoinHandle<T> {
     /// Extracts a handle to the underlying thread.

@@ -64,6 +64,9 @@ impl<T: ?Sized> !Send for NonNull<T> {}
 #[stable(feature = "nonnull", since = "1.25.0")]
 impl<T: ?Sized> !Sync for NonNull<T> {}
 
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> !FinalizerSafe for NonNull<T> {}
+
 impl<T: Sized> NonNull<T> {
     /// Creates a new `NonNull` that is dangling, but well-aligned.
     ///

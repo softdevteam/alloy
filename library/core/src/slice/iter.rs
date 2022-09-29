@@ -83,6 +83,8 @@ impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
 unsafe impl<T: Sync> Sync for Iter<'_, T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync> Send for Iter<'_, T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: Sync> FinalizerSafe for Iter<'_, T> {}
 
 impl<'a, T> Iter<'a, T> {
     #[inline]
@@ -204,6 +206,8 @@ impl<T: fmt::Debug> fmt::Debug for IterMut<'_, T> {
 unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Send> Send for IterMut<'_, T> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe> FinalizerSafe for IterMut<'_, T> {}
 
 impl<'a, T> IterMut<'a, T> {
     #[inline]

@@ -45,6 +45,7 @@ pub struct Thread {
 // a thread to be Send/Sync
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
+unsafe impl FinalizerSafe for Thread {}
 
 impl Thread {
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
