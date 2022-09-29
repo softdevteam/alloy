@@ -1,24 +1,72 @@
-error: `Hello(123 as *mut u8)` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:15:13
+error: `ShouldFail(Cell::new(123))` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:74:13
    |
-LL |     Gc::new(Hello(123 as *mut u8));
-   |     --------^^^^^^^^^^^^^^^^^^^^^-
+LL |         self.0.replace(456);
+   |         -------------------
+   |         |
+   |         caused by the expression in `fn drop(&mut)` here because
+   |         it uses a type which is not safe to use in a finalizer.
+...
+LL |     Gc::new(ShouldFail(Cell::new(123)));
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
+
+error: `boxed_trait` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:77:13
+   |
+LL |     Gc::new(boxed_trait);
+   |     --------^^^^^^^^^^^-
    |     |       |
    |     |       has a drop method which cannot be safely finalized.
-   |     `Gc::new` requires that it implements the `Send` trait.
+   |     `Gc::new` requires that it implements the `FinalizeSafe` trait.
    |
-   = help: `Gc` runs finalizers on a separate thread, so `Hello(123 as *mut u8)` must implement `Send` in order to be safely dropped
+   = help: `Gc` runs finalizers on a separate thread, so `boxed_trait` must implement `FinalizeSafe` in order to be safely dropped.
 
-error: `Hello(123 as *mut u8)` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:15:13
+error: `gcfields` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:80:13
    |
-LL |     Gc::new(Hello(123 as *mut u8));
-   |     --------^^^^^^^^^^^^^^^^^^^^^-
-   |     |       |
-   |     |       has a drop method which cannot be safely finalized.
-   |     `Gc::new` requires that it implements the `Sync` trait.
+LL |         println!("Boom {}", self.0);
+   |                             ------
+   |                             |
+   |                             caused by the expression here in `fn drop(&mut)` because
+   |                             it uses another `Gc` type.
+...
+LL |     Gc::new(gcfields);
+   |             ^^^^^^^^ has a drop method which cannot be safely finalized.
    |
-   = help: `Gc` runs finalizers on a separate thread, so `Hello(123 as *mut u8)` must implement `Sync` in order to be safely dropped
+   = help: `Gc` finalizers are unordered, so this field may have already been dropped. It is not safe to dereference.
 
-error: aborting due to 2 previous errors
+error: `self_call` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:83:13
+   |
+LL |         self.foo();
+   |         ----------
+   |         |
+   |         caused by the expression in `fn drop(&mut)` here because
+   |         it uses a type which is not safe to use in a finalizer.
+...
+LL |     Gc::new(self_call);
+   |             ^^^^^^^^^ has a drop method which cannot be safely finalized.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
+
+error: `transparent_call` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:86:13
+   |
+LL |         let x = ShouldPassInFuture(456 as *mut u8);
+   |                 ----------------------------------
+   |                 |
+   |                 caused by the expression in `fn drop(&mut)` here because
+   |                 it uses a type which is not safe to use in a finalizer.
+...
+LL |     Gc::new(transparent_call);
+   |             ^^^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
+
+error: aborting due to 5 previous errors
 
