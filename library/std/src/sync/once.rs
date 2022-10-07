@@ -126,6 +126,8 @@ pub struct Once {
 unsafe impl Sync for Once {}
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl Send for Once {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl FinalizerSafe for Once {}
 
 #[stable(feature = "sync_once_unwind_safe", since = "1.59.0")]
 impl UnwindSafe for Once {}

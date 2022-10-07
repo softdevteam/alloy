@@ -155,6 +155,8 @@ pub struct BacktraceFrame {
     symbols: Vec<BacktraceSymbol>,
 }
 
+unsafe impl FinalizerSafe for BacktraceFrame {}
+
 #[derive(Debug)]
 enum RawFrame {
     Actual(backtrace_rs::Frame),
@@ -450,6 +452,8 @@ impl LazilyResolvedCapture {
 // SAFETY: Access to the inner value is synchronized using a thread-safe `Once`
 // So long as `Capture` is `Sync`, `LazilyResolvedCapture` is too
 unsafe impl Sync for LazilyResolvedCapture where Capture: Sync {}
+
+unsafe impl FinalizerSafe for LazilyResolvedCapture where Capture: FinalizerSafe {}
 
 impl Capture {
     fn resolve(&mut self) {

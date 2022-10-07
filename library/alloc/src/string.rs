@@ -2856,6 +2856,8 @@ impl fmt::Debug for Drain<'_> {
 unsafe impl Sync for Drain<'_> {}
 #[stable(feature = "drain", since = "1.6.0")]
 unsafe impl Send for Drain<'_> {}
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl FinalizerSafe for Drain<'_> {}
 
 #[stable(feature = "drain", since = "1.6.0")]
 impl Drop for Drain<'_> {

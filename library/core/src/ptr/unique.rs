@@ -53,6 +53,9 @@ pub struct Unique<T: ?Sized> {
 unsafe impl<T: Send + ?Sized> Send for Unique<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: FinalizerSafe + ?Sized> FinalizerSafe for Unique<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
 unsafe impl<T: ?Sized> OnlyFinalizeComponents for Unique<T> {}
 
 /// `Unique` pointers are `Sync` if `T` is `Sync` because the data they

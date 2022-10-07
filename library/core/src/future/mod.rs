@@ -59,6 +59,9 @@ unsafe impl Send for ResumeTy {}
 #[unstable(feature = "gen_future", issue = "50547")]
 unsafe impl Sync for ResumeTy {}
 
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl FinalizerSafe for ResumeTy {}
+
 /// Wrap a generator in a future.
 ///
 /// This function returns a `GenFuture` underneath, but hides it in `impl Trait` to give

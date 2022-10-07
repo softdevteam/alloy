@@ -12,6 +12,10 @@ pub use crate::marker::{Copy, Send, Sized, Sync, Unpin};
 #[doc(no_inline)]
 pub use crate::ops::{Drop, Fn, FnMut, FnOnce};
 
+#[unstable(feature = "gc", issue = "none")]
+#[doc(no_inline)]
+pub use crate::marker::FinalizerSafe;
+
 // Re-exported functions
 #[stable(feature = "core_prelude", since = "1.4.0")]
 #[doc(no_inline)]
