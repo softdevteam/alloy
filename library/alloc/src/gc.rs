@@ -118,6 +118,12 @@ impl<T: ?Sized> Gc<T> {
         this.ptr.as_ptr() as *const T
     }
 
+    /// Get a raw pointer to the underlying value `T`.
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn as_ptr(this: Self) -> *const T {
+        this.ptr.as_ptr() as *const T
+    }
+
     #[unstable(feature = "gc", issue = "none")]
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
         this.ptr.as_ptr() == other.ptr.as_ptr()
