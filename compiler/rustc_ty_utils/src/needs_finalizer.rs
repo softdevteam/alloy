@@ -118,22 +118,16 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, substs) => {
-                        if ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), self.param_env) {
-                            continue;
-                        }
+                        let finalizer_optional =
+                            component.finalizer_optional(tcx.at(DUMMY_SP), self.param_env);
 
-                        let must_recurse = component.must_check_component_tys_for_finalizer(
-                            tcx.at(DUMMY_SP),
-                            self.param_env,
-                        );
-
-                        if must_recurse {
+                        if finalizer_optional {
                             for subst_ty in substs.types() {
                                 queue_type(self, subst_ty);
                             }
                         }
 
-                        let tys = match (self.adt_components)(adt_def, must_recurse) {
+                        let tys = match (self.adt_components)(adt_def, finalizer_optional) {
                             Err(e) => return Some(Err(e)),
                             Ok(tys) => tys,
                         };
@@ -174,11 +168,11 @@ fn adt_finalizer_tys<'tcx>(
     def_id: DefId,
 ) -> Result<&ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
     let adt_has_dtor = |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).is_some();
-    let adt_components = move |adt_def: ty::AdtDef<'tcx>, must_recurse: bool| {
+    let adt_components = move |adt_def: ty::AdtDef<'tcx>, finalizer_optional: bool| {
         if adt_def.is_manually_drop() {
             debug!("dt_finalizer_tys: `{:?}` is manually drop", adt_def);
             return Ok(Vec::new().into_iter());
-        } else if adt_has_dtor(adt_def) && !must_recurse {
+        } else if adt_has_dtor(adt_def) && !finalizer_optional {
             debug!("adt_finalizer_tys: `{:?}` implements `Drop`", adt_def);
             // Special case tuples
             return Err(AlwaysRequiresDrop);

@@ -45,7 +45,6 @@
 #[cfg(not(no_global_oom_handling))]
 use core::char::{decode_utf16, REPLACEMENT_CHARACTER};
 use core::fmt;
-use core::gc::NoFinalize;
 use core::hash;
 use core::iter::FusedIterator;
 #[cfg(not(no_global_oom_handling))]
@@ -2952,6 +2951,3 @@ impl From<char> for String {
         c.to_string()
     }
 }
-
-#[unstable(feature = "gc", issue = "none")]
-unsafe impl NoFinalize for String {}

@@ -57,7 +57,7 @@ struct FinalizationCtxt<'tcx> {
 
 impl<'tcx> FinalizationCtxt<'tcx> {
     fn check(&mut self, ty: Ty<'tcx>) {
-        if self.is_finalizer_safe(ty) || self.is_no_finalize(ty) {
+        if self.is_finalizer_safe(ty) || !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) {
             return;
         }
 
@@ -137,10 +137,6 @@ impl<'tcx> FinalizationCtxt<'tcx> {
                     .may_apply()
             }) == Some(true)
         })
-    }
-
-    fn is_no_finalize(&self, ty: Ty<'tcx>) -> bool {
-        ty.is_no_finalize_modulo_regions(self.tcx.at(DUMMY_SP), self.param_env)
     }
 
     fn is_copy(&self, ty: Ty<'tcx>) -> bool {

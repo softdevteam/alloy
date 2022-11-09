@@ -2,7 +2,7 @@
 
 use core::alloc::LayoutError;
 use core::cmp;
-use core::gc::{NoFinalize, OnlyFinalizeComponents};
+use core::gc::FinalizerOptional;
 use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ops::Drop;
@@ -483,7 +483,7 @@ unsafe impl<#[may_dangle] T, A: Allocator> Drop for RawVec<T, A> {
 }
 
 #[unstable(feature = "gc", issue = "none")]
-unsafe impl<T, A: Allocator> OnlyFinalizeComponents for RawVec<T, A> {}
+unsafe impl<T, A: Allocator> FinalizerOptional for RawVec<T, A> {}
 
 // Central function for reserve error handling.
 #[cfg(not(no_global_oom_handling))]
@@ -521,5 +521,3 @@ fn alloc_guard(alloc_size: usize) -> Result<(), TryReserveError> {
 fn capacity_overflow() -> ! {
     panic!("capacity overflow");
 }
-
-unsafe impl<T: NoFinalize, A: Allocator> NoFinalize for RawVec<T, A> {}

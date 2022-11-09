@@ -3,7 +3,8 @@
 #![feature(gc)]
 
 use std::mem;
-use std::gc::{Gc, NoFinalize};
+use std::rc::Rc;
+use std::gc::{Gc, FinalizerOptional};
 
 struct HasDrop;
 
@@ -24,8 +25,7 @@ struct ExplicitNoFinalize;
 // This struct doesn't need finalizing, but it's not annoted as such.
 struct NonAnnotated(usize);
 
-unsafe impl NoFinalize for ExplicitNoFinalize {}
-unsafe impl NoFinalize for HasDropNoFinalize {}
+unsafe impl FinalizerOptional for HasDropNoFinalize {}
 
 impl<T> Drop for FinalizedContainer<T> {
     fn drop(&mut self) {}
@@ -69,6 +69,8 @@ static STATIC_MAYBE_FINALIZE_DROP_COMPONENTS: bool = mem::needs_finalizer::<Mayb
 static VEC_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Vec<NonAnnotated>>();
 static BOX_COLLECTABLE_NO_DROP_ELEMENT: bool = mem::needs_finalizer::<Box<NonAnnotated>>();
 
+static NESTED_GC: bool = mem::needs_finalizer::<Box<Gc<HasDrop>>>();
+static RC: bool = mem::needs_finalizer::<Rc<HasDrop>>();
 static NESTED_GC_NO_FINALIZE: bool = mem::needs_finalizer::<Box<Gc<NonAnnotated>>>();
 
 fn main() {
@@ -109,5 +111,7 @@ fn main() {
 
     assert!(!VEC_COLLECTABLE_NO_DROP_ELEMENT);
     assert!(!BOX_COLLECTABLE_NO_DROP_ELEMENT);
+    assert!(!NESTED_GC);
+    assert!(RC);
     assert!(!NESTED_GC_NO_FINALIZE);
 }

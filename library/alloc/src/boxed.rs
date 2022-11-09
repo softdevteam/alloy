@@ -154,7 +154,7 @@ use core::convert::{From, TryFrom};
 use core::fmt;
 use core::future::Future;
 use core::gc::Collectable;
-use core::gc::{NoFinalize, OnlyFinalizeComponents};
+use core::gc::FinalizerOptional;
 use core::hash::{Hash, Hasher};
 #[cfg(not(no_global_oom_handling))]
 use core::iter::FromIterator;
@@ -2089,16 +2089,10 @@ impl<S: ?Sized + AsyncIterator + Unpin> AsyncIterator for Box<S> {
 }
 
 #[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: NoFinalize> NoFinalize for Box<T> {}
+unsafe impl<T: ?Sized> FinalizerOptional for Box<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: NoFinalize, A: Allocator> NoFinalize for Box<T, A> {}
-
-#[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: ?Sized> OnlyFinalizeComponents for Box<T> {}
-
-#[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: ?Sized, A: Allocator> OnlyFinalizeComponents for Box<T, A> {}
+unsafe impl<T: ?Sized, A: Allocator> FinalizerOptional for Box<T, A> {}
 
 #[unstable(feature = "gc", issue = "none")]
 unsafe impl<T: ?Sized, A: Allocator> Collectable for Box<T, A> {

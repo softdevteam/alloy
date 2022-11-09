@@ -5,7 +5,6 @@ use crate::ops::{CoerceUnsized, DispatchFromDyn};
 use crate::ptr::NonNull;
 
 use crate::gc::NoTrace;
-use crate::gc::OnlyFinalizeComponents;
 
 /// A wrapper around a raw non-null `*mut T` that indicates that the possessor
 /// of this wrapper owns the referent. Useful for building abstractions like
@@ -54,9 +53,6 @@ unsafe impl<T: Send + ?Sized> Send for Unique<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 unsafe impl<T: FinalizerSafe + ?Sized> FinalizerSafe for Unique<T> {}
-
-#[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: ?Sized> OnlyFinalizeComponents for Unique<T> {}
 
 /// `Unique` pointers are `Sync` if `T` is `Sync` because the data they
 /// reference is unaliased. Note that this aliasing invariant is

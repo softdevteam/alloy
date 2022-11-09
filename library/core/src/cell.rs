@@ -194,7 +194,6 @@
 
 use crate::cmp::Ordering;
 use crate::fmt::{self, Debug, Display};
-use crate::gc::NoFinalize;
 use crate::marker::{FinalizerSafe, PhantomData, Unsize};
 use crate::mem;
 use crate::ops::{CoerceUnsized, Deref, DerefMut};
@@ -248,9 +247,6 @@ pub struct Cell<T: ?Sized> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: ?Sized> Send for Cell<T> where T: Send {}
-
-#[unstable(feature = "gc", issue = "none")]
-unsafe impl<T: ?Sized> NoFinalize for Cell<T> where T: NoFinalize {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized> !FinalizerSafe for Cell<T> {}

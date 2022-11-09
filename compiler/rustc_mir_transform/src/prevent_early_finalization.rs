@@ -83,7 +83,7 @@ fn is_return<'tcx>(terminator: &Terminator<'tcx>) -> bool {
 fn needs_black_box<'tcx>(
     local: &LocalDecl<'tcx>,
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    _param_env: ParamEnv<'tcx>,
 ) -> bool {
     if !local.is_user_variable() {
         return false;
