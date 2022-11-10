@@ -94,10 +94,6 @@ fn needs_black_box<'tcx>(
             return false;
         }
 
-        if local.ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), param_env) {
-            return false;
-        }
-
         return true;
     }
 
