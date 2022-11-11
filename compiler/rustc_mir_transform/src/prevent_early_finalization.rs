@@ -83,7 +83,7 @@ fn is_return<'tcx>(terminator: &Terminator<'tcx>) -> bool {
 fn needs_black_box<'tcx>(
     local: &LocalDecl<'tcx>,
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    _param_env: ParamEnv<'tcx>,
 ) -> bool {
     if !local.is_user_variable() {
         return false;
@@ -91,10 +91,6 @@ fn needs_black_box<'tcx>(
 
     if let ty::Adt(def, ..) = local.ty.kind() {
         if def.did() != tcx.lang_items().gc_type().unwrap() {
-            return false;
-        }
-
-        if local.ty.is_no_finalize_modulo_regions(tcx.at(DUMMY_SP), param_env) {
             return false;
         }
 

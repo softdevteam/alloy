@@ -244,7 +244,8 @@ fn mir_const<'tcx>(
             &Lint(function_item_references::FunctionItemReferences),
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
-            &prevent_early_finalization::PreventEarlyFinalization,
+            // FIXME(jake) re-enable with FinalizerOptional fix
+            // &prevent_early_finalization::PreventEarlyFinalization,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],

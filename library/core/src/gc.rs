@@ -11,30 +11,15 @@ static MAX_LAYOUT: usize = crate::mem::size_of::<usize>() * 64;
 #[cfg_attr(not(bootstrap), lang = "conservative")]
 pub trait Conservative {}
 
-/// Prevents a type from being finalized when used in `Gc`.
-///
-/// If a type `T` implements `NoFinalize`, a finalizer will not be registered to
-/// call its drop method when passed to `Gc::new`, regardless of whether its
-/// component types require finalization.
-///
-/// # Safety
-///
-/// Unsafe because this should be used with care. Preventing drop from
-/// running can lead to surprising behaviour. In particular, this will also
-/// prevent the finalization of all component types of T.
-#[unstable(feature = "gc", issue = "none")]
-#[cfg_attr(not(bootstrap), lang = "no_finalize")]
-pub unsafe trait NoFinalize {}
-
-#[cfg_attr(not(bootstrap), lang = "flz_comps")]
 /// Prevents a type from being finalized by GC if none of the component types
-/// need dropping. This can be thought of as a weaker version of `NoFinalize`.
+/// need dropping.
 ///
 /// # Safety
 ///
 /// Unsafe because this should be used with care. Preventing drop from
 /// running can lead to surprising behaviour.
-pub unsafe trait OnlyFinalizeComponents {}
+#[rustc_diagnostic_item = "finalizer_optional"]
+pub unsafe trait FinalizerOptional {}
 
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(not(bootstrap), lang = "notrace")]
@@ -130,29 +115,4 @@ impl<T: ?Sized> DerefMut for NonFinalizable<T> {
 pub unsafe trait Collectable {
     #[cfg_attr(not(bootstrap), lang = "set_collectable")]
     unsafe fn set_collectable(&self);
-}
-
-unsafe impl<T> NoFinalize for NonFinalizable<T> {}
-
-mod impls {
-    use super::NoFinalize;
-
-    macro_rules! impl_nofinalize {
-        ($($t:ty)*) => (
-            $(
-                #[unstable(feature = "gc", issue = "none")]
-                unsafe impl NoFinalize for $t {}
-            )*
-        )
-    }
-
-    impl_nofinalize! {
-        usize u8 u16 u32 u64 u128
-            isize i8 i16 i32 i64 i128
-            f32 f64
-            bool char
-    }
-
-    #[unstable(feature = "never_type", issue = "35121")]
-    unsafe impl NoFinalize for ! {}
 }

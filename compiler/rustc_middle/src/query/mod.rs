@@ -1257,10 +1257,6 @@ rustc_queries! {
         desc { "computing whether `{}` is `Unpin`", env.value }
         remap_env_constness
     }
-    /// Query backing `Ty::is_no_finalize`.
-    query is_no_finalize_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-        desc { "computing whether `{}` is `NoFinalize`", env.value }
-    }
     /// Query backing `Ty::is_no_trace`.
     query is_no_trace_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` is `NoTrace`", env.value }
@@ -1274,7 +1270,7 @@ rustc_queries! {
         desc { "computing whether `{}` is `Collectable`", env.value }
     }
     /// Query backing `Ty::must_check_component_tys_for_finalizer`.
-    query must_check_component_tys_for_finalizer_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
+    query finalizer_optional_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` contains types which might need finalizing", env.value }
     }
     /// Query backing `Ty::needs_drop`.
