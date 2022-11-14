@@ -1023,6 +1023,7 @@ symbols! {
         non_ascii_idents,
         non_exhaustive,
         non_exhaustive_omitted_patterns_lint,
+        non_finalizable,
         non_modrs_mods,
         none_error,
         nontemporal_store,
