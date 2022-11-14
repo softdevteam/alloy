@@ -13,6 +13,23 @@ use crate::ops::{Deref, DerefMut};
 #[cfg_attr(not(bootstrap), lang = "finalizer_optional")]
 pub unsafe trait FinalizerOptional {}
 
+/// A wrapper which prevents `T` from being finalized when used in a `Gc`.
+///
+/// This is useful for when its not possible to implement `FinalizerOptional`
+/// because of the orphan rule. However, if `NonFinalizable<T>` is used as a
+/// field type of another type which is finalizable, then `T` will also be
+/// finalized.
+#[derive(Debug, PartialEq, Eq)]
+#[rustc_diagnostic_item = "non_finalizable"]
+pub struct NonFinalizable<T: ?Sized>(T);
+
+impl<T> NonFinalizable<T> {
+    /// Wrap a value to prevent finalization in `Gc`.
+    pub fn new(value: T) -> NonFinalizable<T> {
+        NonFinalizable(value)
+    }
+}
+
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized> Deref for NonFinalizable<T> {
     type Target = T;

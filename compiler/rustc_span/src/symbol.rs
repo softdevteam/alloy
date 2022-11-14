@@ -1064,6 +1064,7 @@ symbols! {
         non_ascii_idents,
         non_exhaustive,
         non_exhaustive_omitted_patterns_lint,
+        non_finalizable,
         non_lifetime_binders,
         non_modrs_mods,
         none,
