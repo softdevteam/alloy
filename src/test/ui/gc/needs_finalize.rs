@@ -4,7 +4,7 @@
 
 use std::mem;
 use std::rc::Rc;
-use std::gc::{Gc, FinalizerOptional};
+use std::gc::{Gc, FinalizerOptional, NonFinalizable};
 
 struct HasDrop;
 
@@ -73,6 +73,9 @@ static NESTED_GC: bool = mem::needs_finalizer::<Box<Gc<HasDrop>>>();
 static RC: bool = mem::needs_finalizer::<Rc<HasDrop>>();
 static NESTED_GC_NO_FINALIZE: bool = mem::needs_finalizer::<Box<Gc<NonAnnotated>>>();
 
+static NON_FINALIZABLE: bool = mem::needs_finalizer::<NonFinalizable<HasDrop>>();
+static NON_FINALIZABLE_NESTED: bool = mem::needs_finalizer::<MaybeFinalize<NonFinalizable<HasDrop>>>();
+
 fn main() {
     assert!(!CONST_U8);
     assert!(!CONST_STRING);
@@ -114,4 +117,7 @@ fn main() {
     assert!(!NESTED_GC);
     assert!(RC);
     assert!(!NESTED_GC_NO_FINALIZE);
+
+    assert!(!NON_FINALIZABLE);
+    assert!(!NON_FINALIZABLE_NESTED);
 }

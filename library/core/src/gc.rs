@@ -34,10 +34,12 @@ pub struct Trace {
 
 /// A wrapper which prevents `T` from being finalized when used in a `Gc`.
 ///
-/// This has the same effect as implementing `NoFinalize` trait on `T`, however,
-/// due to the orphan rule this is not always possible. `NonFinalizable` acts as
-/// a convenience wrapper.
-#[derive(Debug)]
+/// This is useful for when its not possible to implement `FinalizerOptional`
+/// because of the orphan rule. However, if `NonFinalizable<T>` is used as a
+/// field type of another type which is finalizable, then `T` will also be
+/// finalized.
+#[derive(Debug, PartialEq, Eq)]
+#[rustc_diagnostic_item = "non_finalizable"]
 pub struct NonFinalizable<T: ?Sized>(T);
 
 impl<T> NonFinalizable<T> {

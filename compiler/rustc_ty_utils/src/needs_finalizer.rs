@@ -5,7 +5,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::ty::util::{needs_drop_components, AlwaysRequiresDrop};
 use rustc_middle::ty::{self, EarlyBinder, Subst, Ty, TyCtxt};
 use rustc_session::Limit;
-use rustc_span::DUMMY_SP;
+use rustc_span::{sym, DUMMY_SP};
 
 type NeedsDropResult<T> = Result<T, AlwaysRequiresDrop>;
 
@@ -118,6 +118,10 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, substs) => {
+                        if adt_def.did() == tcx.get_diagnostic_item(sym::non_finalizable).unwrap() {
+                            continue;
+                        }
+
                         let finalizer_optional =
                             component.finalizer_optional(tcx.at(DUMMY_SP), self.param_env);
 
