@@ -87,6 +87,7 @@ mod normalize_array_len;
 mod nrvo;
 mod prettify;
 mod ref_prop;
+mod remove_gc_drops;
 mod remove_noop_landing_pads;
 mod remove_storage_markers;
 mod remove_uninit_drops;
@@ -573,6 +574,7 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             // Cleanup for human readability, off by default.
             &prettify::ReorderBasicBlocks,
             &prettify::ReorderLocals,
+            &remove_gc_drops::RemoveGcDrops,
             // Dump the end result for testing and debugging purposes.
             &dump_mir::Marker("PreCodegen"),
         ],
