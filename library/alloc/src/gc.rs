@@ -94,6 +94,36 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 
+/// A compiler barrier to prevent finalizers running before the last reference to
+/// an object is dead.
+///
+/// The compiler is free to optimise away the stack or register location holding
+/// a GC reference if it's no longer used. This means that sometimes, at
+/// runtime, a reference is cleaned up earlier than its source-level lifetime to
+/// free up the register for something else. This is fine (and usually
+/// desirable!) because it doesn't have any observable difference in behaviour.
+///
+/// However, things get complicated when a garbage collector is involved. In
+/// very rare cases, this optimisation, followed by an unfortunately timed
+/// collection, may cause the value the reference points to to be freed earlier
+/// than expected - and thus finalized earlier than it should be. This can cause
+/// deadlocks, races, and even use-after-frees.
+///
+/// Adding a compiler barrier to `Gc`'s drop prevents the compiler from optimizing
+/// away the reference too soon. This is a special implementation with compiler
+/// support, because it is usually impossible to allow both `Drop` and `Copy`
+/// traits to be implemented on a type simultaneously.
+#[cfg(all(not(bootstrap), not(test)))]
+impl<T: ?Sized> Drop for Gc<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // asm macro clobber by default, so this is enough to introduce a
+            // barrier.
+            core::arch::asm!("/* {0} */", in(reg) self);
+        }
+    }
+}
+
 impl<T: ?Sized> Gc<T> {
     unsafe fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
         Self { ptr, _phantom: PhantomData }
