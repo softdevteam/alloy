@@ -111,6 +111,8 @@ where
 
             for component in components {
                 match *component.kind() {
+                    _ if component.is_gc(tcx) => return Some(Err(AlwaysRequiresDrop)),
+
                     _ if component.is_copy_modulo_regions(tcx.at(DUMMY_SP), self.param_env) => (),
 
                     ty::Closure(_, substs) => {

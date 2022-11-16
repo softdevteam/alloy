@@ -72,9 +72,9 @@ mod match_branches;
 mod multiple_return_terminators;
 mod normalize_array_len;
 mod nrvo;
-mod prevent_early_finalization;
 // This pass is public to allow external drivers to perform MIR cleanup
 pub mod remove_false_edges;
+mod remove_gc_drops;
 mod remove_noop_landing_pads;
 mod remove_storage_markers;
 mod remove_uninit_drops;
@@ -244,8 +244,6 @@ fn mir_const<'tcx>(
             &Lint(function_item_references::FunctionItemReferences),
             // What we need to do constant evaluation.
             &simplify::SimplifyCfg::new("initial"),
-            // FIXME(jake) re-enable with FinalizerOptional fix
-            // &prevent_early_finalization::PreventEarlyFinalization,
             &rustc_peek::SanityCheck, // Just a lint
             &marker::PhaseChange(MirPhase::Const),
         ],
@@ -512,6 +510,7 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             &deduplicate_blocks::DeduplicateBlocks,
             // Some cleanup necessary at least for LLVM and potentially other codegen backends.
             &add_call_guards::CriticalCallEdges,
+            &remove_gc_drops::RemoveGcDrops,
             &marker::PhaseChange(MirPhase::Optimized),
             // Dump the end result for testing and debugging purposes.
             &dump_mir::Marker("PreCodegen"),

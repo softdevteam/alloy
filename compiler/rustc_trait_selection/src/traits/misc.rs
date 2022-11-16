@@ -7,6 +7,8 @@ use rustc_hir as hir;
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitable};
 
+use rustc_span::sym;
+
 use crate::traits::error_reporting::InferCtxtExt;
 
 #[derive(Clone)]
@@ -41,6 +43,10 @@ pub fn can_type_implement_copy<'tcx>(
 
             _ => return Err(CopyImplementationError::NotAnAdt),
         };
+
+        if tcx.get_diagnostic_item(sym::gc).map_or(false, |gc| adt.did() == gc) {
+            return Ok(());
+        }
 
         let mut infringing = Vec::new();
         for variant in adt.variants() {
