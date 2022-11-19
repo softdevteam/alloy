@@ -818,6 +818,13 @@ impl<'tcx> Ty<'tcx> {
         self.is_trivially_sized(tcx_at.tcx) || tcx_at.is_sized_raw(param_env.and(self))
     }
 
+    pub fn is_gc(self, tcx: TyCtxt<'tcx>) -> bool {
+        if let ty::Adt(adt_def, ..) = self.kind() {
+            return tcx.get_diagnostic_item(sym::gc).map_or(false, |gc| adt_def.did() == gc);
+        }
+        return false;
+    }
+
     /// Checks whether values of this type `T` implement the `Freeze`
     /// trait -- frozen types are those that do not contain an
     /// `UnsafeCell` anywhere. This is a language concept used to
