@@ -51,9 +51,9 @@ use core::{
     fmt,
     hash::{Hash, Hasher},
     marker::{FinalizerSafe, PhantomData, Unsize},
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::MaybeUninit,
     ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
-    ptr::{null_mut, NonNull},
+    ptr::{drop_in_place, null_mut, NonNull},
 };
 
 use boehm::GcAllocator;
@@ -64,7 +64,7 @@ mod tests;
 #[unstable(feature = "gc", issue = "none")]
 static ALLOCATOR: GcAllocator = GcAllocator;
 
-struct GcBox<T: ?Sized>(ManuallyDrop<T>);
+struct GcBox<T: ?Sized>(T);
 
 /// A multi-threaded garbage collected pointer.
 ///
@@ -247,11 +247,7 @@ impl<T> Gc<T> {
     #[inline(always)]
     #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
-        unsafe {
-            Self::from_inner(
-                Box::leak(Box::new_in(GcBox(ManuallyDrop::new(value)), GcAllocator)).into(),
-            )
-        }
+        unsafe { Self::from_inner(Box::leak(Box::new_in(GcBox(value), GcAllocator)).into()) }
     }
 
     fn register_finalizer(&mut self) {
@@ -260,14 +256,16 @@ impl<T> Gc<T> {
             return;
         }
 
-        unsafe extern "C" fn fshim<T>(obj: *mut u8, _meta: *mut u8) {
-            unsafe { ManuallyDrop::drop(&mut *(obj as *mut ManuallyDrop<T>)) };
+        unsafe extern "C" fn finalizer<T>(obj: *mut u8, _meta: *mut u8) {
+            unsafe {
+                drop_in_place(obj as *mut T);
+            }
         }
 
         unsafe {
             ALLOCATOR.register_finalizer(
                 self as *mut _ as *mut u8,
-                Some(fshim::<T>),
+                Some(finalizer::<T>),
                 null_mut(),
                 null_mut(),
                 null_mut(),
