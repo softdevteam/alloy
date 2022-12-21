@@ -1,0 +1,18 @@
+# TOML configuration used for benchmarking Rust programs built with Alloy.
+
+[rust]
+codegen-units = 0           # Use many compilation units.
+optimize = true
+debug = false
+
+[build]
+install-stage = 2
+
+[llvm]
+optimize = true
+assertions = false
+ninja = true
+
+[install]
+prefix = "build/alloy-stage2-latest"
+sysconfdir = "etc"
