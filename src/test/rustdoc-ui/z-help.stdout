@@ -45,6 +45,7 @@
     -Z                    future-incompat-test=val -- forces all lints to be future incompatible, used for internal testing (default: no)
     -Z                   gc-disable-finalizers=val -- prevent the collector from running any finalizers (default: no)
     -Z                  gc-optimize-finalizers=val -- attempts to remove finalizers for GC'd values where dropping is not necessary (default: yes)
+    -Z                  gc-no-early-finalizers=val -- extends the life of `Gc` references to ensure finalizers don't run early (default: no)
     -Z                                  gcc-ld=val -- implementation of ld used by cc
     -Z                      graphviz-dark-mode=val -- use dark-themed colors in graphviz output (default: no)
     -Z                           graphviz-font=val -- use the given `fontname` in graphviz output; can be overridden by setting environment variable `RUSTC_GRAPHVIZ_FONT` (default: `Courier, monospace`)

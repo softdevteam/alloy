@@ -29,7 +29,8 @@ impl<'tcx> MirPass<'tcx> for RemoveGcDrops {
                 }
 
                 if let ty::Adt(_, substs) = ty.kind() {
-                    if is_gc_crate
+                    if !tcx.sess.opts.unstable_opts.gc_no_early_finalizers
+                        || is_gc_crate
                         || !decl.is_user_variable()
                         || !substs.type_at(0).needs_finalizer(tcx, param_env)
                     {
