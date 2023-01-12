@@ -1328,6 +1328,8 @@ options! {
         "prevent the collector from running any finalizers (default: no)"),
     gc_optimize_finalizers: bool = (true, parse_bool, [UNTRACKED],
         "attempts to remove finalizers for GC'd values where dropping is not necessary (default: yes)"),
+    gc_no_early_finalizers: bool = (true, parse_bool, [UNTRACKED],
+        "extends the life of `Gc` references to ensure finalizers don't run early (default: no)"),
     gcc_ld: Option<LdImpl> = (None, parse_gcc_ld, [TRACKED], "implementation of ld used by cc"),
     graphviz_dark_mode: bool = (false, parse_bool, [UNTRACKED],
         "use dark-themed colors in graphviz output (default: no)"),
