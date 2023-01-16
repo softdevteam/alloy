@@ -126,6 +126,7 @@ const EXTRA_CHECK_CFGS: &[(Option<Mode>, &'static str, Option<&[&'static str]>)]
     (Some(Mode::Std), "no_global_oom_handling", None),
     (Some(Mode::Std), "no_rc", None),
     (Some(Mode::Std), "no_sync", None),
+    (Some(Mode::Std), "profile_gc", None),
     (Some(Mode::Std), "freebsd12", None),
     (Some(Mode::Std), "freebsd13", None),
     (Some(Mode::Std), "backtrace_in_libstd", None),
