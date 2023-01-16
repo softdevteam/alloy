@@ -56,6 +56,8 @@ use core::{
     ptr::{drop_in_place, null_mut, NonNull},
 };
 
+#[cfg(profile_gc)]
+use core::sync::atomic::{self, AtomicU64};
 use boehm::GcAllocator;
 
 #[cfg(test)]
@@ -63,6 +65,11 @@ mod tests;
 
 #[unstable(feature = "gc", issue = "none")]
 static ALLOCATOR: GcAllocator = GcAllocator;
+
+#[cfg(profile_gc)]
+static FINALIZERS_REGISTERED: AtomicU64 = AtomicU64::new(0);
+#[cfg(profile_gc)]
+static FINALIZERS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 
 struct GcBox<T: ?Sized>(T);
 
@@ -256,9 +263,14 @@ impl<T> Gc<T> {
             return;
         }
 
+        #[cfg(profile_gc)]
+        FINALIZERS_REGISTERED.fetch_add(1, atomic::Ordering::Relaxed);
+
         unsafe extern "C" fn finalizer<T>(obj: *mut u8, _meta: *mut u8) {
             unsafe {
                 drop_in_place(obj as *mut T);
+                #[cfg(profile_gc)]
+                FINALIZERS_COMPLETED.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
 
@@ -277,6 +289,23 @@ impl<T> Gc<T> {
     pub fn unregister_finalizer(&mut self) {
         let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
         ALLOCATOR.unregister_finalizer(ptr);
+    }
+}
+
+#[cfg(profile_gc)]
+#[derive(Debug)]
+pub struct FinalizerInfo {
+    pub registered: u64,
+    pub completed: u64,
+}
+
+#[cfg(profile_gc)]
+impl FinalizerInfo {
+    pub fn finalizer_info() -> FinalizerInfo {
+        FinalizerInfo {
+            registered: FINALIZERS_REGISTERED.load(atomic::Ordering::Relaxed),
+            completed: FINALIZERS_COMPLETED.load(atomic::Ordering::Relaxed),
+        }
     }
 }
 
