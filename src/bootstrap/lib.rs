@@ -197,6 +197,7 @@ const EXTRA_CHECK_CFGS: &[(Option<Mode>, &'static str, Option<&[&'static str]>)]
     (Some(Mode::Std), "stdarch_intel_sde", None),
     (Some(Mode::Std), "no_fp_fmt_parse", None),
     (Some(Mode::Std), "no_global_oom_handling", None),
+    (Some(Mode::Std), "profile_gc", None),
     (Some(Mode::Std), "freebsd12", None),
     (Some(Mode::Std), "backtrace_in_libstd", None),
     /* Extra values not defined in the built-in targets yet, but used in std */
