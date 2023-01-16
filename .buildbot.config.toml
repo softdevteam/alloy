@@ -11,5 +11,5 @@ tools = ["cargo", "rustdoc"]
 assertions = true           # Turn on assertions in LLVM.
 
 [install]
-prefix = "build/rustgc-stage2-latest"
+prefix = "build/alloy-stage2-latest"
 sysconfdir = "etc"
