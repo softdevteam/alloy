@@ -52,7 +52,7 @@ impl<T> NonFinalizable<T> {
 #[unstable(feature = "gc", issue = "none")]
 impl Trace {
     #[inline]
-    /// Returns true if rustgc wasn't able to create a precise descriptor for
+    /// Returns true if Alloy wasn't able to create a precise descriptor for
     /// the type.
     pub fn must_use_conservative(&self) -> bool {
         self.bitmap == 1 && self.size == 0
