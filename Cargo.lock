@@ -4159,7 +4159,6 @@ dependencies = [
  "rustc_index",
  "rustc_macros",
  "rustc_middle",
- "rustc_monomorphize",
  "rustc_serialize",
  "rustc_session",
  "rustc_span",

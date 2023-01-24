@@ -1265,10 +1265,6 @@ rustc_queries! {
     query is_conservative_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` is `Conservative`", env.value }
     }
-    /// Query backing `Ty::is_collectable`.
-    query is_collectable_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-        desc { "computing whether `{}` is `Collectable`", env.value }
-    }
     /// Query backing `Ty::must_check_component_tys_for_finalizer`.
     query finalizer_optional_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` contains types which might need finalizing", env.value }

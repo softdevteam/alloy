@@ -189,8 +189,6 @@ language_item_table! {
 
     NoTrace,                 sym::notrace,             no_trace_trait,             Target::Trait,          GenericRequirement::None;
     Conservative,            sym::conservative,        conservative_trait,         Target::Trait,          GenericRequirement::None;
-    Collectable,             sym::collectable,         collectable_trait,          Target::Trait,          GenericRequirement::None;
-    SetCollectable,          sym::set_collectable,     set_collectable_fn,         Target::Method(MethodKind::Trait {body: false}), GenericRequirement::None;
     Gc,                      sym::gc,                  gc_type,                    Target::Struct,         GenericRequirement::Exact(1);
     Destruct,                sym::destruct,            destruct_trait,             Target::Trait,          GenericRequirement::None;
 

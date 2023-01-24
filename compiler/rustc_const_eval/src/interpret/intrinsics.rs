@@ -74,10 +74,6 @@ pub(crate) fn eval_nullary_intrinsic<'tcx>(
             ensure_monomorphic_enough(tcx, tp_ty)?;
             ConstValue::from_bool(tp_ty.needs_drop(tcx, param_env))
         }
-        sym::make_collectable => {
-            //no-op
-            ConstValue::from_bool(true)
-        }
         sym::pref_align_of => {
             // Correctly handles non-monomorphic calls, so there is no need for ensure_monomorphic_enough.
             let layout = tcx.layout_of(param_env.and(tp_ty)).map_err(|e| err_inval!(Layout(e)))?;

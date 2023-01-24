@@ -862,10 +862,6 @@ impl<'tcx> Ty<'tcx> {
         !self.is_conservative(tcx_at, param_env)
     }
 
-    pub fn is_collectable(self, tcx_at: TyCtxtAt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> bool {
-        tcx_at.is_collectable_raw(param_env.and(self))
-    }
-
     pub fn finalizer_optional(self, tcx_at: TyCtxtAt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> bool {
         tcx_at.finalizer_optional_raw(param_env.and(self))
     }

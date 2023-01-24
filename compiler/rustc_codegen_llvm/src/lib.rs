@@ -62,7 +62,6 @@ mod coverageinfo;
 mod debuginfo;
 mod declare;
 mod intrinsic;
-mod intrinsic_util;
 
 // The following is a work around that replaces `pub mod llvm;` and that fixes issue 53912.
 #[path = "llvm/mod.rs"]
