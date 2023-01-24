@@ -14,7 +14,7 @@ pub struct GcAllocator;
 unsafe impl GlobalAlloc for GcAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        return boehm::GC_malloc_uncollectable(layout.size()) as *mut u8;
+        return boehm::GC_malloc(layout.size()) as *mut u8;
     }
 
     #[inline]
@@ -39,12 +39,12 @@ unsafe impl GlobalAlloc for GcAllocator {
 
     #[inline]
     fn alloc_conservative(&self, layout: Layout) -> *mut u8 {
-        unsafe { boehm::GC_malloc_uncollectable(layout.size()) as *mut u8 }
+        unsafe { boehm::GC_malloc(layout.size()) as *mut u8 }
     }
 
     #[inline]
     unsafe fn alloc_untraceable(&self, layout: Layout) -> *mut u8 {
-        boehm::GC_malloc_atomic_uncollectable(layout.size()) as *mut u8
+        boehm::GC_malloc_atomic(layout.size()) as *mut u8
     }
 }
 
