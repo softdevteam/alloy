@@ -32,8 +32,6 @@ pub struct ProfileStats {
 extern "C" {
     pub(crate) fn GC_malloc(nbytes: usize) -> *mut u8;
 
-    pub(crate) fn GC_malloc_uncollectable(nbytes: usize) -> *mut u8;
-
     pub(crate) fn GC_realloc(old: *mut u8, new_size: usize) -> *mut u8;
 
     pub(crate) fn GC_free(dead: *mut u8);
