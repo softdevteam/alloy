@@ -202,13 +202,10 @@ use rustc_session::config::EntryFnType;
 use rustc_session::lint::builtin::LARGE_ASSIGNMENTS;
 use rustc_session::Limit;
 use rustc_span::source_map::{dummy_spanned, respan, Span, Spanned, DUMMY_SP};
-use rustc_span::symbol::sym;
 use rustc_target::abi::Size;
 use std::iter;
 use std::ops::Range;
 use std::path::PathBuf;
-
-use crate::collectable_trait::{collect_mono, is_collectable_trait_method};
 
 #[derive(PartialEq)]
 pub enum MonoItemCollectionMode {
@@ -983,15 +980,9 @@ fn visit_instance_use<'tcx>(
     }
 
     match instance.def {
-        ty::InstanceDef::Virtual(def_id, ..) | ty::InstanceDef::Intrinsic(def_id) => {
+        ty::InstanceDef::Virtual(..) | ty::InstanceDef::Intrinsic(..) => {
             if !is_direct_call {
                 bug!("{:?} being reified", instance);
-            }
-            if tcx.is_diagnostic_item(sym::make_collectable, def_id) {
-                let fn_ty = instance.ty(tcx, ty::ParamEnv::reveal_all());
-                let fn_sig = fn_ty.fn_sig(tcx);
-                let arg_ty = fn_sig.input(0).skip_binder();
-                collect_mono(tcx, arg_ty, instance.substs, output);
             }
         }
         ty::InstanceDef::DropGlue(_, None) => {
@@ -1026,10 +1017,6 @@ fn should_codegen_locally<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>) ->
 
     if def_id.is_local() {
         // Local items cannot be referred to locally without monomorphizing them locally.
-        return true;
-    }
-
-    if is_collectable_trait_method(tcx, def_id) {
         return true;
     }
 
@@ -1146,7 +1133,7 @@ fn find_vtable_types_for_unsizing<'tcx>(
 }
 
 #[instrument(skip(tcx), level = "debug")]
-pub(crate) fn create_fn_mono_item<'tcx>(
+fn create_fn_mono_item<'tcx>(
     tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
     source: Span,

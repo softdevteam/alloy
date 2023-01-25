@@ -103,18 +103,3 @@ impl<T: ?Sized> DerefMut for NonFinalizable<T> {
         &mut self.0
     }
 }
-
-#[cfg_attr(not(bootstrap), lang = "collectable")]
-/// A type that implements this trait provides a way to dynamically change its
-/// heap allocation from non-GC'd to GC'd.
-///
-/// # Safety
-///
-/// Setting a value to collectable means that the GC will deallocate it when it
-/// is no longer reachable. Once set, the value must not be accessed via an
-/// obfuscated pointer which was hidden from the GC (e.g. as part of a XOR
-/// linked list)
-pub unsafe trait Collectable {
-    #[cfg_attr(not(bootstrap), lang = "set_collectable")]
-    unsafe fn set_collectable(&self);
-}

@@ -32,8 +32,6 @@ pub struct ProfileStats {
 extern "C" {
     pub(crate) fn GC_malloc(nbytes: usize) -> *mut u8;
 
-    pub(crate) fn GC_malloc_uncollectable(nbytes: usize) -> *mut u8;
-
     pub(crate) fn GC_realloc(old: *mut u8, new_size: usize) -> *mut u8;
 
     pub(crate) fn GC_free(dead: *mut u8);
@@ -65,8 +63,6 @@ extern "C" {
     pub(crate) fn GC_make_descriptor(bitmap: *const usize, len: usize) -> usize;
 
     pub(crate) fn GC_malloc_atomic(nbytes: usize) -> *mut u8;
-
-    pub(crate) fn GC_malloc_atomic_uncollectable(nbytes: usize) -> *mut u8;
 
     pub(crate) fn GC_thread_is_registered() -> u32;
 
