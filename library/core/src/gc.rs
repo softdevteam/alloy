@@ -103,3 +103,10 @@ impl<T: ?Sized> DerefMut for NonFinalizable<T> {
         &mut self.0
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "ReferenceFree")]
+pub auto trait ReferenceFree {}
+
+impl<T> !ReferenceFree for &T {}
+impl<T> !ReferenceFree for &mut T {}

@@ -15,7 +15,7 @@ impl<B, C> Signal2 for B where B: Signal<Item = C> {
 // @has - '//h3[@class="code-header in-band"]' 'impl<B> Sync for Switch<B> where <B as Signal>::Item: Sync'
 // @has - '//h3[@class="code-header in-band"]' 'impl<B> FinalizerSafe for Switch<B> where <B as Signal>::Item: FinalizerSafe'
 // @count - '//*[@id="implementations-list"]//*[@class="impl"]' 0
-// @count - '//*[@id="synthetic-implementations-list"]//*[@class="impl has-srclink"]' 7
+// @count - '//*[@id="synthetic-implementations-list"]//*[@class="impl has-srclink"]' 8
 pub struct Switch<B: Signal> {
     pub inner: <B as Signal2>::Item2,
 }

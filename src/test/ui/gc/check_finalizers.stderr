@@ -13,6 +13,15 @@ LL |     Gc::new(ShouldFail(Cell::new(123)));
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
 
+error: `boxed_trait` cannot be safely constructed.
+  --> $DIR/check_finalizers.rs:77:13
+   |
+LL |     Gc::new(boxed_trait);
+   |     --------^^^^^^^^^^^-
+   |     |       |
+   |     |       contains a reference (&) which may no longer be valid when it is finalized.
+   |     `Gc::new` requires that a type is reference free.
+
 error: `boxed_trait` cannot be safely finalized.
   --> $DIR/check_finalizers.rs:77:13
    |
@@ -25,7 +34,7 @@ LL |     Gc::new(boxed_trait);
    = help: `Gc` runs finalizers on a separate thread, so `boxed_trait` must implement `FinalizeSafe` in order to be safely dropped.
 
 error: `gcfields` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:80:13
+  --> $DIR/check_finalizers.rs:81:13
    |
 LL |         println!("Boom {}", self.0);
    |                             ------
@@ -39,7 +48,7 @@ LL |     Gc::new(gcfields);
    = help: `Gc` finalizers are unordered, so this field may have already been dropped. It is not safe to dereference.
 
 error: `self_call` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:83:13
+  --> $DIR/check_finalizers.rs:84:13
    |
 LL |         self.foo();
    |         ----------
@@ -54,7 +63,7 @@ LL |     Gc::new(self_call);
            must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
 
 error: `transparent_call` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:86:13
+  --> $DIR/check_finalizers.rs:87:13
    |
 LL |         let x = ShouldPassInFuture(456 as *mut u8);
    |                 ----------------------------------
@@ -68,5 +77,5 @@ LL |     Gc::new(transparent_call);
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
 
-error: aborting due to 5 previous errors
+error: aborting due to 6 previous errors
 
