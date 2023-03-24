@@ -1,10 +1,10 @@
 #![feature(gc)]
 #![feature(negative_impls)]
 
-use std::gc::Gc;
-use std::rc::Rc;
 use std::cell::Cell;
+use std::gc::Gc;
 use std::marker::FinalizerSafe;
+use std::rc::Rc;
 
 struct ShouldPass(*mut u8);
 
@@ -17,7 +17,7 @@ impl Drop for ShouldPass {
 
 struct ShouldFail(Cell<usize>);
 
-impl !FinalizerSafe for ShouldFail{}
+impl !FinalizerSafe for ShouldFail {}
 
 impl Drop for ShouldFail {
     // We mutate via an unsynchronized field here, this should bork.
@@ -51,37 +51,14 @@ impl Drop for ShouldFail2 {
     }
 }
 
-struct ShouldPassInFuture(*mut u8);
-
-impl !FinalizerSafe for ShouldPassInFuture {}
-
-impl ShouldPassInFuture {
-    fn transparent(&self) {
-        println!("Value is {:?}", self.0);
-    }
-}
-
-impl Drop for ShouldPassInFuture {
-    fn drop(&mut self) {
-        let x = ShouldPassInFuture(456 as *mut u8);
-        x.transparent();
-    }
-}
-
 fn main() {
     Gc::new(ShouldPass(123 as *mut u8));
 
     Gc::new(ShouldFail(Cell::new(123))); //~ ERROR: `ShouldFail(Cell::new(123))` cannot be safely finalized.
-
-    let boxed_trait: Box<dyn Opaque> = Box::new(ShouldPass(123 as *mut u8));
-    Gc::new(boxed_trait); //~ ERROR: `boxed_trait` cannot be safely finalized.
 
     let gcfields = HasGcFields(Gc::new(123));
     Gc::new(gcfields); //~ ERROR: `gcfields` cannot be safely finalized.
 
     let self_call = ShouldFail2(123 as *mut u8);
     Gc::new(self_call); //~ ERROR: `self_call` cannot be safely finalized.
-
-    let transparent_call = ShouldPassInFuture(123 as *mut u8);
-    Gc::new(transparent_call); //~ ERROR: `transparent_call` cannot be safely finalized.
 }

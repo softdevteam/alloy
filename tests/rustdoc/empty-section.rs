@@ -12,3 +12,4 @@ impl !FinalizerSafe for Foo {}
 impl !std::marker::Unpin for Foo {}
 impl !std::panic::RefUnwindSafe for Foo {}
 impl !std::panic::UnwindSafe for Foo {}
+impl std::gc::ReferenceFree for Foo {}
