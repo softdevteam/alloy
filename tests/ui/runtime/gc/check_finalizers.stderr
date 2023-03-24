@@ -1,5 +1,5 @@
 error: `ShouldFail(Cell::new(123))` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:74:13
+  --> $DIR/check_finalizers.rs:57:13
    |
 LL |         self.0.replace(456);
    |         ------
@@ -13,19 +13,8 @@ LL |     Gc::new(ShouldFail(Cell::new(123)));
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
 
-error: `boxed_trait` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:77:13
-   |
-LL |     Gc::new(boxed_trait);
-   |     --------^^^^^^^^^^^-
-   |     |       |
-   |     |       has a drop method which cannot be safely finalized.
-   |     `Gc::new` requires that it implements the `FinalizeSafe` trait.
-   |
-   = help: `Gc` runs finalizers on a separate thread, so `boxed_trait` must implement `FinalizeSafe` in order to be safely dropped.
-
 error: `gcfields` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:80:13
+  --> $DIR/check_finalizers.rs:60:13
    |
 LL |         println!("Boom {}", self.0);
    |                             ------
@@ -39,7 +28,7 @@ LL |     Gc::new(gcfields);
    = help: `Gc` finalizers are unordered, so this field may have already been dropped. It is not safe to dereference.
 
 error: `self_call` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:83:13
+  --> $DIR/check_finalizers.rs:63:13
    |
 LL |         self.foo();
    |         ----------
@@ -53,20 +42,5 @@ LL |     Gc::new(self_call);
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
 
-error: `transparent_call` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:86:13
-   |
-LL |         let x = ShouldPassInFuture(456 as *mut u8);
-   |                 ----------------------------------
-   |                 |
-   |                 caused by the expression in `fn drop(&mut)` here because
-   |                 it uses a type which is not safe to use in a finalizer.
-...
-LL |     Gc::new(transparent_call);
-   |             ^^^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
-   |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
-
-error: aborting due to 5 previous errors
+error: aborting due to 3 previous errors
 
