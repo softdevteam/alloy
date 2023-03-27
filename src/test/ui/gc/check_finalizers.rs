@@ -75,6 +75,7 @@ fn main() {
 
     let boxed_trait: Box<dyn Opaque> = Box::new(ShouldPass(123 as *mut u8));
     Gc::new(boxed_trait); //~ ERROR: `boxed_trait` cannot be safely finalized.
+                          //~^ ERROR: `boxed_trait` cannot be safely constructed.
 
     let gcfields = HasGcFields(Gc::new(123));
     Gc::new(gcfields); //~ ERROR: `gcfields` cannot be safely finalized.

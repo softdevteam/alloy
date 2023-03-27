@@ -263,6 +263,7 @@ symbols! {
         Rc,
         Ready,
         Receiver,
+        ReferenceFree,
         Relaxed,
         Release,
         Result,
