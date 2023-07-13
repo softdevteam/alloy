@@ -6,7 +6,9 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    |           ^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-   = help: the trait `GlobalAlloc` is implemented for `System`
+   = help: the following other types implement trait `GlobalAlloc`:
+             GcAllocator
+             System
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `usize: GlobalAlloc` is not satisfied
@@ -17,7 +19,9 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    |           ^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-   = help: the trait `GlobalAlloc` is implemented for `System`
+   = help: the following other types implement trait `GlobalAlloc`:
+             GcAllocator
+             System
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `usize: GlobalAlloc` is not satisfied
@@ -28,7 +32,9 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    |           ^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-   = help: the trait `GlobalAlloc` is implemented for `System`
+   = help: the following other types implement trait `GlobalAlloc`:
+             GcAllocator
+             System
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `usize: GlobalAlloc` is not satisfied
@@ -39,7 +45,9 @@ LL | #[global_allocator]
 LL | static A: usize = 0;
    |           ^^^^^ the trait `GlobalAlloc` is not implemented for `usize`
    |
-   = help: the trait `GlobalAlloc` is implemented for `System`
+   = help: the following other types implement trait `GlobalAlloc`:
+             GcAllocator
+             System
    = note: this error originates in the attribute macro `global_allocator` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: aborting due to 4 previous errors

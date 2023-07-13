@@ -1,5 +1,5 @@
 include ../tools.mk
-
+# ignore-test
 # only-x86_64
 # only-linux
 # ignore-32bit

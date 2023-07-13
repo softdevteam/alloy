@@ -127,6 +127,7 @@ const PERMITTED_RUSTC_DEPENDENCIES: &[&str] = &[
     "byteorder", // via ruzstd in object in thorin-dwp
     "cc",
     "cfg-if",
+    "cmake",
     "compiler_builtins",
     "convert_case", // dependency of derive_more
     "cpufeatures",
