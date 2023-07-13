@@ -373,6 +373,7 @@
 #![feature(custom_test_frameworks)]
 #![feature(edition_panic)]
 #![feature(format_args_nl)]
+#![feature(gc)]
 #![feature(get_many_mut)]
 #![feature(lazy_cell)]
 #![feature(log_syntax)]
@@ -562,6 +563,7 @@ pub mod env;
 pub mod error;
 pub mod ffi;
 pub mod fs;
+pub mod gc;
 pub mod io;
 pub mod net;
 pub mod num;
