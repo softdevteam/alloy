@@ -1,0 +1,13 @@
+[package]
+name = "boehm"
+version = "0.1.0"
+authors = ["Jake Hughes <jh@jakehughes.uk>"]
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+core = { path = "../core" }
+compiler_builtins = { version = "0.1.10", features = ['rustc-dep-of-std'] }
+
+[build-dependencies]
+cmake = "0.1"

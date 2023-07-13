@@ -57,6 +57,7 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
+ "boehm",
  "compiler_builtins",
  "core",
  "rand",
@@ -301,6 +302,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "boehm"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+ "compiler_builtins",
+ "core",
 ]
 
 [[package]]
@@ -576,6 +586,15 @@ dependencies = [
  "if_chain",
  "itertools",
  "rustc-semver",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -4990,6 +5009,7 @@ version = "0.0.0"
 dependencies = [
  "addr2line",
  "alloc",
+ "boehm",
  "cfg-if",
  "compiler_builtins",
  "core",
