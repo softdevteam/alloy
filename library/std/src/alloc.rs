@@ -65,6 +65,9 @@ use core::{mem, ptr};
 #[doc(inline)]
 pub use alloc_crate::alloc::*;
 
+#[unstable(feature = "gc", issue = "none")]
+pub use alloc_crate::boehm::GcAllocator;
+
 /// The default memory allocator provided by the operating system.
 ///
 /// This is based on `malloc` on Unix platforms and `HeapAlloc` on Windows,
