@@ -95,4 +95,8 @@ impl GcAllocator {
     pub fn allow_register_threads() {
         unsafe { boehm::GC_allow_register_threads() }
     }
+
+    pub fn suppress_warnings() {
+        unsafe { boehm::GC_set_warn_proc(&boehm::GC_ignore_warn_proc as *const _ as *mut u8) };
+    }
 }
