@@ -19,7 +19,7 @@ fn needs_drop_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>
     // needs drop.
     let adt_has_dtor =
         |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
-    let res = drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false, false)
+    let res = drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false)
         .filter(filter_array_elements(tcx, query.param_env))
         .next()
         .is_some();
@@ -55,26 +55,11 @@ fn has_significant_drop_raw<'tcx>(
         query.param_env,
         adt_consider_insignificant_dtor(tcx),
         true,
-        false,
     )
     .filter(filter_array_elements(tcx, query.param_env))
     .next()
     .is_some();
     debug!("has_significant_drop_raw({:?}) = {:?}", query, res);
-    res
-}
-
-fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
-    // If we don't know a type doesn't need drop, for example if it's a type
-    // parameter without a `Copy` bound, then we conservatively return that it
-    // needs drop.
-    let adt_has_dtor =
-        |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
-    let res = drop_tys_helper(tcx, query.value, query.param_env, adt_has_dtor, false, true)
-        .next()
-        .is_some();
-
-    debug!("needs_finalizer_raw({:?}) = {:?}", query, res);
     res
 }
 
@@ -90,7 +75,7 @@ struct NeedsDropTypes<'tcx, F> {
     unchecked_tys: Vec<(Ty<'tcx>, usize)>,
     recursion_limit: Limit,
     adt_components: F,
-    is_finalizer: bool,
+    analysis_kind: AnalysisKind<'tcx>,
 }
 
 impl<'tcx, F> NeedsDropTypes<'tcx, F> {
@@ -99,7 +84,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
         param_env: ty::ParamEnv<'tcx>,
         ty: Ty<'tcx>,
         adt_components: F,
-        is_finalizer: bool,
+        analysis_kind: AnalysisKind<'tcx>,
     ) -> Self {
         let mut seen_tys = FxHashSet::default();
         seen_tys.insert(ty);
@@ -111,7 +96,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
             unchecked_tys: vec![(ty, 0)],
             recursion_limit: tcx.recursion_limit(),
             adt_components,
-            is_finalizer,
+            analysis_kind,
         }
     }
 }
@@ -155,7 +140,7 @@ where
                         return Some(Err(AlwaysRequiresDrop));
                     }
 
-                    _ if !self.is_finalizer && component.is_gc(tcx) => {
+                    _ if !self.analysis_kind.is_finalization() && component.is_gc(tcx) => {
                         return Some(Err(AlwaysRequiresDrop));
                     }
 
@@ -171,15 +156,26 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, args) => {
-                        let finalizer_optional =
-                            self.is_finalizer && component.finalizer_optional(tcx, self.param_env);
+                        let finalizer_optional = self.analysis_kind.is_finalization()
+                            && component.finalizer_optional(tcx, self.param_env);
+
+                        if self.analysis_kind.is_finalization() {
+                            self.analysis_kind.cache_type(component);
+                        }
+
                         if finalizer_optional {
                             for arg_ty in args.types() {
-                                queue_type(self, arg_ty);
+                                // Required to prevent cycles when checking for finalizers. For
+                                // example, to check whether a Box<T> requires a finalizer, its type
+                                // parameter T must be checked. However, if T = Box, then this
+                                // induce a cycle without accounting for previously seen types.
+                                if !self.analysis_kind.is_cached(arg_ty) {
+                                    queue_type(self, arg_ty);
+                                }
                             }
                         }
 
-                        if self.is_finalizer
+                        if self.analysis_kind.is_finalization()
                             && adt_def.did()
                                 == tcx.get_diagnostic_item(sym::non_finalizable).unwrap()
                         {
@@ -252,6 +248,36 @@ enum DtorType {
     Significant,
 }
 
+enum AnalysisKind<'tcx> {
+    Destruction,
+    Finalization(FxHashSet<Ty<'tcx>>),
+}
+
+impl<'tcx> AnalysisKind<'tcx> {
+    fn is_finalization(&self) -> bool {
+        match self {
+            AnalysisKind::Destruction => false,
+            AnalysisKind::Finalization(..) => true,
+        }
+    }
+
+    fn cache_type(&mut self, ty: Ty<'tcx>) {
+        if let AnalysisKind::Finalization(cache) = self {
+            cache.insert(ty);
+        } else {
+            bug!("Cannot cache types for destruction analysis");
+        }
+    }
+
+    fn is_cached(&mut self, ty: Ty<'tcx>) -> bool {
+        if let AnalysisKind::Finalization(cache) = self {
+            return cache.contains(&ty);
+        } else {
+            bug!("Cannot cache types for destruction analysis");
+        }
+    }
+}
+
 // This is a helper function for `adt_drop_tys` and `adt_significant_drop_tys`.
 // Depending on the implantation of `adt_has_dtor`, it is used to check if the
 // ADT has a destructor or if the ADT only has a significant destructor. For
@@ -262,24 +288,16 @@ fn drop_tys_helper<'tcx>(
     param_env: rustc_middle::ty::ParamEnv<'tcx>,
     adt_has_dtor: impl Fn(ty::AdtDef<'tcx>) -> Option<DtorType>,
     only_significant: bool,
-    is_finalizer: bool,
 ) -> impl Iterator<Item = NeedsDropResult<Ty<'tcx>>> {
     fn with_query_cache<'tcx>(
         tcx: TyCtxt<'tcx>,
         iter: impl IntoIterator<Item = Ty<'tcx>>,
-        is_finalizer: bool,
     ) -> NeedsDropResult<Vec<Ty<'tcx>>> {
         iter.into_iter().try_fold(Vec::new(), |mut vec, subty| {
             match subty.kind() {
                 ty::Adt(adt_id, subst) => {
-                    if is_finalizer {
-                        for subty in tcx.adt_finalizer_tys(adt_id.did())? {
-                            vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
-                        }
-                    } else {
-                        for subty in tcx.adt_drop_tys(adt_id.did())? {
-                            vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
-                        }
+                    for subty in tcx.adt_drop_tys(adt_id.did())? {
+                        vec.push(EarlyBinder::bind(subty).instantiate(tcx, subst));
                     }
                 }
                 _ => vec.push(subty),
@@ -306,7 +324,7 @@ fn drop_tys_helper<'tcx>(
                     // the passed in type parameters are also insignificant.
                     // Eg: Vec<T> dtor is insignificant when T=i32 but significant when T=Mutex.
                     Ok(args.types().collect())
-                }
+                },
             }
         } else if adt_def.is_union() {
             debug!("drop_tys_helper: `{:?}` is a union", adt_def);
@@ -325,13 +343,13 @@ fn drop_tys_helper<'tcx>(
                 // ADTs are `needs_drop` exactly if they `impl Drop` or if any of their "transitive"
                 // fields do. There can be no cycles here, because ADTs cannot contain themselves as
                 // fields.
-                with_query_cache(tcx, field_tys, is_finalizer)
+                with_query_cache(tcx, field_tys)
             }
         }
         .map(|v| v.into_iter())
         };
 
-    NeedsDropTypes::new(tcx, param_env, ty, adt_components, is_finalizer)
+    NeedsDropTypes::new(tcx, param_env, ty, adt_components, AnalysisKind::Destruction)
 }
 
 fn adt_consider_insignificant_dtor<'tcx>(
@@ -372,7 +390,6 @@ fn adt_drop_tys<'tcx>(
         tcx.param_env(def_id),
         adt_has_dtor,
         false,
-        false,
     )
     .collect::<Result<Vec<_>, _>>()
     .map(|components| tcx.mk_type_list(&components))
@@ -390,31 +407,53 @@ fn adt_significant_drop_tys(
         tcx.param_env(def_id),
         adt_consider_insignificant_dtor(tcx),
         true,
-        false,
     )
     .collect::<Result<Vec<_>, _>>()
     .map(|components| tcx.mk_type_list(&components))
 }
 
-fn adt_finalizer_tys<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    def_id: DefId,
-) -> Result<&ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
-    // This is for the "adt_drop_tys" query, that considers all `Drop` impls, therefore all dtors are
-    // significant.
+fn needs_finalizer_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
     let adt_has_dtor =
         |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
-    // `tcx.type_of(def_id)` identical to `tcx.make_adt(def, identity_substs)`
-    drop_tys_helper(
+
+    let adt_components =
+        move |adt_def: ty::AdtDef<'tcx>, args: GenericArgsRef<'tcx>, finalizer_optional: bool| {
+            if adt_def.is_manually_drop() {
+                debug!("finalize_tys_helper: `{:?}` is manually drop", adt_def);
+                Ok(Vec::new())
+            } else if adt_has_dtor(adt_def).is_some() && !finalizer_optional {
+                debug!("finalize_tys_helper: `{:?}` implements `Drop`", adt_def);
+                Err(AlwaysRequiresDrop)
+            } else if adt_def.is_union() {
+                debug!("finalize_tys_helper: `{:?}` is a union", adt_def);
+                Ok(Vec::new())
+            } else {
+                let field_tys = adt_def.all_fields().map(|field| {
+                    let r = tcx.type_of(field.did).instantiate(tcx, args);
+                    debug!(
+                        "finalize_tys_helper: Subst into {:?} with {:?} getting {:?}",
+                        field, args, r
+                    );
+                    r
+                });
+
+                Ok(field_tys.collect())
+            }
+            .map(|v| v.into_iter())
+        };
+
+    let res = NeedsDropTypes::new(
         tcx,
-        tcx.type_of(def_id).instantiate_identity(),
-        tcx.param_env(def_id),
-        adt_has_dtor,
-        false,
-        true,
+        query.param_env,
+        query.value,
+        adt_components,
+        AnalysisKind::Finalization(FxHashSet::default()),
     )
-    .collect::<Result<Vec<_>, _>>()
-    .map(|components| tcx.mk_type_list(&components))
+    .next()
+    .is_some();
+
+    debug!("needs_finalizer_raw({:?}) = {:?}", query, res);
+    res
 }
 
 pub(crate) fn provide(providers: &mut Providers) {
@@ -424,7 +463,6 @@ pub(crate) fn provide(providers: &mut Providers) {
         needs_finalizer_raw,
         adt_drop_tys,
         adt_significant_drop_tys,
-        adt_finalizer_tys,
         ..*providers
     };
 }
