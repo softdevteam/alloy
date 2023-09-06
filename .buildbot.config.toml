@@ -1,0 +1,15 @@
+[rust]
+codegen-units = 0           # Use many compilation units.
+debug-assertions = true     # Turn on assertions in rustc.
+
+[build]
+docs = false
+extended = true
+tools = ["cargo", "rustdoc"]
+
+[llvm]
+assertions = true           # Turn on assertions in LLVM.
+
+[install]
+prefix = "build/rustgc-stage2-latest"
+sysconfdir = "etc"
