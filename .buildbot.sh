@@ -4,6 +4,10 @@
 
 set -e
 
+# This is needed because Alloy is rebased on top of rustc, and we need enough
+# depth for the bootstrapper to find the correct llvm sha
+git fetch --unshallow
+
 export CARGO_HOME="`pwd`/.cargo"
 export RUSTUP_HOME="`pwd`/.rustup"
 
