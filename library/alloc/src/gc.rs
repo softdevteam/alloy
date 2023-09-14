@@ -280,7 +280,7 @@ impl<T> Gc<T> {
 
         unsafe {
             ALLOCATOR.register_finalizer(
-                self as *mut _ as *mut u8,
+                self.ptr.as_ptr() as *mut u8,
                 Some(finalizer::<T>),
                 null_mut(),
                 null_mut(),
