@@ -2,7 +2,7 @@
 #![feature(negative_impls)]
 
 use std::cell::Cell;
-use std::gc::Gc;
+use std::gc::{Gc, FinalizeUnchecked};
 use std::marker::FinalizerSafe;
 use std::rc::Rc;
 
@@ -61,4 +61,6 @@ fn main() {
 
     let self_call = ShouldFail2(123 as *mut u8);
     Gc::new(self_call); //~ ERROR: `self_call` cannot be safely finalized.
+
+    unsafe { Gc::new(FinalizeUnchecked::new(ShouldFail(Cell::new(123)))) };
 }
