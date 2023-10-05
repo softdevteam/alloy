@@ -1,65 +1,63 @@
-# The Rust Programming Language
+# Alloy: opt-in tracing garbage collection for Rust
 
-[![Rust Community](https://img.shields.io/badge/Rust_Community%20-Join_us-brightgreen?style=plastic&logo=rust)](https://www.rust-lang.org/community)
+Alloy is a fork of the Rust language with support for opt-in tracing garbage
+collection (GC) using the `Gc<T>` type. It is a research project designed to
+help make **writing cyclic data structures easier** in Rust.
 
-This is the main source code repository for [Rust]. It contains the compiler,
-standard library, and documentation.
+Alloy is not production-ready. However, it is sufficiently polished to be usable
+for real programs: it supports GC across multiple threads; has high-quality
+error messages; and reasonable performance.
 
-[Rust]: https://www.rust-lang.org/
+## Using Alloy to write a doubly-linked list
 
-**Note: this README is for _users_ rather than _contributors_.**
-If you wish to _contribute_ to the compiler, you should read
-[CONTRIBUTING.md](CONTRIBUTING.md) instead.
+The following example program shows how we can use Alloy's `Gc<T>` smart pointer
+to write a doubly-linked list with three nodes:
 
-## Quick Start
+```rust
+use std::gc::Gc;
+use std::cell::RefCell;
 
-Read ["Installation"] from [The Book].
+struct Node {
+    name: &'static str,
+    prev: Option<Gc<RefCell<Node>>>,
+    next: Option<Gc<RefCell<Node>>>,
+}
 
-["Installation"]: https://doc.rust-lang.org/book/ch01-01-installation.html
-[The Book]: https://doc.rust-lang.org/book/index.html
+fn main() {
+    let c = Gc::new(RefCell::new(Node { name: "c", prev: None, next: None}));
+    let b = Gc::new(RefCell::new(Node { name: "b", prev: None, next: Some(c)}));
+    let a = Gc::new(RefCell::new(Node { name: "a", prev: None, next: Some(b)}));
 
-## Installing from Source
-
-The Rust build system uses a Python script called `x.py` to build the compiler,
-which manages the bootstrapping process. It lives at the root of the project.
-It also uses a file named `config.toml` to determine various configuration
-settings for the build. You can see a full list of options in
-`config.example.toml`.
-
-The `x.py` command can be run directly on most Unix systems in the following
-format:
-
-```sh
-./x.py <subcommand> [flags]
+    // Now patch in the previous nodes
+    c.borrow_mut().next = Some(b);
+    b.borrow_mut().next = Some(a);
+}
 ```
 
-This is how the documentation and examples assume you are running `x.py`.
-See the [rustc dev guide][rustcguidebuild] if this does not work on your
-platform.
+This is similar to using Rust's `Rc` smart pointer, but instead, there is a
+garbage collector running in the background which will automatically free the
+`Gc` values when they're no longer used. There are two main ergonomic benefits
+to using Alloy:
 
-More information about `x.py` can be found by running it with the `--help` flag
-or reading the [rustc dev guide][rustcguidebuild].
+1. The `Gc` type is `Copy`, so new pointers can be created easily without
+   needing to `clone` them.
+2. Alloy supports cyclic references by design, so there's no need to use `Weak`
+   references.
 
-[gettingstarted]: https://rustc-dev-guide.rust-lang.org/getting-started.html
-[rustcguidebuild]: https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html#what-is-xpy
+## Building Alloy
 
 ### Dependencies
 
 Make sure you have installed the dependencies:
 
+* `rustup`
 * `python` 3 or 2.7
 * `git`
 * A C compiler (when building for the host, `cc` is enough; cross-compiling may
   need additional compilers)
-* `curl` (not needed on Windows)
+* `curl`
 * `pkg-config` if you are compiling on Linux and targeting Linux
 * `libiconv` (already included with glibc on Debian-based distros)
-
-To build Cargo, you'll also need OpenSSL (`libssl-dev` or `openssl-devel` on
-most Unix distros).
-
-If building LLVM from source, you'll need additional tools:
-
 * `g++`, `clang++`, or MSVC with versions listed on
   [LLVM's documentation](https://llvm.org/docs/GettingStarted.html#host-c-toolchain-both-compiler-and-standard-library)
 * `ninja`, or GNU `make` 3.81 or later (Ninja is recommended, especially on
@@ -68,26 +66,23 @@ If building LLVM from source, you'll need additional tools:
 * `libstdc++-static` may be required on some Linux distributions such as Fedora
   and Ubuntu
 
-On tier 1 or tier 2 with host tools platforms, you can also choose to download
-LLVM by setting `llvm.download-ci-llvm = true`.
-Otherwise, you'll need LLVM installed and `llvm-config` in your path.
-See [the rustc-dev-guide for more info][sysllvm].
+### Build steps
 
-[sysllvm]: https://rustc-dev-guide.rust-lang.org/building/new-target.html#using-pre-built-llvm
+[installation guide]: https://github.com/rust-lang/rust#installing-from-source
 
-
-### Building on a Unix-like system
-
-#### Build steps
+Building Alloy from source is the same process as building the official Rust
+compiler from source. For a more detailed guide on how this is done, along with
+the different configuration options, follow the [installation guide] from the
+official Rust repository.
 
 1. Clone the [source] with `git`:
 
    ```sh
-   git clone https://github.com/rust-lang/rust.git
+   git clone https://github.com/softdevteam/alloy.git
    cd rust
    ```
 
-[source]: https://github.com/rust-lang/rust
+[source]: https://github.com/softdevteam/alloy
 
 2. Configure the build settings:
 
@@ -111,170 +106,53 @@ See [the rustc-dev-guide for more info][sysllvm].
    package manager. You can disable this behavior by passing
    `--set build.extended=false` to `./configure`.
 
-[Cargo]: https://github.com/rust-lang/cargo
-
-#### Configure and Make
-
-This project provides a configure script and makefile (the latter of which just
-invokes `x.py`). `./configure` is the recommended way to programatically
-generate a `config.toml`. `make` is not recommended (we suggest using `x.py`
-directly), but it is supported and we try not to break it unnecessarily.
-
-```sh
-./configure
-make && sudo make install
-```
-
-`configure` generates a `config.toml` which can also be used with normal `x.py`
-invocations.
-
-### Building on Windows
-
-On Windows, we suggest using [winget] to install dependencies by running the
-following in a terminal:
-
-```powershell
-winget install -e Python.Python.3
-winget install -e Kitware.CMake
-winget install -e Git.Git
-```
-
-Then edit your system's `PATH` variable and add: `C:\Program Files\CMake\bin`.
-See
-[this guide on editing the system `PATH`](https://www.java.com/en/download/help/path.html)
-from the Java documentation.
-
-[winget]: https://github.com/microsoft/winget-cli
-
-There are two prominent ABIs in use on Windows: the native (MSVC) ABI used by
-Visual Studio and the GNU ABI used by the GCC toolchain. Which version of Rust
-you need depends largely on what C/C++ libraries you want to interoperate with.
-Use the MSVC build of Rust to interop with software produced by Visual Studio
-and the GNU build to interop with GNU software built using the MinGW/MSYS2
-toolchain.
-
-#### MinGW
-
-[MSYS2][msys2] can be used to easily build Rust on Windows:
-
-[msys2]: https://www.msys2.org/
-
-1. Download the latest [MSYS2 installer][msys2] and go through the installer.
-
-2. Run `mingw32_shell.bat` or `mingw64_shell.bat` from the MSYS2 installation
-   directory (e.g. `C:\msys64`), depending on whether you want 32-bit or 64-bit
-   Rust. (As of the latest version of MSYS2 you have to run `msys2_shell.cmd
-   -mingw32` or `msys2_shell.cmd -mingw64` from the command line instead.)
-
-3. From this terminal, install the required tools:
+4. Add the Alloy toolchain to rustup:
 
    ```sh
-   # Update package mirrors (may be needed if you have a fresh install of MSYS2)
-   pacman -Sy pacman-mirrors
-
-   # Install build tools needed for Rust. If you're building a 32-bit compiler,
-   # then replace "x86_64" below with "i686". If you've already got Git, Python,
-   # or CMake installed and in PATH you can remove them from this list.
-   # Note that it is important that you do **not** use the 'python2', 'cmake',
-   # and 'ninja' packages from the 'msys2' subsystem.
-   # The build has historically been known to fail with these packages.
-   pacman -S git \
-               make \
-               diffutils \
-               tar \
-               mingw-w64-x86_64-python \
-               mingw-w64-x86_64-cmake \
-               mingw-w64-x86_64-gcc \
-               mingw-w64-x86_64-ninja
+   rustup toolchain link alloy /path/to/alloy/rustc
    ```
 
-4. Navigate to Rust's source code (or clone it), then build it:
+Rust programs which use cargo can now be built and run using Alloy instead of
+the official Rust compiler:
 
    ```sh
-   python x.py setup user && python x.py build && python x.py install
+   cargo +alloy build
    ```
 
-#### MSVC
+## How it works
 
-MSVC builds of Rust additionally require an installation of Visual Studio 2017
-(or later) so `rustc` can use its linker. The simplest way is to get
-[Visual Studio], check the "C++ build tools" and "Windows 10 SDK" workload.
+[Boehm Demers Weiser GC (BDWGC)]: https://github.com/ivmai/bdwgc
 
-[Visual Studio]: https://visualstudio.microsoft.com/downloads/
+Alloy uses _conservative_ garbage collection. This means that it does not have
+any specific knowledge about where references to objects are located. Instead,
+Alloy will assume that an object is still alive if it can be reached by a value on
+the stack (or in a register) which, if treated like a pointer, points to an
+object in the heap. The fields of those objects are then traced using the same
+approach, until all live objects in the program have been discovered. 
 
-(If you're installing CMake yourself, be careful that "C++ CMake tools for
-Windows" doesn't get included under "Individual components".)
+This tends to work well in practice, however, it comes with an important caveat:
+you must not hide references from the GC. For example, data structures
+such as XOR lists are unsound because Alloy will never be able to reach their
+objects.
 
-With these dependencies installed, you can build the compiler in a `cmd.exe`
-shell with:
+Behind the scenes, Alloy uses the [Boehm Demers Weiser GC (BDWGC)] for its
+garbage collection implementation. This supports incremental, generational,
+parallel (but not concurrent!)[^1] collection.
 
-```sh
-python x.py setup user
-python x.py build
-```
+[^1]: A _concurrent_ collector is one where threads doing GC work can run at the
+    same time as normal program (i.e. mutator) threads. A _parallel_ garbage
+    collector simply means that the garbage collection workload can be
+    parallelised across multiple worker threads.
 
-Right now, building Rust only works with some known versions of Visual Studio.
-If you have a more recent version installed and the build system doesn't
-understand, you may need to force rustbuild to use an older version.
-This can be done by manually calling the appropriate vcvars file before running
-the bootstrap.
+## Known limitations
 
-```batch
-CALL "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat"
-python x.py build
-```
-
-#### Specifying an ABI
-
-Each specific ABI can also be used from either environment (for example, using
-the GNU ABI in PowerShell) by using an explicit build triple. The available
-Windows build triples are:
-- GNU ABI (using GCC)
-    - `i686-pc-windows-gnu`
-    - `x86_64-pc-windows-gnu`
-- The MSVC ABI
-    - `i686-pc-windows-msvc`
-    - `x86_64-pc-windows-msvc`
-
-The build triple can be specified by either specifying `--build=<triple>` when
-invoking `x.py` commands, or by creating a `config.toml` file (as described in
-[Building on a Unix-like system](#building-on-a-unix-like-system)), and passing
-`--set build.build=<triple>` to `./configure`.
-
-## Building Documentation
-
-If you'd like to build the documentation, it's almost the same:
-
-```sh
-./x.py doc
-```
-
-The generated documentation will appear under `doc` in the `build` directory for
-the ABI used. That is, if the ABI was `x86_64-pc-windows-msvc`, the directory
-will be `build\x86_64-pc-windows-msvc\doc`.
-
-## Notes
-
-Since the Rust compiler is written in Rust, it must be built by a precompiled
-"snapshot" version of itself (made in an earlier stage of development).
-As such, source builds require an Internet connection to fetch snapshots, and an
-OS that can execute the available snapshot binaries.
-
-See https://doc.rust-lang.org/nightly/rustc/platform-support.html for a list of
-supported platforms.
-Only "host tools" platforms have a pre-compiled snapshot binary available; to
-compile for a platform without host tools you must cross-compile.
-
-You may find that other platforms work, but these are our officially supported
-build environments that are most likely to work.
-
-## Getting Help
-
-See https://www.rust-lang.org/community for a list of chat platforms and forums.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+* Alloy is limited to x86-64 architectures.
+* Alloy uses the BDWGC's handlers for the SIGXCPU and SIGPWR signals to
+  co-ordinate pausing threads so that GC can happen. It cannot be used with
+  programs which also catch these signals.
+* Alloy does not support semi-conservative collection (i.e. precise
+  tracing through heap allocated struct / enum fields).
+* Alloy has only been tested on Linux.
 
 ## License
 
@@ -285,17 +163,3 @@ licenses.
 See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and
 [COPYRIGHT](COPYRIGHT) for details.
 
-## Trademark
-
-[The Rust Foundation][rust-foundation] owns and protects the Rust and Cargo
-trademarks and logos (the "Rust Trademarks").
-
-If you want to use these names or brands, please read the
-[media guide][media-guide].
-
-Third-party logos may be subject to third-party copyrights and trademarks. See
-[Licenses][policies-licenses] for details.
-
-[rust-foundation]: https://foundation.rust-lang.org/
-[media-guide]: https://foundation.rust-lang.org/policies/logo-policy-and-media-guide/
-[policies-licenses]: https://www.rust-lang.org/policies/licenses
