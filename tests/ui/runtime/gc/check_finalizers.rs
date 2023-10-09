@@ -40,6 +40,14 @@ impl Drop for HasGcFields {
 
 struct ShouldFail2(*mut u8);
 
+struct NotThreadSafe(usize);
+
+impl !Send for NotThreadSafe {}
+impl !Sync for NotThreadSafe {}
+
+struct ShouldFail3(NotThreadSafe);
+
+
 impl ShouldFail2 {
     #[inline(never)]
     fn foo(&mut self) {}
@@ -48,6 +56,12 @@ impl ShouldFail2 {
 impl Drop for ShouldFail2 {
     fn drop(&mut self) {
         self.foo();
+    }
+}
+
+impl Drop for ShouldFail3 {
+    fn drop(&mut self) {
+        println!("Boom {}", self.0.0);
     }
 }
 
@@ -61,6 +75,9 @@ fn main() {
 
     let self_call = ShouldFail2(123 as *mut u8);
     Gc::new(self_call); //~ ERROR: `self_call` cannot be safely finalized.
+
+    let not_threadsafe = ShouldFail3(NotThreadSafe(123));
+    Gc::new(not_threadsafe); //~ ERROR: `not_threadsafe` cannot be safely finalized.
 
     unsafe { Gc::new(FinalizeUnchecked::new(ShouldFail(Cell::new(123)))) };
 }

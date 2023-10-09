@@ -60,6 +60,7 @@ impl<T: ?Sized> DerefMut for NonFinalizable<T> {
 /// implementing the `FinalizerSafe` trait for `T` as `FinalizeUnchecked`
 /// applies only to individual uses of `T`.
 #[unstable(feature = "gc", issue = "none")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "FinalizeUnchecked")]
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FinalizeUnchecked<T: ?Sized>(T);
 

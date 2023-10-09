@@ -1,5 +1,5 @@
 error: `ShouldFail(Cell::new(123))` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:57:13
+  --> $DIR/check_finalizers.rs:71:13
    |
 LL |         self.0.replace(456);
    |         ------
@@ -11,10 +11,10 @@ LL |     Gc::new(ShouldFail(Cell::new(123)));
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
+           must only use values whose types implement `Send + Sync + FinalizerSafe`.
 
 error: `gcfields` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:60:13
+  --> $DIR/check_finalizers.rs:74:13
    |
 LL |         println!("Boom {}", self.0);
    |                             ------
@@ -28,7 +28,7 @@ LL |     Gc::new(gcfields);
    = help: `Gc` finalizers are unordered, so this field may have already been dropped. It is not safe to dereference.
 
 error: `self_call` cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:63:13
+  --> $DIR/check_finalizers.rs:77:13
    |
 LL |         self.foo();
    |         ----------
@@ -40,7 +40,22 @@ LL |     Gc::new(self_call);
    |             ^^^^^^^^^ has a drop method which cannot be safely finalized.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `Send + Sync` or `FinalizerSafe`.
+           must only use values whose types implement `Send + Sync + FinalizerSafe`.
 
-error: aborting due to 3 previous errors
+error: `not_threadsafe` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:80:13
+   |
+LL |         println!("Boom {}", self.0.0);
+   |                             --------
+   |                             |
+   |                             caused by the expression in `fn drop(&mut)` here because
+   |                             it uses a type which is not safe to use in a finalizer.
+...
+LL |     Gc::new(not_threadsafe);
+   |             ^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `Send + Sync + FinalizerSafe`.
+
+error: aborting due to 4 previous errors
 
