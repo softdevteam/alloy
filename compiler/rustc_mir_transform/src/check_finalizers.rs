@@ -80,7 +80,15 @@ impl<'tcx> FinalizationCtxt<'tcx> {
     }
 
     fn check(&mut self, ty: Ty<'tcx>) {
-        if self.is_finalizer_safe(ty) || !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) {
+        if !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) {
+            return;
+        }
+
+        if self.is_finalize_unchecked(ty) {
+            return;
+        }
+
+        if self.is_send(ty) && self.is_sync(ty) && self.is_finalizer_safe(ty) {
             return;
         }
 
@@ -176,9 +184,38 @@ impl<'tcx> FinalizationCtxt<'tcx> {
         ty.is_copy_modulo_regions(self.tcx, self.param_env)
     }
 
+    fn is_send(&self, ty: Ty<'tcx>) -> bool {
+        let t = self.tcx.get_diagnostic_item(sym::Send).unwrap();
+        return self
+            .tcx
+            .infer_ctxt()
+            .build()
+            .type_implements_trait(t, [ty], self.param_env)
+            .must_apply_modulo_regions();
+    }
+
+    fn is_sync(&self, ty: Ty<'tcx>) -> bool {
+        let t = self.tcx.get_diagnostic_item(sym::Sync).unwrap();
+        return self
+            .tcx
+            .infer_ctxt()
+            .build()
+            .type_implements_trait(t, [ty], self.param_env)
+            .must_apply_modulo_regions();
+    }
+
     fn is_gc(&self, ty: Ty<'tcx>) -> bool {
         if let ty::Adt(def, ..) = ty.kind() {
             if def.did() == self.tcx.get_diagnostic_item(sym::gc).unwrap() {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn is_finalize_unchecked(&self, ty: Ty<'tcx>) -> bool {
+        if let ty::Adt(def, ..) = ty.kind() {
+            if def.did() == self.tcx.get_diagnostic_item(sym::FinalizeUnchecked).unwrap() {
                 return true;
             }
         }
@@ -223,7 +260,7 @@ impl<'a, 'tcx> ProjectionChecker<'a, 'tcx> {
             err.span_label(self.cx.arg, "has a drop method which cannot be safely finalized.");
             err.span_label(span, "caused by the expression in `fn drop(&mut)` here because");
             err.span_label(span, "it uses a type which is not safe to use in a finalizer.");
-            err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `Send + Sync` or `FinalizerSafe`.");
+            err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `Send + Sync + FinalizerSafe`.");
         }
         err.emit();
     }
@@ -239,7 +276,10 @@ impl<'a, 'tcx> Visitor<'tcx> for ProjectionChecker<'a, 'tcx> {
         for (_, proj) in place_ref.iter_projections() {
             match proj {
                 ProjectionElem::Field(_, ty) => {
-                    if !self.cx.is_finalizer_safe(ty) {
+                    if !self.cx.is_finalizer_safe(ty)
+                        || !self.cx.is_send(ty)
+                        || !self.cx.is_sync(ty)
+                    {
                         let span = self.body.source_info(location).span;
                         self.emit_err(ty, span);
                     }
