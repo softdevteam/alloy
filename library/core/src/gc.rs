@@ -19,7 +19,7 @@ pub unsafe trait FinalizerOptional {}
 /// because of the orphan rule. However, if `NonFinalizable<T>` is used as a
 /// field type of another type which is finalizable, then `T` will also be
 /// finalized.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 #[rustc_diagnostic_item = "non_finalizable"]
 pub struct NonFinalizable<T: ?Sized>(T);
 
