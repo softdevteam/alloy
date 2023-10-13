@@ -36,6 +36,7 @@ fn main() {
 
     cmake::Config::new(&boehm_src)
         .pic(true)
+        .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .cflag("-DGC_ALWAYS_MULTITHREADED")
         .cflag("-DGC_JAVA_FINALIZATION")
