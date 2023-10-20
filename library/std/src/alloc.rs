@@ -66,7 +66,7 @@ use core::{mem, ptr};
 pub use alloc_crate::alloc::*;
 
 #[unstable(feature = "gc", issue = "none")]
-pub use alloc_crate::boehm::GcAllocator;
+pub use alloc_crate::gc::GcAllocator;
 
 /// The default memory allocator provided by the operating system.
 ///

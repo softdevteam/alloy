@@ -158,7 +158,6 @@
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests;
 
-use crate::alloc::GcAllocator;
 use crate::any::Any;
 use crate::cell::UnsafeCell;
 use crate::ffi::{CStr, CString};
@@ -523,7 +522,7 @@ impl Builder {
             let stack_start = unsafe { imp::guard::get_stack_start().unwrap() };
             if stack_start != crate::ptr::null_mut() {
                 unsafe {
-                    GcAllocator::register_thread(&stack_start as *const _ as *mut u8);
+                    crate::gc::register_thread(&stack_start as *const _ as *mut u8);
                 }
             }
 
@@ -541,7 +540,7 @@ impl Builder {
 
             // SAFETY: The thread has no more work to do, so can be unregisterd.
             unsafe {
-                GcAllocator::unregister_thread();
+                crate::gc::unregister_thread();
             }
 
             // SAFETY: `their_packet` as been built just above and moved by the

@@ -1,7 +1,6 @@
 // run-pass
 // ignore-tidy-linelength
 #![feature(gc)]
-#![feature(rustc_private)]
 #![feature(negative_impls)]
 
 use std::gc::{Gc, GcAllocator, FinalizeUnchecked};

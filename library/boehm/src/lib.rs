@@ -1,102 +1,70 @@
 #![no_std]
-#![feature(allocator_api)]
 
-use core::{
-    alloc::{AllocError, Allocator, GlobalAlloc, Layout},
-    ptr::NonNull,
-};
-
-mod boehm;
-
-pub struct GcAllocator;
-
-unsafe impl GlobalAlloc for GcAllocator {
-    #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        return boehm::GC_malloc(layout.size()) as *mut u8;
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, _: Layout) {
-        boehm::GC_free(ptr);
-    }
-
-    #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, _: Layout, new_size: usize) -> *mut u8 {
-        boehm::GC_realloc(ptr, new_size) as *mut u8
-    }
+#[repr(C)]
+#[derive(Default)]
+pub struct ProfileStats {
+    /// Heap size in bytes (including area unmapped to OS).
+    pub heapsize_full: usize,
+    /// Total bytes contained in free and unmapped blocks.
+    pub free_bytes_full: usize,
+    /// Amount of memory unmapped to OS.
+    pub unmapped_bytes: usize,
+    /// Number of bytes allocated since the recent collection.
+    pub bytes_allocd_since_gc: usize,
+    /// Number of bytes allocated before the recent collection.
+    /// The value may wrap.
+    pub allocd_bytes_before_gc: usize,
+    /// Number of bytes not considered candidates for garbage collection.
+    pub non_gc_bytes: usize,
+    /// Garbage collection cycle number.
+    /// The value may wrap.
+    pub gc_no: usize,
+    /// Number of marker threads (excluding the initiating one).
+    pub markers_m1: usize,
+    /// Approximate number of reclaimed bytes after recent collection.
+    pub bytes_reclaimed_since_gc: usize,
+    /// Approximate number of bytes reclaimed before the recent collection.
+    /// The value may wrap.
+    pub reclaimed_bytes_before_gc: usize,
+    /// Number of bytes freed explicitly since the recent GC.
+    pub expl_freed_bytes_since_gc: usize,
 }
 
-unsafe impl Allocator for GcAllocator {
-    #[inline]
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe {
-            let ptr = boehm::GC_malloc(layout.size()) as *mut u8;
-            let ptr = NonNull::new_unchecked(ptr);
-            Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
-        }
-    }
+#[link(name = "gc")]
+extern "C" {
+    pub fn GC_malloc(nbytes: usize) -> *mut u8;
 
-    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
-}
+    pub fn GC_realloc(old: *mut u8, new_size: usize) -> *mut u8;
 
-impl GcAllocator {
-    pub fn force_gc() {
-        unsafe { boehm::GC_gcollect() }
-    }
+    pub fn GC_free(dead: *mut u8);
 
-    pub unsafe fn register_finalizer(
-        &self,
-        obj: *mut u8,
+    pub fn GC_register_finalizer(
+        ptr: *mut u8,
         finalizer: Option<unsafe extern "C" fn(*mut u8, *mut u8)>,
         client_data: *mut u8,
         old_finalizer: *mut extern "C" fn(*mut u8, *mut u8),
         old_client_data: *mut *mut u8,
-    ) {
-        boehm::GC_register_finalizer_no_order(
-            obj,
-            finalizer,
-            client_data,
-            old_finalizer,
-            old_client_data,
-        )
-    }
+    );
 
-    pub fn unregister_finalizer(&self, gcbox: *mut u8) {
-        unsafe {
-            boehm::GC_register_finalizer(
-                gcbox,
-                None,
-                ::core::ptr::null_mut(),
-                ::core::ptr::null_mut(),
-                ::core::ptr::null_mut(),
-            );
-        }
-    }
+    pub fn GC_register_finalizer_no_order(
+        ptr: *mut u8,
+        finalizer: Option<unsafe extern "C" fn(*mut u8, *mut u8)>,
+        client_data: *mut u8,
+        old_finalizer: *mut extern "C" fn(*mut u8, *mut u8),
+        old_client_data: *mut *mut u8,
+    );
 
-    pub fn init() {
-        unsafe { boehm::GC_init() }
-    }
+    pub fn GC_gcollect();
 
-    /// Returns true if thread was successfully registered.
-    pub unsafe fn register_thread(stack_base: *mut u8) -> bool {
-        boehm::GC_register_my_thread(stack_base) == 0
-    }
+    pub fn GC_thread_is_registered() -> u32;
 
-    /// Returns true if thread was successfully unregistered.
-    pub unsafe fn unregister_thread() -> bool {
-        boehm::GC_unregister_my_thread() == 0
-    }
+    pub fn GC_register_my_thread(stack_base: *mut u8) -> i32;
 
-    pub fn thread_registered() -> bool {
-        unsafe { boehm::GC_thread_is_registered() != 0 }
-    }
+    pub fn GC_unregister_my_thread() -> i32;
 
-    pub fn allow_register_threads() {
-        unsafe { boehm::GC_allow_register_threads() }
-    }
+    pub fn GC_init();
 
-    pub fn suppress_warnings() {
-        unsafe { boehm::GC_set_warn_proc(&boehm::GC_ignore_warn_proc as *const _ as *mut u8) };
-    }
+    pub fn GC_set_warn_proc(level: *mut u8);
+
+    pub fn GC_ignore_warn_proc(proc: *mut u8, word: usize);
 }

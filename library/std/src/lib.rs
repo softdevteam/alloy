@@ -551,6 +551,9 @@ pub use core::u8;
 #[allow(deprecated, deprecated_in_future)]
 pub use core::usize;
 
+#[unstable(feature = "gc", issue = "none")]
+pub use alloc_crate::gc::GcAllocator;
+
 pub mod f32;
 pub mod f64;
 

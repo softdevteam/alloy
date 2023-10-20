@@ -1,7 +1,6 @@
 // run-pass
 // ignore-tidy-linelength
 #![feature(gc)]
-#![feature(rustc_private)]
 
 use std::gc::{Gc, GcAllocator};
 use std::sync::atomic::{self, AtomicUsize};

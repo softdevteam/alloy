@@ -1,6 +1,5 @@
 // run-pass
 #![feature(gc)]
-#![feature(rustc_private)]
 
 use std::alloc::GcAllocator;
 use std::gc::Gc;
