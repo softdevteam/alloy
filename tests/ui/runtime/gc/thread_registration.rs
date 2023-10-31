@@ -1,8 +1,7 @@
 // run-pass
 // ignore-emscripten no threads support
-#![feature(rustc_private)]
+#![feature(gc)]
 
-use std::alloc::GcAllocator;
 use std::thread;
 
 pub fn main() {
@@ -11,5 +10,5 @@ pub fn main() {
 }
 
 fn child() -> bool {
-    GcAllocator::thread_registered()
+    std::gc::thread_registered()
 }
