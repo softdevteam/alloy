@@ -3,7 +3,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-const BOEHM_REPO: &str = "https://github.com/ivmai/bdwgc.git";
+const BOEHM_REPO: &str = "https://github.com/softdevteam/bdwgc.git";
 const BOEHM_ATOMICS_REPO: &str = "https://github.com/ivmai/libatomic_ops.git";
 const BOEHM_DIR: &str = "bdwgc";
 const BUILD_DIR: &str = "lib";
