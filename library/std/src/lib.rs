@@ -397,6 +397,14 @@
 #![feature(thread_local_internals)]
 // tidy-alphabetical-end
 //
+// Alloy:
+// tidy-alphabetical-start
+#![feature(coerce_unsized)]
+#![feature(dispatch_from_dyn)]
+#![feature(receiver_trait)]
+#![feature(unsize)]
+// tidy-alphabetical-end
+//
 #![default_lib_allocator]
 
 // Explicitly import the prelude. The compiler uses this same unstable attribute

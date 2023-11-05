@@ -101,11 +101,11 @@ unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         // Rust's stack overflow handler will unregister and return if there is
         // no stack overflow, allowing the fault to "fall-through" to Boehm's
         // handler next time. The is not true in the reverse case.
-        crate::gc::init();
+        alloc::gc::init();
 
         // Boehm GC prints OOM warnings which are useful for debugging, but
         // annoying when building the compiler in release mode.
-        crate::gc::suppress_warnings();
+        alloc::gc::suppress_warnings();
 
         sys::init(argc, argv, sigpipe);
 

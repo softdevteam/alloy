@@ -29,7 +29,7 @@ pub fn will_drop() {
    let _gc = Gc::new(Finalizable(123));
    let f = Finalizable(456);
    let fdyn: Gc<dyn T> = Gc::new(f);
-// CHECK-COUNT-2: {{(call|invoke) .*}}drop_in_place<alloc::gc::Gc<gc::Finalizable>>
+// CHECK-COUNT-2: {{(call|invoke) .*}}drop_in_place<std::gc::Gc<gc::Finalizable>>
 // CHECK-LABEL: {{^[}]}}
 }
 
