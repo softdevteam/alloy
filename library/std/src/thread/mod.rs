@@ -522,7 +522,7 @@ impl Builder {
             let stack_start = unsafe { imp::guard::get_stack_start().unwrap() };
             if stack_start != crate::ptr::null_mut() {
                 unsafe {
-                    crate::gc::register_thread(&stack_start as *const _ as *mut u8);
+                    alloc::gc::register_thread(&stack_start as *const _ as *mut u8);
                 }
             }
 
@@ -540,7 +540,7 @@ impl Builder {
 
             // SAFETY: The thread has no more work to do, so can be unregisterd.
             unsafe {
-                crate::gc::unregister_thread();
+                alloc::gc::unregister_thread();
             }
 
             // SAFETY: `their_packet` as been built just above and moved by the
