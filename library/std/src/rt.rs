@@ -103,10 +103,6 @@ unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         // handler next time. The is not true in the reverse case.
         alloc::gc::init();
 
-        // Boehm GC prints OOM warnings which are useful for debugging, but
-        // annoying when building the compiler in release mode.
-        alloc::gc::suppress_warnings();
-
         sys::init(argc, argv, sigpipe);
 
         let main_guard = sys::thread::guard::init();
