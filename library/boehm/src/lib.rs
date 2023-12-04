@@ -1,5 +1,7 @@
 #![no_std]
 
+use libc;
+
 #[repr(C)]
 #[derive(Default)]
 pub struct ProfileStats {
@@ -60,9 +62,18 @@ extern "C" {
 
     pub fn GC_thread_is_registered() -> u32;
 
-    pub fn GC_register_my_thread(stack_base: *mut u8) -> i32;
+    pub fn GC_pthread_create(
+        native: *mut libc::pthread_t,
+        attr: *const libc::pthread_attr_t,
+        f: extern "C" fn(_: *mut libc::c_void) -> *mut libc::c_void,
+        value: *mut libc::c_void,
+    ) -> libc::c_int;
 
-    pub fn GC_unregister_my_thread() -> i32;
+    pub fn GC_pthread_join(native: libc::pthread_t, value: *mut *mut libc::c_void) -> libc::c_int;
+
+    pub fn GC_pthread_exit(value: *mut libc::c_void) -> !;
+
+    pub fn GC_pthread_detach(thread: libc::pthread_t) -> libc::c_int;
 
     pub fn GC_init();
 

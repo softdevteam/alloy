@@ -112,16 +112,6 @@ pub fn init() {
     unsafe { boehm::GC_init() }
 }
 
-/// Returns true if thread was successfully registered.
-pub unsafe fn register_thread(stack_base: *mut u8) -> bool {
-    unsafe { boehm::GC_register_my_thread(stack_base) == 0 }
-}
-
-/// Returns true if thread was successfully unregistered.
-pub unsafe fn unregister_thread() -> bool {
-    unsafe { boehm::GC_unregister_my_thread() == 0 }
-}
-
 pub fn suppress_warnings() {
     unsafe { boehm::GC_set_warn_proc(&boehm::GC_ignore_warn_proc as *const _ as *mut u8) };
 }
