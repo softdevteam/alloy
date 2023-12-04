@@ -34,13 +34,24 @@ fn main() {
         run("git", |cmd| cmd.arg("clone").arg(BOEHM_ATOMICS_REPO).current_dir(&boehm_src));
     }
 
-    cmake::Config::new(&boehm_src)
+    let mut build = cmake::Config::new(&boehm_src);
+    build
         .pic(true)
-        .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")
         .cflag("-DGC_ALWAYS_MULTITHREADED")
-        .cflag("-DGC_JAVA_FINALIZATION")
-        .build();
+        .cflag("-DGC_JAVA_FINALIZATION");
+
+    if env::var("ENABLE_GC_ASSERTIONS").map_or(false, |v| v == "true") {
+        build.define("enable_gc_assertions", "ON");
+    }
+
+    if env::var("ENABLE_GC_DEBUG").map_or(false, |v| v == "true") {
+        build.profile("Debug");
+    } else {
+        build.profile("Release");
+    }
+
+    build.build();
 
     println!("cargo:rustc-link-search=native={}", &build_dir.display());
     println!("cargo:rustc-link-lib=static=gc");

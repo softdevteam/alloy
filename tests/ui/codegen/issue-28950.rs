@@ -8,7 +8,9 @@
 // FIXME(eddyb) Improve unoptimized codegen to avoid the temporary,
 // and thus run successfully even when compiled at -C opt-level=0.
 
-const LEN: usize = 1 << 15;
+// For Alloy, this must be larger than 1 << 16 because very small threads fail when
+// doing stack scanning work for GC.
+const LEN: usize = 1 << 17;
 
 use std::thread::Builder;
 

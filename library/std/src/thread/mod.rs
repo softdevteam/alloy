@@ -278,7 +278,7 @@ impl Builder {
     ///
     /// let builder = thread::Builder::new()
     ///                               .name("foo".into())
-    ///                               .stack_size(32 * 1024);
+    ///                               .stack_size(64 * 1024);
     ///
     /// let handler = builder.spawn(|| {
     ///     // thread code

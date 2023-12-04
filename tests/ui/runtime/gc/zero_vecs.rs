@@ -30,14 +30,25 @@ fn test_pop(v: &mut Vec<Gc<Finalizable>, GcAllocator>) {
         let mut _gc = Some(v.pop());
         _gc = None;
     }
+
 }
 
 fn main() {
-    let mut v1 = Vec::with_capacity_in(10, GcAllocator);
+    let capacity = 10;
+    let mut v1 = Vec::with_capacity_in(capacity, GcAllocator);
     test_pop(&mut v1);
     test_pop(&mut v1);
 
     GcAllocator::force_gc();
 
-    assert_eq!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed), 19);
+    // This tests that finalisation happened indirectly by trying to overwrite references to live GC
+    // objects in order for Boehm to consider them dead. This is inherently flaky because we might
+    // miss some references which linger on the stack or in registers. This tends to happen for the
+    // last on-stack reference to an object in a tight loop.
+    //
+    // In this case it doesn't really matter whether or not the last object was finalised. Instead,
+    // what matters is that *most* were, as this is enough to have confidence that popping an item
+    // from a vector does not allow it to be indirectly kept alive from within the vector's backing
+    // store.
+    assert!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed) >= (capacity * 2) -1);
 }
