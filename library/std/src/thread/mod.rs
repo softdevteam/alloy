@@ -517,15 +517,6 @@ impl Builder {
                 imp::Thread::set_name(name);
             }
 
-            // SAFETY: Register the thread with libgc so that its stack can be scanned
-            // for garbage collection.
-            let stack_start = unsafe { imp::guard::get_stack_start().unwrap() };
-            if stack_start != crate::ptr::null_mut() {
-                unsafe {
-                    alloc::gc::register_thread(&stack_start as *const _ as *mut u8);
-                }
-            }
-
             crate::io::set_output_capture(output_capture);
 
             // SAFETY: we constructed `f` initialized.
@@ -537,11 +528,6 @@ impl Builder {
             let try_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 crate::sys_common::backtrace::__rust_begin_short_backtrace(f)
             }));
-
-            // SAFETY: The thread has no more work to do, so can be unregisterd.
-            unsafe {
-                alloc::gc::unregister_thread();
-            }
 
             // SAFETY: `their_packet` as been built just above and moved by the
             // closure (it is an Arc<...>) and `my_packet` will be stored in the

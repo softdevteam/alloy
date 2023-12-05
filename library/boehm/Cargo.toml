@@ -1,3 +1,5 @@
+cargo-features = ["public-dependency"]
+
 [package]
 name = "boehm"
 version = "0.1.0"
@@ -8,6 +10,7 @@ license = "Apache-2.0 OR MIT"
 [dependencies]
 core = { path = "../core" }
 compiler_builtins = { version = "0.1.10", features = ['rustc-dep-of-std'] }
+libc = { version = "0.2.148", default-features = false, features = ['rustc-dep-of-std'], public = true }
 
 [build-dependencies]
 cmake = "0.1"
