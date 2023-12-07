@@ -56,7 +56,14 @@ unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
     if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
         unsafe { boehm::GC_malloc(layout.size()) as *mut u8 }
     } else {
-        unsafe { boehm::GC_memalign(layout.align(), layout.size()) as *mut u8 }
+        let mut out = ptr::null_mut();
+        // posix_memalign requires that the alignment be a multiple of `sizeof(void*)`.
+        // Since these are all powers of 2, we can just use max.
+        unsafe {
+            let align = layout.align().max(core::mem::size_of::<usize>());
+            let ret = boehm::GC_posix_memalign(&mut out, align, layout.size());
+            if ret != 0 { ptr::null_mut() } else { out as *mut u8 }
+        }
     }
 }
 

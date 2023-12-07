@@ -36,7 +36,7 @@ pub struct ProfileStats {
 extern "C" {
     pub fn GC_malloc(nbytes: usize) -> *mut u8;
 
-    pub fn GC_memalign(align: usize, nbytes: usize) -> *mut u8;
+    pub fn GC_posix_memalign(mem_ptr: *mut *mut u8, align: usize, nbytes: usize) -> i32;
 
     pub fn GC_realloc(old: *mut u8, new_size: usize) -> *mut u8;
 
