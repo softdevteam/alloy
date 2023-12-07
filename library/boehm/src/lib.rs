@@ -42,6 +42,8 @@ extern "C" {
 
     pub fn GC_free(dead: *mut u8);
 
+    pub fn GC_base(mem_ptr: *mut u8) -> *mut u8;
+
     pub fn GC_register_finalizer(
         ptr: *mut u8,
         finalizer: Option<unsafe extern "C" fn(*mut u8, *mut u8)>,
