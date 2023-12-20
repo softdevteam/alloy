@@ -123,6 +123,7 @@ impl StaticKey {
     /// been allocated.
     #[inline]
     pub unsafe fn set(&self, val: *mut u8) {
+        crate::gc::TLS_ROOTSET.push(val as *mut u8);
         imp::set(self.key(), val)
     }
 

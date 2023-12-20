@@ -52,6 +52,8 @@ pub use alloc::gc::thread_registered;
 pub use alloc::gc::GcAllocator;
 pub use core::gc::*;
 
+use crate::sync::Mutex;
+
 #[cfg(profile_gc)]
 use core::sync::atomic::{self, AtomicU64};
 
@@ -62,6 +64,31 @@ mod tests;
 static FINALIZERS_REGISTERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(profile_gc)]
 static FINALIZERS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+
+pub static TLS_ROOTSET: TLSRootset = TLSRootset::new();
+
+#[derive(Debug)]
+pub struct TLSRootset(Mutex<Vec<*mut u8, GcAllocator>>);
+
+impl TLSRootset {
+    const fn new() -> Self {
+        Self(Mutex::new(Vec::new_in(GcAllocator)))
+    }
+
+    pub fn push(&self, root: *mut u8) {
+        let mut v = self.0.lock().unwrap();
+        v.push(root);
+    }
+
+    pub fn remove(&self, root: *mut u8) {
+        let mut v = self.0.lock().unwrap();
+        let idx = v.iter().position(|r| *r == root).unwrap();
+        v.swap_remove(idx);
+    }
+}
+
+unsafe impl Send for TLSRootset {}
+unsafe impl Sync for TLSRootset {}
 
 struct GcBox<T: ?Sized>(T);
 

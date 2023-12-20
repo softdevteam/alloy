@@ -1,5 +1,6 @@
 use super::lazy::LazyKeyInner;
 use crate::cell::Cell;
+use crate::gc::GcAllocator;
 use crate::sys_common::thread_local_key::StaticKey as OsStaticKey;
 use crate::{fmt, marker, panic, ptr};
 
@@ -142,7 +143,11 @@ impl<T: 'static> Key<T> {
         let ptr = if ptr.is_null() {
             // If the lookup returned null, we haven't initialized our own
             // local copy, so do that now.
-            let ptr = Box::into_raw(Box::new(Value { inner: LazyKeyInner::new(), key: self }));
+            let ptr = Box::into_raw(Box::new_in(
+                Value { inner: LazyKeyInner::new(), key: self },
+                GcAllocator,
+            ));
+            crate::gc::TLS_ROOTSET.push(ptr as *mut u8);
             // SAFETY: At this point we are sure there is no value inside
             // ptr so setting it will not affect anyone else.
             unsafe {
@@ -174,7 +179,8 @@ unsafe extern "C" fn destroy_value<T: 'static>(ptr: *mut u8) {
     // Wrap the call in a catch to ensure unwinding is caught in the event
     // a panic takes place in a destructor.
     if let Err(_) = panic::catch_unwind(|| unsafe {
-        let ptr = Box::from_raw(ptr as *mut Value<T>);
+        crate::gc::TLS_ROOTSET.remove(ptr);
+        let ptr = Box::from_raw_in(ptr as *mut Value<T>, GcAllocator);
         let key = ptr.key;
         key.os.set(ptr::invalid_mut(1));
         drop(ptr);
