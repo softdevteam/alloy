@@ -81,5 +81,9 @@ extern "C" {
 
     pub fn GC_set_warn_proc(level: *mut u8);
 
+    pub fn GC_tls_rootset() -> *mut u8;
+
+    pub fn GC_init_tls_rootset(rootset: *mut u8);
+
     pub fn GC_ignore_warn_proc(proc: *mut u8, word: usize);
 }

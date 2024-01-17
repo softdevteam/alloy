@@ -11,11 +11,6 @@ cfg_if::cfg_if! {
         mod static_local;
         #[doc(hidden)]
         pub use static_local::{Key, thread_local_inner};
-    } else if #[cfg(target_thread_local)] {
-        #[doc(hidden)]
-        mod fast_local;
-        #[doc(hidden)]
-        pub use fast_local::{Key, thread_local_inner};
     } else {
         #[doc(hidden)]
         mod os_local;
