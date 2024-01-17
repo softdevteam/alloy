@@ -3,6 +3,45 @@ use crate::cell::Cell;
 use crate::sys_common::thread_local_key::StaticKey as OsStaticKey;
 use crate::{fmt, marker, panic, ptr};
 
+use alloc::boehm;
+
+/// A buffer of pointers to each thread local variable.
+///
+/// The Boehm GC can't locate GC pointers stored inside POSIX thread locals, so
+/// this struct keeps track of pointers to thread local data, which the GC then
+/// uses as part of its marking rootset.
+///
+/// Despite its implementation as a ZST, this struct is stateful -- its methods
+/// have side-effects and are performed on a buffer stored in a special
+/// thread-local value. However, this state is declared from within the BDWGC
+/// and deliberately hidden from rustc, which is why the API uses static methods
+/// (i.e. does not take self references).
+///
+/// The reason for this design is that `TLSRoots` is modified from inside Rust's
+/// `thread_local!` API: if we were to implement this data structure using
+/// Rust's thread local API, we would run into problems such as re-entrancy
+/// issues or infinite recursion.
+///
+/// Usage of this struct is safe because it provides no access to the underlying
+/// roots except via methods which are guaranteed not to leak aliasing mutable
+/// references.
+struct TLSRoots;
+
+impl TLSRoots {
+    /// Push a root to the current thread's TLS rootset. This lazily
+    /// initialises the backing vector.
+    fn push(root: *mut u8) {
+        let mut rootset = unsafe { boehm::GC_tls_rootset() as *mut Vec<*mut u8> };
+        if rootset.is_null() {
+            let v = Vec::new();
+            let buf: *mut Vec<*mut u8> = Box::into_raw(Box::new(v));
+            unsafe { boehm::GC_init_tls_rootset(buf as *mut u8) };
+            rootset = buf
+        }
+        unsafe { (&mut *rootset).push(root) };
+    }
+}
+
 #[doc(hidden)]
 #[allow_internal_unstable(thread_local_internals)]
 #[allow_internal_unsafe]
@@ -143,6 +182,7 @@ impl<T: 'static> Key<T> {
             // If the lookup returned null, we haven't initialized our own
             // local copy, so do that now.
             let ptr = Box::into_raw(Box::new(Value { inner: LazyKeyInner::new(), key: self }));
+            TLSRoots::push(ptr as *mut u8);
             // SAFETY: At this point we are sure there is no value inside
             // ptr so setting it will not affect anyone else.
             unsafe {
