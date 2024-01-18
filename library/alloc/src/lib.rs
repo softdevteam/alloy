@@ -222,7 +222,7 @@ mod testing;
 #[allow(unused_extern_crates)]
 #[allow(missing_docs)]
 #[unstable(feature = "gc", issue = "none")]
-pub extern crate boehm;
+pub extern crate bdwgc;
 
 // Module with internal macros used by other modules (needs to be included before other modules).
 #[macro_use]

@@ -57,7 +57,7 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
- "boehm",
+ "bdwgc",
  "compiler_builtins",
  "core",
  "rand",
@@ -305,7 +305,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "boehm"
+name = "bdwgc"
 version = "0.1.0"
 dependencies = [
  "cmake",
@@ -5010,7 +5010,7 @@ version = "0.0.0"
 dependencies = [
  "addr2line",
  "alloc",
- "boehm",
+ "bdwgc",
  "cfg-if",
  "compiler_builtins",
  "core",

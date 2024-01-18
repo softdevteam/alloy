@@ -85,7 +85,7 @@ impl Thread {
             };
         }
 
-        let ret = alloc::boehm::GC_pthread_create(&mut native, &attr, thread_start, p as *mut _);
+        let ret = alloc::bdwgc::GC_pthread_create(&mut native, &attr, thread_start, p as *mut _);
         // Note: if the thread creation fails and this assert fails, then p will
         // be leaked. However, an alternative design could cause double-free
         // which is clearly worse.
@@ -267,7 +267,7 @@ impl Thread {
 
     pub fn join(self) {
         unsafe {
-            let ret = alloc::boehm::GC_pthread_join(self.id, ptr::null_mut());
+            let ret = alloc::bdwgc::GC_pthread_join(self.id, ptr::null_mut());
             mem::forget(self);
             assert!(ret == 0, "failed to join thread: {}", io::Error::from_raw_os_error(ret));
         }
@@ -286,7 +286,7 @@ impl Thread {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let ret = unsafe { alloc::boehm::GC_pthread_detach(self.id) };
+        let ret = unsafe { alloc::bdwgc::GC_pthread_detach(self.id) };
         debug_assert_eq!(ret, 0);
     }
 }
