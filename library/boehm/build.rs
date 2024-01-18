@@ -5,8 +5,8 @@ use std::process::Command;
 
 const BOEHM_REPO: &str = "https://github.com/softdevteam/bdwgc.git";
 const BOEHM_ATOMICS_REPO: &str = "https://github.com/ivmai/libatomic_ops.git";
-const BOEHM_DIR: &str = "bdwgc";
-const BUILD_DIR: &str = "lib";
+const BOEHM_DEFAULT_SRC_DIR: &str = "bdwgc";
+const BOEHM_BUILD_DIR: &str = "lib";
 
 #[cfg(not(all(target_pointer_width = "64", target_arch = "x86_64")))]
 compile_error!("Requires x86_64 with 64 bit pointer width.");
@@ -25,11 +25,16 @@ where
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let mut boehm_src = PathBuf::from(&out_dir);
-    boehm_src.push(BOEHM_DIR);
-    let mut build_dir = PathBuf::from(&out_dir);
-    build_dir.push(BUILD_DIR);
 
-    if !boehm_src.exists() {
+    match env::var("BOEHM") {
+        Ok(path) => boehm_src.push(path),
+        Err(_) => boehm_src.push(BOEHM_DEFAULT_SRC_DIR),
+    }
+
+    let mut build_dir = PathBuf::from(&out_dir);
+    build_dir.push(BOEHM_BUILD_DIR);
+
+    if !boehm_src.exists() && env::var("BOEHM").is_err() {
         run("git", |cmd| cmd.arg("clone").arg(BOEHM_REPO).arg(&boehm_src));
         run("git", |cmd| cmd.arg("clone").arg(BOEHM_ATOMICS_REPO).current_dir(&boehm_src));
     }
