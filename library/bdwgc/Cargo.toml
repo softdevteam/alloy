@@ -1,7 +1,7 @@
 cargo-features = ["public-dependency"]
 
 [package]
-name = "boehm"
+name = "bdwgc"
 version = "0.1.0"
 authors = ["Jake Hughes <jh@jakehughes.uk>"]
 edition = "2021"

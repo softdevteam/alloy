@@ -54,14 +54,14 @@ unsafe impl GlobalAlloc for GcAllocator {
 #[inline]
 unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
     if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
-        unsafe { boehm::GC_malloc(layout.size()) as *mut u8 }
+        unsafe { bdwgc::GC_malloc(layout.size()) as *mut u8 }
     } else {
         let mut out = ptr::null_mut();
         // posix_memalign requires that the alignment be a multiple of `sizeof(void*)`.
         // Since these are all powers of 2, we can just use max.
         unsafe {
             let align = layout.align().max(core::mem::size_of::<usize>());
-            let ret = boehm::GC_posix_memalign(&mut out, align, layout.size());
+            let ret = bdwgc::GC_posix_memalign(&mut out, align, layout.size());
             if ret != 0 { ptr::null_mut() } else { out as *mut u8 }
         }
     }
@@ -70,7 +70,7 @@ unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
 #[inline]
 unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
     if old_layout.align() <= MIN_ALIGN && old_layout.align() <= new_size {
-        unsafe { boehm::GC_realloc(ptr, new_size) as *mut u8 }
+        unsafe { bdwgc::GC_realloc(ptr, new_size) as *mut u8 }
     } else {
         unsafe {
             let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
@@ -90,11 +90,11 @@ unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut 
 unsafe fn gc_free(ptr: *mut u8, layout: Layout) {
     if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
         unsafe {
-            boehm::GC_free(ptr);
+            bdwgc::GC_free(ptr);
         }
     } else {
         unsafe {
-            boehm::GC_free(boehm::GC_base(ptr));
+            bdwgc::GC_free(bdwgc::GC_base(ptr));
         }
     }
 }
@@ -117,18 +117,18 @@ unsafe impl Allocator for GcAllocator {
 
 impl GcAllocator {
     pub fn force_gc() {
-        unsafe { boehm::GC_gcollect() }
+        unsafe { bdwgc::GC_gcollect() }
     }
 }
 
 pub fn init() {
-    unsafe { boehm::GC_init() }
+    unsafe { bdwgc::GC_init() }
 }
 
 pub fn suppress_warnings() {
-    unsafe { boehm::GC_set_warn_proc(&boehm::GC_ignore_warn_proc as *const _ as *mut u8) };
+    unsafe { bdwgc::GC_set_warn_proc(&bdwgc::GC_ignore_warn_proc as *const _ as *mut u8) };
 }
 
 pub fn thread_registered() -> bool {
-    unsafe { boehm::GC_thread_is_registered() != 0 }
+    unsafe { bdwgc::GC_thread_is_registered() != 0 }
 }

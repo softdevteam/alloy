@@ -28,7 +28,7 @@ fn large_alignment() {
 }
 
 #[test]
-fn boehm_issue_589() {
+fn bdwgc_issue_589() {
     // Test the specific size / alignment problem raised in [1].
     //
     // [1]: https://github.com/ivmai/bdwgc/issues/589

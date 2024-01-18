@@ -267,7 +267,7 @@ impl<T> Gc<T> {
         }
 
         unsafe {
-            boehm::GC_register_finalizer_no_order(
+            bdwgc::GC_register_finalizer_no_order(
                 self.ptr.as_ptr() as *mut u8,
                 Some(finalizer::<T>),
                 null_mut(),
@@ -281,7 +281,7 @@ impl<T> Gc<T> {
     pub fn unregister_finalizer(&mut self) {
         let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
         unsafe {
-            boehm::GC_register_finalizer(
+            bdwgc::GC_register_finalizer(
                 ptr,
                 None,
                 ::core::ptr::null_mut(),

@@ -3,11 +3,11 @@ use crate::cell::Cell;
 use crate::sys_common::thread_local_key::StaticKey as OsStaticKey;
 use crate::{fmt, marker, panic, ptr};
 
-use alloc::boehm;
+use alloc::bdwgc;
 
 /// A buffer of pointers to each thread local variable.
 ///
-/// The Boehm GC can't locate GC pointers stored inside POSIX thread locals, so
+/// The BDWGC can't locate GC pointers stored inside POSIX thread locals, so
 /// this struct keeps track of pointers to thread local data, which the GC then
 /// uses as part of its marking rootset.
 ///
@@ -31,11 +31,11 @@ impl TLSRoots {
     /// Push a root to the current thread's TLS rootset. This lazily
     /// initialises the backing vector.
     fn push(root: *mut u8) {
-        let mut rootset = unsafe { boehm::GC_tls_rootset() as *mut Vec<*mut u8> };
+        let mut rootset = unsafe { bdwgc::GC_tls_rootset() as *mut Vec<*mut u8> };
         if rootset.is_null() {
             let v = Vec::new();
             let buf: *mut Vec<*mut u8> = Box::into_raw(Box::new(v));
-            unsafe { boehm::GC_init_tls_rootset(buf as *mut u8) };
+            unsafe { bdwgc::GC_init_tls_rootset(buf as *mut u8) };
             rootset = buf
         }
         unsafe { (&mut *rootset).push(root) };
