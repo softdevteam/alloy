@@ -1,4 +1,3 @@
-// ignore-test
 // ignore-wasm32
 // dont-check-compiler-stderr
 #![feature(cfg_target_thread_local, thread_local_internals)]

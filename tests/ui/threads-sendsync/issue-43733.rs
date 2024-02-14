@@ -1,4 +1,3 @@
-// ignore-test
 // ignore-wasm32
 // revisions: mir thir
 // [thir]compile-flags: -Z thir-unsafeck
