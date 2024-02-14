@@ -8,6 +8,8 @@
 
 use std::gc::{Gc, GcAllocator};
 use std::sync::atomic::{self, AtomicUsize};
+use std::thread;
+use std::time;
 
 struct Finalizable(usize);
 
@@ -40,6 +42,9 @@ fn main() {
     test_pop(&mut v1);
 
     GcAllocator::force_gc();
+
+    // Wait enough time for the finaliser thread to finish running.
+    thread::sleep(time::Duration::from_millis(100));
 
     // This tests that finalisation happened indirectly by trying to overwrite references to live GC
     // objects in order for Boehm to consider them dead. This is inherently flaky because we might

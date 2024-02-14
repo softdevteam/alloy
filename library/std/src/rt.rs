@@ -112,6 +112,8 @@ unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         // info about the stack bounds.
         let thread = Thread::new(Some(rtunwrap!(Ok, CString::new("main"))));
         thread_info::set(main_guard, thread);
+
+        crate::gc::init_finalization_thread();
     }
 }
 

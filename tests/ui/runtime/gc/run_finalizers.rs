@@ -4,6 +4,8 @@
 
 use std::gc::{Gc, GcAllocator};
 use std::sync::atomic::{self, AtomicUsize};
+use std::thread;
+use std::time;
 
 struct Finalizable(usize);
 
@@ -30,6 +32,10 @@ fn foo() {
 fn main() {
     foo();
     GcAllocator::force_gc();
+
+    // Wait enough time for the finaliser thread to finish running.
+
+    thread::sleep(time::Duration::from_millis(100));
     // On some platforms, the last object might not be finalised because it's
     // kept alive by a lingering reference.
     assert!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed) >= ALLOCATED_COUNT -1);
