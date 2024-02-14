@@ -342,7 +342,7 @@ pub struct RustAnalyzer {
 impl Step for RustAnalyzer {
     type Output = ();
     const ONLY_HOSTS: bool = true;
-    const DEFAULT: bool = false;
+    const DEFAULT: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.path("src/tools/rust-analyzer")

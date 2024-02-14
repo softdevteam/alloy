@@ -1,4 +1,3 @@
-// ignore-test
 // compile-flags: -O
 // aux-build:thread_local_aux.rs
 // ignore-windows FIXME(#84933)
