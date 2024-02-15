@@ -8,14 +8,21 @@ Alloy is not production-ready. However, it is sufficiently polished to be usable
 for real programs: it supports GC across multiple threads; has high-quality
 error messages; and reasonable performance.
 
+> :warning: Alloy won't be able trace objects for garbage collection unless you
+> set the `#[global_allocator]` to use `std::gc::GcAllocator`.
+
 ## Using Alloy to write a doubly-linked list
 
 The following example program shows how we can use Alloy's `Gc<T>` smart pointer
 to write a doubly-linked list with three nodes:
 
 ```rust
-use std::gc::Gc;
+#![feature(gc)]
+use std::gc::{Gc, GcAllocator};
 use std::cell::RefCell;
+
+#[global_allocator]
+static A: GcAllocator = GcAllocator;
 
 struct Node {
     name: &'static str,
@@ -123,6 +130,41 @@ the official Rust compiler:
 
 [Boehm Demers Weiser GC (BDWGC)]: https://github.com/ivmai/bdwgc
 
+### The `Gc<T>` smart pointer
+
+Alloy provides a new smart pointer type, `Gc<T>`, which allows for shared
+ownership of a value of type `T` allocated in the heap and managed by a garbage
+collector. 
+
+```rust
+use std::gc::Gc;
+
+fn main() {
+    let a = Gc::new(123);
+}
+```
+
+This creates a garbage collected object containing the `u64` value `123`.
+
+### Interior mutability
+
+There is no way to mutate, or obtain a mutable reference (`&mut T`) to the
+contents of a `Gc<T>` once it has been allocated. This is because mutable
+references must not alias with any other references, and there is no way to know
+at compile-time whether there is only one `Gc` reference to the data.
+
+As with other shared ownership types in Rust, interior mutability (e.g.
+`RefCell`, `Mutex`, etc) must be used when mutating the contents inside a `Gc`:
+
+```rust
+fn main() {
+    let a = Gc::new(RefCell::new(123));
+    *a.borrow_mut() = 456; // Mutate the value inside the GC
+}
+```
+
+### The collector
+
 Alloy uses _conservative_ garbage collection. This means that it does not have
 any specific knowledge about where references to objects are located. Instead,
 Alloy will assume that an object is still alive if it can be reached by a value on
@@ -143,6 +185,89 @@ parallel (but not concurrent!)[^1] collection.
     same time as normal program (i.e. mutator) threads. A _parallel_ garbage
     collector simply means that the garbage collection workload can be
     parallelised across multiple worker threads.
+
+### Finalisation
+
+Finalisers are a common component of most tracing GCs which are used to run code
+for cleanup once an object dies (e.g.~closing a file handle or a database
+connection).
+
+Alloy takes a novel approach to finalisation compared to previous Rust GCs in
+that it uses existing drop methods as garbage collection finalisers, saving
+users the potentially error-prone task of manually writing both destructor and
+finaliser methods for GC managed objects.
+
+When a `Gc`'s underlying contents becomes unreachable, Alloy will call its
+finaliser, which means that `drop` is called on all the component types (in the
+same way that Rust automatically calls `drop` in an RAII context).
+
+#### Finalisation order
+
+To achieve Alloy's goal of making cyclic data structures easier to write, we
+made the decision to support the finalisation of objects with cycles. This means
+that no guarantees are made about the order in which finalisers are run. In
+order for this to be sound, you must not access other `Gc` objects from inside
+the `drop` method a `Gc`. Alloy ensures that this rule is followed by checking
+for potential misuses of `drop` at compile-time with _Finaliser
+Safety Analysis_ (FSA). Consider the following example:
+
+```rust
+struct Node {
+    next: Gc<usize>,
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        *self.next;
+    }
+}
+
+fn main {
+    let x = Gc::new(Node { Gc::new(123) });
+}
+```
+
+If at any point you try to create `Gc<Node>`, such as in `main` above, Alloy will throw the following
+compiler error:
+
+```
+error: `Node { next: Gc::new(123) }` cannot be safely finalized.
+  --> src/main.rs
+   |
+12 |     let x = Gc::new(Node { next: Gc::new(123) });
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^ has a drop method which cannot be safely finalized.
+...
+2  |         *self.next;
+   |          ---------
+   |          |
+   |          caused by the expression here in `fn drop(&mut)` because
+   |          it uses another `Gc` type.
+   |
+   = help: `Gc` finalizers are unordered, so this field may have already been dropped.
+     It is not safe to dereference.
+```
+
+As this suggests, Finaliser Safety Analysis is only applied to a given `drop`
+method if its parent type is used in a `Gc`.
+
+FSA is conservative and can rule out drop methods that a human can determine are
+in fact safe to be used as finalisers. For those situations you can `unsafe
+impl` the `FinalizerSafe` trait, which overrides FSA for a given type.
+
+#### Concurrency-safe finalisation
+
+Alloy runs finalisers on a dedicated finalisation thread. This is because
+finalisers can potentially run at any time during the execution of a Rust
+program, and if they try to acquire locks to shared data which is already being
+held, the program could crash or even deadlock. Finalising on a dedicated thread
+means that finalisation can wait safely until the user program no longer holds
+exclusive access. (See [Destructors, Finalizers, and Synchronization](https://dl.acm.org/doi/pdf/10.1145/604131.604153) for a more
+in-depth discussion of this issue).
+
+However, in order to safely finalise objects on a separate thread, finalisers
+must access data in a thread-safe way. Alloy ensures that this happens at
+compile-time by using finaliser safety analysis to check that only values marked
+`Send` or `Sync` are used inside a `drop` method when used during finalisation.
 
 ## Known limitations
 
