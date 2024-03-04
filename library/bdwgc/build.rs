@@ -10,6 +10,11 @@ const BDWGC_BUILD_DIR: &str = "lib";
 compile_error!("Requires x86_64 with 64 bit pointer width.");
 
 fn main() {
+    if env::var("GC_LINK_DYNAMIC").map_or(false, |v| v == "true") {
+        println!("cargo:rustc-link-lib=dylib=gc");
+        return;
+    }
+
     let out_dir = env::var("OUT_DIR").unwrap();
     let bdwgc_src = PathBuf::from(BDWGC_REPO);
 
