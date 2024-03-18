@@ -219,11 +219,6 @@ extern crate test;
 #[cfg(test)]
 mod testing;
 
-#[allow(unused_extern_crates)]
-#[allow(missing_docs)]
-#[unstable(feature = "gc", issue = "none")]
-pub extern crate bdwgc;
-
 // Module with internal macros used by other modules (needs to be included before other modules).
 #[macro_use]
 mod macros;
@@ -250,8 +245,6 @@ pub mod collections;
 #[cfg(all(not(no_rc), not(no_sync), not(no_global_oom_handling)))]
 pub mod ffi;
 pub mod fmt;
-#[unstable(feature = "gc", issue = "none")]
-pub mod gc;
 #[cfg(not(no_rc))]
 pub mod rc;
 pub mod slice;

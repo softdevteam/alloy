@@ -85,7 +85,7 @@ impl Thread {
             };
         }
 
-        let ret = alloc::bdwgc::GC_pthread_create(&mut native, &attr, thread_start, p as *mut _);
+        let ret = crate::bdwgc::GC_pthread_create(&mut native, &attr, thread_start, p as *mut _);
         // Note: if the thread creation fails and this assert fails, then p will
         // be leaked. However, an alternative design could cause double-free
         // which is clearly worse.
@@ -106,7 +106,7 @@ impl Thread {
                 // out of stack.
                 let _handler = stack_overflow::Handler::new();
 
-                debug_assert!(alloc::gc::thread_registered());
+                debug_assert!(crate::gc::thread_registered());
                 // Finally, let's run some code.
                 Box::from_raw(main as *mut Box<dyn FnOnce()>)();
             }
@@ -267,7 +267,7 @@ impl Thread {
 
     pub fn join(self) {
         unsafe {
-            let ret = alloc::bdwgc::GC_pthread_join(self.id, ptr::null_mut());
+            let ret = bdwgc::GC_pthread_join(self.id, ptr::null_mut());
             mem::forget(self);
             assert!(ret == 0, "failed to join thread: {}", io::Error::from_raw_os_error(ret));
         }
@@ -286,7 +286,7 @@ impl Thread {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let ret = unsafe { alloc::bdwgc::GC_pthread_detach(self.id) };
+        let ret = unsafe { bdwgc::GC_pthread_detach(self.id) };
         debug_assert_eq!(ret, 0);
     }
 }

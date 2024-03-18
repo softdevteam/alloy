@@ -8,7 +8,7 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-core = { path = "../core" }
+core = { version = "1.0.0", package = 'rustc-std-workspace-core' }
 compiler_builtins = { version = "0.1.10", features = ['rustc-dep-of-std'] }
 libc = { version = "0.2.148", default-features = false, features = ['rustc-dep-of-std'], public = true }
 
