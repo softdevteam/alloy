@@ -1,8 +1,8 @@
 // run-pass
 #![feature(gc)]
 
-use std::alloc::GcAllocator;
 use std::gc::Gc;
+use std::gc::GcAllocator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{thread, time};
 

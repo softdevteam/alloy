@@ -57,7 +57,6 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
- "bdwgc",
  "compiler_builtins",
  "core",
  "rand",
@@ -280,8 +279,8 @@ version = "0.1.0"
 dependencies = [
  "cmake",
  "compiler_builtins",
- "core",
  "libc",
+ "rustc-std-workspace-core",
 ]
 
 [[package]]

@@ -101,7 +101,7 @@ unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         // Rust's stack overflow handler will unregister and return if there is
         // no stack overflow, allowing the fault to "fall-through" to Boehm's
         // handler next time. The is not true in the reverse case.
-        alloc::gc::init();
+        crate::gc::init();
 
         sys::init(argc, argv, sigpipe);
 

@@ -9,7 +9,6 @@ autobenches = false
 edition = "2021"
 
 [dependencies]
-bdwgc = { path = "../bdwgc"}
 core = { path = "../core" }
 compiler_builtins = { version = "0.1.40", features = ['rustc-dep-of-std'] }
 
