@@ -32,9 +32,19 @@ pub struct ProfileStats {
     pub expl_freed_bytes_since_gc: usize,
 }
 
+#[repr(C)]
+pub struct FinalizerClosure {
+    pub finalizer: Option<unsafe extern "C" fn(*mut u8, *mut u8) -> u32>,
+    pub client_data: *mut u8,
+}
+
+unsafe impl Sync for FinalizerClosure {}
+
 #[link(name = "gc")]
 extern "C" {
     pub fn GC_malloc(nbytes: usize) -> *mut u8;
+
+    pub fn GC_finalized_malloc(nbytes: usize, closure: *const FinalizerClosure) -> *mut u8;
 
     pub fn GC_posix_memalign(mem_ptr: *mut *mut u8, align: usize, nbytes: usize) -> i32;
 
@@ -62,6 +72,10 @@ extern "C" {
 
     pub fn GC_gcollect();
 
+    pub fn GC_disable();
+
+    pub fn GC_enable();
+
     pub fn GC_thread_is_registered() -> u32;
 
     pub fn GC_pthread_create(
@@ -78,6 +92,8 @@ extern "C" {
     pub fn GC_pthread_detach(thread: libc::pthread_t) -> libc::c_int;
 
     pub fn GC_init();
+
+    pub fn GC_init_finalized_malloc();
 
     pub fn GC_set_warn_proc(level: *mut u8);
 

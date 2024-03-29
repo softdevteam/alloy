@@ -43,13 +43,15 @@ use core::{
     cmp::{self, Ordering},
     fmt,
     hash::{Hash, Hasher},
-    marker::{FinalizerSafe, PhantomData, Unsize},
-    mem::MaybeUninit,
+    marker::{FinalizerSafe, Unsize},
+    mem::{align_of_val_raw, transmute, MaybeUninit},
     ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
-    ptr::{self, drop_in_place, null_mut, NonNull},
+    ptr::{self, drop_in_place, NonNull},
 };
 
 pub use core::gc::*;
+
+use crate::{collections::VecDeque, sync::Mutex, thread};
 
 #[cfg(profile_gc)]
 use core::sync::atomic::{self, AtomicU64};
@@ -71,6 +73,33 @@ pub const MIN_ALIGN: usize = 8;
 
 #[derive(Debug)]
 pub struct GcAllocator;
+
+#[derive(Debug)]
+pub struct GcFinalizedAllocator;
+
+use bdwgc::FinalizerClosure;
+/// `GcFinalizedAllocator::allocate` takes a struct with two fields: a pointer to the fn pointer,
+/// and some additional metadata (which we don't use). Since this is re-used for every finalisable
+/// object we make this a single static value to save us from having to make a new struct for each
+/// object.
+static FINALIZER_CLOSURE: FinalizerClosure =
+    FinalizerClosure { finalizer: Some(finalizer_stub), client_data: ptr::null_mut() };
+
+unsafe impl Allocator for GcFinalizedAllocator {
+    #[inline]
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        match layout.size() {
+            0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
+            size => unsafe {
+                let ptr = bdwgc::GC_finalized_malloc(layout.size(), &FINALIZER_CLOSURE) as *mut u8;
+                let ptr = NonNull::new(ptr).ok_or(AllocError)?;
+                Ok(NonNull::slice_from_raw_parts(ptr, size))
+            },
+        }
+    }
+
+    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
+}
 
 unsafe impl GlobalAlloc for GcAllocator {
     #[inline]
@@ -165,6 +194,7 @@ impl GcAllocator {
 
 pub fn init() {
     unsafe { bdwgc::GC_init() }
+    unsafe { bdwgc::GC_init_finalized_malloc() }
 }
 
 pub fn suppress_warnings() {
@@ -175,11 +205,76 @@ pub fn thread_registered() -> bool {
     unsafe { bdwgc::GC_thread_is_registered() != 0 }
 }
 
+// Ring buffer of objects to be finalized.
+//
+// This is considered a root for the Gc because the 'to-be-finalised' objects are otherwise
+// unreachable and must be kept alive until their finaliser has run.
+static FIN_Q: Mutex<VecDeque<Gc<()>>> = Mutex::new(VecDeque::new());
+
+// Number of objects to grow the FIN_Q by each time it reaches capacity.
+pub const FIN_Q_BUFFER_SIZE: usize = 2048;
+
+// The function pointer passed down the queue to be executed on the finalization thread.
+//
+// This is not polymorphic because type information about the object inside the box is not known
+// during collection. However, it is enough to use the () type because we ensure that during
+// allocation that it points to the correct drop_in_place fn for the underlying value.
+type Finalizer = unsafe fn(*mut GcBox<()>);
+
+/// Called by the collector during the STW pause, where the collector holds the
+/// global allocator lock. This function therefore *must not* perform any heap allocation or the
+/// program would deadlock.
+unsafe extern "C" fn finalizer_stub(object: *mut u8, _meta: *mut u8) -> u32 {
+    let mut q = FIN_Q.lock().unwrap();
+    // The ring buffer must have enough space to push the object. If not, this would trigger a call
+    // to realloc which would deadlock.
+    assert!(q.len() != q.capacity());
+    q.push_back(Gc::from_inner(NonNull::new_unchecked(object as *mut GcBox<()>)));
+    drop(q);
+    return 1;
+}
+
+pub fn process_fin_q() {
+    loop {
+        let object = FIN_Q.lock().unwrap().pop_front();
+        if let Some(object) = object {
+            unsafe {
+                let mut finalizer = object.inner().finalizer;
+                if finalizer.is_none() {
+                    // This is only possible if the actual object has a non-word-sized alignment and
+                    // there is some padding in the block before the finalizer fn pointer. Since we
+                    // know that the BDWGC always callocs, we iterate the block until we find the
+                    // first non-zero word.
+                    let mut ptr: *mut GcBox<()> = NonNull::as_ptr(object.ptr);
+                    loop {
+                        ptr = ptr.offset(1);
+                        let cur = ptr::read(ptr::addr_of_mut!((*ptr).finalizer));
+                        if cur.is_some() {
+                            finalizer = cur;
+                            break;
+                        }
+                    }
+                }
+                // While this appears to call a function with an object of type `GcBox<()>`, the fn
+                // ptr points to the actual monomorphised drop glue for the object.
+                (finalizer.unwrap())(NonNull::as_ptr(object.ptr));
+            }
+        } else {
+            break;
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // GC API
 ////////////////////////////////////////////////////////////////////////////////
 
-struct GcBox<T: ?Sized>(T);
+struct GcBox<T: ?Sized> {
+    /// The finalizer fn pointer for `GcBox<T>`. `None` if needs_finalize<T> == false.
+    finalizer: Option<Finalizer>,
+    /// The object being garbage collected.
+    value: T,
+}
 
 /// A multi-threaded garbage collected pointer.
 ///
@@ -189,7 +284,6 @@ struct GcBox<T: ?Sized>(T);
 #[cfg_attr(not(test), rustc_diagnostic_item = "gc")]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
-    _phantom: PhantomData<T>,
 }
 
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
@@ -240,8 +334,19 @@ impl<T: ?Sized> Drop for Gc<T> {
 }
 
 impl<T: ?Sized> Gc<T> {
+    #[inline(always)]
+    fn inner(&self) -> &GcBox<T> {
+        // This unsafety is ok because while this Gc is alive we're guaranteed
+        // that the inner pointer is valid.
+        unsafe { self.ptr.as_ref() }
+    }
+
     unsafe fn from_inner(ptr: NonNull<GcBox<T>>) -> Self {
-        Self { ptr, _phantom: PhantomData }
+        Self { ptr }
+    }
+
+    unsafe fn from_ptr(ptr: *mut GcBox<T>) -> Self {
+        unsafe { Self::from_inner(NonNull::new_unchecked(ptr)) }
     }
 
     /// Get a `Gc<T>` from a raw pointer.
@@ -254,7 +359,17 @@ impl<T: ?Sized> Gc<T> {
     /// size and alignment of the originally allocated block.
     #[unstable(feature = "gc", issue = "none")]
     pub fn from_raw(raw: *const T) -> Gc<T> {
-        Gc { ptr: unsafe { NonNull::new_unchecked(raw as *mut GcBox<T>) }, _phantom: PhantomData }
+        let layout = Layout::new::<GcBox<()>>();
+        // Align the unsized value to the end of the GcBox.
+        // Because GcBox is repr(C), it will always be the last field in memory.
+        // SAFETY: since the only unsized types for T possible are slices, trait objects,
+        // and extern types, the input safety requirement is currently enough to
+        // satisfy the requirements of align_of_val_raw.
+        let raw_align = unsafe { align_of_val_raw(raw) };
+        let offset = layout.size() + layout.padding_needed_for(raw_align);
+        // Reverse the offset to find the original GcBox.
+        let box_ptr = unsafe { raw.byte_sub(offset) as *mut GcBox<T> };
+        unsafe { Self::from_ptr(box_ptr) }
     }
 
     /// Get a raw pointer to the underlying value `T`.
@@ -266,7 +381,8 @@ impl<T: ?Sized> Gc<T> {
     /// Get a raw pointer to the underlying value `T`.
     #[unstable(feature = "gc", issue = "none")]
     pub fn as_ptr(this: &Self) -> *const T {
-        this.ptr.as_ptr() as *const T
+        let ptr: *mut GcBox<T> = NonNull::as_ptr(this.ptr);
+        unsafe { ptr::addr_of_mut!((*ptr).value) }
     }
 
     #[unstable(feature = "gc", issue = "none")]
@@ -290,9 +406,7 @@ impl<T> Gc<T> {
     #[unstable(feature = "gc", issue = "none")]
     #[cfg_attr(not(test), rustc_diagnostic_item = "gc_ctor")]
     pub fn new(value: T) -> Self {
-        let mut gc = unsafe { Self::new_internal(value) };
-        gc.register_finalizer();
-        gc
+        unsafe { Self::new_internal(value) }
     }
 }
 
@@ -354,57 +468,54 @@ impl<T> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn new_unsynchronised(value: T) -> Self {
-        let mut gc = unsafe { Self::new_internal(value) };
-        gc.register_finalizer();
-        gc
+        unsafe { Self::new_internal(value) }
     }
 
     #[inline(always)]
     #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
-        unsafe { Self::from_inner(Box::leak(Box::new_in(GcBox(value), GcAllocator)).into()) }
-    }
-
-    fn register_finalizer(&mut self) {
         #[cfg(not(bootstrap))]
-        if !core::mem::needs_finalizer::<T>() {
-            return;
-        }
-
-        #[cfg(profile_gc)]
-        FINALIZERS_REGISTERED.fetch_add(1, atomic::Ordering::Relaxed);
-
-        unsafe extern "C" fn finalizer<T>(obj: *mut u8, _meta: *mut u8) {
-            unsafe {
-                drop_in_place(obj as *mut T);
-                #[cfg(profile_gc)]
-                FINALIZERS_COMPLETED.fetch_add(1, atomic::Ordering::Relaxed);
-            }
-        }
-
-        unsafe {
-            bdwgc::GC_register_finalizer_no_order(
-                self.ptr.as_ptr() as *mut u8,
-                Some(finalizer::<T>),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        }
-    }
-
-    #[unstable(feature = "gc", issue = "none")]
-    pub fn unregister_finalizer(&mut self) {
-        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
-        unsafe {
-            bdwgc::GC_register_finalizer(
-                ptr,
-                None,
-                ::core::ptr::null_mut(),
-                ::core::ptr::null_mut(),
-                ::core::ptr::null_mut(),
+        if !crate::mem::needs_finalizer::<T>() {
+            return Self::from_inner(
+                Box::leak(Box::new_in(GcBox { finalizer: None, value }, GcAllocator)).into(),
             );
         }
+
+        // Check ahead of time whether the finalizer queue is big enough for another element.
+        //
+        // holding the FIN_Q lock on a mutator thread is very dangerous because a GC can interrupt,
+        // try and re-acquire it and cause a deadlock, in this critical section we must disable GC.
+        bdwgc::GC_disable();
+        let mut q = FIN_Q.lock().unwrap();
+        let len = q.len();
+        if len == q.capacity() {
+            if len == 0 {
+                q.reserve(FIN_Q_BUFFER_SIZE);
+                // An empty queue with no capacity reserved can only happen if nothing has been
+                // pushed to it yet. It's time to spin up a finaliser thread as there will now be
+                // work to do.
+                thread::spawn(|| process_fin_q);
+            } else {
+                q.reserve(len);
+            }
+        }
+        drop(q);
+        bdwgc::GC_enable();
+
+        // By explicitly using type parameters here, we force rustc to compile monomorphised drop
+        // glue for `GcBox<T>`. This ensures that the fn pointer points to the correct drop method
+        // (or chain of drop methods) for the type `T`. After this, it's safe to cast it to the
+        // generic function pointer `Finalizer` and then pass that around inside the collector where
+        // the type of the object is unknown.
+        //
+        // Note that we reify a `drop_in_place` for `GcBox<T>` here and not just `T` -- even though
+        // `GcBox` has no drop implementation! This is because `T` is stored at some offset inside
+        // `GcBox`, and doing it this way means that we don't have to manually add these offsets
+        // later when we call the finaliser.
+        let finalizer = Some(transmute::<_, Finalizer>(drop_in_place::<GcBox<T>> as unsafe fn(_)));
+        Self::from_inner(
+            Box::leak(Box::new_in(GcBox { finalizer, value }, GcFinalizedAllocator)).into(),
+        )
     }
 }
 
@@ -503,11 +614,9 @@ impl<T: Send + Sync> Gc<MaybeUninit<T>> {
     #[unstable(feature = "gc", issue = "none")]
     pub unsafe fn assume_init(self) -> Gc<T> {
         let ptr = self.ptr.as_ptr() as *mut GcBox<MaybeUninit<T>>;
-        let mut gc = unsafe { Gc::from_inner((&mut *ptr).assume_init()) };
+        unsafe { Gc::from_inner((&mut *ptr).assume_init()) }
         // Now that T is initialized, we must make sure that it's dropped when
         // `GcBox<T>` is freed.
-        gc.register_finalizer();
-        gc
     }
 }
 
@@ -739,8 +848,9 @@ impl<T: ?Sized> fmt::Pointer for Gc<T> {
 impl<T: ?Sized> Deref for Gc<T> {
     type Target = T;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.ptr.as_ptr() as *const T) }
+        &self.inner().value
     }
 }
 
@@ -777,5 +887,22 @@ impl<T: ?Sized> core::borrow::Borrow<T> for Gc<T> {
 impl<T: ?Sized> AsRef<T> for Gc<T> {
     fn as_ref(&self) -> &T {
         &**self
+    }
+}
+
+#[cfg(profile_gc)]
+#[derive(Debug)]
+pub struct FinalizerInfo {
+    pub registered: u64,
+    pub completed: u64,
+}
+
+#[cfg(profile_gc)]
+impl FinalizerInfo {
+    pub fn finalizer_info() -> FinalizerInfo {
+        FinalizerInfo {
+            registered: FINALIZERS_REGISTERED.load(atomic::Ordering::Relaxed),
+            completed: FINALIZERS_COMPLETED.load(atomic::Ordering::Relaxed),
+        }
     }
 }

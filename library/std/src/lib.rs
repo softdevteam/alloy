@@ -321,6 +321,7 @@
 #![feature(hashmap_internals)]
 #![feature(ip)]
 #![feature(ip_in_core)]
+#![feature(layout_for_ptr)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_write_slice)]
