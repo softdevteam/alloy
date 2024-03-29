@@ -40,17 +40,14 @@
 use core::{
     alloc::{AllocError, Allocator, GlobalAlloc, Layout},
     any::Any,
-    cell::RefCell,
     cmp::{self, Ordering},
     fmt,
     hash::{Hash, Hasher},
     marker::{FinalizerSafe, PhantomData, Unsize},
-    mem::{transmute, MaybeUninit},
+    mem::MaybeUninit,
     ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver},
     ptr::{self, drop_in_place, null_mut, NonNull},
 };
-
-use crate::{sync::mpsc, sync::mpsc::Sender, thread};
 
 pub use core::gc::*;
 
@@ -377,15 +374,11 @@ impl<T> Gc<T> {
         #[cfg(profile_gc)]
         FINALIZERS_REGISTERED.fetch_add(1, atomic::Ordering::Relaxed);
 
-        // This function gets called by Boehm when an object becomes unreachable.
-        unsafe extern "C" fn finalizer<T>(object: *mut u8, _meta: *mut u8) {
+        unsafe extern "C" fn finalizer<T>(obj: *mut u8, _meta: *mut u8) {
             unsafe {
-                let cb = finalizer_callback::<T>;
-                let fo = FinalizableObj {
-                    callback: transmute(cb as unsafe extern "C" fn(*mut T)),
-                    object,
-                };
-                FINALIZER_QUEUE.with(|q| q.borrow().as_ref().unwrap().send(fo).unwrap());
+                drop_in_place(obj as *mut T);
+                #[cfg(profile_gc)]
+                FINALIZERS_COMPLETED.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
 
@@ -397,6 +390,37 @@ impl<T> Gc<T> {
                 null_mut(),
                 null_mut(),
             )
+        }
+    }
+
+    #[unstable(feature = "gc", issue = "none")]
+    pub fn unregister_finalizer(&mut self) {
+        let ptr = self.ptr.as_ptr() as *mut GcBox<T> as *mut u8;
+        unsafe {
+            bdwgc::GC_register_finalizer(
+                ptr,
+                None,
+                ::core::ptr::null_mut(),
+                ::core::ptr::null_mut(),
+                ::core::ptr::null_mut(),
+            );
+        }
+    }
+}
+
+#[cfg(profile_gc)]
+#[derive(Debug)]
+pub struct FinalizerInfo {
+    pub registered: u64,
+    pub completed: u64,
+}
+
+#[cfg(profile_gc)]
+impl FinalizerInfo {
+    pub fn finalizer_info() -> FinalizerInfo {
+        FinalizerInfo {
+            registered: FINALIZERS_REGISTERED.load(atomic::Ordering::Relaxed),
+            completed: FINALIZERS_COMPLETED.load(atomic::Ordering::Relaxed),
         }
     }
 }
@@ -753,55 +777,5 @@ impl<T: ?Sized> core::borrow::Borrow<T> for Gc<T> {
 impl<T: ?Sized> AsRef<T> for Gc<T> {
     fn as_ref(&self) -> &T {
         &**self
-    }
-}
-
-thread_local! {
-    pub static FINALIZER_QUEUE: RefCell<Option<FinalizerQueue>> = RefCell::new(None);
-}
-
-type FinalizerQueue = Sender<FinalizableObj>;
-
-#[derive(Debug)]
-pub struct FinalizableObj {
-    callback: FinalizerCallback,
-    object: *mut u8,
-}
-
-unsafe impl Send for FinalizableObj {}
-
-pub(crate) fn init_finalization_thread() {
-    let (sender, receiver) = mpsc::channel();
-    FINALIZER_QUEUE.with(|q| *q.borrow_mut() = Some(sender));
-
-    thread::spawn(move || {
-        for finalisable in receiver.iter() {
-            unsafe { (finalisable.callback)(finalisable.object) };
-        }
-    });
-}
-
-unsafe extern "C" fn finalizer_callback<T>(obj: *mut T) {
-    unsafe { drop_in_place(obj as *mut T) };
-    #[cfg(profile_gc)]
-    FINALIZERS_COMPLETED.fetch_add(1, atomic::Ordering::Relaxed);
-}
-
-type FinalizerCallback = unsafe extern "C" fn(data: *mut u8);
-
-#[cfg(profile_gc)]
-#[derive(Debug)]
-pub struct FinalizerInfo {
-    pub registered: u64,
-    pub completed: u64,
-}
-
-#[cfg(profile_gc)]
-impl FinalizerInfo {
-    pub fn finalizer_info() -> FinalizerInfo {
-        FinalizerInfo {
-            registered: FINALIZERS_REGISTERED.load(atomic::Ordering::Relaxed),
-            completed: FINALIZERS_COMPLETED.load(atomic::Ordering::Relaxed),
-        }
     }
 }
