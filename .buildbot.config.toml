@@ -9,6 +9,7 @@ tools = ["cargo", "rustdoc"]
 
 [llvm]
 assertions = true           # Turn on assertions in LLVM.
+download-ci-llvm = false
 
 [install]
 prefix = "build/rustgc-stage2-latest"
