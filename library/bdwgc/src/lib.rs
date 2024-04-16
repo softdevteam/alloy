@@ -79,6 +79,8 @@ extern "C" {
 
     pub fn GC_init();
 
+    pub fn GC_set_markers_count(count: usize);
+
     pub fn GC_set_warn_proc(level: *mut u8);
 
     pub fn GC_tls_rootset() -> *mut u8;
