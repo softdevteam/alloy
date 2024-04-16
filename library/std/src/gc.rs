@@ -164,6 +164,7 @@ impl GcAllocator {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub fn init() {
+    unsafe { bdwgc::GC_set_markers_count(1) }
     unsafe { bdwgc::GC_init() }
 }
 
