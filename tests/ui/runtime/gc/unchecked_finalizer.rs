@@ -19,7 +19,8 @@ impl Drop for UnsafeContainer {
 impl !FinalizerSafe for UnsafeContainer {}
 
 static FINALIZER_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATED_COUNT: usize = 100;
+static ALLOCATED_COUNT: usize = 10;
+static SLEEP_MAX: u64 = 8192; // in millis.
 
 fn foo() {
     for i in 0..ALLOCATED_COUNT {
@@ -36,10 +37,17 @@ fn main() {
     foo();
     GcAllocator::force_gc();
 
-    // Wait enough time for the finaliser thread to finish running.
-    thread::sleep(time::Duration::from_millis(100));
+    let mut count = FINALIZER_COUNT.load(atomic::Ordering::Relaxed);
+    let mut sleep_duration = 2;
+    while count < ALLOCATED_COUNT - 1 && sleep_duration <= SLEEP_MAX {
+        // Wait an acceptable amount of time for the finalizer thread to do its work.
+        thread::sleep(time::Duration::from_millis(sleep_duration));
+        sleep_duration = sleep_duration * 2;
+        count = FINALIZER_COUNT.load(atomic::Ordering::Relaxed);
+    }
 
     // On some platforms, the last object might not be finalised because it's
     // kept alive by a lingering reference.
-    assert!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed) >= ALLOCATED_COUNT -1);
+    assert!(count >= ALLOCATED_COUNT - 1);
+    assert!(count <= ALLOCATED_COUNT);
 }

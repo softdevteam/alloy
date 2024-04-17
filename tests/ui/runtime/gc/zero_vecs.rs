@@ -11,6 +11,7 @@ use std::sync::atomic::{self, AtomicUsize};
 use std::thread;
 use std::time;
 
+static SLEEP_MAX: u64 = 8192; // in millis.
 struct Finalizable(usize);
 
 impl Drop for Finalizable {
@@ -41,10 +42,17 @@ fn main() {
     test_pop(&mut v1);
     test_pop(&mut v1);
 
+    let expected = (capacity * 2) - 1;
     GcAllocator::force_gc();
 
-    // Wait enough time for the finaliser thread to finish running.
-    thread::sleep(time::Duration::from_millis(100));
+    let mut count = FINALIZER_COUNT.load(atomic::Ordering::Relaxed);
+    let mut sleep_duration = 2;
+    while count < expected && sleep_duration <= SLEEP_MAX {
+        // Wait an acceptable amount of time for the finalizer thread to do its work.
+        thread::sleep(time::Duration::from_millis(sleep_duration));
+        sleep_duration = sleep_duration * 2;
+        count = FINALIZER_COUNT.load(atomic::Ordering::Relaxed);
+    }
 
     // This tests that finalisation happened indirectly by trying to overwrite references to live GC
     // objects in order for Boehm to consider them dead. This is inherently flaky because we might
@@ -55,5 +63,5 @@ fn main() {
     // what matters is that *most* were, as this is enough to have confidence that popping an item
     // from a vector does not allow it to be indirectly kept alive from within the vector's backing
     // store.
-    assert!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed) >= (capacity * 2) -1);
+    assert!(FINALIZER_COUNT.load(atomic::Ordering::Relaxed) >= expected);
 }
