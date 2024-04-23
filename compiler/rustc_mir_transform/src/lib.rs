@@ -166,6 +166,7 @@ declare_passes! {
     mod remove_noop_landing_pads : RemoveNoopLandingPads;
     mod remove_place_mention : RemovePlaceMention;
     mod remove_storage_markers : RemoveStorageMarkers;
+    mod remove_elidable_drops : RemoveElidableDrops;
     mod remove_uninit_drops : RemoveUninitDrops;
     mod remove_unneeded_drops : RemoveUnneededDrops;
     mod remove_zsts : RemoveZsts;
@@ -720,6 +721,8 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             &simplify::SimplifyLocals::Final,
             &multiple_return_terminators::MultipleReturnTerminators,
             &large_enums::EnumSizeOpt { discrepancy: 128 },
+            // Must come before CriticalCallEdges to prevent LLVM basic block ordering errors.
+            &remove_elidable_drops::RemoveElidableDrops,
             // Some cleanup necessary at least for LLVM and potentially other codegen backends.
             &add_call_guards::CriticalCallEdges,
             // Cleanup for human readability, off by default.

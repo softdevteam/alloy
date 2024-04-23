@@ -7,6 +7,7 @@ use rustc_ast::Mutability;
 use rustc_hir as hir;
 use rustc_infer::infer::{RegionResolutionError, TyCtxtInferExt};
 use rustc_middle::ty::{self, AdtDef, Ty, TyCtxt, TypeVisitableExt, TypingMode};
+use rustc_span::sym;
 
 use crate::regions::InferCtxtRegionExt;
 use crate::traits::{self, FulfillmentError, ObligationCause};
@@ -65,6 +66,10 @@ pub fn type_allowed_to_implement_copy<'tcx>(
 
         _ => return Err(CopyImplementationError::NotAnAdt),
     };
+
+    if tcx.get_diagnostic_item(sym::gc).map_or(false, |gc| adt.did() == gc) {
+        return Ok(());
+    }
 
     all_fields_implement_trait(
         tcx,
