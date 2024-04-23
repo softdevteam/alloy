@@ -28,6 +28,7 @@
 #![feature(restricted_std)]
 #![feature(rustc_attrs)]
 #![feature(extend_one)]
+#![feature(gc)]
 #![recursion_limit = "256"]
 #![allow(internal_features)]
 #![deny(ffi_unwind_calls)]

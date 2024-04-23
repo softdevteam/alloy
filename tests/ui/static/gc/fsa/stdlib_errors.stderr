@@ -1,0 +1,47 @@
+error: `s` has a drop method which cannot be safely finalized.
+  --> $DIR/stdlib_errors.rs:31:13
+   |
+LL |       Gc::new(s);
+   |               ^
+  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
+  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
+   |
+   = note: is not safe to be run as a finalizer
+
+error: `t` has a drop method which cannot be safely finalized.
+  --> $DIR/stdlib_errors.rs:34:13
+   |
+LL |         println!("Boom {}", self.1.0); // deref `Unsafe`
+   |                             --------
+   |                             |
+   |                             caused by the expression in `fn drop(&mut)` here because
+   |                             it uses a type which is not safe to use in a finalizer.
+...
+LL |     Gc::new(t);
+   |     --------^- `Gc::new` requires that it implements the `FinalizeSafe` trait.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: `t` has a drop method which cannot be safely finalized.
+  --> $DIR/stdlib_errors.rs:34:13
+   |
+LL |       Gc::new(t);
+   |               ^
+  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
+  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
+   |
+   = note: is not safe to be run as a finalizer
+
+error: `u` has a drop method which cannot be safely finalized.
+  --> $DIR/stdlib_errors.rs:38:13
+   |
+LL |       Gc::new(u);
+   |               ^
+  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
+  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
+   |
+   = note: is not safe to be run as a finalizer
+
+error: aborting due to 4 previous errors
+

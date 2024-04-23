@@ -1549,6 +1549,18 @@ rustc_queries! {
     query drop_method_finalizer_elidable_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` contains types which might need finalizing", env.value }
     }
+    /// Query backing `Ty::is_finalizer_safe`.
+    query is_finalizer_safe_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` is `FinalizerSafe`", env.value }
+    }
+    /// Query backing `Ty::is_send`.
+    query is_send_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` is `Send`", env.value }
+    }
+    /// Query backing `Ty::is_sync`.
+    query is_sync_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` is `Sync`", env.value }
+    }
     /// Query backing `Ty::needs_drop`.
     query needs_drop_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` needs drop", env.value }

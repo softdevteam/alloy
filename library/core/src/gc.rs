@@ -47,3 +47,43 @@ impl<T: ?Sized> DerefMut for NonFinalizable<T> {
     }
 }
 
+/// A wrapper to prevent alloy from performing Finaliser Safety Analysis (FSA)
+/// on `T`.
+///
+/// FSA is a compile-time analysis performed by alloy which checks whether it is
+/// sound to call a type's drop method by a garbage collection finaliser. It
+/// works by looking at each line in T's drop method for potential soundness
+/// violations.
+///
+/// However, where this is too strict -- and the user knows T::drop to be sound
+/// -- `FinalizeUnchecked` can be used to opt-out of FSA.
+#[unstable(feature = "gc", issue = "none")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "FinalizeUnchecked")]
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct FinalizeUnchecked<T: ?Sized>(T);
+
+impl<T> FinalizeUnchecked<T> {
+    pub unsafe fn new(value: T) -> Self {
+        FinalizeUnchecked(value)
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> Deref for FinalizeUnchecked<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+#[unstable(feature = "gc", issue = "none")]
+impl<T: ?Sized> DerefMut for FinalizeUnchecked<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+#[cfg(not(bootstrap))]
+unsafe impl<T> core::marker::FinalizerSafe for FinalizeUnchecked<T> {}

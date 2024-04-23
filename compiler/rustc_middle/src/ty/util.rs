@@ -1207,6 +1207,18 @@ impl<'tcx> Ty<'tcx> {
         tcx.drop_method_finalizer_elidable_raw(typing_env.as_query_input(self))
     }
 
+    pub fn is_finalizer_safe(self, tcx: TyCtxt<'tcx>, typing_env: ty::TypingEnv<'tcx>) -> bool {
+        tcx.is_finalizer_safe_raw(typing_env.as_query_input(self))
+    }
+
+    pub fn is_send(self, tcx: TyCtxt<'tcx>, typing_env: ty::TypingEnv<'tcx>) -> bool {
+        tcx.is_send_raw(typing_env.as_query_input(self))
+    }
+
+    pub fn is_sync(self, tcx: TyCtxt<'tcx>, typing_env: ty::TypingEnv<'tcx>) -> bool {
+        tcx.is_sync_raw(typing_env.as_query_input(self))
+    }
+
     /// Fast path helper for testing if a type is `Freeze`.
     ///
     /// Returning true means the type is known to be `Freeze`. Returning

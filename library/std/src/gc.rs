@@ -31,25 +31,27 @@
 //! [`Cell`]: core::cell::Cell
 //! [`RefCell`]: core::cell::RefCell
 //! [send]: core::marker::Send
-//! [`Rc`]: core::rc::Rc
+//! [`Rc`]: crate::rc::Rc
 //! [`Deref`]: core::ops::Deref
 //! [mutability]: core::cell#introducing-mutability-inside-of-something-immutable
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
 
-use core::{
-    alloc::{AllocError, Allocator, GlobalAlloc, Layout},
-    any::Any,
-    cmp::{self, Ordering},
-    fmt,
-    hash::{Hash, Hasher},
-    marker::Unsize,
-    mem::{self, align_of_val_raw, size_of_val, MaybeUninit},
-    ops::{CoerceUnsized, Deref, DispatchFromDyn},
-    ptr::{self, drop_in_place, NonNull},
-};
-
+use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use core::any::Any;
+use core::cmp::{self, Ordering};
+use core::fmt;
 pub use core::gc::*;
+use core::hash::{Hash, Hasher};
+use core::marker::Unsize;
+use core::mem::{self, MaybeUninit, align_of_val_raw, size_of_val};
+use core::ops::{CoerceUnsized, Deref, DispatchFromDyn};
+use core::ptr::{self, NonNull, drop_in_place};
+#[cfg(not(no_global_oom_handling))]
+use core::slice::from_raw_parts_mut;
+
+#[cfg(not(no_global_oom_handling))]
+use crate::alloc::{Global, handle_alloc_error};
 
 ////////////////////////////////////////////////////////////////////////////////
 // BDWGC Allocator
@@ -168,12 +170,22 @@ struct GcBox<T: ?Sized> {
 /// See the [module-level documentation](./index.html) for more details.
 #[unstable(feature = "gc", issue = "none")]
 #[cfg_attr(all(not(bootstrap), not(test)), lang = "gc")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "gc")]
 pub struct Gc<T: ?Sized> {
     ptr: NonNull<GcBox<T>>,
 }
 
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync + Send> Sync for Gc<T> {}
+
+// In non-topological finalization, it is unsound to deref any fields of type
+// `Gc` from within a finalizer. This is because it could have been finalized
+// first, thus resulting in a dangling reference. Marking this as
+// `!FinalizerSafe` will give a nice compiler error if the user does so.
+//
+// FIXME: Make this conditional based on whether -DTOPOLOGICAL_FINALIZATION flag
+// is passed to the compiler.
+impl<T: ?Sized> !core::marker::FinalizerSafe for Gc<T> {}
 
 #[unstable(feature = "gc", issue = "none")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
@@ -268,7 +280,7 @@ impl<T: ?Sized> Gc<T> {
     }
 }
 
-impl<T: Send + Sync> Gc<T> {
+impl<T> Gc<T> {
     /// Constructs a new `Gc<T>`.
     ///
     /// # Examples
@@ -281,6 +293,7 @@ impl<T: Send + Sync> Gc<T> {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "gc_ctor")]
     pub fn new(value: T) -> Self {
         unsafe { Self::new_internal(value) }
     }

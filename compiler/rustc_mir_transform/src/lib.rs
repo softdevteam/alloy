@@ -122,6 +122,7 @@ declare_passes! {
     mod check_call_recursion : CheckCallRecursion, CheckDropRecursion;
     mod check_alignment : CheckAlignment;
     mod check_const_item_mutation : CheckConstItemMutation;
+    mod check_finalizers : CheckFinalizers;
     mod check_null : CheckNull;
     mod check_packed_ref : CheckPackedRef;
     mod check_undefined_transmutes : CheckUndefinedTransmutes;
@@ -444,7 +445,12 @@ fn mir_promoted(
     pm::run_passes(
         tcx,
         &mut body,
-        &[&promote_pass, &simplify::SimplifyCfg::PromoteConsts, &coverage::InstrumentCoverage],
+        &[
+            &promote_pass,
+            &simplify::SimplifyCfg::PromoteConsts,
+            &coverage::InstrumentCoverage,
+            &check_finalizers::CheckFinalizers,
+        ],
         Some(MirPhase::Analysis(AnalysisPhase::Initial)),
         pm::Optimizations::Allowed,
     );

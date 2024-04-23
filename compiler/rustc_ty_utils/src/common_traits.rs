@@ -30,6 +30,31 @@ fn drop_method_finalizer_elidable_raw<'tcx>(
     is_item_raw(tcx, query, LangItem::DropMethodFinalizerElidable)
 }
 
+fn is_finalizer_safe_raw<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>,
+) -> bool {
+    is_diagnostic_item_raw(tcx, query, sym::FinalizerSafe)
+}
+
+fn is_send_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+    is_diagnostic_item_raw(tcx, query, sym::Send)
+}
+
+fn is_sync_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+    is_diagnostic_item_raw(tcx, query, sym::Sync)
+}
+
+fn is_diagnostic_item_raw<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>,
+    item: Symbol,
+) -> bool {
+    let trait_def_id = tcx.get_diagnostic_item(item).unwrap();
+    let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(query.typing_env);
+    traits::type_known_to_meet_bound_modulo_regions(&infcx, param_env, query.value, trait_def_id)
+}
+
 fn is_item_raw<'tcx>(
     tcx: TyCtxt<'tcx>,
     query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>,
