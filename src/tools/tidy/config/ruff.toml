@@ -5,23 +5,6 @@ target-version = "py39"
 
 # Ignore all submodules
 extend-exclude = [
-    "src/doc/nomicon/",
-    "src/tools/cargo/",
-    "src/doc/reference/",
-    "src/doc/book/",
-    "src/doc/rust-by-example/",
-    "library/stdarch/",
-    "src/doc/rustc-dev-guide/",
-    "src/doc/edition-guide/",
-    "src/llvm-project/",
-    "src/doc/embedded-book/",
-    "library/backtrace/",
-    "src/tools/enzyme/",
-    "src/tools/rustc-perf/",
-    "src/gcc/",
-    "compiler/rustc_codegen_gcc",
-    "src/tools/clippy",
-    "src/tools/miri",
     # Hack: CI runs from a subdirectory under the main checkout
     "../src/doc/nomicon/",
     "../src/tools/cargo/",
@@ -33,6 +16,7 @@ extend-exclude = [
     "../src/doc/edition-guide/",
     "../src/llvm-project/",
     "../src/doc/embedded-book/",
+    "../src/bdwgc/",
     "../library/backtrace/",
     "../src/tools/enzyme/",
     "../src/tools/rustc-perf/",
