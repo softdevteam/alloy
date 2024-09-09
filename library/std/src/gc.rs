@@ -156,6 +156,10 @@ pub fn thread_registered() -> bool {
     unsafe { bdwgc::GC_thread_is_registered() != 0 }
 }
 
+pub fn keep_alive<T>(ptr: *mut T) {
+    unsafe { bdwgc::GC_keep_alive(ptr as *mut u8) }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // GC API
 ////////////////////////////////////////////////////////////////////////////////
@@ -214,11 +218,7 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 #[cfg(all(not(bootstrap), not(test)))]
 impl<T: ?Sized> Drop for Gc<T> {
     fn drop(&mut self) {
-        unsafe {
-            // asm macro clobber by default, so this is enough to introduce a
-            // barrier.
-            core::arch::asm!("/* {0} */", in(reg) self);
-        }
+        keep_alive(self);
     }
 }
 

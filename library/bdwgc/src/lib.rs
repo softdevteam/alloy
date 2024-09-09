@@ -76,4 +76,6 @@ extern "C" {
     pub fn GC_pthread_detach(thread: libc::pthread_t) -> libc::c_int;
 
     pub fn GC_init();
+
+    pub fn GC_keep_alive(ptr: *mut u8);
 }
