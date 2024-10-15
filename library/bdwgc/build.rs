@@ -31,8 +31,8 @@ fn main() {
     build
         .pic(true)
         .define("BUILD_SHARED_LIBS", "OFF")
-        .cflag("-DGC_ALWAYS_MULTITHREADED")
-        .cflag("-DGC_JAVA_FINALIZATION");
+        .define("enable_parallel_mark", "Off")
+        .cflag("-DGC_ALWAYS_MULTITHREADED");
 
     if env::var("ENABLE_GC_ASSERTIONS").map_or(false, |v| v == "true") {
         build.define("enable_gc_assertions", "ON");
