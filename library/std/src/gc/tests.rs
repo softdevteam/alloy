@@ -78,3 +78,37 @@ fn bdwgc_issue_589() {
         GlobalAlloc::dealloc(&allocator, raw_ptr, layout);
     }
 }
+#[test]
+fn test_unsized() {
+    let foo: Gc<[i32]> = Gc::new([1, 2, 3]);
+    assert_eq!(foo, foo.clone());
+}
+
+#[test]
+fn test_from_box() {
+    let b: Box<u32> = Box::new(123);
+    let g: Gc<u32> = Gc::from(b);
+
+    assert_eq!(*g, 123);
+}
+
+#[test]
+fn test_from_box_trait() {
+    use crate::fmt::Display;
+    use crate::string::ToString;
+
+    let b: Box<dyn Display> = Box::new(123);
+    let g: Gc<dyn Display> = Gc::from(b);
+
+    assert_eq!(g.to_string(), "123");
+}
+
+#[test]
+fn test_from_box_trait_zero_sized() {
+    use crate::fmt::Debug;
+
+    let b: Box<dyn Debug> = Box::new(());
+    let g: Gc<dyn Debug> = Gc::from(b);
+
+    assert_eq!(format!("{g:?}"), "()");
+}

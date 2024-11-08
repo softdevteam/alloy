@@ -169,6 +169,12 @@ struct GcBox<T: ?Sized> {
     value: T,
 }
 
+/// Calculate layout for `GcBox<T>` using the inner value's layout
+fn gcbox_layout_for_value_layout(layout: Layout) -> Layout {
+    // Calculate layout using the given value layout.
+    Layout::new::<GcBox<()>>().extend(layout).unwrap().0.pad_to_align()
+}
+
 /// A multi-threaded garbage collected pointer.
 ///
 /// See the [module-level documentation](./index.html) for more details.
@@ -238,6 +244,60 @@ impl<T: ?Sized> Gc<T> {
         unsafe { Self::from_inner(NonNull::new_unchecked(ptr)) }
     }
 
+    /// Allocates a `GcBox<T>` with sufficient space for a possibly-unsized inner value where the
+    /// value has the layout provided.
+    ///
+    /// The function `mem_to_gcbox` is called with the data pointer and must return back a
+    /// (potentially fat)-pointer for the `GcBox<T>`.
+    #[cfg(not(no_global_oom_handling))]
+    unsafe fn allocate_for_layout(
+        value_layout: Layout,
+        allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
+        mem_to_gcbox: impl FnOnce(*mut u8) -> *mut GcBox<T>,
+    ) -> *mut GcBox<T> {
+        let layout = gcbox_layout_for_value_layout(value_layout);
+        unsafe {
+            Gc::try_allocate_for_layout(value_layout, allocate, mem_to_gcbox)
+                .unwrap_or_else(|_| handle_alloc_error(layout))
+        }
+    }
+
+    /// Allocates an `GcBox<T>` with sufficient space for a possibly-unsized inner value where the
+    /// value has the layout provided, returning an error if allocation fails.
+    ///
+    /// The function `mem_to_gcbox` is called with the data pointer and must return back a
+    /// (potentially fat)-pointer for the `GcBox<T>`.
+    #[inline]
+    unsafe fn try_allocate_for_layout(
+        value_layout: Layout,
+        allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
+        mem_to_gcbox: impl FnOnce(*mut u8) -> *mut GcBox<T>,
+    ) -> Result<*mut GcBox<T>, AllocError> {
+        let layout = gcbox_layout_for_value_layout(value_layout);
+
+        // Allocate for the layout.
+        let ptr = allocate(layout)?;
+
+        // Initialize the GcBox
+        let inner = mem_to_gcbox(ptr.as_non_null_ptr().as_ptr());
+        unsafe {
+            debug_assert_eq!(Layout::for_value_raw(inner), layout);
+        }
+        Ok(inner)
+    }
+
+    #[cfg(not(no_global_oom_handling))]
+    unsafe fn allocate_for_ptr(ptr: *const T) -> *mut GcBox<T> {
+        // Allocate for the `GcBox<T>` using the given value.
+        unsafe {
+            Gc::<T>::allocate_for_layout(
+                Layout::for_value_raw(ptr),
+                |layout| GcAllocator.allocate(layout),
+                |mem| mem.with_metadata_of(ptr as *const GcBox<T>),
+            )
+        }
+    }
+
     /// Get a `Gc<T>` from a raw pointer.
     ///
     /// # Safety
@@ -259,6 +319,28 @@ impl<T: ?Sized> Gc<T> {
         // Reverse the offset to find the original GcBox.
         let box_ptr = unsafe { raw.byte_sub(offset) as *mut GcBox<T> };
         unsafe { Self::from_ptr(box_ptr) }
+    }
+
+    #[cfg(not(no_global_oom_handling))]
+    fn from_box<A: Allocator>(src: Box<T, A>) -> Gc<T> {
+        unsafe {
+            let value_size = size_of_val(&*src);
+            let ptr = Self::allocate_for_ptr(&*src);
+
+            // Copy value as bytes
+            ptr::copy_nonoverlapping(
+                core::ptr::addr_of!(*src) as *const u8,
+                ptr::addr_of_mut!((*ptr).value) as *mut u8,
+                value_size,
+            );
+
+            // Free the allocation without dropping its contents
+            let (bptr, alloc) = Box::into_raw_with_allocator(src);
+            let src = Box::from_raw_in(bptr as *mut mem::ManuallyDrop<T>, alloc.by_ref());
+            drop(src);
+
+            Self::from_ptr(ptr)
+        }
     }
 
     /// Get a raw pointer to the underlying value `T`.
@@ -510,6 +592,46 @@ impl<T: Default + Send + Sync> Default for Gc<T> {
     #[inline]
     fn default() -> Gc<T> {
         Gc::new(Default::default())
+    }
+}
+
+#[cfg(not(no_global_oom_handling))]
+impl<T> From<T> for Gc<T> {
+    /// Converts a `T` into an `Gc<T>`
+    ///
+    /// The conversion moves the value into a newly allocated `Gc`. It is equivalent to calling
+    /// `Gc::new(t)`.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #![feature(gc)]
+    /// # use std::gc::Gc;
+    /// let x = 5;
+    /// let arc = Gc::new(5);
+    ///
+    /// assert_eq!(Gc::from(x), arc);
+    /// ```
+    fn from(t: T) -> Self {
+        Gc::new(t)
+    }
+}
+
+#[cfg(not(no_global_oom_handling))]
+impl<T: ?Sized, A: Allocator> From<Box<T, A>> for Gc<T> {
+    /// Move a boxed object to a new, garbage-collected, allocation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #![feature(gc)]
+    /// # use std::gc::Gc;
+    /// let original: Box<i32> = Box::new(1);
+    /// let shared: Gc<i32> = Gc::from(original);
+    /// assert_eq!(1, *shared);
+    /// ```
+    #[inline]
+    fn from(v: Box<T, A>) -> Gc<T> {
+        Gc::from_box(v)
     }
 }
 
