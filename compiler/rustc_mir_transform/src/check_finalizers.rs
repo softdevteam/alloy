@@ -36,10 +36,10 @@ enum FinalizerErrorKind<'tcx> {
 
 impl<'tcx> FinalizerErrorKind<'tcx> {
     fn emit(&self, cx: &FinalizationCtxt<'tcx>) {
-        let arg_sp = cx.tcx.sess.source_map().span_to_snippet(cx.arg).unwrap();
+        let snippet = cx.tcx.sess.source_map().span_to_snippet(cx.arg_span).unwrap();
         let mut err = cx.tcx.sess.psess.dcx.struct_span_err(
-            cx.arg,
-            format!("`{arg_sp}` has a drop method which cannot be safely finalized."),
+            cx.arg_span,
+            format!("`{snippet}` has a drop method which cannot be safely finalized."),
         );
         match self {
             Self::NotSendAndSync(span) => {
@@ -56,7 +56,7 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                     );
                     err.span_label(*span, "it uses another `Gc` type.");
                     err.span_label(
-                        cx.ctor,
+                        cx.fn_span,
                         format!("Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised."),
                     );
                 } else {
@@ -70,7 +70,7 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                     );
                     err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
                     err.span_label(
-                        cx.ctor,
+                        cx.fn_span,
                         format!(
                             "`Gc::new` requires that {ty} implements the `FinalizeSafe` trait.",
                         ),
@@ -86,10 +86,13 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                 err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
             }
             Self::MissingFnDef => {
-                err.span_label(cx.arg, "contains a function call which may be unsafe.");
+                err.span_label(cx.arg_span, "contains a function call which may be unsafe.");
             }
             Self::UnknownTraitObject => {
-                err.span_label(cx.arg, "contains a trait object whose implementation is unknown.");
+                err.span_label(
+                    cx.arg_span,
+                    "contains a trait object whose implementation is unknown.",
+                );
             }
             Self::UnsoundExternalDropGlue(span) => {
                 err.span_label(*span, "is not safe to be run as a finalizer");
@@ -101,60 +104,52 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
 
 impl<'tcx> MirPass<'tcx> for CheckFinalizers {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-        let ctor = tcx.get_diagnostic_item(sym::gc_ctor);
-
-        if ctor.is_none() {
-            return;
-        }
-
-        let ctor_did = ctor.unwrap();
         let param_env = tcx.param_env(body.source.def_id());
 
-        for block in body.basic_blocks.iter() {
-            let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, source_info }) =
-                &block.terminator
-            else {
-                continue;
-            };
-            let ty::FnDef(fn_did, ..) = func.ty(body, tcx).kind() else {
-                continue;
-            };
-            if *fn_did != ctor_did {
-                // Skip over anything that's not `Gc::new`.
-                continue;
-            }
-            let arg = match &args[0].node {
-                Operand::Copy(place) | Operand::Move(place) => {
-                    body.local_decls()[place.local].source_info.span
+        for (func, args, source_info) in
+            body.basic_blocks.iter().filter_map(|bb| match &bb.terminator().kind {
+                TerminatorKind::Call { func, args, .. } => {
+                    Some((func, args, bb.terminator().source_info))
                 }
-                Operand::Constant(con) => con.span,
+                _ => None,
+            })
+        {
+            let ty::FnDef(fn_did, ..) = func.ty(body, tcx).kind() else {
+                // We only care about explicit function calls.
+                continue;
             };
-
-            let mut fctxt = FinalizationCtxt { ctor: source_info.span, arg, tcx, param_env };
-            let arg_ty = args[0].node.ty(body, tcx);
-            let res = fctxt.check_drop_glue(arg_ty);
-            if let Err(errs) = res {
-                errs.into_iter().for_each(|e| e.emit(&fctxt))
+            if !tcx.has_attr(*fn_did, sym::rustc_fsa_entry_point) {
+                // Skip over any call that's not marked #[rustc_fsa_entry_point]
+                continue;
             }
+
+            assert_eq!(args.len(), 1);
+            let arg_ty = args[0].node.ty(body, tcx);
+            FinalizationCtxt::new(source_info.span, args[0].span, tcx, param_env)
+                .check_drop_glue(arg_ty);
         }
     }
 }
 
 struct FinalizationCtxt<'tcx> {
-    ctor: Span,
-    arg: Span,
+    fn_span: Span,
+    arg_span: Span,
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
 }
 
 impl<'tcx> FinalizationCtxt<'tcx> {
-    fn check_drop_glue(&mut self, ty: Ty<'tcx>) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
+    fn new(fn_span: Span, arg_span: Span, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> Self {
+        Self { fn_span, arg_span, tcx, param_env }
+    }
+
+    fn check_drop_glue(&self, ty: Ty<'tcx>) {
         if !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) || self.is_finalize_unchecked(ty) {
-            return Ok(());
+            return;
         }
 
         if self.is_send(ty) && self.is_sync(ty) && self.is_finalizer_safe(ty) {
-            return Ok(());
+            return;
         }
 
         let mut errors = Vec::new();
@@ -228,7 +223,7 @@ impl<'tcx> FinalizationCtxt<'tcx> {
                 _ => (),
             }
         }
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        errors.into_iter().for_each(|e| e.emit(&self));
     }
 
     fn drop_mir<'a>(&self, ty: Ty<'tcx>) -> &'a Body<'tcx> {

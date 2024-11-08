@@ -375,7 +375,7 @@ impl<T> Gc<T> {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "gc", issue = "none")]
-    #[cfg_attr(not(test), rustc_diagnostic_item = "gc_ctor")]
+    #[cfg_attr(not(bootstrap), rustc_fsa_entry_point)]
     pub fn new(value: T) -> Self {
         unsafe { Self::new_internal(value) }
     }
@@ -630,6 +630,7 @@ impl<T: ?Sized, A: Allocator> From<Box<T, A>> for Gc<T> {
     /// assert_eq!(1, *shared);
     /// ```
     #[inline]
+    #[cfg_attr(not(bootstrap), rustc_fsa_entry_point)]
     fn from(v: Box<T, A>) -> Gc<T> {
         Gc::from_box(v)
     }

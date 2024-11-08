@@ -1020,6 +1020,11 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         rustc_force_inline, Normal, template!(Word, NameValueStr: "reason"), WarnFollowing, EncodeCrossCrate::Yes,
         "#[rustc_force_inline] forces a free function to be inlined"
     ),
+    rustc_attr!(
+        rustc_fsa_entry_point, Normal, template!(Word), ErrorFollowing,
+        EncodeCrossCrate::Yes,
+        "#[rustc_fsa_entry_point] is used to determine when types should be checked by finaliser safety analysis."
+    ),
 
     // ==========================================================================
     // Internal attributes, Testing:
