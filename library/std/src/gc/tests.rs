@@ -112,3 +112,29 @@ fn test_from_box_trait_zero_sized() {
 
     assert_eq!(format!("{g:?}"), "()");
 }
+
+#[test]
+fn test_from_box_slice() {
+    let s = vec![1, 2, 3].into_boxed_slice();
+    let g: Gc<[u32]> = Gc::from(s);
+
+    assert_eq!(&g[..], [1, 2, 3]);
+}
+
+#[test]
+fn test_from_box_str() {
+    use crate::string::String;
+
+    let s = String::from("foo").into_boxed_str();
+    let g: Gc<str> = Gc::from(s);
+
+    assert_eq!(&g[..], "foo");
+}
+
+#[test]
+fn test_from_vec() {
+    let v = vec![1, 2, 3];
+    let g: Gc<[u32]> = Gc::from(v);
+
+    assert_eq!(&g[..], [1, 2, 3]);
+}
