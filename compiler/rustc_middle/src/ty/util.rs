@@ -1183,7 +1183,16 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn is_gc(self, tcx: TyCtxt<'tcx>) -> bool {
         if let ty::Adt(adt_def, ..) = self.kind() {
-            return tcx.get_diagnostic_item(sym::gc).map_or(false, |gc| adt_def.did() == gc);
+            return tcx.get_diagnostic_item(sym::gc).map_or(false, |t| adt_def.did() == t);
+        }
+        return false;
+    }
+
+    pub fn is_finalize_unchecked(self, tcx: TyCtxt<'tcx>) -> bool {
+        if let ty::Adt(adt_def, ..) = self.kind() {
+            return tcx
+                .get_diagnostic_item(sym::FinalizeUnchecked)
+                .map_or(false, |t| adt_def.did() == t);
         }
         return false;
     }

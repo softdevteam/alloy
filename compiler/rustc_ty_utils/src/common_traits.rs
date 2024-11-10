@@ -69,6 +69,9 @@ pub(crate) fn provide(providers: &mut Providers) {
     *providers = Providers {
         is_copy_raw,
         is_sized_raw,
+        is_send_raw,
+        is_sync_raw,
+        is_finalizer_safe_raw,
         is_freeze_raw,
         is_unpin_raw,
         drop_method_finalizer_elidable_raw,

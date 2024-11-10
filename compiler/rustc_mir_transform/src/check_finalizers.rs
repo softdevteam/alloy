@@ -9,8 +9,6 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use rustc_trait_selection::infer::InferCtxtExt as _;
-use rustc_trait_selection::infer::TyCtxtInferExt;
 
 #[derive(PartialEq)]
 pub struct CheckFinalizers;
@@ -35,10 +33,10 @@ enum FinalizerErrorKind<'tcx> {
 }
 
 impl<'tcx> FinalizerErrorKind<'tcx> {
-    fn emit(&self, cx: &FinalizationCtxt<'tcx>) {
-        let snippet = cx.tcx.sess.source_map().span_to_snippet(cx.arg_span).unwrap();
-        let mut err = cx.tcx.sess.psess.dcx.struct_span_err(
-            cx.arg_span,
+    fn emit(&self, ecx: &FSAEntryPointCtxt<'tcx>) {
+        let snippet = ecx.tcx.sess.source_map().span_to_snippet(ecx.arg_span).unwrap();
+        let mut err = ecx.tcx.sess.psess.dcx.struct_span_err(
+            ecx.arg_span,
             format!("`{snippet}` has a drop method which cannot be safely finalized."),
         );
         match self {
@@ -49,14 +47,14 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
             }
             Self::NotFinalizerSafe(ty, span) => {
                 // Special-case `Gc` types for more friendly errors
-                if cx.is_gc(*ty) {
+                if ty.is_gc(ecx.tcx) {
                     err.span_label(
                         *span,
                         "caused by the expression here in `fn drop(&mut)` because",
                     );
                     err.span_label(*span, "it uses another `Gc` type.");
                     err.span_label(
-                        cx.fn_span,
+                        ecx.fn_span,
                         format!("Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised."),
                     );
                 } else {
@@ -70,7 +68,7 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                     );
                     err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
                     err.span_label(
-                        cx.fn_span,
+                        ecx.fn_span,
                         format!(
                             "`Gc::new` requires that {ty} implements the `FinalizeSafe` trait.",
                         ),
@@ -86,11 +84,11 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                 err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
             }
             Self::MissingFnDef => {
-                err.span_label(cx.arg_span, "contains a function call which may be unsafe.");
+                err.span_label(ecx.arg_span, "contains a function call which may be unsafe.");
             }
             Self::UnknownTraitObject => {
                 err.span_label(
-                    cx.arg_span,
+                    ecx.arg_span,
                     "contains a trait object whose implementation is unknown.",
                 );
             }
@@ -106,6 +104,14 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let param_env = tcx.param_env(body.source.def_id());
 
+        if in_std_lib(tcx, body.source.def_id()) {
+            // Do not check for FSA entry points if we're compiling the standard library. This is
+            // because in practice, the only entry points would be `Gc` constructor calls in the
+            // implementation of the `Gc` API (`library/std/gc.rs`), and we don't want to check
+            // these.
+            return;
+        }
+
         for (func, args, source_info) in
             body.basic_blocks.iter().filter_map(|bb| match &bb.terminator().kind {
                 TerminatorKind::Call { func, args, .. } => {
@@ -114,46 +120,95 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
                 _ => None,
             })
         {
-            let ty::FnDef(fn_did, ..) = func.ty(body, tcx).kind() else {
-                // We only care about explicit function calls.
+            let fn_ty = func.ty(body, tcx);
+            let ty::FnDef(fn_did, substs) = fn_ty.kind() else {
+                // We don't care about function pointers, but we'll assert here incase there's
+                // another kind of type we haven't accounted for.
+                assert!(fn_ty.is_fn_ptr());
                 continue;
             };
-            if !tcx.has_attr(*fn_did, sym::rustc_fsa_entry_point) {
+
+            // The following is a gross hack for performance reasons!
+            //
+            // Calls in MIR which are trait method invocations point to the DefId
+            // of the trait definition, and *not* the monomorphized concrete method definition.
+            // This is a problem for us, because e.g. the `Gc::from` function definition will have the
+            // `#[rustc_fsa_entry_point]` attribute, but the generic `T::from` definition will
+            // not. This is a problem for us, because naively it means we must monomorphize
+            // every single function call just to see if it points to a function somewhere inside
+            // the `Gc` library with the desired attribute. This is painfully slow!
+            //
+            // To get around this, we can ignore all calls if they do not do both of the following:
+            //
+            //      a) point to some function in the standard library.
+            //
+            //      b) the generic substitution for the return type (which is readily available) is
+            //      not a `Gc<T>`. In practice, this means we only actually end up having to
+            //      resolve fn calls to their precise instance when they actually are some kind
+            //      of `Gc` constructor (we still check for the attribute later on to make sure
+            //      though!).
+            if !in_std_lib(tcx, *fn_did) || !fn_ty.fn_sig(tcx).output().skip_binder().is_gc(tcx) {
+                continue;
+            }
+            let mono_fn_did = ty::Instance::resolve(tcx, param_env, *fn_did, substs)
+                .unwrap()
+                .unwrap()
+                .def
+                .def_id();
+            if !tcx.has_attr(mono_fn_did, sym::rustc_fsa_entry_point) {
                 // Skip over any call that's not marked #[rustc_fsa_entry_point]
                 continue;
             }
 
             assert_eq!(args.len(), 1);
             let arg_ty = args[0].node.ty(body, tcx);
-            FinalizationCtxt::new(source_info.span, args[0].span, tcx, param_env)
-                .check_drop_glue(arg_ty);
+            FSAEntryPointCtxt::new(source_info.span, args[0].span, arg_ty, tcx, param_env)
+                .check_drop_glue();
         }
     }
 }
 
-struct FinalizationCtxt<'tcx> {
+/// The central data structure for performing FSA. Constructed and used each time a new FSA
+/// entry-point is found in the MIR (e.g. a call to `Gc::new` or `Gc::from`).
+struct FSAEntryPointCtxt<'tcx> {
+    /// Span of the entry point.
     fn_span: Span,
+    /// Span of the argument to the entry point.
     arg_span: Span,
+    /// Type of the arg to the entry point. This could be deduced from the field above but it is
+    /// inconvenient.
+    arg_ty: Ty<'tcx>,
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
 }
 
-impl<'tcx> FinalizationCtxt<'tcx> {
-    fn new(fn_span: Span, arg_span: Span, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> Self {
-        Self { fn_span, arg_span, tcx, param_env }
+impl<'tcx> FSAEntryPointCtxt<'tcx> {
+    fn new(
+        fn_span: Span,
+        arg_span: Span,
+        arg_ty: Ty<'tcx>,
+        tcx: TyCtxt<'tcx>,
+        param_env: ParamEnv<'tcx>,
+    ) -> Self {
+        Self { fn_span, arg_span, arg_ty, tcx, param_env }
     }
 
-    fn check_drop_glue(&self, ty: Ty<'tcx>) {
-        if !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) || self.is_finalize_unchecked(ty) {
+    fn check_drop_glue(&self) {
+        if !self.arg_ty.needs_finalizer(self.tcx, self.param_env)
+            || self.arg_ty.is_finalize_unchecked(self.tcx)
+        {
             return;
         }
 
-        if self.is_send(ty) && self.is_sync(ty) && self.is_finalizer_safe(ty) {
+        if self.arg_ty.is_send(self.tcx, self.param_env)
+            && self.arg_ty.is_sync(self.tcx, self.param_env)
+            && self.arg_ty.is_finalizer_safe(self.tcx, self.param_env)
+        {
             return;
         }
 
         let mut errors = Vec::new();
-        let mut tys = vec![ty];
+        let mut tys = vec![self.arg_ty];
 
         loop {
             let Some(ty) = tys.pop() else {
@@ -192,7 +247,7 @@ impl<'tcx> FinalizationCtxt<'tcx> {
                         tys.push(f)
                     }
                 }
-                ty::Adt(def, substs) if !self.is_copy(ty) => {
+                ty::Adt(def, substs) if !ty.is_copy_modulo_regions(self.tcx, self.param_env) => {
                     if def.is_box() {
                         // This is a special case because Box has an empty drop
                         // method which is filled in later by the compiler.
@@ -200,7 +255,7 @@ impl<'tcx> FinalizationCtxt<'tcx> {
                     }
                     if def.has_dtor(self.tcx) {
                         match DropMethodChecker::new(self.drop_mir(ty), self).check() {
-                            Err(_) if self.in_std_lib(def.did()) => {
+                            Err(_) if in_std_lib(self.tcx, def.did()) => {
                                 errors.push(FinalizerErrorKind::UnsoundExternalDropGlue(
                                     self.drop_mir(ty).span,
                                 ));
@@ -235,68 +290,6 @@ impl<'tcx> FinalizationCtxt<'tcx> {
         let s = self.tcx.mk_args_trait(ty, substs.into_iter());
         let i = ty::Instance::resolve(self.tcx, self.param_env, df, s).unwrap().unwrap();
         self.tcx.instance_mir(i.def)
-    }
-
-    fn in_std_lib(&self, did: DefId) -> bool {
-        let alloc_crate =
-            self.tcx.get_diagnostic_item(sym::Rc).map_or(false, |x| did.krate == x.krate);
-        let core_crate =
-            self.tcx.get_diagnostic_item(sym::RefCell).map_or(false, |x| did.krate == x.krate);
-        let std_crate =
-            self.tcx.get_diagnostic_item(sym::Mutex).map_or(false, |x| did.krate == x.krate);
-        alloc_crate || std_crate || core_crate
-    }
-
-    fn is_finalizer_safe(&self, ty: Ty<'tcx>) -> bool {
-        let t = self.tcx.get_diagnostic_item(sym::FinalizerSafe).unwrap();
-        return self
-            .tcx
-            .infer_ctxt()
-            .build()
-            .type_implements_trait(t, [ty], self.param_env)
-            .must_apply_modulo_regions();
-    }
-
-    fn is_copy(&self, ty: Ty<'tcx>) -> bool {
-        ty.is_copy_modulo_regions(self.tcx, self.param_env)
-    }
-
-    fn is_send(&self, ty: Ty<'tcx>) -> bool {
-        let t = self.tcx.get_diagnostic_item(sym::Send).unwrap();
-        return self
-            .tcx
-            .infer_ctxt()
-            .build()
-            .type_implements_trait(t, [ty], self.param_env)
-            .must_apply_modulo_regions();
-    }
-
-    fn is_sync(&self, ty: Ty<'tcx>) -> bool {
-        let t = self.tcx.get_diagnostic_item(sym::Sync).unwrap();
-        return self
-            .tcx
-            .infer_ctxt()
-            .build()
-            .type_implements_trait(t, [ty], self.param_env)
-            .must_apply_modulo_regions();
-    }
-
-    fn is_gc(&self, ty: Ty<'tcx>) -> bool {
-        if let ty::Adt(def, ..) = ty.kind() {
-            if def.did() == self.tcx.get_diagnostic_item(sym::gc).unwrap() {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn is_finalize_unchecked(&self, ty: Ty<'tcx>) -> bool {
-        if let ty::Adt(def, ..) = ty.kind() {
-            if def.did() == self.tcx.get_diagnostic_item(sym::FinalizeUnchecked).unwrap() {
-                return true;
-            }
-        }
-        return false;
     }
 
     /// For a given projection, extract the 'useful' type which needs checking for finalizer safety.
@@ -340,16 +333,16 @@ impl<'tcx> FinalizationCtxt<'tcx> {
     }
 }
 
-struct DropMethodChecker<'a, 'tcx> {
-    body: &'a Body<'tcx>,
-    cx: &'a FinalizationCtxt<'tcx>,
+struct DropMethodChecker<'ecx, 'tcx> {
+    body: &'ecx Body<'tcx>,
+    ecx: &'ecx FSAEntryPointCtxt<'tcx>,
     errors: Vec<FinalizerErrorKind<'tcx>>,
     error_locs: FxHashSet<Location>,
 }
 
-impl<'a, 'tcx> DropMethodChecker<'a, 'tcx> {
-    fn new(body: &'a Body<'tcx>, fctxt: &'a FinalizationCtxt<'tcx>) -> Self {
-        Self { body, cx: fctxt, errors: Vec::new(), error_locs: FxHashSet::default() }
+impl<'ecx, 'tcx> DropMethodChecker<'ecx, 'tcx> {
+    fn new(body: &'ecx Body<'tcx>, ecx: &'ecx FSAEntryPointCtxt<'tcx>) -> Self {
+        Self { body, ecx, errors: Vec::new(), error_locs: FxHashSet::default() }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
@@ -367,7 +360,7 @@ impl<'a, 'tcx> DropMethodChecker<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
+impl<'ecx, 'tcx> Visitor<'tcx> for DropMethodChecker<'ecx, 'tcx> {
     fn visit_projection(
         &mut self,
         place_ref: PlaceRef<'tcx>,
@@ -379,10 +372,12 @@ impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
         // checked.
         for ty in place_ref
             .iter_projections()
-            .filter_map(|(base, elem)| self.cx.extract_projection_ty(self.body, base, elem))
+            .filter_map(|(base, elem)| self.ecx.extract_projection_ty(self.body, base, elem))
         {
             let span = self.body.source_info(location).span;
-            if !self.cx.is_send(ty) || !self.cx.is_sync(ty) {
+            if !ty.is_send(self.ecx.tcx, self.ecx.param_env)
+                || !ty.is_sync(self.ecx.tcx, self.ecx.param_env)
+            {
                 self.push_error(location, FinalizerErrorKind::NotSendAndSync(span));
                 break;
             }
@@ -397,7 +392,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
                 self.push_error(location, FinalizerErrorKind::UnsoundReference(ty, span));
                 break;
             }
-            if !self.cx.is_finalizer_safe(ty) {
+            if !ty.is_finalizer_safe(self.ecx.tcx, self.ecx.param_env) {
                 self.push_error(location, FinalizerErrorKind::NotFinalizerSafe(ty, span));
                 break;
             }
@@ -410,7 +405,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
             for caller_arg in self.body.args_iter() {
                 let recv_ty = self.body.local_decls()[caller_arg].ty;
                 for arg in args.iter() {
-                    let arg_ty = arg.node.ty(self.body, self.cx.tcx);
+                    let arg_ty = arg.node.ty(self.body, self.ecx.tcx);
                     if arg_ty == recv_ty {
                         // Currently, we do not recurse into function calls
                         // to see whether they access `!FinalizerSafe`
@@ -451,4 +446,11 @@ impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
             }
         }
     }
+}
+
+fn in_std_lib<'tcx>(tcx: TyCtxt<'tcx>, did: DefId) -> bool {
+    let alloc_crate = tcx.get_diagnostic_item(sym::Rc).map_or(false, |x| did.krate == x.krate);
+    let core_crate = tcx.get_diagnostic_item(sym::RefCell).map_or(false, |x| did.krate == x.krate);
+    let std_crate = tcx.get_diagnostic_item(sym::Mutex).map_or(false, |x| did.krate == x.krate);
+    alloc_crate || std_crate || core_crate
 }
