@@ -1,72 +1,72 @@
-error: `HasRef::default()` has a drop method which cannot be safely finalized.
-  --> $DIR/references.rs:25:22
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/references.rs:25:13
    |
 LL |         use_val(self.a); // should fail
    |                 ------
    |                 |
-   |                 caused by the expression here in `fn drop(&mut)` because
-   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
 ...
-LL |     std::gc::Gc::new(HasRef::default());
-   |                      ^^^^^^^^^^^^^^^^^
+LL |     Gc::new(HasRef::default());
+   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
    = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
-error: `HasRef::default()` has a drop method which cannot be safely finalized.
-  --> $DIR/references.rs:25:22
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/references.rs:25:13
    |
 LL |         use_val(self.c[0]); // should fail
    |                 ---------
    |                 |
-   |                 caused by the expression in `fn drop(&mut)` here because
-   |                 it uses a type which is not safe to use in a finalizer.
+   |                 a finalizer cannot safely use this `[&u64; 2]`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
 ...
-LL |     std::gc::Gc::new(HasRef::default());
-   |     -----------------^^^^^^^^^^^^^^^^^- `Gc::new` requires that [&u64; 2] implements the `FinalizeSafe` trait.
+LL |     Gc::new(HasRef::default());
+   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `FinalizerSafe`.
 
-error: `HasRef::default()` has a drop method which cannot be safely finalized.
-  --> $DIR/references.rs:25:22
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/references.rs:25:13
    |
 LL |         let a = self.a; // should fail
    |                 ------
    |                 |
-   |                 caused by the expression here in `fn drop(&mut)` because
-   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
 ...
-LL |     std::gc::Gc::new(HasRef::default());
-   |                      ^^^^^^^^^^^^^^^^^
+LL |     Gc::new(HasRef::default());
+   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
    = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
-error: `HasRef::default()` has a drop method which cannot be safely finalized.
-  --> $DIR/references.rs:25:22
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/references.rs:25:13
    |
 LL |         let c = self.c;
    |                 ------
    |                 |
-   |                 caused by the expression in `fn drop(&mut)` here because
-   |                 it uses a type which is not safe to use in a finalizer.
+   |                 a finalizer cannot safely use this `[&u64; 2]`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
 ...
-LL |     std::gc::Gc::new(HasRef::default());
-   |     -----------------^^^^^^^^^^^^^^^^^- `Gc::new` requires that [&u64; 2] implements the `FinalizeSafe` trait.
+LL |     Gc::new(HasRef::default());
+   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `FinalizerSafe`.
 
-error: `HasRef::default()` has a drop method which cannot be safely finalized.
-  --> $DIR/references.rs:25:22
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/references.rs:25:13
    |
 LL |         use_val(c[1]); // should fail
    |                 ----
    |                 |
-   |                 caused by the expression here in `fn drop(&mut)` because
-   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
 ...
-LL |     std::gc::Gc::new(HasRef::default());
-   |                      ^^^^^^^^^^^^^^^^^
+LL |     Gc::new(HasRef::default());
+   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
    = help: `Gc` may run finalizers after the valid lifetime of this reference.
 

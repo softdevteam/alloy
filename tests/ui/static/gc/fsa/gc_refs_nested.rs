@@ -4,12 +4,12 @@
 #![allow(unused_variables)]
 include!{"./auxiliary/types.rs"}
 
-impl<'a> Drop for HasNestedRef<'a> {
+impl Drop for HasNestedGc {
     fn drop(&mut self) {
         use_val(self.a); // should fail
         use_val(self.b); // should pass
 
-        // Project through to the nested `HasRef` struct.
+        // Project through to the nested `HasGc` struct.
         use_val(self.c.a); // should fail
         use_val(self.c.b); // should pass
 
@@ -23,7 +23,7 @@ impl<'a> Drop for HasNestedRef<'a> {
         let d = &1;
         use_val(d);
 
-        let e = HasRef::default();
+        let e = HasGc::default();
         // Should fail as it is a field projection. Ideally this should be allowed because these
         // references are not fields on the `self` type. However, FSA is not sophisticated enough to
         // make this distinction.
@@ -34,11 +34,11 @@ impl<'a> Drop for HasNestedRef<'a> {
 }
 
 fn main() {
-    Gc::new(HasNestedRef::default());
-    //~^       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^      ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^     ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^    ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^^   ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^^^  ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
+    Gc::new(HasNestedGc::default());
+    //~^     ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~^^    ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~^^^   ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~^^^^  ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~^^^^^ ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~^^^^^^ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
 }

@@ -1,0 +1,68 @@
+error: The drop method for `HasGc` cannot be safely finalized.
+  --> $DIR/gc_refs.rs:25:13
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `Gc<u64>`
+   |                 from a drop method because it might have already been finalized.
+...
+LL |     Gc::new(HasGc::default());
+   |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
+
+error: The drop method for `HasGc` cannot be safely finalized.
+  --> $DIR/gc_refs.rs:25:13
+   |
+LL |         use_val(self.c[0]); // should fail
+   |                 ---------
+   |                 |
+   |                 a finalizer cannot safely use this `[Gc<u64>; 2]`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
+...
+LL |     Gc::new(HasGc::default());
+   |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: The drop method for `HasGc` cannot be safely finalized.
+  --> $DIR/gc_refs.rs:25:13
+   |
+LL |         let a = self.a; // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `Gc<u64>`
+   |                 from a drop method because it might have already been finalized.
+...
+LL |     Gc::new(HasGc::default());
+   |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
+
+error: The drop method for `HasGc` cannot be safely finalized.
+  --> $DIR/gc_refs.rs:25:13
+   |
+LL |         let c = self.c;
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely use this `[Gc<u64>; 2]`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
+...
+LL |     Gc::new(HasGc::default());
+   |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: The drop method for `HasGc` cannot be safely finalized.
+  --> $DIR/gc_refs.rs:25:13
+   |
+LL |         use_val(c[1]); // should fail
+   |                 ----
+   |                 |
+   |                 a finalizer cannot safely dereference this `Gc<u64>`
+   |                 from a drop method because it might have already been finalized.
+...
+LL |     Gc::new(HasGc::default());
+   |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
+
+error: aborting due to 5 previous errors
+

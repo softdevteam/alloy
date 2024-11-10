@@ -1,3 +1,5 @@
+use std::gc::Gc;
+
 #[inline(never)]
 fn use_val<T: std::fmt::Debug>(x: T) {
     dbg!("{:?}", x);
@@ -40,5 +42,33 @@ impl<'a> std::default::Default for HasNestedRef<'a> {
     #[inline(never)]
     fn default() -> Self {
         Self { a: &1, b: 1, c: HasRef::default() }
+    }
+}
+
+#[derive(Debug)]
+struct HasNestedGc {
+    a: Gc<u64>,
+    b: u64,
+    c: HasGc,
+}
+
+#[derive(Debug)]
+struct HasGc {
+    a: Gc<u64>,
+    b: u64,
+    c: [Gc<u64>; 2]
+}
+
+impl std::default::Default for HasGc {
+    #[inline(never)]
+    fn default() -> Self {
+        Self { a: Gc::new(1), b: 1, c: [Gc::new(1), Gc::new(2)] }
+    }
+}
+
+impl<'a> std::default::Default for HasNestedGc {
+    #[inline(never)]
+    fn default() -> Self {
+        Self { a: Gc::new(1), b: 1, c: HasGc::default() }
     }
 }

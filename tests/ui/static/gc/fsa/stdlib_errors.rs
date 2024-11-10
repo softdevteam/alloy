@@ -29,12 +29,12 @@ fn main() {
     let u = U(Rc::new(Rc::new(Rc::new(1))));
 
     Gc::new(s);
-    //~^ ERROR: `s` has a drop method which cannot be safely finalized.
+    //~^ ERROR: The drop method for `Rc<u8>` cannot be safely finalized.
 
     Gc::new(t);
-    //~^  ERROR: `t` has a drop method which cannot be safely finalized.
-    //~^^ ERROR: `t` has a drop method which cannot be safely finalized.
+    //~^  ERROR: The drop method for `T` cannot be safely finalized.
+    //~^^ ERROR: The drop method for `Rc<u8>` cannot be safely finalized.
 
     Gc::new(u);
-    //~^ ERROR: `u` has a drop method which cannot be safely finalized.
+    //~^  ERROR: The drop method for `Rc<Rc<Rc<u8>>>` cannot be safely finalized.
 }

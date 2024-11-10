@@ -1,43 +1,43 @@
-error: `s` has a drop method which cannot be safely finalized.
+error: The drop method for `Rc<u8>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:31:13
    |
 LL |       Gc::new(s);
-   |               ^
+   |       --------^- caused by trying to construct a `Gc<S>` here.
   --> $SRC_DIR/alloc/src/rc.rs:LL:COL
   ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
    |
    = note: is not safe to be run as a finalizer
 
-error: `t` has a drop method which cannot be safely finalized.
+error: The drop method for `T` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13
    |
 LL |         println!("Boom {}", self.1.0); // deref `Unsafe`
    |                             --------
    |                             |
-   |                             caused by the expression in `fn drop(&mut)` here because
-   |                             it uses a type which is not safe to use in a finalizer.
+   |                             a finalizer cannot safely use this `Unsafe`
+   |                             from a drop method because it does not implement `FinalizerSafe`.
 ...
 LL |     Gc::new(t);
-   |     --------^- `Gc::new` requires that Unsafe implements the `FinalizeSafe` trait.
+   |     --------^- caused by trying to construct a `Gc<T>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `FinalizerSafe`.
 
-error: `t` has a drop method which cannot be safely finalized.
+error: The drop method for `Rc<u8>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13
    |
 LL |       Gc::new(t);
-   |               ^
+   |       --------^- caused by trying to construct a `Gc<T>` here.
   --> $SRC_DIR/alloc/src/rc.rs:LL:COL
   ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
    |
    = note: is not safe to be run as a finalizer
 
-error: `u` has a drop method which cannot be safely finalized.
+error: The drop method for `Rc<Rc<Rc<u8>>>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:38:13
    |
 LL |       Gc::new(u);
-   |               ^
+   |       --------^- caused by trying to construct a `Gc<U>` here.
   --> $SRC_DIR/alloc/src/rc.rs:LL:COL
   ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
    |

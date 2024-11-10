@@ -1,50 +1,41 @@
-error: `ShouldFail(Cell::new(123))` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:71:13
+error: The drop method for `ShouldFail` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:63:13
    |
 LL |         self.0.replace(456);
    |         ------
    |         |
-   |         caused by the expression in `fn drop(&mut)` here because
-   |         it uses a type which is not safe to use in a finalizer.
+   |         a finalizer cannot safely use this `Cell<usize>`
+   |         from a drop method because it does not implement `Send` + `Sync`.
 ...
 LL |     Gc::new(ShouldFail(Cell::new(123)));
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<ShouldFail>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `Send` + `Sync`.
+           must only use values which are thread-safe.
 
-error: `gcfields` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:75:13
-   |
-LL |         println!("Boom {}", self.0);
-   |                             ------
-   |                             |
-   |                             caused by the expression here in `fn drop(&mut)` because
-   |                             it uses another `Gc` type.
-...
-LL |     Gc::new(gcfields);
-   |     --------^^^^^^^^- Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised.
-
-error: `self_call` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:79:13
+error: The drop method for `ShouldFail2` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:67:13
    |
 LL |     Gc::new(self_call);
-   |             ^^^^^^^^^ contains a function call which may be unsafe.
+   |     --------^^^^^^^^^-
+   |     |       |
+   |     |       contains a function call which may be unsafe.
+   |     caused by trying to construct a `Gc<ShouldFail2>` here.
 
-error: `not_threadsafe` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:83:13
+error: The drop method for `ShouldFail3` cannot be safely finalized.
+  --> $DIR/check_finalizers.rs:71:13
    |
 LL |         println!("Boom {}", self.0.0);
    |                             --------
    |                             |
-   |                             caused by the expression in `fn drop(&mut)` here because
-   |                             it uses a type which is not safe to use in a finalizer.
+   |                             a finalizer cannot safely use this `NotThreadSafe`
+   |                             from a drop method because it does not implement `Send` + `Sync`.
 ...
 LL |     Gc::new(not_threadsafe);
-   |             ^^^^^^^^^^^^^^
+   |     --------^^^^^^^^^^^^^^- caused by trying to construct a `Gc<ShouldFail3>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `Send` + `Sync`.
+           must only use values which are thread-safe.
 
-error: aborting due to 4 previous errors
+error: aborting due to 3 previous errors
 

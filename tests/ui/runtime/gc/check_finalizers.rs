@@ -30,14 +30,6 @@ trait Opaque {}
 
 impl Opaque for ShouldPass {}
 
-struct HasGcFields(Gc<usize>);
-
-impl Drop for HasGcFields {
-    fn drop(&mut self) {
-        println!("Boom {}", self.0);
-    }
-}
-
 struct ShouldFail2(*mut u8);
 
 struct NotThreadSafe(usize);
@@ -69,19 +61,15 @@ fn main() {
     Gc::new(ShouldPass(123 as *mut u8));
 
     Gc::new(ShouldFail(Cell::new(123)));
-    //~^ ERROR: `ShouldFail(Cell::new(123))` has a drop method which cannot be safely finalized.
-
-    let gcfields = HasGcFields(Gc::new(123));
-    Gc::new(gcfields);
-    //~^ ERROR: `gcfields` has a drop method which cannot be safely finalized.
+    //~^ ERROR: The drop method for `ShouldFail` cannot be safely finalized.
 
     let self_call = ShouldFail2(123 as *mut u8);
     Gc::new(self_call);
-    //~^ ERROR: `self_call` has a drop method which cannot be safely finalized.
+    //~^ ERROR: The drop method for `ShouldFail2` cannot be safely finalized.
 
     let not_threadsafe = ShouldFail3(NotThreadSafe(123));
     Gc::new(not_threadsafe);
-    //~^ ERROR: `not_threadsafe` has a drop method which cannot be safely finalized.
+    //~^ ERROR: The drop method for `ShouldFail3` cannot be safely finalized.
 
     unsafe { Gc::new(FinalizeUnchecked::new(ShouldFail(Cell::new(123)))) };
 }
