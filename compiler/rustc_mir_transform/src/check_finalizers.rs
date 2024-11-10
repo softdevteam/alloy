@@ -32,74 +32,6 @@ enum FinalizerErrorKind<'tcx> {
     UnsoundExternalDropGlue(Span),
 }
 
-impl<'tcx> FinalizerErrorKind<'tcx> {
-    fn emit(&self, ecx: &FSAEntryPointCtxt<'tcx>) {
-        let snippet = ecx.tcx.sess.source_map().span_to_snippet(ecx.arg_span).unwrap();
-        let mut err = ecx.tcx.sess.psess.dcx.struct_span_err(
-            ecx.arg_span,
-            format!("`{snippet}` has a drop method which cannot be safely finalized."),
-        );
-        match self {
-            Self::NotSendAndSync(span) => {
-                err.span_label(*span, "caused by the expression in `fn drop(&mut)` here because");
-                err.span_label(*span, "it uses a type which is not safe to use in a finalizer.");
-                err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `Send` + `Sync`.");
-            }
-            Self::NotFinalizerSafe(ty, span) => {
-                // Special-case `Gc` types for more friendly errors
-                if ty.is_gc(ecx.tcx) {
-                    err.span_label(
-                        *span,
-                        "caused by the expression here in `fn drop(&mut)` because",
-                    );
-                    err.span_label(*span, "it uses another `Gc` type.");
-                    err.span_label(
-                        ecx.fn_span,
-                        format!("Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised."),
-                    );
-                } else {
-                    err.span_label(
-                        *span,
-                        "caused by the expression in `fn drop(&mut)` here because",
-                    );
-                    err.span_label(
-                        *span,
-                        "it uses a type which is not safe to use in a finalizer.",
-                    );
-                    err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
-                    err.span_label(
-                        ecx.fn_span,
-                        format!(
-                            "`Gc::new` requires that {ty} implements the `FinalizeSafe` trait.",
-                        ),
-                    );
-                }
-            }
-            Self::UnsoundReference(ty, span) => {
-                err.span_label(*span, "caused by the expression here in `fn drop(&mut)` because");
-                err.span_label(
-                    *span,
-                    format!("it is a reference ({ty}) which is not safe to use in a finalizer."),
-                );
-                err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
-            }
-            Self::MissingFnDef => {
-                err.span_label(ecx.arg_span, "contains a function call which may be unsafe.");
-            }
-            Self::UnknownTraitObject => {
-                err.span_label(
-                    ecx.arg_span,
-                    "contains a trait object whose implementation is unknown.",
-                );
-            }
-            Self::UnsoundExternalDropGlue(span) => {
-                err.span_label(*span, "is not safe to be run as a finalizer");
-            }
-        }
-        err.emit();
-    }
-}
-
 impl<'tcx> MirPass<'tcx> for CheckFinalizers {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let param_env = tcx.param_env(body.source.def_id());
@@ -278,7 +210,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 _ => (),
             }
         }
-        errors.into_iter().for_each(|e| e.emit(&self));
+        errors.into_iter().for_each(|e| self.emit_error(e));
     }
 
     fn drop_mir<'a>(&self, ty: Ty<'tcx>) -> &'a Body<'tcx> {
@@ -330,6 +262,72 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
             }
             _ => None,
         }
+    }
+
+    fn emit_error(&self, error_kind: FinalizerErrorKind<'tcx>) {
+        let snippet = self.tcx.sess.source_map().span_to_snippet(self.arg_span).unwrap();
+        let mut err = self.tcx.sess.psess.dcx.struct_span_err(
+            self.arg_span,
+            format!("`{snippet}` has a drop method which cannot be safely finalized."),
+        );
+        match error_kind {
+            FinalizerErrorKind::NotSendAndSync(span) => {
+                err.span_label(span, "caused by the expression in `fn drop(&mut)` here because");
+                err.span_label(span, "it uses a type which is not safe to use in a finalizer.");
+                err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `Send` + `Sync`.");
+            }
+            FinalizerErrorKind::NotFinalizerSafe(ty, span) => {
+                // Special-case `Gc` types for more friendly errors
+                if ty.is_gc(self.tcx) {
+                    err.span_label(
+                        span,
+                        "caused by the expression here in `fn drop(&mut)` because",
+                    );
+                    err.span_label(span, "it uses another `Gc` type.");
+                    err.span_label(
+                        self.fn_span,
+                        format!("Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised."),
+                    );
+                } else {
+                    err.span_label(
+                        span,
+                        "caused by the expression in `fn drop(&mut)` here because",
+                    );
+                    err.span_label(
+                        span,
+                        "it uses a type which is not safe to use in a finalizer.",
+                    );
+                    err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
+                    err.span_label(
+                        self.fn_span,
+                        format!(
+                            "`Gc::new` requires that {ty} implements the `FinalizeSafe` trait.",
+                        ),
+                    );
+                }
+            }
+            FinalizerErrorKind::UnsoundReference(ty, span) => {
+                err.span_label(span, "caused by the expression here in `fn drop(&mut)` because");
+                err.span_label(
+                    span,
+                    format!("it is a reference ({ty}) which is not safe to use in a finalizer."),
+                );
+                err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
+            }
+            FinalizerErrorKind::MissingFnDef => {
+                err.span_label(self.arg_span, "contains a function call which may be unsafe.");
+            }
+            FinalizerErrorKind::UnknownTraitObject => {
+                err.span_label(
+                    self.arg_span,
+                    "contains a trait object whose implementation is unknown.",
+                );
+            }
+            FinalizerErrorKind::UnsoundExternalDropGlue(span) => {
+                err.span_label(span, "is not safe to be run as a finalizer");
+            }
+        }
+        err.emit();
     }
 }
 
