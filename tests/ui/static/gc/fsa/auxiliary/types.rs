@@ -77,5 +77,15 @@ impl<'a> std::default::Default for HasNestedGc {
 struct Wrapper<T: Debug>(T);
 
 #[derive(Debug)]
-struct NotFinalizerSafe(u8);
-impl !FinalizerSafe for NotFinalizerSafe {}
+struct U8Wrapper(u8);
+
+#[derive(Debug)]
+struct FinalizerUnsafeU8Wrapper(u8);
+impl !FinalizerSafe for FinalizerUnsafeU8Wrapper {}
+
+#[derive(Debug)]
+struct FinalizerUnsafeWrapper<T: Debug>(T);
+impl<T> !FinalizerSafe for FinalizerUnsafeWrapper<T> {}
+
+#[derive(Debug)]
+struct FinalizerUnsafeType(u8);

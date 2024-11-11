@@ -1,0 +1,32 @@
+error: The drop method for `Wrapper<FinalizerUnsafeWrapper<FinalizerUnsafeWrapper<FinalizerUnsafeType>>>` cannot be safely finalized.
+  --> $DIR/drop_glue.rs:19:13
+   |
+LL |         use_val(&self.0);
+   |                 -------
+   |                 |
+   |                 a finalizer cannot safely use this `FinalizerUnsafeWrapper<FinalizerUnsafeWrapper<FinalizerUnsafeType>>`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
+...
+LL |     Gc::new(Wrapper(FinalizerUnsafeWrapper(FinalizerUnsafeWrapper(FinalizerUnsafeType(1)))));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<Wrapper<FinalizerUnsafeWrapper<FinalizerUnsafeWrapper<FinalizerUnsafeType>>>>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: The drop method for `FinalizerUnsafeWrapper<FinalizerUnsafeWrapper<FinalizerUnsafeType>>` cannot be safely finalized.
+  --> $DIR/drop_glue.rs:19:13
+   |
+LL |         use_val(&self.0);
+   |                 -------
+   |                 |
+   |                 a finalizer cannot safely use this `FinalizerUnsafeWrapper<FinalizerUnsafeType>`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
+...
+LL |     Gc::new(Wrapper(FinalizerUnsafeWrapper(FinalizerUnsafeWrapper(FinalizerUnsafeType(1)))));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<Wrapper<FinalizerUnsafeWrapper<FinalizerUnsafeWrapper<FinalizerUnsafeType>>>>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: aborting due to 2 previous errors
+

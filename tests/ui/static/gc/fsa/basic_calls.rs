@@ -29,7 +29,9 @@ fn baz<T: Debug>(x: &Wrapper<T>) {
 }
 
 fn main() {
-    Gc::new(Wrapper(NotFinalizerSafe(1)));
-    //~^   ERROR: The drop method for `Wrapper<NotFinalizerSafe>` cannot be safely finalized.
-    //~^^  ERROR: The drop method for `Wrapper<NotFinalizerSafe>` cannot be safely finalized.
+    Gc::new(Wrapper(FinalizerUnsafeU8Wrapper(1)));
+    //~^ ERROR: The drop method for `Wrapper<FinalizerUnsafeU8Wrapper>` cannot be safely finalized.
+    //~| ERROR: The drop method for `Wrapper<FinalizerUnsafeU8Wrapper>` cannot be safely finalized.
+
+    Gc::new(Wrapper(Wrapper(1)));
 }

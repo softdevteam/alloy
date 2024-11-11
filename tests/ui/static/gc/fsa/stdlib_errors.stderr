@@ -1,12 +1,11 @@
 error: The drop method for `Rc<u8>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:31:13
    |
-LL |       Gc::new(s);
-   |       --------^- caused by trying to construct a `Gc<S>` here.
-  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
-  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
-   |
-   = note: is not safe to be run as a finalizer
+LL |     Gc::new(s);
+   |     --------^-
+   |     |       |
+   |     |       this `Rc<u8>` is not safe to be run as a finalizer
+   |     caused by trying to construct a `Gc<S>` here.
 
 error: The drop method for `T` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13
@@ -26,22 +25,20 @@ LL |     Gc::new(t);
 error: The drop method for `Rc<u8>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13
    |
-LL |       Gc::new(t);
-   |       --------^- caused by trying to construct a `Gc<T>` here.
-  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
-  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
-   |
-   = note: is not safe to be run as a finalizer
+LL |     Gc::new(t);
+   |     --------^-
+   |     |       |
+   |     |       this `Rc<u8>` is not safe to be run as a finalizer
+   |     caused by trying to construct a `Gc<T>` here.
 
 error: The drop method for `Rc<Rc<Rc<u8>>>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:38:13
    |
-LL |       Gc::new(u);
-   |       --------^- caused by trying to construct a `Gc<U>` here.
-  --> $SRC_DIR/alloc/src/rc.rs:LL:COL
-  ::: $SRC_DIR/alloc/src/rc.rs:LL:COL
-   |
-   = note: is not safe to be run as a finalizer
+LL |     Gc::new(u);
+   |     --------^-
+   |     |       |
+   |     |       this `Rc<Rc<Rc<u8>>>` is not safe to be run as a finalizer
+   |     caused by trying to construct a `Gc<U>` here.
 
 error: aborting due to 4 previous errors
 

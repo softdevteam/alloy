@@ -1,17 +1,17 @@
-error: The drop method for `Wrapper<NotFinalizerSafe>` cannot be safely finalized.
+error: The drop method for `Wrapper<FinalizerUnsafeU8Wrapper>` cannot be safely finalized.
   --> $DIR/recursive_calls.rs:31:13
    |
 LL |     use_val(&x.0); // should fail
    |             ----
    |             |
-   |             a finalizer cannot safely use this `T`
-   |             from a drop method because it does not implement `Send` + `Sync`.
+   |             a finalizer cannot safely use this `FinalizerUnsafeU8Wrapper`
+   |             from a drop method because it does not implement `FinalizerSafe`.
 ...
-LL |     Gc::new(Wrapper(NotFinalizerSafe(1)));
-   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<Wrapper<NotFinalizerSafe>>` here.
+LL |     Gc::new(Wrapper(FinalizerUnsafeU8Wrapper(1)));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<Wrapper<FinalizerUnsafeU8Wrapper>>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values which are thread-safe.
+           must only use values whose types implement `FinalizerSafe`.
 
 error: aborting due to 1 previous error
 
