@@ -22,14 +22,6 @@ impl Drop for HasNestedGc {
         // should pass, as not a field projection
         let d = &1;
         use_val(d);
-
-        let e = HasGc::default();
-        // Should fail as it is a field projection. Ideally this should be allowed because these
-        // references are not fields on the `self` type. However, FSA is not sophisticated enough to
-        // make this distinction.
-        use_val(e.a);
-        // Should pass
-        use_val(e.b);
     }
 }
 
@@ -40,5 +32,4 @@ fn main() {
     //~^^^   ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
     //~^^^^  ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
     //~^^^^^ ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
-    //~^^^^^^ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
 }

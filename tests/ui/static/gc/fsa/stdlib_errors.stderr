@@ -11,11 +11,11 @@ LL |       Gc::new(s);
 error: The drop method for `T` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13
    |
-LL |         println!("Boom {}", self.1.0); // deref `Unsafe`
-   |                             --------
-   |                             |
-   |                             a finalizer cannot safely use this `Unsafe`
-   |                             from a drop method because it does not implement `FinalizerSafe`.
+LL |         let x = self.1.0; // should fail
+   |                 --------
+   |                 |
+   |                 a finalizer cannot safely use this `Unsafe`
+   |                 from a drop method because it does not implement `FinalizerSafe`.
 ...
 LL |     Gc::new(t);
    |     --------^- caused by trying to construct a `Gc<T>` here.

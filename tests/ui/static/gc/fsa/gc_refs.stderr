@@ -1,5 +1,5 @@
 error: The drop method for `HasGc` cannot be safely finalized.
-  --> $DIR/gc_refs.rs:25:13
+  --> $DIR/gc_refs.rs:21:13
    |
 LL |         use_val(self.a); // should fail
    |                 ------
@@ -11,7 +11,7 @@ LL |     Gc::new(HasGc::default());
    |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
 
 error: The drop method for `HasGc` cannot be safely finalized.
-  --> $DIR/gc_refs.rs:25:13
+  --> $DIR/gc_refs.rs:21:13
    |
 LL |         use_val(self.c[0]); // should fail
    |                 ---------
@@ -26,7 +26,7 @@ LL |     Gc::new(HasGc::default());
            must only use values whose types implement `FinalizerSafe`.
 
 error: The drop method for `HasGc` cannot be safely finalized.
-  --> $DIR/gc_refs.rs:25:13
+  --> $DIR/gc_refs.rs:21:13
    |
 LL |         let a = self.a; // should fail
    |                 ------
@@ -38,7 +38,7 @@ LL |     Gc::new(HasGc::default());
    |     --------^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasGc>` here.
 
 error: The drop method for `HasGc` cannot be safely finalized.
-  --> $DIR/gc_refs.rs:25:13
+  --> $DIR/gc_refs.rs:21:13
    |
 LL |         let c = self.c;
    |                 ------
@@ -53,7 +53,7 @@ LL |     Gc::new(HasGc::default());
            must only use values whose types implement `FinalizerSafe`.
 
 error: The drop method for `HasGc` cannot be safely finalized.
-  --> $DIR/gc_refs.rs:25:13
+  --> $DIR/gc_refs.rs:21:13
    |
 LL |         use_val(c[1]); // should fail
    |                 ----

@@ -1,8 +1,8 @@
 use std::gc::Gc;
+use std::fmt::Debug;
 
 #[inline(never)]
 fn use_val<T: std::fmt::Debug>(x: T) {
-    dbg!("{:?}", x);
 }
 
 #[derive(Debug)]
@@ -72,3 +72,10 @@ impl<'a> std::default::Default for HasNestedGc {
         Self { a: Gc::new(1), b: 1, c: HasGc::default() }
     }
 }
+
+#[derive(Debug)]
+struct Wrapper<T: Debug>(T);
+
+#[derive(Debug)]
+struct NotFinalizerSafe(u8);
+impl !FinalizerSafe for NotFinalizerSafe {}

@@ -9,6 +9,7 @@ use rustc_middle::mir::*;
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
+use std::collections::VecDeque;
 
 #[derive(PartialEq)]
 pub struct CheckFinalizers;
@@ -224,7 +225,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                         )));
                     }
                     if def.has_dtor(self.tcx) {
-                        match DropMethodChecker::new(self.drop_mir(ty), ty, self).check() {
+                        match DropCtxt::new(self.drop_mir(ty), ty, self).check() {
                             Err(_) if in_std_lib(self.tcx, def.did()) => {
                                 let fn_info = FnInfo::new(self.drop_mir(ty).span, ty);
                                 errors.push(FinalizerErrorKind::UnsoundExternalDropGlue(fn_info));
@@ -257,7 +258,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
         let dt = self.tcx.require_lang_item(LangItem::Drop, None);
         let df = self.tcx.associated_item_def_ids(dt)[0];
         let s = self.tcx.mk_args_trait(ty, substs.into_iter());
-        let i = ty::Instance::resolve(self.tcx, self.param_env, df, s).unwrap().unwrap();
+        let i = ty::Instance::expect_resolve(self.tcx, self.param_env, df, s);
         self.tcx.instance_mir(i.def)
     }
 
@@ -388,17 +389,60 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
     }
 }
 
-struct DropMethodChecker<'ecx, 'tcx> {
-    body: &'ecx Body<'tcx>,
+/// The central data structure for performing FSA on a particular type's drop method.
+///
+/// Constructed and used each time a new `T::drop()` is found in the MIR. Note that this *does not*
+/// deal with drop glue. Instead, those drop methods which come from component types of `T` are
+/// added in `FSAEntryPointCtxt::check_drop_glue()` to the stack of types to be processed
+/// separately, where they get their own `DropCtxt`.
+struct DropCtxt<'ecx, 'tcx> {
+    /// Queue of function definitions that need to be checked as part of this FSA pass. This is
+    /// pushed to when a call is located in the MIR.
+    funcs: VecDeque<&'ecx Body<'tcx>>,
+    /// The type of the value whose drop method we are currently checking. Used for emitting nicer,
+    /// contextual FSA error messages.
     drop_ty: Ty<'tcx>,
+    /// Context for the entry point (e.g `Gc::new` or `Gc::from`).
     ecx: &'ecx FSAEntryPointCtxt<'tcx>,
+}
+
+struct FuncCtxt<'dcx, 'ecx, 'tcx> {
+    body: &'ecx Body<'tcx>,
+    dcx: &'dcx mut DropCtxt<'ecx, 'tcx>,
     errors: Vec<FinalizerErrorKind<'tcx>>,
     error_locs: FxHashSet<Location>,
 }
 
-impl<'ecx, 'tcx> DropMethodChecker<'ecx, 'tcx> {
-    fn new(body: &'ecx Body<'tcx>, drop_ty: Ty<'tcx>, ecx: &'ecx FSAEntryPointCtxt<'tcx>) -> Self {
-        Self { body, ecx, drop_ty, errors: Vec::new(), error_locs: FxHashSet::default() }
+impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
+    fn new(
+        drop_func: &'ecx Body<'tcx>,
+        drop_ty: Ty<'tcx>,
+        ecx: &'ecx FSAEntryPointCtxt<'tcx>,
+    ) -> Self {
+        assert_eq!(drop_func.arg_count, 1);
+        let mut funcs = VecDeque::default();
+        funcs.push_back(drop_func);
+        Self { funcs, ecx, drop_ty }
+    }
+
+    fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
+        let mut errors = Vec::new();
+        loop {
+            let Some(body) = self.funcs.pop_front() else {
+                break;
+            };
+            match FuncCtxt::new(body, &mut self).check() {
+                Err(ref mut e) => errors.append(e),
+                _ => (),
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors) }
+    }
+}
+
+impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
+    fn new(body: &'ecx Body<'tcx>, dcx: &'dcx mut DropCtxt<'ecx, 'tcx>) -> Self {
+        Self { body, dcx, errors: Vec::new(), error_locs: FxHashSet::default() }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
@@ -414,9 +458,17 @@ impl<'ecx, 'tcx> DropMethodChecker<'ecx, 'tcx> {
         self.errors.push(error);
         self.error_locs.insert(location);
     }
+
+    fn tcx(&self) -> TyCtxt<'tcx> {
+        self.dcx.ecx.tcx
+    }
+
+    fn ecx(&self) -> &'dcx FSAEntryPointCtxt<'tcx> {
+        &self.dcx.ecx
+    }
 }
 
-impl<'ecx, 'tcx> Visitor<'tcx> for DropMethodChecker<'ecx, 'tcx> {
+impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     fn visit_projection(
         &mut self,
         place_ref: PlaceRef<'tcx>,
@@ -428,12 +480,15 @@ impl<'ecx, 'tcx> Visitor<'tcx> for DropMethodChecker<'ecx, 'tcx> {
         // checked.
         for ty in place_ref
             .iter_projections()
-            .filter_map(|(base, elem)| self.ecx.extract_projection_ty(self.body, base, elem))
+            .filter_map(|(base, elem)| self.ecx().extract_projection_ty(self.body, base, elem))
         {
-            let fn_info = FnInfo::new(self.body.span, self.drop_ty);
+            let fn_info = FnInfo::new(self.body.span, self.dcx.drop_ty);
             let proj_info = ProjInfo::new(self.body.source_info(location).span, ty);
-            if !ty.is_send(self.ecx.tcx, self.ecx.param_env)
-                || !ty.is_sync(self.ecx.tcx, self.ecx.param_env)
+            if ty.is_unsafe_ptr() {
+                break;
+            }
+            if !ty.is_send(self.tcx(), self.ecx().param_env)
+                || !ty.is_sync(self.tcx(), self.ecx().param_env)
             {
                 self.push_error(location, FinalizerErrorKind::NotSendAndSync(fn_info, proj_info));
                 break;
@@ -449,7 +504,7 @@ impl<'ecx, 'tcx> Visitor<'tcx> for DropMethodChecker<'ecx, 'tcx> {
                 self.push_error(location, FinalizerErrorKind::UnsoundReference(fn_info, proj_info));
                 break;
             }
-            if !ty.is_finalizer_safe(self.ecx.tcx, self.ecx.param_env) {
+            if !ty.is_finalizer_safe(self.tcx(), self.ecx().param_env) {
                 self.push_error(location, FinalizerErrorKind::NotFinalizerSafe(fn_info, proj_info));
                 break;
             }
@@ -457,52 +512,32 @@ impl<'ecx, 'tcx> Visitor<'tcx> for DropMethodChecker<'ecx, 'tcx> {
         self.super_projection(place_ref, context, location);
     }
 
-    fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, _: Location) {
-        if let TerminatorKind::Call { ref args, .. } = terminator.kind {
-            for caller_arg in self.body.args_iter() {
-                let recv_ty = self.body.local_decls()[caller_arg].ty;
-                for arg in args.iter() {
-                    let arg_ty = arg.node.ty(self.body, self.ecx.tcx);
-                    if arg_ty == recv_ty {
-                        // Currently, we do not recurse into function calls
-                        // to see whether they access `!FinalizerSafe`
-                        // fields, so we must throw an error in `drop`
-                        // methods which call other functions and pass
-                        // `self` as an argument.
-                        //
-                        // Here, we throw an error if `drop(&mut self)`
-                        // calls a function with an argument that has the
-                        // same type as the drop receiver (e.g. foo(x:
-                        // &Self)). This approximation will always prevent
-                        // unsound `drop` methods, however, it is overly
-                        // conservative and will prevent correct examples
-                        // like below from compiling:
-                        //
-                        // ```
-                        // fn drop(&mut self) {
-                        //   let x = Self { ... };
-                        //   x.foo();
-                        // }
-                        // ```
-                        //
-                        // This example is sound, because `x` is a local
-                        // that was instantiated on the finalizer thread, so
-                        // its fields are always safe to access from inside
-                        // this drop method.
-                        //
-                        // However, this will not compile, because the
-                        // receiver for `x.foo()` is the same type as the
-                        // `self` reference. To fix this, we would need to
-                        // do a def-use analysis on the self reference to
-                        // find every MIR local which refers to it that ends
-                        // up being passed to a call terminator. This is not
-                        // trivial to do at the moment.
-                        let fn_info = FnInfo::new(self.body.span, self.drop_ty);
-                        self.errors.push(FinalizerErrorKind::MissingFnDef(fn_info));
-                    }
+    fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
+        let TerminatorKind::Call { func, fn_span, .. } = &terminator.kind else {
+            self.super_terminator(terminator, location);
+            return;
+        };
+        let fn_ty = func.ty(self.body, self.tcx());
+        let ty::FnDef(fn_did, substs) = fn_ty.kind() else {
+            self.super_terminator(terminator, location);
+            return;
+        };
+        match ty::Instance::resolve(self.tcx(), self.ecx().param_env, *fn_did, substs) {
+            Ok(Some(instance)) => {
+                if self.tcx().is_mir_available(instance.def.def_id()) {
+                    self.dcx.funcs.push_back(self.tcx().instance_mir(instance.def));
+                } else {
+                    let fn_info = FnInfo::new(*fn_span, self.dcx.drop_ty);
+                    self.push_error(location, FinalizerErrorKind::MissingFnDef(fn_info))
                 }
             }
-        }
+            Ok(None) => {
+                let fn_info = FnInfo::new(*fn_span, self.dcx.drop_ty);
+                self.push_error(location, FinalizerErrorKind::MissingFnDef(fn_info))
+            }
+            Err(_) => bug!(),
+        };
+        self.super_terminator(terminator, location);
     }
 }
 

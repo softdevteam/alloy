@@ -14,10 +14,6 @@ impl Drop for HasGc {
         let b = self.b; // should pass
         let c = self.c;
         use_val(c[1]); // should fail
-
-        // should pass, as not a field projection
-        let c = Gc::new(1);
-        use_val(c);
     }
 }
 

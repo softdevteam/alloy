@@ -19,7 +19,7 @@ struct U(Rc<Rc<Rc<u8>>>);
 
 impl Drop for T {
     fn drop(&mut self) {
-        println!("Boom {}", self.1.0); // deref `Unsafe`
+        let x = self.1.0; // should fail
     }
 }
 

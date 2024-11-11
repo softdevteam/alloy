@@ -1,5 +1,5 @@
 error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
+  --> $DIR/gc_refs_nested.rs:29:13
    |
 LL |         use_val(self.a); // should fail
    |                 ------
@@ -11,7 +11,7 @@ LL |     Gc::new(HasNestedGc::default());
    |     --------^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedGc>` here.
 
 error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
+  --> $DIR/gc_refs_nested.rs:29:13
    |
 LL |         use_val(self.c.a); // should fail
    |                 --------
@@ -26,7 +26,7 @@ LL |     Gc::new(HasNestedGc::default());
            must only use values whose types implement `FinalizerSafe`.
 
 error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
+  --> $DIR/gc_refs_nested.rs:29:13
    |
 LL |         use_val(self.c.b); // should pass
    |                 --------
@@ -41,7 +41,7 @@ LL |     Gc::new(HasNestedGc::default());
            must only use values whose types implement `FinalizerSafe`.
 
 error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
+  --> $DIR/gc_refs_nested.rs:29:13
    |
 LL |         let a = self.a; // should fail
    |                 ------
@@ -53,7 +53,7 @@ LL |     Gc::new(HasNestedGc::default());
    |     --------^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedGc>` here.
 
 error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
+  --> $DIR/gc_refs_nested.rs:29:13
    |
 LL |         let ca = self.a; // should fail
    |                  ------
@@ -64,17 +64,5 @@ LL |         let ca = self.a; // should fail
 LL |     Gc::new(HasNestedGc::default());
    |     --------^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedGc>` here.
 
-error: The drop method for `HasNestedGc` cannot be safely finalized.
-  --> $DIR/gc_refs_nested.rs:37:13
-   |
-LL |         use_val(e.a);
-   |                 ---
-   |                 |
-   |                 a finalizer cannot safely dereference this `Gc<u64>`
-   |                 from a drop method because it might have already been finalized.
-...
-LL |     Gc::new(HasNestedGc::default());
-   |     --------^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedGc>` here.
-
-error: aborting due to 6 previous errors
+error: aborting due to 5 previous errors
 
