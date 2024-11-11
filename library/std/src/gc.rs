@@ -613,7 +613,7 @@ impl<T> From<T> for Gc<T> {
     /// ```
     #[cfg_attr(not(bootstrap), rustc_fsa_entry_point)]
     fn from(t: T) -> Self {
-        Gc::new(t)
+        unsafe { Gc::new_internal(t) }
     }
 }
 

@@ -1,0 +1,59 @@
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/gc_from.rs:13:34
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
+...
+LL |     let _: Gc<HasRef> = Gc::from(HasRef::default());
+   |                         ---------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/gc_from.rs:15:34
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
+...
+LL |     let _: Gc<HasRef> = Gc::from(Box::new(HasRef::default()));
+   |                         ---------^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/gc_from.rs:17:36
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
+...
+LL |     let _: Gc<[HasRef]> = Gc::from(vec![HasRef::default()]);
+   |                           ---------^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<[HasRef<'_>]>` here.
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+   = note: this error originates in the macro `vec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: The drop method for `HasRef<'_>` cannot be safely finalized.
+  --> $DIR/gc_from.rs:19:36
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
+...
+LL |     let _: Gc<[HasRef]> = Gc::from(vec![HasRef::default()].into_boxed_slice());
+   |                           ---------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<[HasRef<'_>]>` here.
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: aborting due to 4 previous errors
+

@@ -93,6 +93,8 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
                 continue;
             };
 
+            let ret_ty = fn_ty.fn_sig(tcx).output().skip_binder();
+
             // The following is a gross hack for performance reasons!
             //
             // Calls in MIR which are trait method invocations point to the DefId
@@ -112,23 +114,24 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
             //      resolve fn calls to their precise instance when they actually are some kind
             //      of `Gc` constructor (we still check for the attribute later on to make sure
             //      though!).
-            if !in_std_lib(tcx, *fn_did) || !fn_ty.fn_sig(tcx).output().skip_binder().is_gc(tcx) {
+            if !in_std_lib(tcx, *fn_did)
+                || !ret_ty.is_gc(tcx)
+                || ty::Instance::expect_resolve(tcx, param_env, *fn_did, substs)
+                    .def
+                    .get_attrs(tcx, sym::rustc_fsa_entry_point)
+                    .next()
+                    .is_none()
+            {
                 continue;
             }
-            let mono_fn_did = ty::Instance::resolve(tcx, param_env, *fn_did, substs)
-                .unwrap()
-                .unwrap()
-                .def
-                .def_id();
-            if !tcx.has_attr(mono_fn_did, sym::rustc_fsa_entry_point) {
-                // Skip over any call that's not marked #[rustc_fsa_entry_point]
-                continue;
-            }
-
-            assert_eq!(args.len(), 1);
-            let arg_ty = args[0].node.ty(body, tcx);
-            FSAEntryPointCtxt::new(source_info.span, args[0].span, arg_ty, tcx, param_env)
-                .check_drop_glue();
+            FSAEntryPointCtxt::new(
+                source_info.span,
+                args[0].span,
+                ret_ty.gced_ty(tcx),
+                tcx,
+                param_env,
+            )
+            .check_drop_glue();
         }
     }
 }
@@ -140,9 +143,8 @@ struct FSAEntryPointCtxt<'tcx> {
     fn_span: Span,
     /// Span of the argument to the entry point.
     arg_span: Span,
-    /// Type of the arg to the entry point. This could be deduced from the field above but it is
-    /// inconvenient.
-    arg_ty: Ty<'tcx>,
+    /// Type of the GC'd value created by the entry point.
+    value_ty: Ty<'tcx>,
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
 }
@@ -151,29 +153,29 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
     fn new(
         fn_span: Span,
         arg_span: Span,
-        arg_ty: Ty<'tcx>,
+        value_ty: Ty<'tcx>,
         tcx: TyCtxt<'tcx>,
         param_env: ParamEnv<'tcx>,
     ) -> Self {
-        Self { fn_span, arg_span, arg_ty, tcx, param_env }
+        Self { fn_span, arg_span, value_ty, tcx, param_env }
     }
 
     fn check_drop_glue(&self) {
-        if !self.arg_ty.needs_finalizer(self.tcx, self.param_env)
-            || self.arg_ty.is_finalize_unchecked(self.tcx)
+        if !self.value_ty.needs_finalizer(self.tcx, self.param_env)
+            || self.value_ty.is_finalize_unchecked(self.tcx)
         {
             return;
         }
 
-        if self.arg_ty.is_send(self.tcx, self.param_env)
-            && self.arg_ty.is_sync(self.tcx, self.param_env)
-            && self.arg_ty.is_finalizer_safe(self.tcx, self.param_env)
+        if self.value_ty.is_send(self.tcx, self.param_env)
+            && self.value_ty.is_sync(self.tcx, self.param_env)
+            && self.value_ty.is_finalizer_safe(self.tcx, self.param_env)
         {
             return;
         }
 
         let mut errors = Vec::new();
-        let mut tys = vec![self.arg_ty];
+        let mut tys = vec![self.value_ty];
 
         loop {
             let Some(ty) = tys.pop() else {
@@ -383,7 +385,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
         }
         err.span_label(
             self.fn_span,
-            format!("caused by trying to construct a `Gc<{}>` here.", self.arg_ty),
+            format!("caused by trying to construct a `Gc<{}>` here.", self.value_ty),
         );
         err.emit();
     }
