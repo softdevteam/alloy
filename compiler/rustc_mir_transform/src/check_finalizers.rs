@@ -404,6 +404,13 @@ struct DropCtxt<'ecx, 'tcx> {
     drop_ty: Ty<'tcx>,
     /// Context for the entry point (e.g `Gc::new` or `Gc::from`).
     ecx: &'ecx FSAEntryPointCtxt<'tcx>,
+    /// The monomorphized function instances which have already been visited by FSA. This is a set
+    /// because we want fast entry and fast lookup -- we don't care about ordering. This serves two
+    /// purposes. First, as a cache to stop us unnecessarily checking (and thus emitting errors)
+    /// for the same function definition more than once. Second, and more importantly, this allows
+    /// us to deal with recursive function calls. Without this, recursive calls in `drop` would
+    /// cause FSA to loop forever.
+    visited_fns: FxHashSet<DefId>,
 }
 
 struct FuncCtxt<'dcx, 'ecx, 'tcx> {
@@ -422,7 +429,7 @@ impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
         assert_eq!(drop_func.arg_count, 1);
         let mut funcs = VecDeque::default();
         funcs.push_back(drop_func);
-        Self { funcs, ecx, drop_ty }
+        Self { funcs, ecx, drop_ty, visited_fns: FxHashSet::default() }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
@@ -524,7 +531,14 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
         };
         match ty::Instance::resolve(self.tcx(), self.ecx().param_env, *fn_did, substs) {
             Ok(Some(instance)) => {
-                if self.tcx().is_mir_available(instance.def.def_id()) {
+                let mono_fn_did = instance.def.def_id();
+                if self.dcx.visited_fns.contains(&mono_fn_did) {
+                    // We've already checked this function. Ignore it!
+                    self.super_terminator(terminator, location);
+                    return;
+                }
+                self.dcx.visited_fns.insert(mono_fn_did);
+                if self.tcx().is_mir_available(mono_fn_did) {
                     self.dcx.funcs.push_back(self.tcx().instance_mir(instance.def));
                 } else {
                     let fn_info = FnInfo::new(*fn_span, self.dcx.drop_ty);
