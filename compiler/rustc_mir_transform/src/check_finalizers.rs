@@ -376,7 +376,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
-                err.span_label(self.arg_span, "contains a function call which may be unsafe.");
+                err.span_label(fi.span, "this function call may be unsafe to use in a finalizer.");
             }
             FinalizerErrorKind::UnknownTraitObject(fi) => {
                 err = self.tcx.sess.psess.dcx.struct_span_err(
@@ -546,30 +546,80 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     }
 
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
-        let TerminatorKind::Call { func, fn_span, .. } = &terminator.kind else {
-            self.super_terminator(terminator, location);
-            return;
-        };
-        let fn_ty = func.ty(self.body, self.tcx());
-        let ty::FnDef(fn_did, substs) = fn_ty.kind() else {
-            self.super_terminator(terminator, location);
-            return;
-        };
-        let fn_info = FnInfo::new(*fn_span, self.dcx.drop_ty);
-        match ty::Instance::resolve(self.tcx(), self.ecx().param_env, *fn_did, substs) {
-            Ok(Some(instance)) => {
-                if !self.tcx().is_mir_available(instance.def_id()) {
-                    self.push_error(location, FinalizerErrorKind::MissingFnDef(fn_info));
+        let (instance, info) = match &terminator.kind {
+            TerminatorKind::Call { func, fn_span, .. } => {
+                match func.ty(self.body, self.tcx()).kind() {
+                    ty::FnDef(fn_did, substs) => {
+                        let info = FnInfo::new(*fn_span, self.dcx.drop_ty);
+                        let Ok(instance) = ty::Instance::resolve(
+                            self.tcx(),
+                            self.ecx().param_env,
+                            *fn_did,
+                            substs,
+                        ) else {
+                            bug!();
+                        };
+                        (instance, info)
+                    }
+                    ty::FnPtr(..) => {
+                        // FSA doesn't support function pointers so this will trigger an error down
+                        // the line.
+                        let span = terminator.source_info.span;
+                        let info = FnInfo::new(span, self.dcx.drop_ty);
+                        (None, info)
+                    }
+                    _ => bug!(),
+                }
+            }
+            TerminatorKind::Drop { place, .. } => {
+                let glue_ty = place.ty(self.body, self.tcx()).ty;
+                let glue = ty::Instance::resolve_drop_in_place(self.tcx(), glue_ty);
+                let ty::InstanceDef::DropGlue(_, ty) = glue.def else {
+                    bug!();
+                };
+
+                if ty.is_none()
+                    || ty.unwrap().ty_adt_def().map_or(true, |adt| !adt.has_dtor(self.tcx()))
+                    || ty.unwrap().is_gc(self.tcx())
+                {
+                    // This check is necessary because FSA happens before optimisation passes like
+                    // 'drop elaboration', so the MIR might contain drop terminators for types that
+                    // don't actually have a drop method.
+                    //
+                    // In addition, we only care if the *top level* part of this type has a drop
+                    // method. If any of its fields also require dropping then they will have
+                    // separate MIR terminators because drop glue will have added them.
+                    //
+                    // We also have to check for, and ignore `Gc<T>`'s, because they have a
+                    // destructor for the premature finalization barriers. This is FSA safe though.
                     self.super_terminator(terminator, location);
                     return;
                 }
+                let drop_trait_did = self.tcx().require_lang_item(LangItem::Drop, None);
+                let poly_drop_fn_did = self.tcx().associated_item_def_ids(drop_trait_did)[0];
+                let Ok(instance) = ty::Instance::resolve(
+                    self.tcx(),
+                    self.ecx().param_env,
+                    poly_drop_fn_did,
+                    self.tcx().mk_args(&[ty.unwrap().into()]),
+                ) else {
+                    bug!();
+                };
+                let span = terminator.source_info.span;
+                let info = FnInfo::new(span, self.dcx.drop_ty);
+                (instance, info)
+            }
+            _ => {
+                self.super_terminator(terminator, location);
+                return;
+            }
+        };
+
+        match instance {
+            Some(instance) if self.tcx().is_mir_available(instance.def_id()) => {
                 self.dcx.callsites.push_back(instance);
             }
-            Ok(None) => {
-                let fn_info = FnInfo::new(*fn_span, self.dcx.drop_ty);
-                self.push_error(location, FinalizerErrorKind::MissingFnDef(fn_info))
-            }
-            Err(_) => bug!(),
+            _ => self.push_error(location, FinalizerErrorKind::MissingFnDef(info)),
         };
         self.super_terminator(terminator, location);
     }

@@ -1,0 +1,20 @@
+error: The drop method for `HasUnsafeNestedDrop` cannot be safely finalized.
+  --> $DIR/nested_drops.rs:48:13
+   |
+LL |         unsafe { libc::malloc(8) as *mut i32 };
+   |                  --------------- this function call may be unsafe to use in a finalizer.
+...
+LL |     Gc::new(FinalizerUnsafeWrapper(HasUnsafeNestedDrop(1)));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<FinalizerUnsafeWrapper<HasUnsafeNestedDrop>>` here.
+
+error: The drop method for `HasUnsafeNestedDrop` cannot be safely finalized.
+  --> $DIR/nested_drops.rs:48:13
+   |
+LL |         unsafe { libc::calloc(8, 8) as *mut i32 };
+   |                  ------------------ this function call may be unsafe to use in a finalizer.
+...
+LL |     Gc::new(FinalizerUnsafeWrapper(HasUnsafeNestedDrop(1)));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<FinalizerUnsafeWrapper<HasUnsafeNestedDrop>>` here.
+
+error: aborting due to 2 previous errors
+
