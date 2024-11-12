@@ -1,0 +1,16 @@
+error: The drop method for `ASM` cannot be safely finalized.
+  --> $DIR/inline_asm.rs:31:13
+   |
+LL | /             asm!(
+LL | |                 "add {0}, {1}, {2}",
+LL | |                 out(reg) result,
+LL | |                 in(reg) a,
+LL | |                 in(reg) b
+LL | |             );
+   | |_____________- this assembly block is not safe to run in a finalizer
+...
+LL |       Gc::new(FinalizerUnsafeWrapper(ASM));
+   |       --------^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<FinalizerUnsafeWrapper<ASM>>` here.
+
+error: aborting due to 1 previous error
+

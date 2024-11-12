@@ -31,6 +31,8 @@ enum FinalizerErrorKind<'tcx> {
     /// because they most likely won't be in a position to fix it from a downstream crate. Currently
     /// this only applies to types belonging to the standard library.
     UnsoundExternalDropGlue(FnInfo<'tcx>),
+    /// Contains an inline assembly block, which can do anything, so we can't be certain it's safe.
+    InlineAsm(FnInfo<'tcx>),
 }
 
 /// Information about the projection which caused the FSA error.
@@ -398,6 +400,16 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                     format!("this `{0}` is not safe to be run as a finalizer", fi.drop_ty),
                 );
             }
+            FinalizerErrorKind::InlineAsm(fi) => {
+                err = self.tcx.sess.psess.dcx.struct_span_err(
+                    self.arg_span,
+                    format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
+                );
+                err.span_label(
+                    fi.span,
+                    format!("this assembly block is not safe to run in a finalizer"),
+                );
+            }
         }
         err.span_label(
             self.fn_span,
@@ -608,6 +620,12 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 let span = terminator.source_info.span;
                 let info = FnInfo::new(span, self.dcx.drop_ty);
                 (instance, info)
+            }
+            TerminatorKind::InlineAsm { .. } => {
+                let span = terminator.source_info.span;
+                let info = FnInfo::new(span, self.dcx.drop_ty);
+                self.push_error(location, FinalizerErrorKind::InlineAsm(info));
+                return;
             }
             _ => {
                 self.super_terminator(terminator, location);
