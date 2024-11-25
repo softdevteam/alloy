@@ -14,13 +14,13 @@ LL |         let x = self.1.0; // should fail
    |                 --------
    |                 |
    |                 a finalizer cannot safely use this `Unsafe`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
+   |                 from a drop method because it does not implement `Send` + `Sync`.
 ...
 LL |     Gc::new(t);
    |     --------^- caused by trying to construct a `Gc<T>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
+           must only use values which are thread-safe.
 
 error: The drop method for `Rc<u8>` cannot be safely finalized.
   --> $DIR/stdlib_errors.rs:34:13

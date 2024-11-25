@@ -18,14 +18,13 @@ error: The drop method for `HasRef<'_>` cannot be safely finalized.
 LL |         use_val(self.c[0]); // should fail
    |                 ---------
    |                 |
-   |                 a finalizer cannot safely use this `[&u64; 2]`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
 ...
 LL |     Gc::new(HasRef::default());
    |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
    |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
 error: The drop method for `HasRef<'_>` cannot be safely finalized.
   --> $DIR/references.rs:25:13
@@ -44,21 +43,6 @@ LL |     Gc::new(HasRef::default());
 error: The drop method for `HasRef<'_>` cannot be safely finalized.
   --> $DIR/references.rs:25:13
    |
-LL |         let c = self.c;
-   |                 ------
-   |                 |
-   |                 a finalizer cannot safely use this `[&u64; 2]`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
-...
-LL |     Gc::new(HasRef::default());
-   |     --------^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasRef<'_>>` here.
-   |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
-
-error: The drop method for `HasRef<'_>` cannot be safely finalized.
-  --> $DIR/references.rs:25:13
-   |
 LL |         use_val(c[1]); // should fail
    |                 ----
    |                 |
@@ -70,5 +54,5 @@ LL |     Gc::new(HasRef::default());
    |
    = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
-error: aborting due to 5 previous errors
+error: aborting due to 4 previous errors
 

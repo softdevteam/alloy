@@ -28,8 +28,7 @@ impl Drop for HasNestedGc {
 fn main() {
     Gc::new(HasNestedGc::default());
     //~^     ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
-    //~^^    ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
-    //~^^^   ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
-    //~^^^^  ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
-    //~^^^^^ ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasNestedGc` cannot be safely finalized.
 }

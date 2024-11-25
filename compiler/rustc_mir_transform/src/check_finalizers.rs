@@ -18,8 +18,6 @@ pub struct CheckFinalizers;
 enum FinalizerErrorKind<'tcx> {
     /// Does not implement `Send` + `Sync`
     NotSendAndSync(FnInfo<'tcx>, ProjInfo<'tcx>),
-    /// Does not implement `FinalizerSafe`
-    NotFinalizerSafe(FnInfo<'tcx>, ProjInfo<'tcx>),
     /// Contains a field projection where one of the projection elements is a reference.
     UnsoundReference(FnInfo<'tcx>, ProjInfo<'tcx>),
     /// Uses a trait object whose concrete type is unknown
@@ -334,33 +332,6 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 );
                 err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values which are thread-safe.");
             }
-            FinalizerErrorKind::NotFinalizerSafe(fi, pi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
-                    self.arg_span,
-                    format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
-                );
-                // Special-case `Gc` types for more friendly errors
-                if pi.ty.is_gc(self.tcx) {
-                    err.span_label(
-                        pi.span,
-                        format!("a finalizer cannot safely dereference this `{0}`", pi.ty),
-                    );
-                    err.span_label(
-                        pi.span,
-                        "from a drop method because it might have already been finalized.",
-                    );
-                } else {
-                    err.span_label(
-                        pi.span,
-                        format!("a finalizer cannot safely use this `{0}`", pi.ty),
-                    );
-                    err.span_label(
-                        pi.span,
-                        "from a drop method because it does not implement `FinalizerSafe`.",
-                    );
-                    err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
-                }
-            }
             FinalizerErrorKind::UnsoundReference(fi, pi) => {
                 err = self.tcx.sess.psess.dcx.struct_span_err(
                     self.arg_span,
@@ -370,8 +341,15 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                     pi.span,
                     format!("a finalizer cannot safely dereference this `{0}`", pi.ty),
                 );
-                err.span_label(pi.span, "because it might not live long enough.");
-                err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
+                if pi.ty.is_gc(self.tcx) {
+                    err.span_label(
+                        pi.span,
+                        "from a drop method because it might have already been finalized.",
+                    );
+                } else {
+                    err.span_label(pi.span, "because it might not live long enough.");
+                    err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
+                }
             }
             FinalizerErrorKind::MissingFnDef(fi) => {
                 err = self.tcx.sess.psess.dcx.struct_span_err(
@@ -514,12 +492,7 @@ impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
 }
 
 impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
-    fn visit_projection(
-        &mut self,
-        place_ref: PlaceRef<'tcx>,
-        context: PlaceContext,
-        location: Location,
-    ) {
+    fn visit_projection(&mut self, place_ref: PlaceRef<'tcx>, _: PlaceContext, location: Location) {
         // A single projection can be comprised of other 'inner' projections (e.g. self.a.b.c), so
         // this loop ensures that the types of each intermediate projection is extracted and then
         // checked.
@@ -538,7 +511,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 self.push_error(location, FinalizerErrorKind::NotSendAndSync(fn_info, proj_info));
                 break;
             }
-            if ty.is_ref() {
+            if ty.is_ref() || ty.is_gc(self.tcx()) {
                 // Unfortunately, we can't relax this constraint to allow static refs for two
                 // reasons:
                 //      1. When this MIR transformation is called, all lifetimes have already
@@ -549,12 +522,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 self.push_error(location, FinalizerErrorKind::UnsoundReference(fn_info, proj_info));
                 break;
             }
-            if !ty.is_finalizer_safe(self.tcx(), self.ecx().param_env) {
-                self.push_error(location, FinalizerErrorKind::NotFinalizerSafe(fn_info, proj_info));
-                break;
-            }
         }
-        self.super_projection(place_ref, context, location);
     }
 
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {

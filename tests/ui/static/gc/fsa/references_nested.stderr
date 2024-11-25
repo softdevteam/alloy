@@ -18,29 +18,13 @@ error: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
 LL |         use_val(self.c.a); // should fail
    |                 --------
    |                 |
-   |                 a finalizer cannot safely use this `HasRef<'_>`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
+   |                 a finalizer cannot safely dereference this `&u64`
+   |                 because it might not live long enough.
 ...
 LL |     Gc::new(HasNestedRef::default());
    |     --------^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedRef<'_>>` here.
    |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
-
-error: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-  --> $DIR/references_nested.rs:37:13
-   |
-LL |         use_val(self.c.b); // should pass
-   |                 --------
-   |                 |
-   |                 a finalizer cannot safely use this `HasRef<'_>`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
-...
-LL |     Gc::new(HasNestedRef::default());
-   |     --------^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<HasNestedRef<'_>>` here.
-   |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
 error: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
   --> $DIR/references_nested.rs:37:13
@@ -84,5 +68,5 @@ LL |     Gc::new(HasNestedRef::default());
    |
    = help: `Gc` may run finalizers after the valid lifetime of this reference.
 
-error: aborting due to 6 previous errors
+error: aborting due to 5 previous errors
 

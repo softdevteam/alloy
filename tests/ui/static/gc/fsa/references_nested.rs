@@ -36,9 +36,8 @@ impl<'a> Drop for HasNestedRef<'a> {
 fn main() {
     Gc::new(HasNestedRef::default());
     //~^       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^      ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^     ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^    ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^^   ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
-    //~^^^^^^  ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
+    //~|       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
+    //~|       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
+    //~|       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
+    //~|       ERROR: The drop method for `HasNestedRef<'_>` cannot be safely finalized.
 }

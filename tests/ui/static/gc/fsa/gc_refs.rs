@@ -20,8 +20,7 @@ impl Drop for HasGc {
 fn main() {
     Gc::new(HasGc::default());
     //~^     ERROR: The drop method for `HasGc` cannot be safely finalized.
-    //~^^    ERROR: The drop method for `HasGc` cannot be safely finalized.
-    //~^^^   ERROR: The drop method for `HasGc` cannot be safely finalized.
-    //~^^^^  ERROR: The drop method for `HasGc` cannot be safely finalized.
-    //~^^^^^ ERROR: The drop method for `HasGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasGc` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasGc` cannot be safely finalized.
 }

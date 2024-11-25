@@ -9,7 +9,7 @@ use std::rc::Rc;
 struct S(Rc<u8>);
 
 struct Unsafe(u8);
-impl !FinalizerSafe for Unsafe {}
+impl !Send for Unsafe {}
 
 // Make sure that FSA still reports an error for the `Unsafe` field.
 struct T(S, Unsafe);

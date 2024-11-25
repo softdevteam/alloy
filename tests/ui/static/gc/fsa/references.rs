@@ -24,8 +24,7 @@ impl<'a> Drop for HasRef<'a> {
 fn main() {
     Gc::new(HasRef::default());
     //~^     ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
-    //~^^    ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
-    //~^^^   ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
-    //~^^^^  ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
-    //~^^^^^ ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
+    //~|     ERROR: The drop method for `HasRef<'_>` cannot be safely finalized.
 }

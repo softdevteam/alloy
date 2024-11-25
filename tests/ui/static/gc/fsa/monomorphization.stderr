@@ -5,13 +5,13 @@ LL |         use_val(&self.0);
    |                 -------
    |                 |
    |                 a finalizer cannot safely use this `FinalizerUnsafeWrapper<u8>`
-   |                 from a drop method because it does not implement `FinalizerSafe`.
+   |                 from a drop method because it does not implement `Send` + `Sync`.
 ...
 LL |     let _: Gc<Wrapper<FinalizerUnsafeWrapper<u8>>> = Gc::new(Wrapper(FinalizerUnsafeWrapper(1)));
    |                                                      --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<Wrapper<FinalizerUnsafeWrapper<u8>>>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
+           must only use values which are thread-safe.
 
 error: The drop method for `S` cannot be safely finalized.
   --> $DIR/monomorphization.rs:65:13
@@ -20,13 +20,13 @@ LL |         baz(&self.0);
    |             -------
    |             |
    |             a finalizer cannot safely use this `FinalizerUnsafeU8Wrapper`
-   |             from a drop method because it does not implement `FinalizerSafe`.
+   |             from a drop method because it does not implement `Send` + `Sync`.
 ...
 LL |     Gc::new(S(FinalizerUnsafeU8Wrapper(1)));
    |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<S>` here.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
+           must only use values which are thread-safe.
 
 error: aborting due to 2 previous errors
 
