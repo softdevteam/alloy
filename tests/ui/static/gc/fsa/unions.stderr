@@ -1,0 +1,11 @@
+error: The drop method for `U` cannot be safely finalized.
+  --> $DIR/unions.rs:41:13
+   |
+LL |     Gc::new(u);
+   |     --------^-
+   |     |       |
+   |     |       contains a union whose drop glue cannot be known at compile-time.
+   |     caused by trying to construct a `Gc<U>` here.
+
+error: aborting due to 1 previous error
+

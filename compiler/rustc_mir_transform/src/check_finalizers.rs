@@ -22,6 +22,8 @@ enum FinalizerErrorKind<'tcx> {
     UnsoundReference(FnInfo<'tcx>, ProjInfo<'tcx>),
     /// Uses a trait object whose concrete type is unknown
     UnknownTraitObject(FnInfo<'tcx>),
+    /// Uses a union with a drop method.
+    Union(FnInfo<'tcx>),
     /// Calls a function whose definition is unavailable, so we can't be certain it's safe.
     MissingFnDef(FnInfo<'tcx>),
     /// The drop glue contains an unsound drop method from an external crate. This will have been
@@ -217,6 +219,9 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                         tys.push(f)
                     }
                 }
+                ty::Adt(def, ..) if def.is_union() && def.has_dtor(self.tcx) => {
+                    errors.push(FinalizerErrorKind::Union(FnInfo::new(rustc_span::DUMMY_SP, ty)));
+                }
                 ty::Adt(def, substs) if !ty.is_copy_modulo_regions(self.tcx, self.param_env) => {
                     if def.is_box() {
                         // This is a special case because Box has an empty drop
@@ -248,6 +253,11 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                             Err(ref mut e) => errors.append(e),
                             _ => (),
                         }
+                    }
+                    if def.is_union() {
+                        // By definition, a union's fields can never have drop glue, so we don't need
+                        // to add them.
+                        continue;
                     }
 
                     for field in def.all_fields() {
@@ -366,6 +376,16 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 err.span_label(
                     self.arg_span,
                     "contains a trait object whose implementation is unknown.",
+                );
+            }
+            FinalizerErrorKind::Union(fi) => {
+                err = self.tcx.sess.psess.dcx.struct_span_err(
+                    self.arg_span,
+                    format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
+                );
+                err.span_label(
+                    self.arg_span,
+                    "contains a union whose drop glue cannot be known at compile-time.",
                 );
             }
             FinalizerErrorKind::UnsoundExternalDropGlue(fi) => {
