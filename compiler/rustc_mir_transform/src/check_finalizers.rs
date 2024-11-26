@@ -33,6 +33,8 @@ enum FinalizerErrorKind<'tcx> {
     UnsoundExternalDropGlue(FnInfo<'tcx>),
     /// Contains an inline assembly block, which can do anything, so we can't be certain it's safe.
     InlineAsm(FnInfo<'tcx>),
+    /// Contains a field projection where one of the projection elements is a raw pointer.
+    RawPtr(FnInfo<'tcx>, ProjInfo<'tcx>),
 }
 
 /// Information about the projection which caused the FSA error.
@@ -408,6 +410,19 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                     format!("this assembly block is not safe to run in a finalizer"),
                 );
             }
+            FinalizerErrorKind::RawPtr(fi, pi) => {
+                err = self.tcx.sess.psess.dcx.struct_span_err(
+                    self.arg_span,
+                    format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
+                );
+                err.span_label(
+                    pi.span,
+                    format!("a finalizer cannot safely dereference this `{0}`", pi.ty),
+                );
+                err.span_label(pi.span, "because it might not live long enough");
+                err.span_label(pi.span, "or be safe to use across threads.");
+                err.help("`Gc` runs finalizers on a separate thread, so drop methods\ncannot safely dereference raw pointers. If you are sure that this is safe,\nconsider wrapping it in a type which implements `Send + Sync`.");
+            }
         }
         err.span_label(
             self.fn_span,
@@ -523,6 +538,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
             let fn_info = FnInfo::new(self.body.span, self.dcx.drop_ty);
             let proj_info = ProjInfo::new(self.body.source_info(location).span, ty);
             if ty.is_unsafe_ptr() {
+                self.push_error(location, FinalizerErrorKind::RawPtr(fn_info, proj_info));
                 break;
             }
             if !ty.is_send(self.tcx(), self.ecx().param_env)

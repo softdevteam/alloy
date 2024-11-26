@@ -1,0 +1,19 @@
+error: The drop method for `S` cannot be safely finalized.
+  --> $DIR/raw_pointers.rs:22:13
+   |
+LL |         use_val(self.0);
+   |                 ------
+   |                 |
+   |                 a finalizer cannot safely dereference this `*mut u8`
+   |                 because it might not live long enough
+   |                 or be safe to use across threads.
+...
+LL |     Gc::new(S(std::ptr::null_mut()));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<S>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           cannot safely dereference raw pointers. If you are sure that this is safe,
+           consider wrapping it in a type which implements `Send + Sync`.
+
+error: aborting due to 1 previous error
+
