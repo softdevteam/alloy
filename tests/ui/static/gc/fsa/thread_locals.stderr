@@ -1,0 +1,13 @@
+error: The drop method for `S` cannot be safely finalized.
+  --> $DIR/thread_locals.rs:25:13
+   |
+LL |         let x = COUNTER.get();
+   |                 ------- this thread-local is not safe to run in a finalizer
+...
+LL |     Gc::new(FinalizerUnsafeWrapper(S));
+   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^- caused by trying to construct a `Gc<FinalizerUnsafeWrapper<S>>` here.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so thread-locals cannot be accessed.
+
+error: aborting due to 1 previous error
+

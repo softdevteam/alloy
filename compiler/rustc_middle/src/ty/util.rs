@@ -1188,6 +1188,13 @@ impl<'tcx> Ty<'tcx> {
         return false;
     }
 
+    pub fn is_thread_local(self, tcx: TyCtxt<'tcx>) -> bool {
+        if let ty::Adt(adt_def, ..) = self.kind() {
+            return tcx.get_diagnostic_item(sym::LocalKey).map_or(false, |t| adt_def.did() == t);
+        }
+        false
+    }
+
     pub fn is_finalize_unchecked(self, tcx: TyCtxt<'tcx>) -> bool {
         if let ty::Adt(adt_def, ..) = self.kind() {
             return tcx

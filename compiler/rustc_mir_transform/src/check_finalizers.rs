@@ -4,6 +4,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir::visit::PlaceContext;
+use rustc_middle::mir::visit::TyContext;
 use rustc_middle::mir::visit::Visitor;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt};
@@ -35,6 +36,7 @@ enum FinalizerErrorKind<'tcx> {
     InlineAsm(FnInfo<'tcx>),
     /// Contains a field projection where one of the projection elements is a raw pointer.
     RawPtr(FnInfo<'tcx>, ProjInfo<'tcx>),
+    ThreadLocal(FnInfo<'tcx>),
 }
 
 /// Information about the projection which caused the FSA error.
@@ -423,6 +425,17 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 err.span_label(pi.span, "or be safe to use across threads.");
                 err.help("`Gc` runs finalizers on a separate thread, so drop methods\ncannot safely dereference raw pointers. If you are sure that this is safe,\nconsider wrapping it in a type which implements `Send + Sync`.");
             }
+            FinalizerErrorKind::ThreadLocal(fi) => {
+                err = self.tcx.sess.psess.dcx.struct_span_err(
+                    self.arg_span,
+                    format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
+                );
+                err.span_label(
+                    fi.span,
+                    format!("this thread-local is not safe to run in a finalizer"),
+                );
+                err.help("`Gc` runs finalizers on a separate thread, so thread-locals cannot be accessed.");
+            }
         }
         err.span_label(
             self.fn_span,
@@ -454,6 +467,7 @@ struct DropCtxt<'ecx, 'tcx> {
     /// us to deal with recursive function calls. Without this, recursive calls in `drop` would
     /// cause FSA to loop forever.
     visited_fns: FxHashSet<ty::Instance<'tcx>>,
+    return_early: bool,
 }
 
 impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
@@ -464,7 +478,7 @@ impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
     ) -> Self {
         let mut callsites = VecDeque::default();
         callsites.push_back(drop_instance);
-        Self { callsites, ecx, drop_ty, visited_fns: FxHashSet::default() }
+        Self { callsites, ecx, drop_ty, visited_fns: FxHashSet::default(), return_early: false }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
@@ -528,6 +542,9 @@ impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
 
 impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     fn visit_projection(&mut self, place_ref: PlaceRef<'tcx>, _: PlaceContext, location: Location) {
+        if self.dcx.return_early {
+            return;
+        }
         // A single projection can be comprised of other 'inner' projections (e.g. self.a.b.c), so
         // this loop ensures that the types of each intermediate projection is extracted and then
         // checked.
@@ -562,6 +579,9 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     }
 
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
+        if self.dcx.return_early {
+            return;
+        }
         let (instance, info) = match &terminator.kind {
             TerminatorKind::Call { func, fn_span, .. } => {
                 match func.ty(self.body, self.tcx()).kind() {
@@ -644,6 +664,25 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
             _ => self.push_error(location, FinalizerErrorKind::MissingFnDef(info)),
         };
         self.super_terminator(terminator, location);
+    }
+
+    fn visit_ty(&mut self, ty: Ty<'tcx>, cx: TyContext) {
+        if self.dcx.return_early {
+            return;
+        }
+        if !ty.is_thread_local(self.tcx()) {
+            self.super_ty(ty);
+            return;
+        }
+
+        let TyContext::Location(loc) = cx else {
+            bug!();
+        };
+
+        // We've found a thread-local inside a finalizer, which is almost certainly incorrect.
+        let info = FnInfo::new(self.body.source_info(loc).span, self.dcx.drop_ty);
+        self.push_error(loc, FinalizerErrorKind::ThreadLocal(info));
+        self.dcx.return_early = true;
     }
 }
 
