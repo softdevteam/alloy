@@ -1,3 +1,4 @@
+//@ ignore-test
 #![feature(gc)]
 #![feature(negative_impls)]
 

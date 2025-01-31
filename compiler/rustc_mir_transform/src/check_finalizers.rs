@@ -12,6 +12,8 @@ use rustc_span::symbol::sym;
 use rustc_span::Span;
 use std::collections::VecDeque;
 
+use bitflags::bitflags;
+
 #[derive(PartialEq)]
 pub struct CheckFinalizers;
 
@@ -173,20 +175,35 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
             return;
         }
 
-        if self.value_ty.is_send(self.tcx, self.param_env)
-            && self.value_ty.is_sync(self.tcx, self.param_env)
-            && self.value_ty.is_finalizer_safe(self.tcx, self.param_env)
-        {
-            return;
-        }
-
         let mut errors = Vec::new();
         let mut tys = vec![self.value_ty];
 
+        // Iterate over each type subtype looking for a type with drop glue.
         loop {
             let Some(ty) = tys.pop() else {
                 break;
             };
+
+            let mut checks = FSAChecks::all();
+            if ty.is_finalize_unchecked(self.tcx)
+                || ty.is_copy_modulo_regions(self.tcx, self.param_env)
+            {
+                // The user has either explicitly told us not to do FSA on `T` or it implements
+                // `Copy` (i.e. it has no drop glue). We are done.
+                return;
+            }
+            if ty.is_send(self.tcx, self.param_env) && ty.is_sync(self.tcx, self.param_env) {
+                // `T` (and thus its fields) are `Send + Sync`. Any projection of `T`'s fields in
+                // `T::drop` are thus guaranteed to be `Send + Sync`, so FSA does not need to check
+                // for this.
+                checks.remove(FSAChecks::SEND_SYNC);
+            }
+            if ty.is_finalizer_safe(self.tcx, self.param_env) {
+                // `T` (and thus its fields) are `FinalizerSafe` (i.e. none of `T`'s fields contain
+                // &/&mut Rust references). Any projection of `T`'s fields in `T::drop` are thus
+                // guaranteed to also be `FinalizerSafe`, so FSA does not need to check for this.
+                checks.remove(FSAChecks::REFERENCES);
+            }
 
             // We must now identify every drop method in the drop glue for `ty`. This means looking
             // at each component type and adding those to the stack for later processing.
@@ -244,7 +261,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                             poly_drop_fn_did,
                             self.tcx.mk_args_trait(ty, substs.into_iter()),
                         );
-                        match DropCtxt::new(drop_instance, ty, self).check() {
+                        match DropCtxt::new(drop_instance, ty, checks, self).check() {
                             Err(_) if in_std_lib(self.tcx, def.did()) => {
                                 let fn_info = FnInfo::new(rustc_span::DUMMY_SP, ty);
                                 errors.push(FinalizerErrorKind::UnsoundExternalDropGlue(fn_info));
@@ -445,6 +462,19 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
     }
 }
 
+#[derive(Clone, Copy, Default, Hash, PartialEq, Eq, Debug)]
+struct FSAChecks(u8);
+
+bitflags! {
+    impl FSAChecks: u8 {
+        const SEND_SYNC   = 1 << 1;
+        const REFERENCES   = 1 << 2;
+        const INLINE_ASM = 1 << 3;
+        const FN_PTRS   = 1 << 4;
+        const THREAD_LOCALS  = 1 << 5;
+    }
+}
+
 /// The central data structure for performing FSA on a particular type's drop method.
 ///
 /// Constructed and used each time a new `T::drop()` is found in the MIR. Note that this *does not*
@@ -458,6 +488,7 @@ struct DropCtxt<'ecx, 'tcx> {
     /// The type of the value whose drop method we are currently checking. Used for emitting nicer,
     /// contextual FSA error messages.
     drop_ty: Ty<'tcx>,
+    checks: FSAChecks,
     /// Context for the entry point (e.g `Gc::new` or `Gc::from`).
     ecx: &'ecx FSAEntryPointCtxt<'tcx>,
     /// The monomorphized function instances which have already been visited by FSA. This is a set
@@ -467,18 +498,18 @@ struct DropCtxt<'ecx, 'tcx> {
     /// us to deal with recursive function calls. Without this, recursive calls in `drop` would
     /// cause FSA to loop forever.
     visited_fns: FxHashSet<ty::Instance<'tcx>>,
-    return_early: bool,
 }
 
 impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
     fn new(
         drop_instance: ty::Instance<'tcx>,
         drop_ty: Ty<'tcx>,
+        checks: FSAChecks,
         ecx: &'ecx FSAEntryPointCtxt<'tcx>,
     ) -> Self {
         let mut callsites = VecDeque::default();
         callsites.push_back(drop_instance);
-        Self { callsites, ecx, drop_ty, visited_fns: FxHashSet::default(), return_early: false }
+        Self { callsites, drop_ty, checks, ecx, visited_fns: FxHashSet::default() }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
@@ -487,12 +518,13 @@ impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
             let Some(instance) = self.callsites.pop_front() else {
                 break;
             };
+
             if self.visited_fns.contains(&instance) {
                 // We've already checked this function. Ignore it!
                 continue;
             }
-            self.visited_fns.insert(instance);
 
+            self.visited_fns.insert(instance);
             let Some(mir) = self.ecx.prefer_instantiated_mir(instance) else {
                 bug!();
             };
@@ -527,7 +559,7 @@ impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
             return;
         }
 
-        self.errors.push(error);
+        self.ecx().emit_error(error);
         self.error_locs.insert(location);
     }
 
@@ -538,11 +570,15 @@ impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
     fn ecx(&self) -> &'dcx FSAEntryPointCtxt<'tcx> {
         &self.dcx.ecx
     }
+
+    fn is_thread_safe(&self, ty: Ty<'tcx>) -> bool {
+        ty.is_send(self.tcx(), self.ecx().param_env) && ty.is_sync(self.tcx(), self.ecx().param_env)
+    }
 }
 
 impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     fn visit_projection(&mut self, place_ref: PlaceRef<'tcx>, _: PlaceContext, location: Location) {
-        if self.dcx.return_early {
+        if self.dcx.checks.is_empty() {
             return;
         }
         // A single projection can be comprised of other 'inner' projections (e.g. self.a.b.c), so
@@ -558,9 +594,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 self.push_error(location, FinalizerErrorKind::RawPtr(fn_info, proj_info));
                 break;
             }
-            if !ty.is_send(self.tcx(), self.ecx().param_env)
-                || !ty.is_sync(self.tcx(), self.ecx().param_env)
-            {
+            if self.dcx.checks.contains(FSAChecks::SEND_SYNC) && !self.is_thread_safe(ty) {
                 self.push_error(location, FinalizerErrorKind::NotSendAndSync(fn_info, proj_info));
                 break;
             }
@@ -579,7 +613,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     }
 
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
-        if self.dcx.return_early {
+        if self.dcx.checks.is_empty() {
             return;
         }
         let (instance, info) = match &terminator.kind {
@@ -667,7 +701,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
     }
 
     fn visit_ty(&mut self, ty: Ty<'tcx>, cx: TyContext) {
-        if self.dcx.return_early {
+        if !self.dcx.checks.contains(FSAChecks::THREAD_LOCALS) {
             return;
         }
         if !ty.is_thread_local(self.tcx()) {
@@ -682,7 +716,10 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
         // We've found a thread-local inside a finalizer, which is almost certainly incorrect.
         let info = FnInfo::new(self.body.source_info(loc).span, self.dcx.drop_ty);
         self.push_error(loc, FinalizerErrorKind::ThreadLocal(info));
-        self.dcx.return_early = true;
+        // When we encounter a thread-local we bail out of the analysis by turning off all the
+        // checks. Otherwise, we'll keep traversing through the internal std-lib API for
+        // thread-locals and generate more errors for the same problem which would be confusing.
+        self.dcx.checks.remove(FSAChecks::all());
     }
 }
 

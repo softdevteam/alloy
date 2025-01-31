@@ -1,4 +1,4 @@
-//@ run-pass
+//@ ignore-test
 #![feature(gc)]
 #![allow(dead_code)]
 

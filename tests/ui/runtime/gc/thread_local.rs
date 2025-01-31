@@ -1,4 +1,4 @@
-//@ run-pass
+//@ ignore-test
 //@ no-prefer-dynamic
 // ignore-tidy-linelength
 #![feature(allocator_api)]

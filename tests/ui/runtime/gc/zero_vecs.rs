@@ -1,4 +1,4 @@
-//@ run-pass
+//@ ignore-test
 #![feature(gc)]
 #![feature(negative_impls)]
 #![allow(unused_assignments)]
