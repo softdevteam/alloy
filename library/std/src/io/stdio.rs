@@ -1274,6 +1274,7 @@ pub fn _print(args: fmt::Arguments<'_>) {
     issue = "none"
 )]
 #[doc(hidden)]
+#[cfg_attr(not(bootstrap), rustc_fsa_safe_fn)]
 #[cfg(not(test))]
 pub fn _eprint(args: fmt::Arguments<'_>) {
     print_to(args, stderr, "stderr");

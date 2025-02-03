@@ -1766,6 +1766,7 @@ symbols! {
         rustc_expected_cgu_reuse,
         rustc_force_inline,
         rustc_fsa_entry_point,
+        rustc_fsa_safe_fn,
         rustc_has_incoherent_inherent_impls,
         rustc_hidden_type_of_opaques,
         rustc_if_this_changed,

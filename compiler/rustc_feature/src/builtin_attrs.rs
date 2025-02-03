@@ -1025,6 +1025,11 @@ pub static BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         EncodeCrossCrate::Yes,
         "#[rustc_fsa_entry_point] is used to determine when types should be checked by finaliser safety analysis."
     ),
+    rustc_attr!(
+        rustc_fsa_safe_fn, Normal, template!(Word), ErrorFollowing,
+        EncodeCrossCrate::Yes,
+        "#[rustc_fsa_safe_fn] is used to declare that a function does not need to be checked by finaliser safety analysis."
+    ),
 
     // ==========================================================================
     // Internal attributes, Testing:

@@ -127,6 +127,7 @@ unsafe impl<T, A: Allocator> DropMethodFinalizerElidable for VecDeque<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for VecDeque<T, A> {
+    #[cfg_attr(not(bootstrap), rustc_fsa_safe_fn)]
     fn drop(&mut self) {
         /// Runs the destructor for all items in the slice when it gets dropped (normally or
         /// during unwinding).

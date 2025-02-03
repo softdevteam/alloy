@@ -256,6 +256,7 @@ impl<T> Box<T> {
     #[inline(always)]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[must_use]
+    #[cfg_attr(not(bootstrap), rustc_fsa_safe_fn)]
     #[rustc_diagnostic_item = "box_new"]
     #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
     pub fn new(x: T) -> Self {
@@ -1655,6 +1656,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> Drop for Box<T, A> {
     #[inline]
+    #[cfg_attr(not(bootstrap), rustc_fsa_safe_fn)]
     fn drop(&mut self) {
         // the T in the Box is dropped by the compiler before the destructor is run
 

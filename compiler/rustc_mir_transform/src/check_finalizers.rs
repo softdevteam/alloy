@@ -1,21 +1,23 @@
 #![allow(rustc::untranslatable_diagnostic)]
 #![allow(rustc::diagnostic_outside_of_impl)]
-use rustc_data_structures::fx::FxHashSet;
-use rustc_hir::def_id::DefId;
-use rustc_hir::lang_items::LangItem;
-use rustc_middle::mir::visit::PlaceContext;
-use rustc_middle::mir::visit::TyContext;
-use rustc_middle::mir::visit::Visitor;
-use rustc_middle::mir::*;
-use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt};
-use rustc_span::symbol::sym;
-use rustc_span::Span;
 use std::collections::VecDeque;
 
 use bitflags::bitflags;
+use rustc_data_structures::fx::FxHashSet;
+use rustc_hir::def_id::DefId;
+use rustc_hir::lang_items::LangItem;
+use rustc_middle::bug;
+use rustc_middle::mir::visit::{PlaceContext, TyContext, Visitor};
+use rustc_middle::mir::*;
+use rustc_middle::ty::{self, List, Ty, TyCtxt, TypingEnv};
+use rustc_span::symbol::sym;
+use rustc_span::{DUMMY_SP, Span};
+use tracing::trace;
+
+use crate::MirPass;
 
 #[derive(PartialEq)]
-pub struct CheckFinalizers;
+pub(super) struct CheckFinalizers;
 
 #[derive(Debug)]
 enum FinalizerErrorKind<'tcx> {
@@ -75,7 +77,8 @@ impl<'tcx> FnInfo<'tcx> {
 
 impl<'tcx> MirPass<'tcx> for CheckFinalizers {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-        let param_env = tcx.param_env(body.source.def_id());
+        trace!("Running FSA on {:?}", body.source);
+        let typing_env = body.typing_env(tcx);
 
         if in_std_lib(tcx, body.source.def_id()) {
             // Do not check for FSA entry points if we're compiling the standard library. This is
@@ -122,14 +125,17 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
             //      resolve fn calls to their precise instance when they actually are some kind
             //      of `Gc` constructor (we still check for the attribute later on to make sure
             //      though!).
-            if !in_std_lib(tcx, *fn_did)
-                || !ret_ty.is_gc(tcx)
-                || ty::Instance::expect_resolve(tcx, param_env, *fn_did, substs)
-                    .def
-                    .get_attrs(tcx, sym::rustc_fsa_entry_point)
-                    .next()
-                    .is_none()
-            {
+            if !in_std_lib(tcx, *fn_did) || !ret_ty.is_gc(tcx) {
+                continue;
+            }
+
+            // We've found a fn in the standard library which returns a Gc<T>. It must be something
+            // in `library/std/gc.rs`...
+            let Ok(inst) = ty::Instance::try_resolve(tcx, typing_env, *fn_did, substs) else {
+                continue;
+            };
+
+            if inst.unwrap().def.get_attrs(tcx, sym::rustc_fsa_entry_point).next().is_none() {
                 continue;
             }
             FSAEntryPointCtxt::new(
@@ -137,10 +143,13 @@ impl<'tcx> MirPass<'tcx> for CheckFinalizers {
                 args[0].span,
                 ret_ty.gced_ty(tcx),
                 tcx,
-                param_env,
+                typing_env,
             )
             .check_drop_glue();
         }
+    }
+    fn is_required(&self) -> bool {
+        true
     }
 }
 
@@ -154,7 +163,7 @@ struct FSAEntryPointCtxt<'tcx> {
     /// Type of the GC'd value created by the entry point.
     value_ty: Ty<'tcx>,
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    typing_env: TypingEnv<'tcx>,
 }
 
 impl<'tcx> FSAEntryPointCtxt<'tcx> {
@@ -163,13 +172,13 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
         arg_span: Span,
         value_ty: Ty<'tcx>,
         tcx: TyCtxt<'tcx>,
-        param_env: ParamEnv<'tcx>,
+        typing_env: TypingEnv<'tcx>,
     ) -> Self {
-        Self { fn_span, arg_span, value_ty, tcx, param_env }
+        Self { fn_span, arg_span, value_ty, tcx, typing_env }
     }
 
     fn check_drop_glue(&self) {
-        if !self.value_ty.needs_finalizer(self.tcx, self.param_env)
+        if !self.value_ty.needs_finalizer(self.tcx, self.typing_env)
             || self.value_ty.is_finalize_unchecked(self.tcx)
         {
             return;
@@ -186,19 +195,19 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
 
             let mut checks = FSAChecks::all();
             if ty.is_finalize_unchecked(self.tcx)
-                || ty.is_copy_modulo_regions(self.tcx, self.param_env)
+                || self.tcx.type_is_copy_modulo_regions(self.typing_env, ty)
             {
                 // The user has either explicitly told us not to do FSA on `T` or it implements
                 // `Copy` (i.e. it has no drop glue). We are done.
                 return;
             }
-            if ty.is_send(self.tcx, self.param_env) && ty.is_sync(self.tcx, self.param_env) {
+            if ty.is_send(self.tcx, self.typing_env) && ty.is_sync(self.tcx, self.typing_env) {
                 // `T` (and thus its fields) are `Send + Sync`. Any projection of `T`'s fields in
                 // `T::drop` are thus guaranteed to be `Send + Sync`, so FSA does not need to check
                 // for this.
                 checks.remove(FSAChecks::SEND_SYNC);
             }
-            if ty.is_finalizer_safe(self.tcx, self.param_env) {
+            if ty.is_finalizer_safe(self.tcx, self.typing_env) {
                 // `T` (and thus its fields) are `FinalizerSafe` (i.e. none of `T`'s fields contain
                 // &/&mut Rust references). Any projection of `T`'s fields in `T::drop` are thus
                 // guaranteed to also be `FinalizerSafe`, so FSA does not need to check for this.
@@ -216,7 +225,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 | ty::Float(_)
                 | ty::Never
                 | ty::FnDef(..)
-                | ty::FnPtr(_)
+                | ty::FnPtr(..)
                 | ty::Char
                 | ty::RawPtr(..)
                 | ty::Ref(..)
@@ -243,7 +252,9 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 ty::Adt(def, ..) if def.is_union() && def.has_dtor(self.tcx) => {
                     errors.push(FinalizerErrorKind::Union(FnInfo::new(rustc_span::DUMMY_SP, ty)));
                 }
-                ty::Adt(def, substs) if !ty.is_copy_modulo_regions(self.tcx, self.param_env) => {
+                ty::Adt(def, substs)
+                    if !self.tcx.type_is_copy_modulo_regions(self.typing_env, ty) =>
+                {
                     if def.is_box() {
                         // This is a special case because Box has an empty drop
                         // method which is filled in later by the compiler.
@@ -253,13 +264,17 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                         )));
                     }
                     if def.has_dtor(self.tcx) {
-                        let drop_trait_did = self.tcx.require_lang_item(LangItem::Drop, None);
+                        let drop_trait_did =
+                            self.tcx.lang_items().drop_trait().unwrap_or_else(|| {
+                                bug!("check_finalizers: couldn't get drop_trait lang  item ")
+                            });
                         let poly_drop_fn_did = self.tcx.associated_item_def_ids(drop_trait_did)[0];
                         let drop_instance = ty::Instance::expect_resolve(
                             self.tcx,
-                            self.param_env,
+                            self.typing_env,
                             poly_drop_fn_did,
-                            self.tcx.mk_args_trait(ty, substs.into_iter()),
+                            self.tcx.mk_args_trait(ty, List::empty()),
+                            DUMMY_SP,
                         );
                         match DropCtxt::new(drop_instance, ty, checks, self).check() {
                             Err(_) if in_std_lib(self.tcx, def.did()) => {
@@ -302,7 +317,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
         instance
             .try_instantiate_mir_and_normalize_erasing_regions(
                 self.tcx,
-                self.param_env,
+                self.typing_env,
                 ty::EarlyBinder::bind(mir.clone()),
             )
             .ok()
@@ -352,7 +367,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
         let mut err;
         match error_kind {
             FinalizerErrorKind::NotSendAndSync(fi, pi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -364,7 +379,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values which are thread-safe.");
             }
             FinalizerErrorKind::UnsoundReference(fi, pi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -383,14 +398,14 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 }
             }
             FinalizerErrorKind::MissingFnDef(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
                 err.span_label(fi.span, "this function call may be unsafe to use in a finalizer.");
             }
             FinalizerErrorKind::UnknownTraitObject(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -400,7 +415,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 );
             }
             FinalizerErrorKind::Union(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -410,7 +425,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 );
             }
             FinalizerErrorKind::UnsoundExternalDropGlue(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -420,7 +435,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 );
             }
             FinalizerErrorKind::InlineAsm(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -430,7 +445,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 );
             }
             FinalizerErrorKind::RawPtr(fi, pi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -443,7 +458,7 @@ impl<'tcx> FSAEntryPointCtxt<'tcx> {
                 err.help("`Gc` runs finalizers on a separate thread, so drop methods\ncannot safely dereference raw pointers. If you are sure that this is safe,\nconsider wrapping it in a type which implements `Send + Sync`.");
             }
             FinalizerErrorKind::ThreadLocal(fi) => {
-                err = self.tcx.sess.psess.dcx.struct_span_err(
+                err = self.tcx.sess.psess.dcx().struct_span_err(
                     self.arg_span,
                     format!("The drop method for `{0}` cannot be safely finalized.", fi.drop_ty),
                 );
@@ -523,6 +538,10 @@ impl<'ecx, 'tcx> DropCtxt<'ecx, 'tcx> {
                 // We've already checked this function. Ignore it!
                 continue;
             }
+            self.visited_fns.insert(instance);
+            if instance.def.get_attrs(self.ecx.tcx, sym::rustc_fsa_safe_fn).next().is_some() {
+                continue;
+            }
 
             self.visited_fns.insert(instance);
             let Some(mir) = self.ecx.prefer_instantiated_mir(instance) else {
@@ -572,7 +591,8 @@ impl<'dcx, 'ecx, 'tcx> FuncCtxt<'dcx, 'ecx, 'tcx> {
     }
 
     fn is_thread_safe(&self, ty: Ty<'tcx>) -> bool {
-        ty.is_send(self.tcx(), self.ecx().param_env) && ty.is_sync(self.tcx(), self.ecx().param_env)
+        ty.is_send(self.tcx(), self.ecx().typing_env)
+            && ty.is_sync(self.tcx(), self.ecx().typing_env)
     }
 }
 
@@ -590,7 +610,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
         {
             let fn_info = FnInfo::new(self.body.span, self.dcx.drop_ty);
             let proj_info = ProjInfo::new(self.body.source_info(location).span, ty);
-            if ty.is_unsafe_ptr() {
+            if ty.is_raw_ptr() {
                 self.push_error(location, FinalizerErrorKind::RawPtr(fn_info, proj_info));
                 break;
             }
@@ -621,9 +641,9 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 match func.ty(self.body, self.tcx()).kind() {
                     ty::FnDef(fn_did, substs) => {
                         let info = FnInfo::new(*fn_span, self.dcx.drop_ty);
-                        let Ok(instance) = ty::Instance::resolve(
+                        let Ok(instance) = ty::Instance::try_resolve(
                             self.tcx(),
-                            self.ecx().param_env,
+                            self.ecx().typing_env,
                             *fn_did,
                             substs,
                         ) else {
@@ -644,7 +664,7 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
             TerminatorKind::Drop { place, .. } => {
                 let glue_ty = place.ty(self.body, self.tcx()).ty;
                 let glue = ty::Instance::resolve_drop_in_place(self.tcx(), glue_ty);
-                let ty::InstanceDef::DropGlue(_, ty) = glue.def else {
+                let ty::InstanceKind::DropGlue(_, ty) = glue.def else {
                     bug!();
                 };
 
@@ -667,9 +687,9 @@ impl<'dcx, 'ecx, 'tcx> Visitor<'tcx> for FuncCtxt<'dcx, 'ecx, 'tcx> {
                 }
                 let drop_trait_did = self.tcx().require_lang_item(LangItem::Drop, None);
                 let poly_drop_fn_did = self.tcx().associated_item_def_ids(drop_trait_did)[0];
-                let Ok(instance) = ty::Instance::resolve(
+                let Ok(instance) = ty::Instance::try_resolve(
                     self.tcx(),
-                    self.ecx().param_env,
+                    self.ecx().typing_env,
                     poly_drop_fn_did,
                     self.tcx().mk_args(&[ty.unwrap().into()]),
                 ) else {

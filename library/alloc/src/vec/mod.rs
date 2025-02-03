@@ -3794,6 +3794,7 @@ unsafe impl<T, A: Allocator> DropMethodFinalizerElidable for Vec<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for Vec<T, A> {
+    #[cfg_attr(not(bootstrap), rustc_fsa_safe_fn)]
     fn drop(&mut self) {
         unsafe {
             // use drop for [T]
