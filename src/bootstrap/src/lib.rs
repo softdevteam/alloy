@@ -756,6 +756,9 @@ impl Build {
         if self.config.premature_finalizer_prevention {
             features.push_str(" premature-finalizer-prevention");
         }
+        if self.config.finalizer_elision {
+            features.push_str(" finalizer-elision");
+        }
         features
     }
 
