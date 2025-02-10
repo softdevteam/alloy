@@ -126,6 +126,8 @@ pub(crate) fn log_stats() {
         premature finalizer prevention enabled,\
         premopt enabled,\
         finalizers registered,\
+        finalizers completed,\
+        barriers visited,\
         Gc allocated,\
         Box allocated,\
         Rc allocated,\
@@ -139,6 +141,8 @@ pub(crate) fn log_stats() {
         stats.premopt_enabled,
         stats.num_finalizers_registered,
         stats.num_finalizers_completed,
+        stats.num_finalizers_elidable,
+        stats.num_barriers_visited,
         stats.num_allocated_gc,
         stats.num_allocated_boxed,
         stats.num_allocated_rc,

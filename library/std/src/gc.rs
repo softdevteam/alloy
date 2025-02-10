@@ -166,6 +166,8 @@ pub struct GcStats {
     pub premopt_enabled: u8,
     pub num_finalizers_registered: u64,
     pub num_finalizers_completed: u64,
+    pub num_finalizers_elidable: u64,
+    pub num_barriers_visited: u64,
     pub num_allocated_gc: u64,
     pub num_allocated_boxed: u64,
     pub num_allocated_arc: u64,
@@ -199,6 +201,8 @@ pub fn stats() -> GcStats {
             .finalizers_registered
             .load(atomic::Ordering::Relaxed),
         num_finalizers_completed: unsafe { bdwgc::GC_finalized_total() },
+        num_finalizers_elidable: GC_COUNTERS.finalizers_elidable.load(atomic::Ordering::Relaxed),
+        num_barriers_visited: GC_COUNTERS.barriers_visited.load(atomic::Ordering::Relaxed),
         num_allocated_gc: GC_COUNTERS.allocated_gc.load(atomic::Ordering::Relaxed),
         num_allocated_boxed: GC_COUNTERS.allocated_boxed.load(atomic::Ordering::Relaxed),
         num_allocated_rc: GC_COUNTERS.allocated_rc.load(atomic::Ordering::Relaxed),
@@ -288,6 +292,8 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 #[cfg(all(not(bootstrap), not(test), feature = "premature-finalizer-prevention"))]
 impl<T: ?Sized> Drop for Gc<T> {
     fn drop(&mut self) {
+        #[cfg(feature = "log-stats")]
+        GC_COUNTERS.barriers_visited.fetch_add(1, atomic::Ordering::Relaxed);
         keep_alive(self);
     }
 }
@@ -524,6 +530,10 @@ impl<T> Gc<T> {
 
             #[cfg(feature = "log-stats")]
             {
+                GC_COUNTERS.finalizers_elidable.fetch_add(
+                    crate::mem::needs_finalizer::<T>() as u64,
+                    atomic::Ordering::Relaxed,
+                );
                 GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
