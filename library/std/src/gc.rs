@@ -40,7 +40,7 @@
 use core::{
     alloc::{AllocError, Allocator, GlobalAlloc, Layout},
     any::Any,
-    cmp::{self, Ordering},
+    cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
     marker::Unsize,
@@ -94,37 +94,12 @@ unsafe impl GlobalAlloc for GcAllocator {
 
 #[inline]
 unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
-    if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
-        unsafe { bdwgc::GC_malloc(layout.size()) as *mut u8 }
-    } else {
-        let mut out = ptr::null_mut();
-        // posix_memalign requires that the alignment be a multiple of `sizeof(void*)`.
-        // Since these are all powers of 2, we can just use max.
-        unsafe {
-            let align = layout.align().max(core::mem::size_of::<usize>());
-            let ret = bdwgc::GC_posix_memalign(&mut out, align, layout.size());
-            if ret != 0 { ptr::null_mut() } else { out as *mut u8 }
-        }
-    }
+    unsafe { bdwgc::GC_malloc(layout.size()) as *mut u8 }
 }
 
 #[inline]
-unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-    if old_layout.align() <= MIN_ALIGN && old_layout.align() <= new_size {
-        unsafe { bdwgc::GC_realloc(ptr, new_size) as *mut u8 }
-    } else {
-        unsafe {
-            let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
-
-            let new_ptr = gc_malloc(new_layout);
-            if !new_ptr.is_null() {
-                let size = cmp::min(old_layout.size(), new_size);
-                ptr::copy_nonoverlapping(ptr, new_ptr, size);
-                gc_free(ptr, old_layout);
-            }
-            new_ptr
-        }
-    }
+unsafe fn gc_realloc(ptr: *mut u8, _old_layout: Layout, new_size: usize) -> *mut u8 {
+    unsafe { bdwgc::GC_realloc(ptr, new_size) as *mut u8 }
 }
 
 #[inline]
