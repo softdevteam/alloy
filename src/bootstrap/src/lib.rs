@@ -759,6 +759,9 @@ impl Build {
         if self.config.finalizer_elision {
             features.push_str(" finalizer-elision");
         }
+        if self.config.bdwgc_link_shared {
+            features.push_str(" bdwgc-link-shared");
+        }
         features
     }
 
