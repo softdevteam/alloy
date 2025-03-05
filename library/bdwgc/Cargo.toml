@@ -14,3 +14,6 @@ libc = { version = "0.2.148", default-features = false, features = ['rustc-dep-o
 
 [build-dependencies]
 cmake = "0.1"
+
+[features]
+link-shared = []

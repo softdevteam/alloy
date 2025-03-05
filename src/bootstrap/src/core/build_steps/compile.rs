@@ -952,6 +952,10 @@ impl Step for Rustc {
             cargo.env("RUSTC_BOLT_LINK_FLAGS", "1");
         }
 
+        if builder.config.bdwgc_link_shared {
+            cargo.env("GC_LINK_DYNAMIC", "true");
+        }
+
         let _guard = builder.msg_sysroot_tool(
             Kind::Build,
             compiler.stage,

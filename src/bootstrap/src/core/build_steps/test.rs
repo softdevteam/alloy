@@ -2074,6 +2074,10 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
             cmd.env("PATH", new_path);
         }
 
+        if builder.config.bdwgc_link_shared {
+            cmd.env("GC_LINK_DYNAMIC", "true");
+        }
+
         // Some UI tests trigger behavior in rustc where it reads $CARGO and changes behavior if it exists.
         // To make the tests work that rely on it not being set, make sure it is not set.
         cmd.env_remove("CARGO");
