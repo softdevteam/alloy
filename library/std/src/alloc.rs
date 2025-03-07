@@ -64,7 +64,7 @@ use core::{hint, mem, ptr};
 #[doc(inline)]
 pub use alloc_crate::alloc::*;
 
-/// The default memory allocator provided by the operating system.
+// The default memory allocator provided by the operating system.
 ///
 /// This is based on `malloc` on Unix platforms and `HeapAlloc` on Windows,
 /// plus related functions. However, it is not valid to mix use of the backing

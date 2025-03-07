@@ -104,6 +104,15 @@ fn handle_rt_panic<T>(e: Box<dyn Any + Send>) -> T {
 unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
     #[cfg_attr(target_os = "teeos", allow(unused_unsafe))]
     unsafe {
+        // Internally, this registers a SIGSEGV handler to compute the start and
+        // end bounds of the data segment. This means it *MUST* be called before
+        // rustc registers its own SIGSEGV stack overflow handler.
+        //
+        // Rust's stack overflow handler will unregister and return if there is
+        // no stack overflow, allowing the fault to "fall-through" to Boehm's
+        // handler next time. The is not true in the reverse case.
+        crate::gc::init();
+
         sys::init(argc, argv, sigpipe)
     };
 

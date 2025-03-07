@@ -277,7 +277,7 @@ impl Builder {
     ///
     /// let builder = thread::Builder::new()
     ///                               .name("foo".into())
-    ///                               .stack_size(32 * 1024);
+    ///                               .stack_size(64 * 1024);
     ///
     /// let handler = builder.spawn(|| {
     ///     // thread code
@@ -558,6 +558,7 @@ impl Builder {
                 crate::sys::backtrace::__rust_begin_short_backtrace(|| hooks.run());
                 crate::sys::backtrace::__rust_begin_short_backtrace(f)
             }));
+
             // SAFETY: `their_packet` as been built just above and moved by the
             // closure (it is an Arc<...>) and `my_packet` will be stored in the
             // same `JoinInner` as this closure meaning the mutation will be
