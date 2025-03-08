@@ -18,7 +18,7 @@ LL |         println!("Boom {}", self.1.0); // deref `Unsafe`
    |                             it uses a type which is not safe to use in a finalizer.
 ...
 LL |     Gc::new(t);
-   |     --------^- `Gc::new` requires that it implements the `FinalizeSafe` trait.
+   |     --------^- `Gc::new` requires that Unsafe implements the `FinalizeSafe` trait.
    |
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `FinalizerSafe`.

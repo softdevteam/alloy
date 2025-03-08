@@ -70,7 +70,6 @@ fn main() {
 
     Gc::new(ShouldFail(Cell::new(123)));
     //~^ ERROR: `ShouldFail(Cell::new(123))` has a drop method which cannot be safely finalized.
-    //~^^ ERROR: `ShouldFail(Cell::new(123))` has a drop method which cannot be safely finalized.
 
     let gcfields = HasGcFields(Gc::new(123));
     Gc::new(gcfields);

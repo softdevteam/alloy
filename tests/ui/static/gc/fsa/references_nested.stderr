@@ -1,0 +1,88 @@
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         use_val(self.a); // should fail
+   |                 ------
+   |                 |
+   |                 caused by the expression here in `fn drop(&mut)` because
+   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         use_val(self.c.a); // should fail
+   |                 --------
+   |                 |
+   |                 caused by the expression in `fn drop(&mut)` here because
+   |                 it uses a type which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |     -----------------^^^^^^^^^^^^^^^^^^^^^^^- `Gc::new` requires that HasRef<'_> implements the `FinalizeSafe` trait.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         use_val(self.c.b); // should pass
+   |                 --------
+   |                 |
+   |                 caused by the expression in `fn drop(&mut)` here because
+   |                 it uses a type which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |     -----------------^^^^^^^^^^^^^^^^^^^^^^^- `Gc::new` requires that HasRef<'_> implements the `FinalizeSafe` trait.
+   |
+   = help: `Gc` runs finalizers on a separate thread, so drop methods
+           must only use values whose types implement `FinalizerSafe`.
+
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         let a = self.a; // should fail
+   |                 ------
+   |                 |
+   |                 caused by the expression here in `fn drop(&mut)` because
+   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         let ca = self.a; // should fail
+   |                  ------
+   |                  |
+   |                  caused by the expression here in `fn drop(&mut)` because
+   |                  it is a reference (&u64) which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: `HasNestedRef::default()` has a drop method which cannot be safely finalized.
+  --> $DIR/references_nested.rs:37:22
+   |
+LL |         use_val(e.a);
+   |                 ---
+   |                 |
+   |                 caused by the expression here in `fn drop(&mut)` because
+   |                 it is a reference (&u64) which is not safe to use in a finalizer.
+...
+LL |     std::gc::Gc::new(HasNestedRef::default());
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: `Gc` may run finalizers after the valid lifetime of this reference.
+
+error: aborting due to 6 previous errors
+

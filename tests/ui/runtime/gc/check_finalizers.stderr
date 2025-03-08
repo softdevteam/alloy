@@ -13,23 +13,8 @@ LL |     Gc::new(ShouldFail(Cell::new(123)));
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send` + `Sync`.
 
-error: `ShouldFail(Cell::new(123))` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:71:13
-   |
-LL |         self.0.replace(456);
-   |         ------
-   |         |
-   |         caused by the expression in `fn drop(&mut)` here because
-   |         it uses a type which is not safe to use in a finalizer.
-...
-LL |     Gc::new(ShouldFail(Cell::new(123)));
-   |     --------^^^^^^^^^^^^^^^^^^^^^^^^^^- `Gc::new` requires that it implements the `FinalizeSafe` trait.
-   |
-   = help: `Gc` runs finalizers on a separate thread, so drop methods
-           must only use values whose types implement `FinalizerSafe`.
-
 error: `gcfields` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:76:13
+  --> $DIR/check_finalizers.rs:75:13
    |
 LL |         println!("Boom {}", self.0);
    |                             ------
@@ -41,13 +26,13 @@ LL |     Gc::new(gcfields);
    |     --------^^^^^^^^- Finalizers cannot safely dereference other `Gc`s, because they might have already been finalised.
 
 error: `self_call` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:80:13
+  --> $DIR/check_finalizers.rs:79:13
    |
 LL |     Gc::new(self_call);
    |             ^^^^^^^^^ contains a function call which may be unsafe.
 
 error: `not_threadsafe` has a drop method which cannot be safely finalized.
-  --> $DIR/check_finalizers.rs:84:13
+  --> $DIR/check_finalizers.rs:83:13
    |
 LL |         println!("Boom {}", self.0.0);
    |                             --------
@@ -61,5 +46,5 @@ LL |     Gc::new(not_threadsafe);
    = help: `Gc` runs finalizers on a separate thread, so drop methods
            must only use values whose types implement `Send` + `Sync`.
 
-error: aborting due to 5 previous errors
+error: aborting due to 4 previous errors
 

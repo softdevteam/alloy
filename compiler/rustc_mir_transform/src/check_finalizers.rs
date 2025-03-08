@@ -1,5 +1,6 @@
 #![allow(rustc::untranslatable_diagnostic)]
 #![allow(rustc::diagnostic_outside_of_impl)]
+use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir::visit::PlaceContext;
@@ -20,8 +21,8 @@ enum FinalizerErrorKind<'tcx> {
     NotSendAndSync(Span),
     /// Does not implement `FinalizerSafe`
     NotFinalizerSafe(Ty<'tcx>, Span),
-    /// Does not implement `ReferenceFree`
-    NotReferenceFree,
+    /// Contains a field projection where one of the projection elements is a reference.
+    UnsoundReference(Ty<'tcx>, Span),
     /// Uses a trait object whose concrete type is unknown
     UnknownTraitObject,
     /// Calls a function whose definition is unavailable, so we can't be certain it's safe.
@@ -70,19 +71,19 @@ impl<'tcx> FinalizerErrorKind<'tcx> {
                     err.help("`Gc` runs finalizers on a separate thread, so drop methods\nmust only use values whose types implement `FinalizerSafe`.");
                     err.span_label(
                         cx.ctor,
-                        format!("`Gc::new` requires that it implements the `FinalizeSafe` trait.",),
+                        format!(
+                            "`Gc::new` requires that {ty} implements the `FinalizeSafe` trait.",
+                        ),
                     );
                 }
             }
-            Self::NotReferenceFree => {
+            Self::UnsoundReference(ty, span) => {
+                err.span_label(*span, "caused by the expression here in `fn drop(&mut)` because");
                 err.span_label(
-                    cx.arg,
-                    "contains a reference (&) which is not safe to be used in a finalizer.",
+                    *span,
+                    format!("it is a reference ({ty}) which is not safe to use in a finalizer."),
                 );
-                err.span_label(
-                    cx.ctor,
-                    format!("`Gc::new` requires finalizable types to be reference free.",),
-                );
+                err.help("`Gc` may run finalizers after the valid lifetime of this reference.");
             }
             Self::MissingFnDef => {
                 err.span_label(cx.arg, "contains a function call which may be unsafe.");
@@ -150,10 +151,6 @@ impl<'tcx> FinalizationCtxt<'tcx> {
     fn check_drop_glue(&mut self, ty: Ty<'tcx>) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
         if !self.tcx.needs_finalizer_raw(self.param_env.and(ty)) || self.is_finalize_unchecked(ty) {
             return Ok(());
-        }
-
-        if !self.is_reference_free(ty) {
-            return Err(vec![FinalizerErrorKind::NotReferenceFree]);
         }
 
         if self.is_send(ty) && self.is_sync(ty) && self.is_finalizer_safe(ty) {
@@ -265,16 +262,6 @@ impl<'tcx> FinalizationCtxt<'tcx> {
             .must_apply_modulo_regions();
     }
 
-    fn is_reference_free(&self, ty: Ty<'tcx>) -> bool {
-        let t = self.tcx.get_diagnostic_item(sym::ReferenceFree).unwrap();
-        return self
-            .tcx
-            .infer_ctxt()
-            .build()
-            .type_implements_trait(t, [ty], self.param_env)
-            .must_apply_modulo_regions();
-    }
-
     fn is_copy(&self, ty: Ty<'tcx>) -> bool {
         ty.is_copy_modulo_regions(self.tcx, self.param_env)
     }
@@ -316,22 +303,72 @@ impl<'tcx> FinalizationCtxt<'tcx> {
         }
         return false;
     }
+
+    /// For a given projection, extract the 'useful' type which needs checking for finalizer safety.
+    ///
+    /// Simplifying somewhat, a projection is a way of peeking into a place. For FSA, the
+    /// projections that are interesting to us are struct/enum fields, and slice/array indices. When
+    /// we find these, we want to extract the type of the field or slice/array element for further
+    /// analysis. This is best explained with an example, the following shows the projection, and
+    /// what type would be returned:
+    ///
+    /// a[i]    -> typeof(a[i])
+    /// a.b[i]  -> typeof(a.b[i])
+    /// a.b     -> typeof(b)
+    /// a.b.c   -> typeof(c)
+    ///
+    /// In practice, this means that the type of the last projection is extracted and returned.
+    fn extract_projection_ty(
+        &self,
+        body: &Body<'tcx>,
+        base: PlaceRef<'tcx>,
+        elem: ProjectionElem<Local, Ty<'tcx>>,
+    ) -> Option<Ty<'tcx>> {
+        match elem {
+            ProjectionElem::Field(_, ty) => Some(ty),
+            ProjectionElem::Index(_)
+            | ProjectionElem::ConstantIndex { .. }
+            | ProjectionElem::Subslice { .. } => {
+                let array_ty = match base.last_projection() {
+                    Some((last_base, last_elem)) => {
+                        last_base.ty(body, self.tcx).projection_ty(self.tcx, last_elem).ty
+                    }
+                    None => base.ty(body, self.tcx).ty,
+                };
+                match array_ty.kind() {
+                    ty::Array(ty, ..) | ty::Slice(ty) => Some(*ty),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 struct DropMethodChecker<'a, 'tcx> {
     body: &'a Body<'tcx>,
     cx: &'a FinalizationCtxt<'tcx>,
     errors: Vec<FinalizerErrorKind<'tcx>>,
+    error_locs: FxHashSet<Location>,
 }
 
 impl<'a, 'tcx> DropMethodChecker<'a, 'tcx> {
     fn new(body: &'a Body<'tcx>, fctxt: &'a FinalizationCtxt<'tcx>) -> Self {
-        Self { body, cx: fctxt, errors: Vec::new() }
+        Self { body, cx: fctxt, errors: Vec::new(), error_locs: FxHashSet::default() }
     }
 
     fn check(mut self) -> Result<(), Vec<FinalizerErrorKind<'tcx>>> {
         self.visit_body(self.body);
         if self.errors.is_empty() { Ok(()) } else { Err(self.errors) }
+    }
+
+    fn push_error(&mut self, location: Location, error: FinalizerErrorKind<'tcx>) {
+        if self.error_locs.contains(&location) {
+            return;
+        }
+
+        self.errors.push(error);
+        self.error_locs.insert(location);
     }
 }
 
@@ -342,18 +379,32 @@ impl<'a, 'tcx> Visitor<'tcx> for DropMethodChecker<'a, 'tcx> {
         context: PlaceContext,
         location: Location,
     ) {
-        for (_, proj) in place_ref.iter_projections() {
-            match proj {
-                ProjectionElem::Field(_, ty) => {
-                    let span = self.body.source_info(location).span;
-                    if !self.cx.is_send(ty) || !self.cx.is_sync(ty) {
-                        self.errors.push(FinalizerErrorKind::NotSendAndSync(span));
-                    }
-                    if !self.cx.is_finalizer_safe(ty) {
-                        self.errors.push(FinalizerErrorKind::NotFinalizerSafe(ty, span));
-                    }
-                }
-                _ => (),
+        // A single projection can be comprised of other 'inner' projections (e.g. self.a.b.c), so
+        // this loop ensures that the types of each intermediate projection is extracted and then
+        // checked.
+        for ty in place_ref
+            .iter_projections()
+            .filter_map(|(base, elem)| self.cx.extract_projection_ty(self.body, base, elem))
+        {
+            let span = self.body.source_info(location).span;
+            if !self.cx.is_send(ty) || !self.cx.is_sync(ty) {
+                self.push_error(location, FinalizerErrorKind::NotSendAndSync(span));
+                break;
+            }
+            if ty.is_ref() {
+                // Unfortunately, we can't relax this constraint to allow static refs for two
+                // reasons:
+                //      1. When this MIR transformation is called, all lifetimes have already
+                //         been erased by borrow-checker.
+                //      2. Unsafe code can and does transmute lifetimes up to 'static then use
+                //         runtime properties to ensure that the reference is valid. FSA would
+                //         not catch this and could allow unsound programs.
+                self.push_error(location, FinalizerErrorKind::UnsoundReference(ty, span));
+                break;
+            }
+            if !self.cx.is_finalizer_safe(ty) {
+                self.push_error(location, FinalizerErrorKind::NotFinalizerSafe(ty, span));
+                break;
             }
         }
         self.super_projection(place_ref, context, location);
