@@ -591,6 +591,8 @@ pub mod ascii;
 pub mod backtrace;
 #[unstable(feature = "bstr", issue = "134915")]
 pub mod bstr;
+#[unstable(feature = "gc", issue = "none")]
+use bdwgc;
 pub mod collections;
 pub mod env;
 pub mod error;

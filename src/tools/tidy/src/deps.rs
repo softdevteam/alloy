@@ -465,6 +465,7 @@ const PERMITTED_STDLIB_DEPENDENCIES: &[&str] = &[
     "allocator-api2",
     "cc",
     "cfg-if",
+    "cmake",
     "compiler_builtins",
     "dlmalloc",
     "fortanix-sgx-abi",

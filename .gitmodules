@@ -51,3 +51,6 @@
 	path = src/gcc
 	url = https://github.com/rust-lang/gcc.git
 	shallow = true
+[submodule "src/bdwgc"]
+	path = src/bdwgc
+	url = https://github.com/softdevteam/bdwgc
