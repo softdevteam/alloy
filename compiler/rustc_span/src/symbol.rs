@@ -1024,6 +1024,7 @@ symbols! {
         future,
         future_output,
         future_trait,
+        gc,
         gdb_script_file,
         ge,
         gen_blocks,

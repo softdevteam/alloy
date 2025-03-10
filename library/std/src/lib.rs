@@ -345,6 +345,7 @@
 #![feature(hashmap_internals)]
 #![feature(hint_must_use)]
 #![feature(ip)]
+#![feature(layout_for_ptr)]
 #![feature(lazy_get)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_write_slice)]
@@ -357,6 +358,7 @@
 #![feature(ptr_as_uninit)]
 #![feature(ptr_mask)]
 #![feature(random)]
+#![feature(set_ptr_value)]
 #![feature(slice_internals)]
 #![feature(slice_ptr_get)]
 #![feature(slice_range)]
@@ -406,6 +408,7 @@
 #![feature(custom_test_frameworks)]
 #![feature(edition_panic)]
 #![feature(format_args_nl)]
+#![feature(gc)]
 #![feature(log_syntax)]
 #![feature(test)]
 #![feature(trace_macros)]
@@ -416,6 +419,13 @@
 // Only for const-ness:
 // tidy-alphabetical-start
 #![feature(io_const_error)]
+// tidy-alphabetical-end
+//
+// Alloy:
+// tidy-alphabetical-start
+#![feature(coerce_unsized)]
+#![feature(dispatch_from_dyn)]
+#![feature(unsize)]
 // tidy-alphabetical-end
 //
 #![default_lib_allocator]
@@ -598,6 +608,8 @@ pub mod env;
 pub mod error;
 pub mod ffi;
 pub mod fs;
+#[unstable(feature = "gc", issue = "none")]
+pub mod gc;
 pub mod hash;
 pub mod io;
 pub mod net;
