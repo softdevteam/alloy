@@ -166,6 +166,7 @@
 #![feature(f16)]
 #![feature(freeze_impls)]
 #![feature(fundamental)]
+#![feature(gc)]
 #![feature(generic_arg_infer)]
 #![feature(if_let_guard)]
 #![feature(intra_doc_pointers)]
@@ -381,6 +382,8 @@ pub mod task;
 /* Heap memory allocator trait */
 #[allow(missing_docs)]
 pub mod alloc;
+
+pub mod gc;
 
 // note: does not need to be public
 mod bool;

@@ -50,6 +50,55 @@ fn needs_async_drop_raw<'tcx>(
     res
 }
 
+fn needs_finalizer_raw<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    query: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>,
+) -> bool {
+    let adt_has_dtor =
+        |adt_def: ty::AdtDef<'tcx>| adt_def.destructor(tcx).map(|_| DtorType::Significant);
+
+    let adt_components = move |adt_def: ty::AdtDef<'tcx>,
+                               args: GenericArgsRef<'tcx>,
+                               drop_method_finalizer_elidable: bool| {
+        if adt_def.is_manually_drop() {
+            debug!("finalize_tys_helper: `{:?}` is manually drop", adt_def);
+            Ok(Vec::new())
+        } else if adt_has_dtor(adt_def).is_some() && !drop_method_finalizer_elidable {
+            debug!("finalize_tys_helper: `{:?}` implements `Drop`", adt_def);
+            Err(AlwaysRequiresDrop)
+        } else if adt_def.is_union() {
+            debug!("finalize_tys_helper: `{:?}` is a union", adt_def);
+            Ok(Vec::new())
+        } else {
+            let field_tys = adt_def.all_fields().map(|field| {
+                let r = tcx.type_of(field.did).instantiate(tcx, args);
+                debug!(
+                    "finalize_tys_helper: Subst into {:?} with {:?} getting {:?}",
+                    field, args, r
+                );
+                r
+            });
+
+            Ok(field_tys.collect())
+        }
+        .map(|v| v.into_iter())
+    };
+
+    let res = NeedsDropTypes::new(
+        tcx,
+        query.typing_env,
+        query.value,
+        false,
+        adt_components,
+        AnalysisKind::Finalization(FxHashSet::default()),
+    )
+    .next()
+    .is_some();
+
+    debug!("needs_finalizer_raw({:?}) = {:?}", query, res);
+    res
+}
+
 /// HACK: in order to not mistakenly assume that `[PhantomData<T>; N]` requires drop glue
 /// we check the element type for drop glue. The correct fix would be looking at the
 /// entirety of the code around `needs_drop_components` and this file and come up with
@@ -104,6 +153,7 @@ struct NeedsDropTypes<'tcx, F> {
     /// Set this to true if an exhaustive list of types involved in
     /// drop obligation is requested.
     exhaustive: bool,
+    analysis_kind: AnalysisKind<'tcx>,
 }
 
 impl<'tcx, F> NeedsDropTypes<'tcx, F> {
@@ -113,6 +163,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
         ty: Ty<'tcx>,
         exhaustive: bool,
         adt_components: F,
+        analysis_kind: AnalysisKind<'tcx>,
     ) -> Self {
         let mut seen_tys = FxHashSet::default();
         seen_tys.insert(ty);
@@ -126,6 +177,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
             recursion_limit: tcx.recursion_limit(),
             adt_components,
             exhaustive,
+            analysis_kind,
         }
     }
 
@@ -139,7 +191,7 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
 
 impl<'tcx, F, I> Iterator for NeedsDropTypes<'tcx, F>
 where
-    F: Fn(ty::AdtDef<'tcx>, GenericArgsRef<'tcx>) -> NeedsDropResult<I>,
+    F: Fn(ty::AdtDef<'tcx>, GenericArgsRef<'tcx>, bool) -> NeedsDropResult<I>,
     I: Iterator<Item = Ty<'tcx>>,
 {
     type Item = NeedsDropResult<Ty<'tcx>>;
@@ -208,6 +260,9 @@ where
                     }
 
                     _ if tcx.type_is_copy_modulo_regions(self.typing_env, component) => {}
+                    _ if !self.analysis_kind.is_finalization() && component.is_gc(tcx) => {
+                        return Some(Err(AlwaysRequiresDrop));
+                    }
 
                     ty::Closure(_, args) => {
                         for upvar in args.as_closure().upvar_tys() {
@@ -225,7 +280,36 @@ where
                     // `ManuallyDrop`. If it's a struct or enum without a `Drop`
                     // impl then check whether the field types need `Drop`.
                     ty::Adt(adt_def, args) => {
-                        let tys = match (self.adt_components)(adt_def, args) {
+                        let drop_method_finalizer_elidable = self.analysis_kind.is_finalization()
+                            && component.drop_method_finalizer_elidable(tcx, self.typing_env);
+
+                        if self.analysis_kind.is_finalization() {
+                            self.analysis_kind.cache_type(component);
+                        }
+
+                        if drop_method_finalizer_elidable {
+                            for arg_ty in args.types() {
+                                // Required to prevent cycles when checking for finalizers. For
+                                // example, to check whether a Box<T> requires a finalizer, its type
+                                // parameter T must be checked. However, if T = Box, then this
+                                // induce a cycle without accounting for previously seen types.
+                                if !self.analysis_kind.is_cached(arg_ty) {
+                                    queue_type(self, arg_ty);
+                                }
+                            }
+                        }
+
+                        if self.analysis_kind.is_finalization()
+                            && adt_def.did()
+                                == tcx.get_diagnostic_item(sym::non_finalizable).unwrap()
+                        {
+                            continue;
+                        }
+                        let tys = match (self.adt_components)(
+                            adt_def,
+                            args,
+                            drop_method_finalizer_elidable,
+                        ) {
                             Err(AlwaysRequiresDrop) => {
                                 return Some(self.always_drop_component(ty));
                             }
@@ -294,6 +378,36 @@ enum DtorType {
     Significant,
 }
 
+enum AnalysisKind<'tcx> {
+    Destruction,
+    Finalization(FxHashSet<Ty<'tcx>>),
+}
+
+impl<'tcx> AnalysisKind<'tcx> {
+    fn is_finalization(&self) -> bool {
+        match self {
+            AnalysisKind::Destruction => false,
+            AnalysisKind::Finalization(..) => true,
+        }
+    }
+
+    fn cache_type(&mut self, ty: Ty<'tcx>) {
+        if let AnalysisKind::Finalization(cache) = self {
+            cache.insert(ty);
+        } else {
+            bug!("Cannot cache types for destruction analysis");
+        }
+    }
+
+    fn is_cached(&mut self, ty: Ty<'tcx>) -> bool {
+        if let AnalysisKind::Finalization(cache) = self {
+            return cache.contains(&ty);
+        } else {
+            bug!("Cannot cache types for destruction analysis");
+        }
+    }
+}
+
 // This is a helper function for `adt_drop_tys` and `adt_significant_drop_tys`.
 // Depending on the implantation of `adt_has_dtor`, it is used to check if the
 // ADT has a destructor or if the ADT only has a significant destructor. For
@@ -323,11 +437,15 @@ fn drop_tys_helper<'tcx>(
         })
     }
 
-    let adt_components = move |adt_def: ty::AdtDef<'tcx>, args: GenericArgsRef<'tcx>| {
+    let adt_components = move |adt_def: ty::AdtDef<'tcx>,
+                               args: GenericArgsRef<'tcx>,
+                               drop_method_finalizer_elidable: bool| {
         if adt_def.is_manually_drop() {
             debug!("drop_tys_helper: `{:?}` is manually drop", adt_def);
             Ok(Vec::new())
-        } else if let Some(dtor_info) = adt_has_dtor(adt_def) {
+        } else if let Some(dtor_info) = adt_has_dtor(adt_def)
+            && !drop_method_finalizer_elidable
+        {
             match dtor_info {
                 DtorType::Significant => {
                     debug!("drop_tys_helper: `{:?}` implements `Drop`", adt_def);
@@ -368,7 +486,7 @@ fn drop_tys_helper<'tcx>(
         .map(|v| v.into_iter())
     };
 
-    NeedsDropTypes::new(tcx, typing_env, ty, exhaustive, adt_components)
+    NeedsDropTypes::new(tcx, typing_env, ty, exhaustive, adt_components, AnalysisKind::Destruction)
 }
 
 fn adt_consider_insignificant_dtor<'tcx>(
@@ -457,6 +575,7 @@ pub(crate) fn provide(providers: &mut Providers) {
         needs_drop_raw,
         needs_async_drop_raw,
         has_significant_drop_raw,
+        needs_finalizer_raw,
         adt_drop_tys,
         adt_significant_drop_tys,
         list_significant_drop_tys,

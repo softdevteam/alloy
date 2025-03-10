@@ -1573,6 +1573,16 @@ pub const unsafe fn transmute_unchecked<Src, Dst>(_src: Src) -> Dst;
 #[rustc_intrinsic]
 pub const fn needs_drop<T: ?Sized>() -> bool;
 
+/// Returns `true` if the actual type given as `T` requires finalizing
+/// ; returns `false` if the actual type provided for `T`
+/// implements `Copy`.
+///
+#[rustc_intrinsic_const_stable_indirect]
+#[rustc_nounwind]
+#[rustc_intrinsic]
+#[cfg(not(bootstrap))]
+pub const fn needs_finalizer<T: ?Sized>() -> bool;
+
 /// Calculates the offset from a pointer.
 ///
 /// This is implemented as an intrinsic to avoid converting to and from an

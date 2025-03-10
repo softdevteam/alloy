@@ -320,6 +320,7 @@ impl<T> Gc<T> {
     #[inline(always)]
     #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
+        #[cfg(not(bootstrap))]
         if !crate::mem::needs_finalizer::<T>() {
             return unsafe {
                 Self::from_inner(Box::leak(Box::new_in(GcBox { value }, GcAllocator)).into())

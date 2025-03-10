@@ -1545,6 +1545,10 @@ rustc_queries! {
     query is_unpin_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` is `Unpin`", env.value }
     }
+    /// Query backing `Ty::must_check_component_tys_for_finalizer`.
+    query drop_method_finalizer_elidable_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` contains types which might need finalizing", env.value }
+    }
     /// Query backing `Ty::needs_drop`.
     query needs_drop_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` needs drop", env.value }
@@ -1556,6 +1560,10 @@ rustc_queries! {
     /// Query backing `Ty::has_significant_drop_raw`.
     query has_significant_drop_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
         desc { "computing whether `{}` has a significant drop", env.value }
+    }
+    /// Query backing `TyS::needs_finalizer`.
+    query needs_finalizer_raw(env: ty::PseudoCanonicalInput<'tcx, Ty<'tcx>>) -> bool {
+        desc { "computing whether `{}` needs finalizer", env.value }
     }
 
     /// Query backing `Ty::is_structural_eq_shallow`.
@@ -1574,6 +1582,15 @@ rustc_queries! {
     /// then `Err(AlwaysRequiresDrop)` is returned.
     query adt_drop_tys(def_id: DefId) -> Result<&'tcx ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
         desc { |tcx| "computing when `{}` needs drop", tcx.def_path_str(def_id) }
+        cache_on_disk_if { true }
+    }
+
+    /// A list of types where the ADT requires finalization when used with
+    /// GC if and only if any of those types require finalization. If the
+    /// ADT is known to always need finalization then
+    /// `Err(AlwaysRequiresDrop)` is returned.
+    query adt_finalizer_tys(def_id: DefId) -> Result<&'tcx ty::List<Ty<'tcx>>, AlwaysRequiresDrop> {
+        desc { |tcx| "computing when `{}` needs finalize", tcx.def_path_str(def_id) }
         cache_on_disk_if { true }
     }
 

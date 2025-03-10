@@ -50,6 +50,10 @@ pub(crate) fn eval_nullary_intrinsic<'tcx>(
             ensure_monomorphic_enough(tcx, tp_ty)?;
             ConstValue::from_bool(tp_ty.needs_drop(tcx, typing_env))
         }
+        sym::needs_finalizer => {
+            ensure_monomorphic_enough(tcx, tp_ty)?;
+            ConstValue::from_bool(tp_ty.needs_finalizer(tcx, typing_env))
+        }
         sym::pref_align_of => {
             // Correctly handles non-monomorphic calls, so there is no need for ensure_monomorphic_enough.
             let layout = tcx
@@ -141,6 +145,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
 
             sym::pref_align_of
             | sym::needs_drop
+            | sym::needs_finalizer
             | sym::type_id
             | sym::type_name
             | sym::variant_count => {
@@ -150,6 +155,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     sym::needs_drop => self.tcx.types.bool,
                     sym::type_id => self.tcx.types.u128,
                     sym::type_name => Ty::new_static_str(self.tcx.tcx),
+                    sym::needs_finalizer => self.tcx.types.bool,
                     _ => bug!(),
                 };
                 let val = self
