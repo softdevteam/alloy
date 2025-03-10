@@ -56,6 +56,7 @@
 #[cfg(not(no_global_oom_handling))]
 use core::cmp;
 use core::cmp::Ordering;
+use core::gc::DropMethodFinalizerElidable;
 use core::hash::{Hash, Hasher};
 #[cfg(not(no_global_oom_handling))]
 use core::iter;
@@ -3785,6 +3786,9 @@ impl<T: Ord, A: Allocator> Ord for Vec<T, A> {
         Ord::cmp(&**self, &**other)
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, A: Allocator> DropMethodFinalizerElidable for Vec<T, A> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T, A: Allocator> Drop for Vec<T, A> {

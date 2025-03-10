@@ -190,6 +190,7 @@ use core::cmp::Ordering;
 use core::error::{self, Error};
 use core::fmt;
 use core::future::Future;
+use core::gc::DropMethodFinalizerElidable;
 use core::hash::{Hash, Hasher};
 use core::marker::{PointerLike, Tuple, Unsize};
 use core::mem::{self, SizedTypeProperties};
@@ -2134,3 +2135,6 @@ impl<E: Error> Error for Box<E> {
 
 #[unstable(feature = "pointer_like_trait", issue = "none")]
 impl<T> PointerLike for Box<T> {}
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T: ?Sized, A: Allocator> DropMethodFinalizerElidable for Box<T, A> {}

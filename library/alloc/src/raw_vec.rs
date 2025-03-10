@@ -1,5 +1,6 @@
 #![unstable(feature = "raw_vec_internals", reason = "unstable const warnings", issue = "none")]
 
+use core::gc::DropMethodFinalizerElidable;
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit, SizedTypeProperties};
 use core::ptr::{self, NonNull, Unique};
@@ -782,6 +783,9 @@ where
 
     memory.map_err(|_| AllocError { layout: new_layout, non_exhaustive: () }.into())
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<T, A: Allocator> DropMethodFinalizerElidable for RawVec<T, A> {}
 
 // Central function for reserve error handling.
 #[cfg(not(no_global_oom_handling))]

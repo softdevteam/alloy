@@ -2,6 +2,7 @@ use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::error::Error;
 use core::fmt::{self, Debug};
+use core::gc::DropMethodFinalizerElidable;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
@@ -182,6 +183,9 @@ pub struct BTreeMap<
     // For dropck; the `Box` avoids making the `Unpin` impl more strict than before
     _marker: PhantomData<crate::boxed::Box<(K, V), A>>,
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<K, V, A: Allocator + Clone> DropMethodFinalizerElidable for BTreeMap<K, V, A> {}
 
 #[stable(feature = "btree_drop", since = "1.7.0")]
 unsafe impl<#[may_dangle] K, #[may_dangle] V, A: Allocator + Clone> Drop for BTreeMap<K, V, A> {
