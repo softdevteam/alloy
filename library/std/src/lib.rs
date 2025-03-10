@@ -299,6 +299,7 @@
 #![feature(if_let_guard)]
 #![feature(intra_doc_pointers)]
 #![feature(lang_items)]
+#![feature(legacy_receiver_trait)]
 #![feature(let_chains)]
 #![feature(link_cfg)]
 #![feature(linkage)]
