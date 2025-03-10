@@ -45,7 +45,7 @@ pub use core::gc::*;
 use core::hash::{Hash, Hasher};
 use core::marker::Unsize;
 use core::mem::{self, MaybeUninit, align_of_val_raw, size_of_val};
-use core::ops::{CoerceUnsized, Deref, DispatchFromDyn};
+use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, LegacyReceiver};
 use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
@@ -1087,3 +1087,6 @@ impl<T: ?Sized> AsRef<T> for Gc<T> {
         &**self
     }
 }
+
+#[unstable(feature = "legacy_receiver_trait", issue = "none")]
+impl<T: ?Sized> LegacyReceiver for Gc<T> {}
