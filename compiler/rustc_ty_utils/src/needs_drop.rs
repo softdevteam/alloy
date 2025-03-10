@@ -284,26 +284,34 @@ where
                             && component.drop_method_finalizer_elidable(tcx, self.typing_env);
 
                         if self.analysis_kind.is_finalization() {
+                            if adt_def.did()
+                                == tcx.get_diagnostic_item(sym::non_finalizable).unwrap()
+                            {
+                                continue;
+                            }
+                            if adt_def.did() == tcx.get_diagnostic_item(sym::HashMap).unwrap()
+                                || adt_def.did() == tcx.get_diagnostic_item(sym::HashSet).unwrap()
+                            {
+                                for arg_ty in args.types() {
+                                    // Required to prevent cycles when checking for finalizers. For
+                                    // example, to check whether a Box<T> requires a finalizer, its type
+                                    // parameter T must be checked. However, if T = Box, then this
+                                    // induce a cycle without accounting for previously seen types.
+                                    if !self.analysis_kind.is_cached(arg_ty) {
+                                        queue_type(self, arg_ty);
+                                    }
+                                }
+                                continue;
+                            }
                             self.analysis_kind.cache_type(component);
                         }
 
                         if drop_method_finalizer_elidable {
                             for arg_ty in args.types() {
-                                // Required to prevent cycles when checking for finalizers. For
-                                // example, to check whether a Box<T> requires a finalizer, its type
-                                // parameter T must be checked. However, if T = Box, then this
-                                // induce a cycle without accounting for previously seen types.
                                 if !self.analysis_kind.is_cached(arg_ty) {
                                     queue_type(self, arg_ty);
                                 }
                             }
-                        }
-
-                        if self.analysis_kind.is_finalization()
-                            && adt_def.did()
-                                == tcx.get_diagnostic_item(sym::non_finalizable).unwrap()
-                        {
-                            continue;
                         }
                         let tys = match (self.adt_components)(
                             adt_def,
