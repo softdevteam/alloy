@@ -1508,21 +1508,29 @@ impl<'tcx> Ty<'tcx> {
     /// Note that this method is used to check eligible types in unions.
     #[inline]
     pub fn needs_finalizer(self, tcx: TyCtxt<'tcx>, typing_env: ty::TypingEnv<'tcx>) -> bool {
-        // Avoid querying in simple cases.
-        match needs_drop_components(tcx, self) {
-            Err(AlwaysRequiresDrop) => true,
-            Ok(components) => {
-                let query_ty = match *components {
-                    [] => return false,
-                    // If we've got a single component, call the query with that
-                    // to increase the chance that we hit the query cache.
-                    [component_ty] => component_ty,
-                    _ => self,
-                };
-                // This doesn't depend on regions, so try to minimize distinct
-                // query keys used.
-                let erased = tcx.normalize_erasing_regions(typing_env, query_ty);
-                tcx.needs_finalizer_raw(typing_env.as_query_input(erased))
+        #[cfg(feature = "rustc_no_elision")]
+        return self.needs_drop(tcx, typing_env);
+
+        #[cfg(not(feature = "rustc_no_elision"))]
+        {
+            if tcx.sess.opts.cg.no_finalizer_elision {
+                return self.needs_drop(tcx, typing_env);
+            }
+            match needs_drop_components(tcx, self) {
+                Err(AlwaysRequiresDrop) => true,
+                Ok(components) => {
+                    let query_ty = match *components {
+                        [] => return false,
+                        // If we've got a single component, call the query with that
+                        // to increase the chance that we hit the query cache.
+                        [component_ty] => component_ty,
+                        _ => self,
+                    };
+                    // This doesn't depend on regions, so try to minimize distinct
+                    // query keys used.
+                    let erased = tcx.normalize_erasing_regions(typing_env, query_ty);
+                    tcx.needs_finalizer_raw(typing_env.as_query_input(erased))
+                }
             }
         }
     }
