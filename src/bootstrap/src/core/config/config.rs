@@ -345,6 +345,8 @@ pub struct Config {
     // libstd features
     pub backtrace: bool, // support for RUST_BACKTRACE
 
+    pub bdwgc_link_shared: bool,
+
     // misc
     pub low_priority: bool,
     pub channel: String,
@@ -677,6 +679,7 @@ pub(crate) struct TomlConfig {
     install: Option<Install>,
     llvm: Option<Llvm>,
     rust: Option<Rust>,
+    alloy: Option<Alloy>,
     target: Option<HashMap<String, TomlTarget>>,
     dist: Option<Dist>,
     profile: Option<String>,
@@ -710,7 +713,7 @@ trait Merge {
 impl Merge for TomlConfig {
     fn merge(
         &mut self,
-        TomlConfig { build, install, llvm, rust, dist, target, profile, change_id }: Self,
+        TomlConfig { build, install, llvm, rust, alloy, dist, target, profile, change_id }: Self,
         replace: ReplaceOpt,
     ) {
         fn do_merge<T: Merge>(x: &mut Option<T>, y: Option<T>, replace: ReplaceOpt) {
@@ -730,6 +733,7 @@ impl Merge for TomlConfig {
         do_merge(&mut self.install, install, replace);
         do_merge(&mut self.llvm, llvm, replace);
         do_merge(&mut self.rust, rust, replace);
+        do_merge(&mut self.alloy, alloy, replace);
         do_merge(&mut self.dist, dist, replace);
 
         match (self.target.as_mut(), target) {
@@ -1217,6 +1221,13 @@ define_config! {
 }
 
 define_config! {
+    /// TOML representation of Alloy build configurations.
+    struct Alloy {
+        bdwgc_link_shared: Option<bool> = "bdwgc-link-shared",
+    }
+}
+
+define_config! {
     /// TOML representation of how each build target is configured.
     struct TomlTarget {
         cc: Option<String> = "cc",
@@ -1295,6 +1306,7 @@ impl Config {
             // This is needed by codegen_ssa on macOS to ship `llvm-objcopy` aliased to
             // `rust-objcopy` to workaround bad `strip`s on macOS.
             llvm_tools_enabled: true,
+            bdwgc_link_shared: false,
 
             ..Default::default()
         }
@@ -2018,6 +2030,12 @@ impl Config {
             }
         } else if config.rust_info.is_from_tarball() && !is_user_configured_rust_channel {
             ci_channel.clone_into(&mut config.channel);
+        }
+
+        if let Some(alloy) = toml.alloy {
+            let Alloy { bdwgc_link_shared } = alloy;
+
+            set(&mut config.bdwgc_link_shared, bdwgc_link_shared);
         }
 
         if let Some(llvm) = toml.llvm {

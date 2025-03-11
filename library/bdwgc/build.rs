@@ -1,18 +1,14 @@
-use std::env;
-use std::path::PathBuf;
-use std::process::Command;
-
-const BDWGC_REPO: &str = "../../src/bdwgc";
-const BDWGC_BUILD_DIR: &str = "lib";
-
 #[cfg(not(all(target_pointer_width = "64", target_arch = "x86_64")))]
 compile_error!("Requires x86_64 with 64 bit pointer width.");
 
-fn main() {
-    if env::var("GC_LINK_DYNAMIC").map_or(false, |v| v == "true") {
-        println!("cargo:rustc-link-lib=dylib=gc");
-        return;
-    }
+#[cfg(not(feature = "link-shared"))]
+fn build_bdwgc() {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    const BDWGC_REPO: &str = "../../src/bdwgc";
+    const BDWGC_BUILD_DIR: &str = "lib";
 
     let out_dir = env::var("OUT_DIR").unwrap();
     let bdwgc_src = PathBuf::from(BDWGC_REPO);
@@ -48,4 +44,11 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", &build_dir.display());
     println!("cargo:rustc-link-lib=static=gc");
+}
+
+fn main() {
+    #[cfg(not(feature = "link-shared"))]
+    build_bdwgc();
+    #[cfg(feature = "link-shared")]
+    println!("cargo:rustc-link-lib=dylib=gc");
 }
