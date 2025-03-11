@@ -676,7 +676,10 @@ impl Build {
         if target.contains("zkvm") {
             features.insert("compiler-builtins-mem");
         }
-
+        // Alloy features
+        if self.config.bdwgc_link_shared {
+            features.insert("bdwgc-link-shared");
+        }
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
 
