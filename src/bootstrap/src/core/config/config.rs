@@ -345,6 +345,10 @@ pub struct Config {
     // libstd features
     pub backtrace: bool, // support for RUST_BACKTRACE
 
+    pub finalizer_elision: bool,
+    pub finalizer_safety_analysis: bool,
+    pub premature_finalizer_prevention: bool,
+    pub premature_finalizer_prevention_optimize: bool,
     pub bdwgc_link_shared: bool,
 
     // misc
@@ -1223,6 +1227,10 @@ define_config! {
 define_config! {
     /// TOML representation of Alloy build configurations.
     struct Alloy {
+        finalizer_elision: Option<bool> = "finalizer-elision",
+        finalizer_safety_analysis: Option<bool> = "finalizer-safety-analysis",
+        premature_finalizer_prevention: Option<bool> = "premature-finalizer-prevention",
+        premature_finalizer_prevention_optimize: Option<bool> = "premature-finalizer-prevention-optimize",
         bdwgc_link_shared: Option<bool> = "bdwgc-link-shared",
     }
 }
@@ -1306,6 +1314,11 @@ impl Config {
             // This is needed by codegen_ssa on macOS to ship `llvm-objcopy` aliased to
             // `rust-objcopy` to workaround bad `strip`s on macOS.
             llvm_tools_enabled: true,
+            // alloy opts
+            finalizer_elision: true,
+            finalizer_safety_analysis: true,
+            premature_finalizer_prevention: true,
+            premature_finalizer_prevention_optimize: true,
             bdwgc_link_shared: false,
 
             ..Default::default()
@@ -2033,8 +2046,21 @@ impl Config {
         }
 
         if let Some(alloy) = toml.alloy {
-            let Alloy { bdwgc_link_shared } = alloy;
+            let Alloy {
+                finalizer_elision,
+                finalizer_safety_analysis,
+                premature_finalizer_prevention,
+                premature_finalizer_prevention_optimize,
+                bdwgc_link_shared,
+            } = alloy;
 
+            set(&mut config.finalizer_elision, finalizer_elision);
+            set(&mut config.finalizer_safety_analysis, finalizer_safety_analysis);
+            set(&mut config.premature_finalizer_prevention, premature_finalizer_prevention);
+            set(
+                &mut config.premature_finalizer_prevention_optimize,
+                premature_finalizer_prevention_optimize,
+            );
             set(&mut config.bdwgc_link_shared, bdwgc_link_shared);
         }
 

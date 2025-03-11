@@ -20,6 +20,9 @@ rustc_smir = { path = "../rustc_smir" }
 stable_mir = { path = "../stable_mir" }
 # tidy-alphabetical-end
 
+rustc_mir_transform = { path = "../rustc_mir_transform" }
+rustc_middle = { path = "../rustc_middle" }
+
 [dependencies.tikv-jemalloc-sys]
 version = "0.6.0"
 optional = true
@@ -32,3 +35,7 @@ llvm = ['rustc_driver_impl/llvm']
 max_level_info = ['rustc_driver_impl/max_level_info']
 rustc_randomized_layouts = ['rustc_driver_impl/rustc_randomized_layouts']
 # tidy-alphabetical-end
+
+rustc_no_premopt = ["rustc_mir_transform/rustc_no_premopt"]
+rustc_no_fsa = ["rustc_mir_transform/rustc_no_fsa"]
+rustc_no_elision = ["rustc_middle/rustc_no_elision"]

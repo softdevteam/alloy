@@ -677,6 +677,15 @@ impl Build {
             features.insert("compiler-builtins-mem");
         }
         // Alloy features
+        if self.config.finalizer_elision {
+            features.insert("finalizer-elision");
+        }
+        if self.config.premature_finalizer_prevention {
+            features.insert("premature-finalizer-prevention");
+        }
+        if self.config.finalizer_elision {
+            features.insert("finalizer-elision");
+        }
         if self.config.bdwgc_link_shared {
             features.insert("bdwgc-link-shared");
         }
@@ -703,6 +712,16 @@ impl Build {
         // keep in sync with `bootstrap/compile.rs:rustc_cargo_env`
         if self.config.rust_randomize_layout {
             features.push("rustc_randomized_layouts");
+        }
+
+        if !self.config.premature_finalizer_prevention_optimize {
+            features.push("rustc_no_premopt");
+        }
+        if !self.config.finalizer_safety_analysis {
+            features.push("rustc_no_fsa");
+        }
+        if !self.config.finalizer_elision {
+            features.push("rustc_no_elision");
         }
 
         // If debug logging is on, then we want the default for tracing:

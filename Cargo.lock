@@ -3093,6 +3093,8 @@ dependencies = [
  "rustc_codegen_ssa",
  "rustc_driver",
  "rustc_driver_impl",
+ "rustc_middle",
+ "rustc_mir_transform",
  "rustc_smir",
  "stable_mir",
  "tikv-jemalloc-sys",
