@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests;
 
+use core::gc::DropMethodFinalizerElidable;
+
 use hashbrown::hash_map as base;
 
 use self::Entry::*;
@@ -3346,3 +3348,6 @@ fn assert_covariance() {
         d
     }
 }
+
+#[unstable(feature = "gc", issue = "none")]
+unsafe impl<K, V, S> DropMethodFinalizerElidable for HashMap<K, V, S> {}
