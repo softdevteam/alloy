@@ -40,7 +40,6 @@
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::any::Any;
 use core::cmp::{self, Ordering};
-use core::fmt;
 pub use core::gc::*;
 use core::hash::{Hash, Hasher};
 use core::marker::Unsize;
@@ -51,6 +50,7 @@ use core::ptr::{self, NonNull, drop_in_place};
 use core::slice::from_raw_parts_mut;
 #[cfg(feature = "log-stats")]
 use core::sync::atomic::{self, AtomicU64};
+use core::{fmt, iter};
 
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
@@ -754,6 +754,56 @@ impl<T, const N: usize> From<[T; N]> for Gc<[T]> {
     #[inline]
     fn from(v: [T; N]) -> Gc<[T]> {
         Gc::<[T; N]>::from(v)
+    }
+}
+
+#[cfg(not(no_global_oom_handling))]
+#[stable(feature = "shared_from_iter", since = "1.37.0")]
+impl<T> FromIterator<T> for Gc<[T]> {
+    /// Takes each element in the `Iterator` and collects it into a `Gc<[T]>`.
+    #[cfg_attr(not(bootstrap), rustc_fsa_entry_point)]
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        ToGcSlice::to_gc_slice(iter.into_iter())
+    }
+}
+
+/// Specialization trait used for collecting into `Gc<[T]>`.
+#[cfg(not(no_global_oom_handling))]
+trait ToGcSlice<T>: Iterator<Item = T> + Sized {
+    fn to_gc_slice(self) -> Gc<[T]>;
+}
+
+#[cfg(not(no_global_oom_handling))]
+impl<T, I: Iterator<Item = T>> ToGcSlice<T> for I {
+    default fn to_gc_slice(self) -> Gc<[T]> {
+        self.collect::<Vec<T>>().into()
+    }
+}
+
+#[cfg(not(no_global_oom_handling))]
+impl<T, I: iter::TrustedLen<Item = T>> ToGcSlice<T> for I {
+    fn to_gc_slice(self) -> Gc<[T]> {
+        // This is the case for a `TrustedLen` iterator.
+        let (low, high) = self.size_hint();
+        if let Some(high) = high {
+            debug_assert_eq!(
+                low,
+                high,
+                "TrustedLen iterator's size hint is not exact: {:?}",
+                (low, high)
+            );
+
+            unsafe {
+                // SAFETY: We need to ensure that the iterator has an exact length and we have.
+                Gc::from_iter_exact(self, low)
+            }
+        } else {
+            // TrustedLen contract guarantees that `upper_bound == None` implies an iterator
+            // length exceeding `usize::MAX`.
+            // The default implementation would collect into a vec which would panic.
+            // Thus we panic here immediately without invoking `Vec` code.
+            panic!("capacity overflow");
+        }
     }
 }
 
