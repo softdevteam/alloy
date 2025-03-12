@@ -78,4 +78,8 @@ extern "C" {
     pub fn GC_init();
 
     pub fn GC_keep_alive(ptr: *mut u8);
+
+    pub fn GC_finalized_total() -> u64;
+
+    pub fn GC_get_gc_no() -> u64;
 }

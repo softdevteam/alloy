@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "rustc_no_fsa", allow(dead_code))]
 #![allow(rustc::untranslatable_diagnostic)]
 #![allow(rustc::diagnostic_outside_of_impl)]
 use std::collections::VecDeque;

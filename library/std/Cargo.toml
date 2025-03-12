@@ -103,6 +103,8 @@ compiler-builtins-mangled-names = ["alloc/compiler-builtins-mangled-names"]
 llvm-libunwind = ["unwind/llvm-libunwind"]
 system-llvm-libunwind = ["unwind/system-llvm-libunwind"]
 
+# Alloy debug flags
+log-stats = ["alloc/log-stats"]
 premature-finalizer-prevention = []
 premature-finalizer-prevention-optimize = []
 finalizer-elision = []
