@@ -37,5 +37,6 @@ rustc_randomized_layouts = ['rustc_driver_impl/rustc_randomized_layouts']
 # tidy-alphabetical-end
 
 rustc_no_premopt = ["rustc_mir_transform/rustc_no_premopt"]
+rustc_log_gc_stats = ["rustc_mir_transform/rustc_log_gc_stats"]
 rustc_no_fsa = ["rustc_mir_transform/rustc_no_fsa"]
 rustc_no_elision = ["rustc_middle/rustc_no_elision"]

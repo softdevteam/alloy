@@ -156,6 +156,7 @@ declare_passes! {
     mod large_enums : EnumSizeOpt;
     mod lower_intrinsics : LowerIntrinsics;
     mod lower_slice_len : LowerSliceLenCalls;
+    mod log_gc_stats : LogGcStats;
     mod match_branches : MatchBranchSimplification;
     mod mentioned_items : MentionedItems;
     mod multiple_return_terminators : MultipleReturnTerminators;
@@ -736,6 +737,8 @@ fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             // Cleanup for human readability, off by default.
             &prettify::ReorderBasicBlocks,
             &prettify::ReorderLocals,
+            #[cfg(feature = "rustc_log_gc_stats")]
+            &log_gc_stats::LogGcStats,
             // Dump the end result for testing and debugging purposes.
             &dump_mir::Marker("PreCodegen"),
         ],

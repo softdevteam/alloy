@@ -35,3 +35,4 @@ tracing = "0.1"
 [features]
 rustc_no_premopt = []
 rustc_no_fsa = []
+rustc_log_gc_stats = []
