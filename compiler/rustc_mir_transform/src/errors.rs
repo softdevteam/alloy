@@ -190,3 +190,10 @@ pub(crate) struct ForceInlineFailure {
 pub(crate) struct ForceInlineJustification {
     pub sym: Symbol,
 }
+
+#[derive(Diagnostic)]
+#[diag(mir_transform_log_stats_err)]
+#[note]
+pub(crate) struct LogStatsError {
+    pub reason: String,
+}

@@ -732,7 +732,7 @@ impl Build {
         if !self.config.finalizer_elision {
             features.push("rustc_no_elision");
         }
-        if !self.config.log_stats {
+        if self.config.log_stats {
             features.push("rustc_log_gc_stats");
         }
 

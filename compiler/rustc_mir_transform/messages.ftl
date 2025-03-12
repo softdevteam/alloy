@@ -36,6 +36,9 @@ mir_transform_force_inline_attr =
 mir_transform_force_inline_justification =
     `{$callee}` is required to be inlined to: {$sym}
 
+mir_transform_log_stats_err = logging of GC statistics failed
+    .note = {$reason}
+
 mir_transform_must_not_suspend = {$pre}`{$def_path}`{$post} held across a suspend point, but should not be
     .label = the value is held across this suspend point
     .note = {$reason}

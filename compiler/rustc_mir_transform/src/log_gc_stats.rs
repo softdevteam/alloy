@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "rustc_log_gc_stats"), allow(dead_code))]
+use std::env;
+use std::fs::OpenOptions;
 use std::io::Write;
-use std::{env, fs};
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::*;
@@ -9,6 +10,7 @@ use rustc_span::sym;
 use tracing::trace;
 
 use crate::MirPass;
+use crate::errors::LogStatsError;
 
 #[derive(Default)]
 struct GcStats {
@@ -58,25 +60,42 @@ impl<'tcx> MirPass<'tcx> for LogGcStats {
             }
         }
 
-        let mut filename = fs::OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .append(true)
             .open(env::var("ALLOY_RUSTC_LOG").unwrap())
-            .unwrap();
+            .unwrap_or_else(|e| {
+                tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() })
+            });
 
-        let headers = "fn,num_gcs,num_rcs,num_arcs,num_weaks,num_arcweaks";
-        let out = format!(
-            "{},{},{},{},{},{}\n",
+        if file
+            .metadata()
+            .unwrap_or_else(|e| {
+                tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() })
+            })
+            .len()
+            == 0
+        {
+            let _ = writeln!(file, "fn,num_gcs,num_rcs,num_arcs,num_weaks,num_arcweaks")
+                .inspect_err(|e| {
+                    tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() })
+                });
+        }
+
+        let _ = writeln!(
+            file,
+            "{},{},{},{},{},{}",
             tcx.def_path_str(body.source.def_id()),
             stats.num_gcs,
             stats.num_rcs,
             stats.num_arcs,
             stats.num_weaks,
-            stats.num_arcweaks,
-        );
-        write!(filename, "{}", format!("{headers}\n{out}")).unwrap();
+            stats.num_arcweaks
+        )
+        .inspect_err(|e| tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() }));
     }
+
     fn is_required(&self) -> bool {
         true
     }
