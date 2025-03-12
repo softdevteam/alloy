@@ -19,6 +19,7 @@ struct GcStats {
     num_weaks: u64,
     num_arcs: u64,
     num_arcweaks: u64,
+    num_elidable_finalizers: u64,
 }
 
 pub(super) struct LogGcStats;
@@ -42,16 +43,23 @@ impl<'tcx> MirPass<'tcx> for LogGcStats {
         let weak = tcx.get_diagnostic_item(sym::RcWeak).unwrap();
         let arcweak = tcx.get_diagnostic_item(sym::ArcWeak).unwrap();
 
+        let typing_env = body.typing_env(tcx);
         let mut stats = GcStats::default();
 
         for decl in body.local_decls().iter().skip(1) {
-            if decl.ty.ty_adt_def().is_none() {
+            if decl.ty.ty_adt_def().is_none() || !decl.is_user_variable() {
+                // Smart pointers types are always ADTs.
+                // We also only care about those that were explicitly defined by the user.
                 continue;
             }
 
             let did = decl.ty.ty_adt_def().unwrap().did();
             match did {
-                _ if did == gc => stats.num_gcs += 1,
+                _ if did == gc => {
+                    stats.num_elidable_finalizers +=
+                        decl.ty.gced_ty(tcx).needs_finalizer(tcx, typing_env) as u64;
+                    stats.num_gcs += 1
+                }
                 _ if did == rc => stats.num_rcs += 1,
                 _ if did == arc => stats.num_arcs += 1,
                 _ if did == weak => stats.num_weaks += 1,
@@ -77,21 +85,25 @@ impl<'tcx> MirPass<'tcx> for LogGcStats {
             .len()
             == 0
         {
-            let _ = writeln!(file, "fn,num_gcs,num_rcs,num_arcs,num_weaks,num_arcweaks")
-                .inspect_err(|e| {
-                    tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() })
-                });
+            let _ = writeln!(
+                file,
+                "fn,num_gcs,num_rcs,num_arcs,num_weaks,num_arcweaks,num_elidable_finalizers"
+            )
+            .inspect_err(|e| {
+                tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() })
+            });
         }
 
         let _ = writeln!(
             file,
-            "{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{}",
             tcx.def_path_str(body.source.def_id()),
             stats.num_gcs,
             stats.num_rcs,
             stats.num_arcs,
             stats.num_weaks,
-            stats.num_arcweaks
+            stats.num_arcweaks,
+            stats.num_elidable_finalizers,
         )
         .inspect_err(|e| tcx.sess.psess.dcx().emit_fatal(LogStatsError { reason: e.to_string() }));
     }
