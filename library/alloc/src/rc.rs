@@ -261,10 +261,14 @@ use core::pin::PinCoerceUnsized;
 use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
+#[cfg(feature = "log-stats")]
+use core::sync::atomic;
 use core::{borrow, fmt, hint};
 #[cfg(test)]
 use std::boxed::Box;
 
+#[cfg(feature = "log-stats")]
+use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
 use crate::alloc::{AllocError, Allocator, Global, Layout};
@@ -408,6 +412,11 @@ impl<T> Rc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new(value: T) -> Rc<T> {
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         // There is an implicit weak pointer owned by all the strong
         // pointers, which ensures that the weak destructor never frees
         // the allocation while the strong destructor is running, even
@@ -502,6 +511,12 @@ impl<T> Rc<T> {
     #[stable(feature = "new_uninit", since = "1.82.0")]
     #[must_use]
     pub fn new_uninit() -> Rc<mem::MaybeUninit<T>> {
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
+            // Decrement because `Rc` uses the global allocator.
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         unsafe {
             Rc::from_ptr(Rc::allocate_for_layout(
                 Layout::new::<T>(),

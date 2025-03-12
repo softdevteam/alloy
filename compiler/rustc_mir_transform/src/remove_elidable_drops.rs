@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "rustc_no_premopt", allow(dead_code))]
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_span::sym;

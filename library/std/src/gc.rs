@@ -49,9 +49,51 @@ use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, LegacyReceiver};
 use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
+#[cfg(feature = "log-stats")]
+use core::sync::atomic::{self, AtomicU64};
 
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
+
+#[cfg(feature = "log-stats")]
+#[derive(Default)]
+struct GcCounters {
+    finalizers_registered: AtomicU64,
+    finalizers_elidable: AtomicU64,
+    allocated_gc: AtomicU64,
+    allocated_boxed: AtomicU64,
+    allocated_rc: AtomicU64,
+    allocated_arc: AtomicU64,
+    barriers_visited: AtomicU64,
+}
+
+#[cfg(feature = "log-stats")]
+#[derive(Debug, Copy, Clone)]
+pub struct GcStats {
+    pub elision_enabled: bool,
+    pub prem_enabled: bool,
+    pub premopt_enabled: bool,
+    pub finalizers_registered: u64,
+    pub finalizers_completed: u64,
+    pub finalizers_elidable: u64,
+    pub barriers_visited: u64,
+    pub allocated_gc: u64,
+    pub allocated_boxed: u64,
+    pub allocated_rc: u64,
+    pub allocated_arc: u64,
+    pub num_gcs: u64,
+}
+
+#[cfg(feature = "log-stats")]
+static GC_COUNTERS: GcCounters = GcCounters {
+    finalizers_registered: AtomicU64::new(0),
+    finalizers_elidable: AtomicU64::new(0),
+    allocated_gc: AtomicU64::new(0),
+    allocated_boxed: AtomicU64::new(0),
+    allocated_rc: AtomicU64::new(0),
+    allocated_arc: AtomicU64::new(0),
+    barriers_visited: AtomicU64::new(0),
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // BDWGC Allocator
@@ -66,6 +108,8 @@ pub struct GcAllocator;
 unsafe impl GlobalAlloc for GcAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        #[cfg(feature = "log-stats")]
+        GC_COUNTERS.allocated_boxed.fetch_add(1, atomic::Ordering::Relaxed);
         unsafe { gc_malloc(layout) }
     }
 
@@ -125,6 +169,8 @@ unsafe fn gc_free(ptr: *mut u8, _: Layout) {
 unsafe impl Allocator for GcAllocator {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        #[cfg(feature = "log-stats")]
+        GC_COUNTERS.allocated_gc.fetch_add(1, atomic::Ordering::Relaxed);
         match layout.size() {
             0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
             size => unsafe {
@@ -147,6 +193,35 @@ impl GcAllocator {
 ////////////////////////////////////////////////////////////////////////////////
 // Free functions
 ////////////////////////////////////////////////////////////////////////////////
+#[cfg(feature = "log-stats")]
+pub fn stats() -> GcStats {
+    #[cfg(feature = "finalizer-elision")]
+    let elision_enabled = true;
+    #[cfg(not(feature = "finalizer-elision"))]
+    let elision_enabled = false;
+    #[cfg(feature = "premature-finalizer-prevention")]
+    let prem_enabled = true;
+    #[cfg(not(feature = "premature-finalizer-prevention"))]
+    let prem_enabled = false;
+    #[cfg(feature = "premature-finalizer-prevention-optimize")]
+    let premopt_enabled = true;
+    #[cfg(not(feature = "premature-finalizer-prevention-optimize"))]
+    let premopt_enabled = false;
+    GcStats {
+        elision_enabled,
+        prem_enabled,
+        premopt_enabled,
+        finalizers_registered: GC_COUNTERS.finalizers_registered.load(atomic::Ordering::Relaxed),
+        finalizers_completed: unsafe { bdwgc::GC_finalized_total() },
+        finalizers_elidable: GC_COUNTERS.finalizers_elidable.load(atomic::Ordering::Relaxed),
+        allocated_gc: GC_COUNTERS.allocated_gc.load(atomic::Ordering::Relaxed),
+        allocated_boxed: GC_COUNTERS.allocated_boxed.load(atomic::Ordering::Relaxed),
+        allocated_rc: GC_COUNTERS.allocated_rc.load(atomic::Ordering::Relaxed),
+        allocated_arc: GC_COUNTERS.allocated_arc.load(atomic::Ordering::Relaxed),
+        barriers_visited: GC_COUNTERS.barriers_visited.load(atomic::Ordering::Relaxed),
+        num_gcs: unsafe { bdwgc::GC_get_gc_no() },
+    }
+}
 
 pub fn init() {
     unsafe { bdwgc::GC_init() }
@@ -224,6 +299,8 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 #[cfg(all(not(bootstrap), not(test)))]
 impl<T: ?Sized> Drop for Gc<T> {
     fn drop(&mut self) {
+        #[cfg(feature = "log-stats")]
+        GC_COUNTERS.barriers_visited.fetch_add(1, atomic::Ordering::Relaxed);
         keep_alive(self);
     }
 }
@@ -446,10 +523,26 @@ impl<T> Gc<T> {
     #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
         #[cfg(not(bootstrap))]
-        if !crate::mem::needs_finalizer::<T>() {
-            return unsafe {
-                Self::from_inner(Box::leak(Box::new_in(GcBox { value }, GcAllocator)).into())
-            };
+        {
+            #[cfg(feature = "finalizer-elision")]
+            let needs_finalizer = crate::mem::needs_finalizer::<T>();
+            #[cfg(not(feature = "finalizer-elision"))]
+            let needs_finalizer = crate::mem::needs_drop::<T>();
+
+            if !needs_finalizer {
+                return unsafe {
+                    Self::from_inner(Box::leak(Box::new_in(GcBox { value }, GcAllocator)).into())
+                };
+            }
+
+            #[cfg(feature = "log-stats")]
+            {
+                GC_COUNTERS.finalizers_elidable.fetch_add(
+                    crate::mem::needs_finalizer::<T>() as u64,
+                    atomic::Ordering::Relaxed,
+                );
+                GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
+            }
         }
 
         unsafe extern "C" fn finalizer_shim<T>(obj: *mut u8, _: *mut u8) {
@@ -478,6 +571,8 @@ impl<T> Gc<T> {
                 ptr::null_mut(),
             );
         }
+        #[cfg(feature = "log-stats")]
+        GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
         unsafe { Self::from_inner(ptr.into()) }
     }
 }

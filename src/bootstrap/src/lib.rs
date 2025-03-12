@@ -677,6 +677,9 @@ impl Build {
             features.insert("compiler-builtins-mem");
         }
         // Alloy features
+        if self.config.log_stats {
+            features.insert("log-stats");
+        }
         if self.config.finalizer_elision {
             features.insert("finalizer-elision");
         }
