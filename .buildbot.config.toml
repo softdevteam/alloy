@@ -1,3 +1,6 @@
+[alloy]
+bdwgc-assertions = true
+
 [rust]
 codegen-units = 0           # Use many compilation units.
 debug-assertions = true     # Turn on assertions in rustc.

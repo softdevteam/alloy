@@ -17,3 +17,5 @@ cmake = "0.1"
 
 [features]
 link-shared = []
+gc-assertions = []
+gc-debug = []

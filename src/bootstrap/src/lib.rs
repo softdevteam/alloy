@@ -692,6 +692,12 @@ impl Build {
         if self.config.bdwgc_link_shared {
             features.insert("bdwgc-link-shared");
         }
+        if self.config.bdwgc_assertions {
+            features.insert("bdwgc-assertions");
+        }
+        if self.config.bdwgc_debug {
+            features.insert("bdwgc-debug");
+        }
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
 

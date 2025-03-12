@@ -30,15 +30,14 @@ fn build_bdwgc() {
         .define("enable_parallel_mark", "Off")
         .cflag("-DGC_ALWAYS_MULTITHREADED");
 
-    if env::var("ENABLE_GC_ASSERTIONS").map_or(false, |v| v == "true") {
-        build.define("enable_gc_assertions", "ON");
-    }
+    #[cfg(feature = "gc-assertions")]
+    build.define("enable_gc_assertions", "ON");
 
-    if env::var("ENABLE_GC_DEBUG").map_or(false, |v| v == "true") {
-        build.profile("Debug");
-    } else {
-        build.profile("Release");
-    }
+    #[cfg(not(feature = "gc-debug"))]
+    build.profile("Release");
+
+    #[cfg(feature = "gc-debug")]
+    build.profile("Debug");
 
     build.build();
 
