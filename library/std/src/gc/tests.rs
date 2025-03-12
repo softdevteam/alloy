@@ -138,3 +138,64 @@ fn test_from_vec() {
 
     assert_eq!(&g[..], [1, 2, 3]);
 }
+
+#[test]
+fn test_copy_from_slice() {
+    let s: &[u32] = &[1, 2, 3];
+    let r: Gc<[u32]> = Gc::from(s);
+
+    assert_eq!(&r[..], [1, 2, 3]);
+}
+
+#[test]
+fn test_clone_from_slice() {
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct X(u32);
+
+    let s: &[X] = &[X(1), X(2), X(3)];
+    let r: Gc<[X]> = Gc::from(s);
+
+    assert_eq!(&r[..], s);
+}
+
+#[test]
+fn test_from_str() {
+    let r: Gc<str> = Gc::from("foo");
+
+    assert_eq!(&r[..], "foo");
+}
+
+#[test]
+#[should_panic]
+fn test_clone_from_slice_panic() {
+    use std::string::{String, ToString};
+
+    struct Fail(u32, String);
+
+    impl Clone for Fail {
+        fn clone(&self) -> Fail {
+            if self.0 == 2 {
+                panic!();
+            }
+            Fail(self.0, self.1.clone())
+        }
+    }
+
+    let s: &[Fail] =
+        &[Fail(0, "foo".to_string()), Fail(1, "bar".to_string()), Fail(2, "baz".to_string())];
+
+    // Should panic, but not cause memory corruption
+    let _r: Gc<[Fail]> = Gc::from(s);
+}
+
+#[test]
+fn test_array_from_slice() {
+    let v = vec![1, 2, 3];
+    let r: Gc<[u32]> = Gc::from(v);
+
+    let a: Result<Gc<[u32; 3]>, _> = r.clone().try_into();
+    assert!(a.is_ok());
+
+    let a: Result<Gc<[u32; 2]>, _> = r.clone().try_into();
+    assert!(a.is_err());
+}
