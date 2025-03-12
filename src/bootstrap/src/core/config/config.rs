@@ -352,6 +352,8 @@ pub struct Config {
     pub premature_finalizer_prevention: bool,
     pub premature_finalizer_prevention_optimize: bool,
     pub bdwgc_link_shared: bool,
+    pub bdwgc_assertions: bool,
+    pub bdwgc_debug: bool,
 
     // misc
     pub low_priority: bool,
@@ -1235,6 +1237,8 @@ define_config! {
         premature_finalizer_prevention: Option<bool> = "premature-finalizer-prevention",
         premature_finalizer_prevention_optimize: Option<bool> = "premature-finalizer-prevention-optimize",
         bdwgc_link_shared: Option<bool> = "bdwgc-link-shared",
+        bdwgc_assertions: Option<bool> = "bdwgc-assertions",
+        bdwgc_debug: Option<bool> = "bdwgc-debug",
     }
 }
 
@@ -1324,6 +1328,8 @@ impl Config {
             premature_finalizer_prevention: true,
             premature_finalizer_prevention_optimize: true,
             bdwgc_link_shared: false,
+            bdwgc_assertions: false,
+            bdwgc_debug: false,
 
             ..Default::default()
         }
@@ -2057,6 +2063,8 @@ impl Config {
                 premature_finalizer_prevention,
                 premature_finalizer_prevention_optimize,
                 bdwgc_link_shared,
+                bdwgc_assertions,
+                bdwgc_debug,
             } = alloy;
 
             set(&mut config.log_stats, log_stats);
@@ -2068,6 +2076,8 @@ impl Config {
                 premature_finalizer_prevention_optimize,
             );
             set(&mut config.bdwgc_link_shared, bdwgc_link_shared);
+            set(&mut config.bdwgc_assertions, bdwgc_assertions);
+            set(&mut config.bdwgc_debug, bdwgc_debug);
         }
 
         if let Some(llvm) = toml.llvm {
