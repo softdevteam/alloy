@@ -686,8 +686,8 @@ impl Build {
         if self.config.premature_finalizer_prevention {
             features.insert("premature-finalizer-prevention");
         }
-        if self.config.finalizer_elision {
-            features.insert("finalizer-elision");
+        if self.config.premature_finalizer_prevention_optimize {
+            features.insert("premature-finalizer-prevention-optimize");
         }
         if self.config.bdwgc_link_shared {
             features.insert("bdwgc-link-shared");
