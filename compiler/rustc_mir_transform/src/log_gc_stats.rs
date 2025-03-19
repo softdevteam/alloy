@@ -37,33 +37,32 @@ impl<'tcx> MirPass<'tcx> for LogGcStats {
             return;
         }
 
-        let gc = tcx.get_diagnostic_item(sym::gc).unwrap();
-        let rc = tcx.get_diagnostic_item(sym::Rc).unwrap();
-        let arc = tcx.get_diagnostic_item(sym::Arc).unwrap();
-        let weak = tcx.get_diagnostic_item(sym::RcWeak).unwrap();
-        let arcweak = tcx.get_diagnostic_item(sym::ArcWeak).unwrap();
+        let gc = tcx.get_diagnostic_item(sym::gc);
+        let rc = tcx.get_diagnostic_item(sym::Rc);
+        let arc = tcx.get_diagnostic_item(sym::Arc);
+        let weak = tcx.get_diagnostic_item(sym::RcWeak);
+        let arcweak = tcx.get_diagnostic_item(sym::ArcWeak);
 
         let typing_env = body.typing_env(tcx);
         let mut stats = GcStats::default();
 
         for decl in body.local_decls().iter().skip(1) {
-            if decl.ty.ty_adt_def().is_none() || !decl.is_user_variable() {
+            if decl.ty.ty_adt_def().is_none() {
                 // Smart pointers types are always ADTs.
-                // We also only care about those that were explicitly defined by the user.
                 continue;
             }
 
             let did = decl.ty.ty_adt_def().unwrap().did();
             match did {
-                _ if did == gc => {
+                _ if gc.is_some() && did == gc.unwrap() => {
                     stats.num_elidable_finalizers +=
                         decl.ty.gced_ty(tcx).needs_finalizer(tcx, typing_env) as u64;
                     stats.num_gcs += 1
                 }
-                _ if did == rc => stats.num_rcs += 1,
-                _ if did == arc => stats.num_arcs += 1,
-                _ if did == weak => stats.num_weaks += 1,
-                _ if did == arcweak => stats.num_arcweaks += 1,
+                _ if rc.is_some() && did == rc.unwrap() => stats.num_rcs += 1,
+                _ if arc.is_some() && did == arc.unwrap() => stats.num_arcs += 1,
+                _ if weak.is_some() && did == weak.unwrap() => stats.num_weaks += 1,
+                _ if arcweak.is_some() && did == arcweak.unwrap() => stats.num_arcweaks += 1,
                 _ => (),
             }
         }
@@ -96,8 +95,8 @@ impl<'tcx> MirPass<'tcx> for LogGcStats {
 
         let _ = writeln!(
             file,
-            "{},{},{},{},{},{},{}",
-            tcx.def_path_str(body.source.def_id()),
+            "{:?},{},{},{},{},{},{}",
+            body.span,
             stats.num_gcs,
             stats.num_rcs,
             stats.num_arcs,
