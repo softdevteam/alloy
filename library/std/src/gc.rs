@@ -49,23 +49,13 @@ use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
 #[cfg(feature = "log-stats")]
-use core::sync::atomic::{self, AtomicU64};
+use core::sync::atomic;
 use core::{fmt, iter};
 
+#[cfg(feature = "log-stats")]
+use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
-
-#[cfg(feature = "log-stats")]
-#[derive(Default)]
-struct GcCounters {
-    finalizers_registered: AtomicU64,
-    finalizers_elidable: AtomicU64,
-    allocated_gc: AtomicU64,
-    allocated_boxed: AtomicU64,
-    allocated_rc: AtomicU64,
-    allocated_arc: AtomicU64,
-    barriers_visited: AtomicU64,
-}
 
 #[cfg(feature = "log-stats")]
 #[derive(Debug, Copy, Clone)]
@@ -83,17 +73,6 @@ pub struct GcStats {
     pub allocated_arc: u64,
     pub num_gcs: u64,
 }
-
-#[cfg(feature = "log-stats")]
-static GC_COUNTERS: GcCounters = GcCounters {
-    finalizers_registered: AtomicU64::new(0),
-    finalizers_elidable: AtomicU64::new(0),
-    allocated_gc: AtomicU64::new(0),
-    allocated_boxed: AtomicU64::new(0),
-    allocated_rc: AtomicU64::new(0),
-    allocated_arc: AtomicU64::new(0),
-    barriers_visited: AtomicU64::new(0),
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 // BDWGC Allocator
