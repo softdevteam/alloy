@@ -513,18 +513,17 @@ impl<T> Gc<T> {
             let needs_finalizer = crate::mem::needs_drop::<T>();
 
             if !needs_finalizer {
+                #[cfg(feature = "log-stats")]
+                {
+                    GC_COUNTERS.finalizers_elidable.fetch_add(
+                        crate::mem::needs_finalizer::<T>() as u64,
+                        atomic::Ordering::Relaxed,
+                    );
+                    GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
+                }
                 return unsafe {
                     Self::from_inner(Box::leak(Box::new_in(GcBox { value }, GcAllocator)).into())
                 };
-            }
-
-            #[cfg(feature = "log-stats")]
-            {
-                GC_COUNTERS.finalizers_elidable.fetch_add(
-                    crate::mem::needs_finalizer::<T>() as u64,
-                    atomic::Ordering::Relaxed,
-                );
-                GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
 
