@@ -388,6 +388,11 @@ impl<T> Arc<T> {
     pub fn new(data: T) -> Arc<T> {
         // Start the weak pointer count as 1 which is the weak pointer that's
         // held by all the strong pointers (kinda), see std/rc.rs for more info
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         let x: Box<_> = Box::new(ArcInner {
             strong: atomic::AtomicUsize::new(1),
             weak: atomic::AtomicUsize::new(1),
@@ -555,6 +560,11 @@ impl<T> Arc<T> {
     pub fn try_new(data: T) -> Result<Arc<T>, AllocError> {
         // Start the weak pointer count as 1 which is the weak pointer that's
         // held by all the strong pointers (kinda), see std/rc.rs for more info
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         let x: Box<_> = Box::try_new(ArcInner {
             strong: atomic::AtomicUsize::new(1),
             weak: atomic::AtomicUsize::new(1),
@@ -785,6 +795,11 @@ impl<T, A: Allocator> Arc<T, A> {
     where
         F: FnOnce(&Weak<T, A>) -> T,
     {
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         // Construct the inner in the "uninitialized" state with a single
         // weak reference.
         let (uninit_raw_ptr, alloc) = Box::into_raw_with_allocator(Box::new_in(
@@ -1960,6 +1975,11 @@ impl<T: ?Sized> Arc<T> {
         allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
         mem_to_arcinner: impl FnOnce(*mut u8) -> *mut ArcInner<T>,
     ) -> *mut ArcInner<T> {
+        #[cfg(feature = "log-stats")]
+        {
+            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
+            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
+        }
         let layout = arcinner_layout_for_value_layout(value_layout);
 
         let ptr = allocate(layout).unwrap_or_else(|_| handle_alloc_error(layout));
