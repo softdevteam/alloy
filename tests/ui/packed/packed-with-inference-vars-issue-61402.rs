@@ -7,6 +7,7 @@
 // that this doesn't ICE.
 
 #![allow(unused_imports, dead_code)]
+#![allow(misaligned_gc_pointers)]
 
 pub struct S;
 

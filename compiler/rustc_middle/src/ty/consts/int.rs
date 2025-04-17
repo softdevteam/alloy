@@ -1,3 +1,4 @@
+#![cfg_attr(not(bootstrap), allow(misaligned_gc_pointers))]
 use std::fmt;
 use std::num::NonZero;
 

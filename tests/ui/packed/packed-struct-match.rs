@@ -1,4 +1,5 @@
 //@ run-pass
+#![allow(misaligned_gc_pointers)]
 
 #[repr(packed)]
 struct Foo1 {

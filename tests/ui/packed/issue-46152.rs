@@ -3,6 +3,7 @@
 #![allow(unused_variables)]
 #![allow(non_local_definitions)]
 #![feature(unsize, coerce_unsized)]
+#![allow(misaligned_gc_pointers)]
 
 #[repr(packed)]
 struct UnalignedPtr<'a, T: ?Sized>

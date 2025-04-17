@@ -1,5 +1,6 @@
 //@ run-pass
 //@ compile-flags: -C debug-assertions
+#![allow(misaligned_gc_pointers)]
 
 #[repr(packed)]
 struct Misaligner {

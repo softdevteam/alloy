@@ -2,6 +2,7 @@
 
 #![feature(repr_simd, core_intrinsics)]
 #![allow(non_camel_case_types)]
+#![allow(misaligned_gc_pointers)]
 
 use std::intrinsics::simd::simd_add;
 
