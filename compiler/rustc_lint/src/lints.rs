@@ -1900,6 +1900,17 @@ impl<'a> LintDiagnostic<'a, ()> for ImproperCTypes<'_> {
     }
 }
 
+pub(crate) struct MisalignedGcPointers<'a> {
+    pub ty: Ty<'a>,
+}
+
+impl<'a> LintDiagnostic<'a, ()> for MisalignedGcPointers<'_> {
+    fn decorate_lint<'b>(self, diag: &'b mut Diag<'a, ()>) {
+        diag.primary_message(fluent::lint_misaligned_gc_pointers);
+        diag.arg("ty", self.ty);
+    }
+}
+
 #[derive(LintDiagnostic)]
 #[diag(lint_variant_size_differences)]
 pub(crate) struct VariantSizeDifferencesDiag {

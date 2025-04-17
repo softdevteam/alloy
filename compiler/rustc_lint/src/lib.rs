@@ -60,6 +60,7 @@ mod levels;
 mod lints;
 mod macro_expr_fragment_specifier_2024_migration;
 mod map_unit_fn;
+mod misaligned_gc_pointers;
 mod multiple_supertrait_upcastable;
 mod non_ascii_idents;
 mod non_fmt_panic;
@@ -98,6 +99,7 @@ use invalid_from_utf8::*;
 use let_underscore::*;
 use macro_expr_fragment_specifier_2024_migration::*;
 use map_unit_fn::*;
+use misaligned_gc_pointers::*;
 use multiple_supertrait_upcastable::*;
 use non_ascii_idents::*;
 use non_fmt_panic::NonPanicFmt;
@@ -244,6 +246,7 @@ late_lint_methods!(
             IfLetRescope: IfLetRescope::default(),
             StaticMutRefs: StaticMutRefs,
             UnqualifiedLocalImports: UnqualifiedLocalImports,
+            MisalignedGcPointers: MisalignedGcPointers,
         ]
     ]
 );

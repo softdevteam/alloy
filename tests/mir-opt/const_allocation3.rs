@@ -3,6 +3,7 @@
 //@ ignore-endian-big
 // EMIT_MIR_FOR_EACH_BIT_WIDTH
 // EMIT_MIR const_allocation3.main.GVN.after.mir
+#![allow(misaligned_gc_pointers)]
 fn main() {
     FOO;
 }

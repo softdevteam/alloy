@@ -9,6 +9,7 @@
 #![feature(rustc_attrs)]
 #![feature(simd_ffi)]
 #![allow(non_camel_case_types)]
+#![allow(misaligned_gc_pointers)]
 
 // Setting up structs that can be used as const vectors
 #[repr(simd)]

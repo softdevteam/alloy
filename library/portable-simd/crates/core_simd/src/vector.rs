@@ -1,8 +1,8 @@
 use crate::simd::{
+    LaneCount, Mask, MaskElement, SupportedLaneCount, Swizzle,
     cmp::SimdPartialOrd,
     num::SimdUint,
     ptr::{SimdConstPtr, SimdMutPtr},
-    LaneCount, Mask, MaskElement, SupportedLaneCount, Swizzle,
 };
 
 /// A SIMD vector with the shape of `[T; N]` but the operations of `T`.
@@ -100,6 +100,7 @@ use crate::simd::{
 // avoided, as it will likely become illegal on `#[repr(simd)]` structs in the future. It also
 // causes rustc to emit illegal LLVM IR in some cases.
 #[repr(simd, packed)]
+#[cfg_attr(not(bootstrap), allow(misaligned_gc_pointers))]
 pub struct Simd<T, const N: usize>([T; N])
 where
     LaneCount<N>: SupportedLaneCount,
@@ -295,10 +296,7 @@ where
     #[inline]
     #[track_caller]
     pub const fn from_slice(slice: &[T]) -> Self {
-        assert!(
-            slice.len() >= Self::LEN,
-            "slice length must be at least the number of elements"
-        );
+        assert!(slice.len() >= Self::LEN, "slice length must be at least the number of elements");
         // SAFETY: We just checked that the slice contains
         // at least `N` elements.
         unsafe { Self::load(slice.as_ptr().cast()) }
@@ -325,10 +323,7 @@ where
     #[inline]
     #[track_caller]
     pub fn copy_to_slice(self, slice: &mut [T]) {
-        assert!(
-            slice.len() >= Self::LEN,
-            "slice length must be at least the number of elements"
-        );
+        assert!(slice.len() >= Self::LEN, "slice length must be at least the number of elements");
         // SAFETY: We just checked that the slice contains
         // at least `N` elements.
         unsafe { self.store(slice.as_mut_ptr().cast()) }

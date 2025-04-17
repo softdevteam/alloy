@@ -1,3 +1,4 @@
+#![allow(misaligned_gc_pointers)]
 use core::cell::RefCell;
 use core::marker::Freeze;
 use core::mem::{self, MaybeUninit};

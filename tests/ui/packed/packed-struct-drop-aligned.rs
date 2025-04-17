@@ -1,6 +1,7 @@
 //@ run-pass
 #![feature(coroutines, stmt_expr_attributes)]
 #![feature(coroutine_trait)]
+#![allow(misaligned_gc_pointers)]
 use std::cell::Cell;
 use std::mem;
 use std::ops::Coroutine;

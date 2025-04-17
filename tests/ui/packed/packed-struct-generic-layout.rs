@@ -1,6 +1,7 @@
 //@ run-pass
 #![allow(dead_code)]
 #![allow(overflowing_literals)]
+#![allow(misaligned_gc_pointers)]
 
 
 use std::mem;

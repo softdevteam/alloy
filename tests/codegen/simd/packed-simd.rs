@@ -6,6 +6,7 @@
 #![crate_type = "lib"]
 #![no_std]
 #![feature(repr_simd, core_intrinsics)]
+#![allow(misaligned_gc_pointers)]
 use core::intrinsics::simd as intrinsics;
 use core::{mem, ptr};
 

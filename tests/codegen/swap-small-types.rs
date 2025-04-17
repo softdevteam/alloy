@@ -2,6 +2,7 @@
 //@ only-x86_64
 
 #![crate_type = "lib"]
+#![allow(misaligned_gc_pointers)]
 
 use std::mem::swap;
 

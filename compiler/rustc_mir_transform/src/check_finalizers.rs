@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "rustc_no_fsa", allow(dead_code))]
 #![allow(rustc::untranslatable_diagnostic)]
 #![allow(rustc::diagnostic_outside_of_impl)]
+#![allow(rustdoc::broken_intra_doc_links)]
 use std::collections::VecDeque;
 
 use bitflags::bitflags;

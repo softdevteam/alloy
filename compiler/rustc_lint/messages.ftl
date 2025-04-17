@@ -504,6 +504,9 @@ lint_metavariable_still_repeating = variable `{$name}` is still repeating at thi
 
 lint_metavariable_wrong_operator = meta-variable repeats with different Kleene operator
 
+lint_misaligned_gc_pointers = contains a non-word aligned field `{$ty}`
+    .note = Alloy uses conservative GC and traces for pointers word-by-word, so this field could inadvertantly hide a pointer
+
 lint_missing_fragment_specifier = missing fragment specifier
 
 lint_missing_unsafe_on_extern = extern blocks should be unsafe

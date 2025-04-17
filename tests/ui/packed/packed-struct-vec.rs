@@ -1,4 +1,5 @@
 //@ run-pass
+#![allow(misaligned_gc_pointers)]
 
 use std::fmt;
 use std::mem;
