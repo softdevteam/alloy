@@ -18,6 +18,7 @@ use core::sync::atomic::AtomicU64;
 pub static GC_COUNTERS: GcCounters = GcCounters {
     finalizers_registered: AtomicU64::new(0),
     finalizers_elidable: AtomicU64::new(0),
+    finalizers_completed: AtomicU64::new(0),
     barriers_visited: AtomicU64::new(0),
     allocated_gc: AtomicU64::new(0),
     allocated_boxed: AtomicU64::new(0),
@@ -32,6 +33,7 @@ pub static GC_COUNTERS: GcCounters = GcCounters {
 pub struct GcCounters {
     pub finalizers_registered: AtomicU64,
     pub finalizers_elidable: AtomicU64,
+    pub finalizers_completed: AtomicU64,
     pub barriers_visited: AtomicU64,
     pub allocated_gc: AtomicU64,
     pub allocated_boxed: AtomicU64,
