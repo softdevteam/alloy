@@ -79,7 +79,13 @@ extern "C" {
 
     pub fn GC_keep_alive(ptr: *mut u8);
 
-    pub fn GC_finalized_total() -> u64;
+    pub fn GC_set_finalize_on_demand(state: i32);
+
+    pub fn GC_set_finalizer_notifier(f: extern "C" fn());
+
+    pub fn GC_should_invoke_finalizers() -> u32;
+
+    pub fn GC_invoke_finalizers() -> u64;
 
     pub fn GC_get_gc_no() -> u64;
 }

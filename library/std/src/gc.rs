@@ -56,6 +56,7 @@ use core::{fmt, iter};
 use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
+use crate::sync::Mutex;
 
 #[cfg(feature = "log-stats")]
 #[derive(Debug, Copy, Clone)]
@@ -73,6 +74,8 @@ pub struct GcStats {
     pub allocated_arc: u64,
     pub num_gcs: u64,
 }
+
+static FINALIZER_THREAD_EXISTS: Mutex<bool> = Mutex::new(false);
 
 ////////////////////////////////////////////////////////////////////////////////
 // BDWGC Allocator
@@ -191,7 +194,7 @@ pub fn stats() -> GcStats {
         prem_enabled,
         premopt_enabled,
         finalizers_registered: GC_COUNTERS.finalizers_registered.load(atomic::Ordering::Relaxed),
-        finalizers_completed: unsafe { bdwgc::GC_finalized_total() },
+        finalizers_completed: GC_COUNTERS.finalizers_completed.load(atomic::Ordering::Relaxed),
         finalizers_elidable: GC_COUNTERS.finalizers_elidable.load(atomic::Ordering::Relaxed),
         allocated_gc: GC_COUNTERS.allocated_gc.load(atomic::Ordering::Relaxed),
         allocated_boxed: GC_COUNTERS.allocated_boxed.load(atomic::Ordering::Relaxed),
@@ -204,6 +207,8 @@ pub fn stats() -> GcStats {
 
 pub fn init() {
     unsafe { bdwgc::GC_init() }
+    unsafe { bdwgc::GC_set_finalize_on_demand(1) }
+    unsafe { bdwgc::GC_set_finalizer_notifier(start_finalization_thread) }
 }
 
 pub fn thread_registered() -> bool {
@@ -212,6 +217,32 @@ pub fn thread_registered() -> bool {
 
 pub fn keep_alive<T>(ptr: *mut T) {
     unsafe { bdwgc::GC_keep_alive(ptr as *mut u8) }
+}
+
+extern "C" fn start_finalization_thread() {
+    let guard = FINALIZER_THREAD_EXISTS.lock().unwrap();
+
+    if *guard {
+        return;
+    }
+
+    crate::thread::spawn(|| {
+        loop {
+            if unsafe { bdwgc::GC_should_invoke_finalizers() } == 1 {
+                #[cfg(feature = "log-stats")]
+                {
+                    let finalized = unsafe { bdwgc::GC_invoke_finalizers() };
+                    GC_COUNTERS
+                        .finalizers_completed
+                        .fetch_add(finalized, atomic::Ordering::Relaxed);
+                }
+                #[cfg(not(feature = "log-stats"))]
+                unsafe {
+                    bdwgc::GC_invoke_finalizers();
+                }
+            }
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
