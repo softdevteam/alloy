@@ -56,7 +56,7 @@ use core::{fmt, iter};
 use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
-use crate::sync::Mutex;
+use crate::sync::{Condvar, Mutex};
 
 #[cfg(feature = "log-stats")]
 #[derive(Debug, Copy, Clone)]
@@ -208,7 +208,7 @@ pub fn stats() -> GcStats {
 pub fn init() {
     unsafe { bdwgc::GC_init() }
     unsafe { bdwgc::GC_set_finalize_on_demand(1) }
-    unsafe { bdwgc::GC_set_finalizer_notifier(start_finalization_thread) }
+    unsafe { bdwgc::GC_set_finalizer_notifier(notify_finalizer_thread) }
 }
 
 pub fn thread_registered() -> bool {
@@ -219,30 +219,47 @@ pub fn keep_alive<T>(ptr: *mut T) {
     unsafe { bdwgc::GC_keep_alive(ptr as *mut u8) }
 }
 
-extern "C" fn start_finalization_thread() {
-    let guard = FINALIZER_THREAD_EXISTS.lock().unwrap();
+static FINALIZER_CV: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 
-    if *guard {
+/// Runs in a dedicated finalization thread.
+///
+/// This first checks with BDWGC if there are any finalizers to run before telling BDWGC to run
+/// them. The reason for this is so that it can use a condition variable to sleep the thread if
+/// there is no work.
+fn run_finalizers() {
+    let (lock, cvar) = &FINALIZER_CV;
+
+    loop {
+        let mut guard = lock.lock().unwrap();
+
+        if unsafe { bdwgc::GC_should_invoke_finalizers() } == 0 {
+            guard = cvar.wait(guard).unwrap();
+        } else {
+            #[cfg(feature = "log-stats")]
+            {
+                let finalized = unsafe { bdwgc::GC_invoke_finalizers() };
+                GC_COUNTERS.finalizers_completed.fetch_add(finalized, atomic::Ordering::Relaxed);
+            }
+            #[cfg(not(feature = "log-stats"))]
+            unsafe {
+                bdwgc::GC_invoke_finalizers();
+            }
+        }
+        drop(guard)
+    }
+}
+
+extern "C" fn notify_finalizer_thread() {
+    let mut ft_exists = FINALIZER_THREAD_EXISTS.lock().unwrap();
+
+    if !*ft_exists {
+        crate::thread::spawn(run_finalizers);
+        *ft_exists = true;
         return;
     }
 
-    crate::thread::spawn(|| {
-        loop {
-            if unsafe { bdwgc::GC_should_invoke_finalizers() } == 1 {
-                #[cfg(feature = "log-stats")]
-                {
-                    let finalized = unsafe { bdwgc::GC_invoke_finalizers() };
-                    GC_COUNTERS
-                        .finalizers_completed
-                        .fetch_add(finalized, atomic::Ordering::Relaxed);
-                }
-                #[cfg(not(feature = "log-stats"))]
-                unsafe {
-                    bdwgc::GC_invoke_finalizers();
-                }
-            }
-        }
-    });
+    let (_lock, cvar) = &FINALIZER_CV;
+    cvar.notify_all();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
