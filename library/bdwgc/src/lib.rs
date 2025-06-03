@@ -88,4 +88,10 @@ extern "C" {
     pub fn GC_invoke_finalizers() -> u64;
 
     pub fn GC_get_gc_no() -> u64;
+
+    pub fn GC_enable();
+
+    pub fn GC_is_disabled() -> i32;
+
+    pub fn GC_disable();
 }

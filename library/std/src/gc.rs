@@ -219,6 +219,33 @@ pub fn keep_alive<T>(ptr: *mut T) {
     unsafe { bdwgc::GC_keep_alive(ptr as *mut u8) }
 }
 
+pub fn is_enabled() -> bool {
+    unsafe { bdwgc::GC_is_disabled() != 1 }
+}
+
+/// Attempts to enable the GC. The disabled state is tracked by a counter, so this function may need
+/// to be called multiple times—once for each prior disable call—to fully re-enable the GC.
+pub fn try_enable() -> bool {
+    unsafe {
+        bdwgc::GC_enable();
+    }
+    is_enabled()
+}
+
+pub fn enable() {
+    loop {
+        if try_enable() {
+            break;
+        }
+    }
+}
+
+/// Disables the GC. This increments a 'disabled' counter inside BDWGC. The GC will remain disabled
+/// until the counter is decremented back to zero by matching enable calls.
+pub fn disable() {
+    unsafe { bdwgc::GC_disable() }
+}
+
 static FINALIZER_CV: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 
 /// Runs in a dedicated finalization thread.
