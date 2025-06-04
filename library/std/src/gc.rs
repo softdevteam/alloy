@@ -206,9 +206,13 @@ pub fn stats() -> GcStats {
 }
 
 pub fn init() {
-    unsafe { bdwgc::GC_init() }
-    unsafe { bdwgc::GC_set_finalize_on_demand(1) }
-    unsafe { bdwgc::GC_set_finalizer_notifier(notify_finalizer_thread) }
+    unsafe {
+        bdwgc::GC_init();
+        bdwgc::GC_set_finalize_on_demand(1);
+        bdwgc::GC_set_finalizer_notifier(notify_finalizer_thread);
+        #[cfg(feature = "bdwgc-disable")]
+        bdwgc::GC_disable()
+    }
 }
 
 pub fn thread_registered() -> bool {

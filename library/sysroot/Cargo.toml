@@ -41,3 +41,4 @@ premature-finalizer-prevention-optimize = ["std/premature-finalizer-prevention-o
 bdwgc-link-shared = ["std/bdwgc-link-shared"]
 bdwgc-assertions = ["std/bdwgc-assertions"]
 bdwgc-debug = ["std/bdwgc-debug"]
+bdwgc-disable = ["std/bdwgc-disable"]

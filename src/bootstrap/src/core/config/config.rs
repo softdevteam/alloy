@@ -354,6 +354,7 @@ pub struct Config {
     pub bdwgc_link_shared: bool,
     pub bdwgc_assertions: bool,
     pub bdwgc_debug: bool,
+    pub bdwgc_disable: bool,
 
     // misc
     pub low_priority: bool,
@@ -1239,6 +1240,7 @@ define_config! {
         bdwgc_link_shared: Option<bool> = "bdwgc-link-shared",
         bdwgc_assertions: Option<bool> = "bdwgc-assertions",
         bdwgc_debug: Option<bool> = "bdwgc-debug",
+        bdwgc_disable: Option<bool> = "bdwgc-disable",
     }
 }
 
@@ -1330,6 +1332,7 @@ impl Config {
             bdwgc_link_shared: false,
             bdwgc_assertions: false,
             bdwgc_debug: false,
+            bdwgc_disable: false,
 
             ..Default::default()
         }
@@ -2065,6 +2068,7 @@ impl Config {
                 bdwgc_link_shared,
                 bdwgc_assertions,
                 bdwgc_debug,
+                bdwgc_disable,
             } = alloy;
 
             set(&mut config.log_stats, log_stats);
@@ -2078,6 +2082,7 @@ impl Config {
             set(&mut config.bdwgc_link_shared, bdwgc_link_shared);
             set(&mut config.bdwgc_assertions, bdwgc_assertions);
             set(&mut config.bdwgc_debug, bdwgc_debug);
+            set(&mut config.bdwgc_disable, bdwgc_disable);
         }
 
         if let Some(llvm) = toml.llvm {
