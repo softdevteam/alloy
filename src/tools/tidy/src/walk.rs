@@ -16,6 +16,7 @@ pub fn filter_dirs(path: &Path) -> bool {
         "library/backtrace",
         "library/portable-simd",
         "library/stdarch",
+        "src/tools/bindgen",
         "src/tools/cargo",
         "src/tools/clippy",
         "src/tools/libcxx-version",

@@ -125,7 +125,7 @@ unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
 #[inline]
 unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
     if old_layout.align() <= MIN_ALIGN && old_layout.align() <= new_size {
-        unsafe { bdwgc::GC_realloc(ptr, new_size) as *mut u8 }
+        unsafe { bdwgc::GC_realloc(ptr as *mut libc::c_void, new_size) as *mut u8 }
     } else {
         unsafe {
             let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
@@ -144,7 +144,7 @@ unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut 
 #[inline]
 unsafe fn gc_free(ptr: *mut u8, _: Layout) {
     unsafe {
-        bdwgc::GC_free(ptr);
+        bdwgc::GC_free(ptr as *mut libc::c_void);
     }
 }
 
@@ -209,7 +209,7 @@ pub fn init() {
     unsafe {
         bdwgc::GC_init();
         bdwgc::GC_set_finalize_on_demand(1);
-        bdwgc::GC_set_finalizer_notifier(notify_finalizer_thread);
+        bdwgc::GC_set_finalizer_notifier(Some(notify_finalizer_thread));
         #[cfg(feature = "bdwgc-disable")]
         bdwgc::GC_disable()
     }
@@ -220,7 +220,7 @@ pub fn thread_registered() -> bool {
 }
 
 pub fn keep_alive<T>(ptr: *mut T) {
-    unsafe { bdwgc::GC_keep_alive(ptr as *mut u8) }
+    unsafe { bdwgc::GC_keep_alive(ptr as *mut _ as u64) }
 }
 
 pub fn is_enabled() -> bool {
@@ -606,7 +606,7 @@ impl<T> Gc<T> {
             }
         }
 
-        unsafe extern "C" fn finalizer_shim<T>(obj: *mut u8, _: *mut u8) {
+        unsafe extern "C" fn finalizer_shim<T>(obj: *mut libc::c_void, _: *mut libc::c_void) {
             let drop_fn = drop_in_place::<GcBox<T>>;
             unsafe { drop_fn(obj as *mut GcBox<T>) };
         }
@@ -625,7 +625,7 @@ impl<T> Gc<T> {
         let ptr = Box::leak(Box::new_in(GcBox { value }, GcAllocator));
         unsafe {
             bdwgc::GC_register_finalizer_no_order(
-                ptr as *mut _ as *mut u8,
+                ptr as *mut _ as *mut libc::c_void,
                 Some(finalizer_shim::<T>),
                 ptr::null_mut(),
                 ptr::null_mut(),

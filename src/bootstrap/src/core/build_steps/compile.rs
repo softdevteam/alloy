@@ -20,7 +20,7 @@ use serde_derive::Deserialize;
 use tracing::{instrument, span};
 
 use crate::core::build_steps::gcc::{Gcc, add_cg_gcc_cargo_flags};
-use crate::core::build_steps::tool::SourceType;
+use crate::core::build_steps::tool::{Bindgen, SourceType};
 use crate::core::build_steps::{dist, llvm};
 use crate::core::builder;
 use crate::core::builder::{
@@ -291,6 +291,9 @@ impl Step for Std {
         for rustflag in self.extra_rust_args.iter() {
             cargo.rustflag(rustflag);
         }
+
+        let bindgen = builder.ensure(Bindgen { compiler, target });
+        cargo.env("RUSTC_BINDGEN", bindgen.tool_path);
 
         let _guard = builder.msg(
             Kind::Build,

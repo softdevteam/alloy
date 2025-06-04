@@ -224,6 +224,7 @@ pub fn prepare_tool_cargo(
             || path.ends_with("clippy")
             || path.ends_with("miri")
             || path.ends_with("rustfmt")
+            || path.ends_with("bindgen")
         {
             cargo.env("LIBZ_SYS_STATIC", "1");
         }
@@ -1245,6 +1246,46 @@ impl Step for TestFloatParse {
             extra_features: Vec::new(),
             allow_features: "",
             cargo_args: Vec::new(),
+            artifact_kind: ToolArtifactKind::Binary,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Bindgen {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for Bindgen {
+    type Output = ToolBuildResult;
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/bindgen")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(Bindgen {
+            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
+            target: run.target,
+        });
+    }
+
+    fn run(self, builder: &Builder<'_>) -> ToolBuildResult {
+        builder.build.require_submodule("src/tools/bindgen", None);
+
+        builder.ensure(ToolBuild {
+            compiler: self.compiler,
+            target: self.target,
+            tool: "bindgen",
+            mode: Mode::ToolBootstrap,
+            path: "src/tools/bindgen",
+            source_type: SourceType::Submodule,
+            extra_features: Vec::new(),
+            allow_features: "",
+            cargo_args: vec!["-p".to_string(), "bindgen-cli".to_string()],
             artifact_kind: ToolArtifactKind::Binary,
         })
     }
