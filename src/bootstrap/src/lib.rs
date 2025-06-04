@@ -698,6 +698,9 @@ impl Build {
         if self.config.bdwgc_debug {
             features.insert("bdwgc-debug");
         }
+        if self.config.bdwgc_disable {
+            features.insert("bdwgc-disable");
+        }
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
 
