@@ -135,6 +135,7 @@ pub struct Build {
     src: PathBuf,
     out: PathBuf,
     bootstrap_out: PathBuf,
+    bdwgc_info: GitInfo,
     cargo_info: GitInfo,
     rust_analyzer_info: GitInfo,
     clippy_info: GitInfo,
@@ -304,6 +305,7 @@ impl Build {
         let is_sudo = false;
 
         let rust_info = config.rust_info.clone();
+        let bdwgc_info = config.bdwgc_info.clone();
         let cargo_info = config.cargo_info.clone();
         let rust_analyzer_info = config.rust_analyzer_info.clone();
         let clippy_info = config.clippy_info.clone();
@@ -375,6 +377,7 @@ impl Build {
             out,
             bootstrap_out,
 
+            bdwgc_info,
             cargo_info,
             rust_analyzer_info,
             clippy_info,
@@ -776,6 +779,10 @@ impl Build {
             Mode::ToolStd | Mode::ToolRustc => "-tools",
         };
         self.out.join(compiler.host).join(format!("stage{}{}", compiler.stage, suffix))
+    }
+
+    fn bdwgc_out(&self, target: TargetSelection) -> PathBuf {
+        self.out.join(&*target.triple).join("bdwgc")
     }
 
     /// Returns the root output directory for all Cargo output in a given stage,

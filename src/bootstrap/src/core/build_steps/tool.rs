@@ -1253,7 +1253,6 @@ impl Step for TestFloatParse {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Bindgen {
-    pub compiler: Compiler,
     pub target: TargetSelection,
 }
 
@@ -1266,19 +1265,14 @@ impl Step for Bindgen {
         run.path("src/tools/bindgen")
     }
 
-    fn make_run(run: RunConfig<'_>) {
-        run.builder.ensure(Bindgen {
-            compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
-            target: run.target,
-        });
-    }
-
     fn run(self, builder: &Builder<'_>) -> ToolBuildResult {
+        let compiler = builder.compiler(0, builder.config.build);
+        let bootstrap_host = builder.config.build;
         builder.build.require_submodule("src/tools/bindgen", None);
 
         builder.ensure(ToolBuild {
-            compiler: self.compiler,
-            target: self.target,
+            compiler,
+            target: bootstrap_host,
             tool: "bindgen",
             mode: Mode::ToolBootstrap,
             path: "src/tools/bindgen",

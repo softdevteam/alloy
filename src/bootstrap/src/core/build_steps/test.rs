@@ -15,7 +15,7 @@ use crate::core::build_steps::doc::DocumentationFormat;
 use crate::core::build_steps::gcc::{Gcc, add_cg_gcc_cargo_flags};
 use crate::core::build_steps::llvm::get_llvm_version;
 use crate::core::build_steps::synthetic_targets::MirOptPanicAbortSyntheticTarget;
-use crate::core::build_steps::tool::{self, SourceType, Tool};
+use crate::core::build_steps::tool::{self, Bindgen, SourceType, Tool};
 use crate::core::build_steps::toolstate::ToolState;
 use crate::core::build_steps::{compile, dist, llvm};
 use crate::core::builder::{
@@ -254,13 +254,15 @@ impl Step for Cargotest {
         let out_dir = builder.out.join("ct");
         t!(fs::create_dir_all(&out_dir));
 
+        let bindgen = builder.ensure(Bindgen { target: compiler.host });
         let _time = helpers::timeit(builder);
         let mut cmd = builder.tool_cmd(Tool::CargoTest);
         cmd.arg(&cargo.tool_path)
             .arg(&out_dir)
             .args(builder.config.test_args())
             .env("RUSTC", builder.rustc(compiler))
-            .env("RUSTDOC", builder.rustdoc(compiler));
+            .env("RUSTDOC", builder.rustdoc(compiler))
+            .env("RUSTC_BINDGEN", &bindgen.tool_path);
         add_rustdoc_cargo_linker_args(
             &mut cmd,
             builder,
@@ -353,6 +355,9 @@ impl Step for Cargo {
             },
             builder,
         );
+
+        let bindgen = builder.ensure(Bindgen { target: self.host });
+        cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
 
         let _time = helpers::timeit(builder);
         add_flags_and_try_run_tests(builder, &mut cargo);
@@ -1269,6 +1274,7 @@ impl Step for CrateRunMakeSupport {
             &[],
         );
         cargo.allow_features("test");
+        cargo.rustflag("-L").rustflag(builder.bdwgc_out(self.host).join("lib").to_str().unwrap());
         run_cargo_test(cargo, &[], &[], "run-make-support self test", host, builder);
     }
 }
@@ -1659,6 +1665,10 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         cmd.arg("--run-lib-path").arg(builder.sysroot_target_libdir(compiler, target));
         cmd.arg("--rustc-path").arg(builder.rustc(compiler));
 
+        let bindgen = builder.ensure(Bindgen { target });
+        cmd.env("RUSTC_BINDGEN", &bindgen.tool_path);
+        cmd.env("LIBGC_DIR", &builder.bdwgc_out(target).join("lib").to_str().unwrap());
+
         // Minicore auxiliary lib for `no_core` tests that need `core` stubs in cross-compilation
         // scenarios.
         cmd.arg("--minicore-path")
@@ -1810,6 +1820,9 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         let mut targetflags = flags;
         targetflags.push(format!("-Lnative={}", builder.test_helpers_out(target).display()));
 
+        let bdwgc_libdir = builder.rustc_libdir(compiler);
+        hostflags.push(format!("-Lnative={}", bdwgc_libdir.display()));
+        targetflags.push(format!("-Lnative={}", bdwgc_libdir.display()));
         for flag in hostflags {
             cmd.arg("--host-rustcflags").arg(flag);
         }
@@ -2502,6 +2515,9 @@ fn run_cargo_test<'a>(
         builder.msg_sysroot_tool(Kind::Test, compiler.stage, what, compiler.host, target)
     });
 
+    let bindgen = builder.ensure(Bindgen { target: compiler.host });
+    cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
+
     #[cfg(feature = "build-metrics")]
     builder.metrics.begin_test_suite(
         build_helper::metrics::TestSuiteMetadata::CargoPackage {
@@ -2585,6 +2601,8 @@ fn prepare_cargo_test(
     } else if let Some(tool) = builder.runner(target) {
         cargo.env(format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)), tool);
     }
+    let bindgen = builder.ensure(Bindgen { target });
+    cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
 
     cargo
 }
@@ -2730,6 +2748,8 @@ impl Step for Crate {
         if crates.iter().any(|crate_| crate_ == "core") {
             crates.push("coretests".to_owned());
         }
+        let bindgen = builder.ensure(Bindgen { target });
+        cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
 
         run_cargo_test(cargo, &[], &crates, &*crate_description(&self.crates), target, builder);
     }

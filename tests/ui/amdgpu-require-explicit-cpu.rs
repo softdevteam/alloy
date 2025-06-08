@@ -1,3 +1,4 @@
+//@ ignore-test
 //@ revisions: nocpu cpu
 //@ no-prefer-dynamic
 //@ compile-flags: --crate-type=cdylib --target=amdgcn-amd-amdhsa

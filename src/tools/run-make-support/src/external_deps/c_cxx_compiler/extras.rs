@@ -23,7 +23,7 @@ pub fn extra_c_flags() -> Vec<&'static str> {
                 vec!["-lm", "-lpthread", "-lposix4", "-lsocket", "-lresolv"]
             }
             n if n.contains("OpenBSD") => vec!["-lm", "-lpthread", "-lc++abi"],
-            _ => vec!["-lm", "-lrt", "-ldl", "-lpthread"],
+            _ => vec!["-lm", "-lrt", "-ldl", "-lpthread", "-lgc"],
         }
     }
 }

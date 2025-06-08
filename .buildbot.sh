@@ -28,7 +28,7 @@ sh rustup.sh --default-host x86_64-unknown-linux-gnu \
 	-y
 export PATH=$(pwd)/.cargo/bin/:$PATH
 
-rustup toolchain link alloy build/x86_64-unknown-linux-gnu/stage1
+rustup toolchain link alloy build/x86_64-unknown-linux-gnu/stage2
 
 # Build and test yksom
 git clone --recursive https://github.com/softdevteam/yksom

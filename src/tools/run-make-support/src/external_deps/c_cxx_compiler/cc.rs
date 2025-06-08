@@ -45,6 +45,10 @@ impl Cc {
             cmd.arg(flag);
         }
 
+        let libgc = env_var("LIBGC_DIR");
+        cmd.arg("-L");
+        cmd.arg(libgc);
+
         Self { cmd }
     }
 

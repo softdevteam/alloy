@@ -11,6 +11,7 @@ proc_macro = { path = "../proc_macro", public = true }
 profiler_builtins = { path = "../profiler_builtins", optional = true }
 std = { path = "../std", public = true }
 test = { path = "../test", public = true }
+bdwgc = { path = "../bdwgc", public = true }
 
 # Forward features to the `std` crate as necessary
 [features]

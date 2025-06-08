@@ -57,6 +57,9 @@ impl Rustc {
     pub fn new() -> Self {
         let mut cmd = setup_common();
         cmd.arg("-L").arg(cwd());
+        let libgc = env_var("LIBGC_DIR");
+        cmd.arg("-L");
+        cmd.arg(libgc);
         Self { cmd }
     }
 

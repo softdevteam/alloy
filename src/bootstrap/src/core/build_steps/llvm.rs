@@ -68,7 +68,7 @@ impl LlvmBuildStatus {
 
 /// Linker flags to pass to LLVM's CMake invocation.
 #[derive(Debug, Clone, Default)]
-struct LdFlags {
+pub(crate) struct LdFlags {
     /// CMAKE_EXE_LINKER_FLAGS
     exe: OsString,
     /// CMAKE_SHARED_LINKER_FLAGS
@@ -648,7 +648,7 @@ fn check_llvm_version(builder: &Builder<'_>, llvm_config: &Path) {
     panic!("\n\nbad LLVM version: {version}, need >=18\n\n")
 }
 
-fn configure_cmake(
+pub(crate) fn configure_cmake(
     builder: &Builder<'_>,
     target: TargetSelection,
     cfg: &mut cmake::Config,

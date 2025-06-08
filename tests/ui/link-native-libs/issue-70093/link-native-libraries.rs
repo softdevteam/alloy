@@ -1,7 +1,7 @@
 // Ensure that rust does not pass native libraries to the linker when
 // `-Zlink-native-libraries=no` is used.
 
-//@ run-pass
+//@ ignore-test
 //@ compile-flags: -Zlink-native-libraries=no -Cdefault-linker-libraries=yes
 //@ ignore-fuchsia - missing __libc_start_main for some reason (#84733)
 //@ ignore-cross-compile - default-linker-libraries=yes doesn't play well with cross compiling

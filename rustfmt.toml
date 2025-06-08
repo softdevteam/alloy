@@ -38,6 +38,7 @@ ignore = [
     "src/doc/rust-by-example",
     "src/doc/rustc-dev-guide",
     "src/llvm-project",
+    "src/tools/bindgen",
     "src/tools/cargo",
     "src/tools/clippy",
     "src/tools/enzyme",
