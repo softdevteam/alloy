@@ -386,6 +386,7 @@ pub struct Config {
     pub out: PathBuf,
     pub rust_info: channel::GitInfo,
 
+    pub bdwgc_info: channel::GitInfo,
     pub cargo_info: channel::GitInfo,
     pub rust_analyzer_info: channel::GitInfo,
     pub clippy_info: channel::GitInfo,
@@ -1832,6 +1833,7 @@ impl Config {
         config.omit_git_hash = toml.rust.as_ref().and_then(|r| r.omit_git_hash).unwrap_or(default);
 
         config.rust_info = GitInfo::new(config.omit_git_hash, &config.src);
+        config.bdwgc_info = GitInfo::new(config.omit_git_hash, &config.src.join("src/bdwgc"));
         config.cargo_info = GitInfo::new(config.omit_git_hash, &config.src.join("src/tools/cargo"));
         config.rust_analyzer_info =
             GitInfo::new(config.omit_git_hash, &config.src.join("src/tools/rust-analyzer"));

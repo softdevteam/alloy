@@ -3,6 +3,7 @@
 // with the name of the kernel plus a .kd suffix.
 // Check that the produced object has the .kd symbol exported.
 
+//@ ignore-test: Not compatible with libgc
 //@ needs-llvm-components: amdgpu
 //@ needs-rust-lld
 

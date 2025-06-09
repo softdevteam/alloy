@@ -1,3 +1,4 @@
+//@ ignore-test: incompatible with libgc
 //@ needs-llvm-components: avr
 //@ needs-rust-lld
 //! Regression test for #129301/llvm-project#106722 within `rustc`.

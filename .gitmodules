@@ -54,3 +54,6 @@
 [submodule "src/bdwgc"]
 	path = src/bdwgc
 	url = https://github.com/softdevteam/bdwgc
+[submodule "src/tools/bindgen"]
+	path = src/tools/bindgen
+	url = https://github.com/rust-lang/rust-bindgen.git

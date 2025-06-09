@@ -1318,6 +1318,12 @@ fn link_sanitizer_runtime(
     }
 }
 
+fn add_bdwgc(sess: &Session, linker: &mut dyn Linker) {
+    let sysroot = sess.sysroot.clone();
+    linker.link_args(&["-rpath", &sysroot.join("lib").to_str().unwrap()]);
+    linker.link_dylib_by_name("gc", false, false);
+}
+
 /// Returns a boolean indicating whether the specified crate should be ignored
 /// during LTO.
 ///
@@ -2253,6 +2259,8 @@ fn linker_with_args(
 
     // Sanitizer libraries.
     add_sanitizer_libraries(sess, flavor, crate_type, cmd);
+
+    add_bdwgc(sess, cmd);
 
     // Object code from the current crate.
     // Take careful note of the ordering of the arguments we pass to the linker

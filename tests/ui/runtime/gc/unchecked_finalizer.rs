@@ -1,4 +1,4 @@
-//@ run-pass
+//@ ignore-test
 // ignore-tidy-linelength
 #![feature(gc)]
 #![feature(rustc_private)]

@@ -409,6 +409,7 @@ dependencies = [
 name = "sysroot"
 version = "0.0.0"
 dependencies = [
+ "bdwgc",
  "proc_macro",
  "profiler_builtins",
  "std",

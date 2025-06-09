@@ -85,8 +85,12 @@ impl Thread {
             };
         }
 
-        let ret =
-            crate::bdwgc::GC_pthread_create(&mut native, attr.as_ptr(), thread_start, p as *mut _);
+        let ret = crate::bdwgc::GC_pthread_create(
+            &mut native,
+            attr.as_ptr() as *const bdwgc::pthread_attr_t,
+            Some(thread_start),
+            p as *mut _,
+        );
         // Note: if the thread creation fails and this assert fails, then p will
         // be leaked. However, an alternative design could cause double-free
         // which is clearly worse.

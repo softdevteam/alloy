@@ -20,8 +20,8 @@ use serde_derive::Deserialize;
 use tracing::{instrument, span};
 
 use crate::core::build_steps::gcc::{Gcc, add_cg_gcc_cargo_flags};
-use crate::core::build_steps::tool::SourceType;
-use crate::core::build_steps::{dist, llvm};
+use crate::core::build_steps::tool::{Bindgen, SourceType};
+use crate::core::build_steps::{bdwgc, dist, llvm};
 use crate::core::builder;
 use crate::core::builder::{
     Builder, Cargo, Kind, PathSet, RunConfig, ShouldRun, Step, TaskPath, crate_description,
@@ -283,6 +283,8 @@ impl Step for Std {
             }
             cargo
         };
+        let bindgen = builder.ensure(Bindgen { target });
+        cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
 
         // See src/bootstrap/synthetic_targets.rs
         if target.is_synthetic() {
@@ -291,6 +293,9 @@ impl Step for Std {
         for rustflag in self.extra_rust_args.iter() {
             cargo.rustflag(rustflag);
         }
+
+        let bindgen = builder.ensure(Bindgen { target });
+        cargo.env("RUSTC_BINDGEN", bindgen.tool_path);
 
         let _guard = builder.msg(
             Kind::Build,
@@ -330,6 +335,33 @@ fn copy_and_stamp(
     target_deps.push((target, dependency_type));
 }
 
+fn copy_libgc(
+    builder: &Builder<'_>,
+    target: TargetSelection,
+    libdir: &Path,
+) -> Vec<(PathBuf, DependencyType)> {
+    let mut v = Vec::new();
+    let install_dir = builder.ensure(bdwgc::Bdwgc { target });
+    if !install_dir.exists() {
+        return v;
+    }
+    for obj in fs::read_dir(install_dir).unwrap() {
+        let p = obj.unwrap().path();
+        if !p.file_name().unwrap().to_str().unwrap().starts_with("libgc") {
+            continue;
+        }
+        if p.is_symlink() {
+            builder.install(&t!(fs::canonicalize(&p)), &libdir, 0o644);
+            let full_dest = libdir.join(p.file_name().unwrap());
+            builder.copy_link(&p, &full_dest);
+        } else {
+            builder.install(&p, &libdir, 0o644);
+        }
+        v.push((p, DependencyType::Target));
+    }
+    v
+}
+
 fn copy_llvm_libunwind(builder: &Builder<'_>, target: TargetSelection, libdir: &Path) -> PathBuf {
     let libunwind_path = builder.ensure(llvm::Libunwind { target });
     let libunwind_source = libunwind_path.join("libunwind.a");
@@ -363,6 +395,11 @@ fn copy_third_party_objects(
         let libunwind_path =
             copy_llvm_libunwind(builder, target, &builder.sysroot_target_libdir(*compiler, target));
         target_deps.push((libunwind_path, DependencyType::Target));
+    }
+
+    if builder.config.bdwgc_link_shared {
+        let libgc_objs = copy_libgc(builder, target, &builder.rustc_libdir(*compiler));
+        target_deps.extend(libgc_objs)
     }
 
     target_deps
@@ -534,6 +571,8 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
             cargo.env("MACOSX_DEPLOYMENT_TARGET", target);
         }
     }
+    let bindgen = builder.ensure(Bindgen { target });
+    cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
 
     // Paths needed by `library/profiler_builtins/build.rs`.
     if let Some(path) = builder.config.profiler_path(target) {
@@ -545,6 +584,12 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
         // the compiler builtins. But they could be unified if desired.
         cargo.env("RUST_COMPILER_RT_FOR_PROFILER", compiler_rt);
     }
+
+    // Evenutally we stick libgc.so in the current compiler stage's sysroot where the linker will
+    // find it. But first, we must explicitly link the build directory because of bootstrap
+    // ordering: the first thing rust does is build library/std with stage 0 which doesn't yet know
+    // about libgc.
+    cargo.rustflag("-L").rustflag(builder.bdwgc_out(target).join("lib").to_str().unwrap());
 
     // Determine if we're going to compile in optimized C intrinsics to
     // the `compiler-builtins` crate. These intrinsics live in LLVM's
@@ -1188,6 +1233,9 @@ pub fn rustc_cargo(
         }
     }
 
+    let bindgen = builder.ensure(Bindgen { target });
+    cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
+
     // Building with protected visibility reduces the number of dynamic relocations needed, giving
     // us a faster startup time. However GNU ld < 2.40 will error if we try to link a shared object
     // with direct references to protected symbols, so for now we only use protected symbols if
@@ -1348,6 +1396,9 @@ pub fn rustc_cargo_env(
         }
     }
 
+    // Paths needed by `library/bdwgc/build.rs`.
+    let bindgen = builder.ensure(Bindgen { target });
+    cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
     // Build jemalloc on AArch64 with support for page sizes up to 64K
     // See: https://github.com/rust-lang/rust/pull/135081
     if builder.config.jemalloc(target)

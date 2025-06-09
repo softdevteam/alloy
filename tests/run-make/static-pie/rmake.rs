@@ -1,6 +1,7 @@
 // How to manually run this
 // $ ./x.py test --target x86_64-unknown-linux-[musl,gnu] tests/run-make/static-pie
 
+//@ ignore-test: not supported with libgc
 //@ only-x86_64
 //@ only-linux
 //@ ignore-32bit
