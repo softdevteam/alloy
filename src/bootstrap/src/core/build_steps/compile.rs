@@ -397,10 +397,8 @@ fn copy_third_party_objects(
         target_deps.push((libunwind_path, DependencyType::Target));
     }
 
-    if builder.config.bdwgc_link_shared {
-        let libgc_objs = copy_libgc(builder, target, &builder.rustc_libdir(*compiler));
-        target_deps.extend(libgc_objs)
-    }
+    let libgc_objs = copy_libgc(builder, target, &builder.rustc_libdir(*compiler));
+    target_deps.extend(libgc_objs);
 
     target_deps
 }

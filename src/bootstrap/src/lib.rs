@@ -692,9 +692,6 @@ impl Build {
         if self.config.premature_finalizer_prevention_optimize {
             features.insert("premature-finalizer-prevention-optimize");
         }
-        if self.config.bdwgc_link_shared {
-            features.insert("bdwgc-link-shared");
-        }
         if self.config.bdwgc_assertions {
             features.insert("bdwgc-assertions");
         }

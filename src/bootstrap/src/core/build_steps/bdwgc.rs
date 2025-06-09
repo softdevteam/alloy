@@ -89,12 +89,11 @@ impl Step for Bdwgc {
         trace!(?profile);
 
         let assertions = if builder.config.bdwgc_assertions { "ON" } else { "OFF" };
-        let shared = if builder.config.bdwgc_link_shared { "ON" } else { "OFF" };
 
         cfg.out_dir(&out_dir)
             .pic(true)
             .profile(profile)
-            .define("BUILD_SHARED_LIBS", shared)
+            .define("BUILD_SHARED_LIBS", "ON")
             .define("enable_parallel_mark", "OFF")
             .define("enable_gc_assertions", assertions)
             .cflag("-DGC_ALWAYS_MULTITHREADED");
