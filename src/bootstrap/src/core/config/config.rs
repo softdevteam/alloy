@@ -351,7 +351,6 @@ pub struct Config {
     pub finalizer_safety_analysis: bool,
     pub premature_finalizer_prevention: bool,
     pub premature_finalizer_prevention_optimize: bool,
-    pub bdwgc_link_shared: bool,
     pub bdwgc_assertions: bool,
     pub bdwgc_debug: bool,
     pub bdwgc_disable: bool,
@@ -1238,7 +1237,6 @@ define_config! {
         finalizer_safety_analysis: Option<bool> = "finalizer-safety-analysis",
         premature_finalizer_prevention: Option<bool> = "premature-finalizer-prevention",
         premature_finalizer_prevention_optimize: Option<bool> = "premature-finalizer-prevention-optimize",
-        bdwgc_link_shared: Option<bool> = "bdwgc-link-shared",
         bdwgc_assertions: Option<bool> = "bdwgc-assertions",
         bdwgc_debug: Option<bool> = "bdwgc-debug",
         bdwgc_disable: Option<bool> = "bdwgc-disable",
@@ -1330,7 +1328,6 @@ impl Config {
             finalizer_safety_analysis: true,
             premature_finalizer_prevention: true,
             premature_finalizer_prevention_optimize: true,
-            bdwgc_link_shared: false,
             bdwgc_assertions: false,
             bdwgc_debug: false,
             bdwgc_disable: false,
@@ -2067,7 +2064,6 @@ impl Config {
                 finalizer_safety_analysis,
                 premature_finalizer_prevention,
                 premature_finalizer_prevention_optimize,
-                bdwgc_link_shared,
                 bdwgc_assertions,
                 bdwgc_debug,
                 bdwgc_disable,
@@ -2081,7 +2077,6 @@ impl Config {
                 &mut config.premature_finalizer_prevention_optimize,
                 premature_finalizer_prevention_optimize,
             );
-            set(&mut config.bdwgc_link_shared, bdwgc_link_shared);
             set(&mut config.bdwgc_assertions, bdwgc_assertions);
             set(&mut config.bdwgc_debug, bdwgc_debug);
             set(&mut config.bdwgc_disable, bdwgc_disable);

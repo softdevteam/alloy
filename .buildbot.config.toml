@@ -1,6 +1,5 @@
 [alloy]
 bdwgc-assertions = true
-bdwgc-link-shared = true
 
 [rust]
 codegen-units = 0           # Use many compilation units.
