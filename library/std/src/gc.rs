@@ -211,7 +211,9 @@ pub fn init() {
         bdwgc::GC_set_finalize_on_demand(1);
         bdwgc::GC_set_finalizer_notifier(Some(notify_finalizer_thread));
         #[cfg(feature = "bdwgc-disable")]
-        bdwgc::GC_disable()
+        bdwgc::GC_disable();
+        #[cfg(feature = "log-stats")]
+        bdwgc::GC_enable_benchmark_stats();
     }
 }
 
