@@ -15,7 +15,6 @@ crate-type = ["dylib", "rlib"]
 [dependencies]
 alloc = { path = "../alloc", public = true }
 cfg-if = { version = "1.0", features = ['rustc-dep-of-std'] }
-bdwgc = { path = "../bdwgc" }
 panic_unwind = { path = "../panic_unwind", optional = true }
 panic_abort = { path = "../panic_abort" }
 core = { path = "../core", public = true }
@@ -108,8 +107,6 @@ log-stats = ["alloc/log-stats"]
 premature-finalizer-prevention = []
 premature-finalizer-prevention-optimize = []
 finalizer-elision = []
-bdwgc-assertions = ["bdwgc/gc-assertions"]
-bdwgc-debug = ["bdwgc/gc-debug"]
 bdwgc-disable = []
 
 # Make panics and failed asserts immediately abort without formatting any message

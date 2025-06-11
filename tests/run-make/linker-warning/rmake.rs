@@ -9,6 +9,7 @@ fn run_rustc() -> Rustc {
         .arg("-Clink-self-contained=-linker")
         .arg("-Zunstable-options")
         .arg("-Wlinker-messages")
+        .cfg("no_gc")
         .output("main")
         .linker("./fake-linker");
     if run_make_support::target() == "x86_64-unknown-linux-gnu" {

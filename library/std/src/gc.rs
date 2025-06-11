@@ -56,6 +56,7 @@ use core::{fmt, iter};
 use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
+use crate::bdwgc;
 use crate::sync::{Condvar, Mutex};
 
 #[cfg(feature = "log-stats")]

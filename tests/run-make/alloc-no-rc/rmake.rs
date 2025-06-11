@@ -11,5 +11,6 @@ fn main() {
         .crate_type("rlib")
         .input(source_root().join("library/alloc/src/lib.rs"))
         .cfg("no_rc")
+        .cfg("no_gc")
         .run();
 }
