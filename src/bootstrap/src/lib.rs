@@ -692,12 +692,6 @@ impl Build {
         if self.config.premature_finalizer_prevention_optimize {
             features.insert("premature-finalizer-prevention-optimize");
         }
-        if self.config.bdwgc_assertions {
-            features.insert("bdwgc-assertions");
-        }
-        if self.config.bdwgc_debug {
-            features.insert("bdwgc-debug");
-        }
         if self.config.bdwgc_disable {
             features.insert("bdwgc-disable");
         }

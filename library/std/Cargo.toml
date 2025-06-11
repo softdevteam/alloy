@@ -107,8 +107,6 @@ log-stats = ["alloc/log-stats"]
 premature-finalizer-prevention = []
 premature-finalizer-prevention-optimize = []
 finalizer-elision = []
-bdwgc-assertions = ["bdwgc/gc-assertions"]
-bdwgc-debug = ["bdwgc/gc-debug"]
 bdwgc-disable = []
 
 # Make panics and failed asserts immediately abort without formatting any message
