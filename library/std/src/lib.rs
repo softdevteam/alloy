@@ -571,6 +571,8 @@ pub use core::unsafe_binder;
 #[allow(deprecated, deprecated_in_future)]
 pub use core::usize;
 
+#[unstable(feature = "gc", issue = "none")]
+pub use alloc_crate::bdwgc;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::borrow;
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -604,8 +606,6 @@ pub mod ascii;
 pub mod backtrace;
 #[unstable(feature = "bstr", issue = "134915")]
 pub mod bstr;
-#[unstable(feature = "gc", issue = "none")]
-use bdwgc;
 pub mod collections;
 pub mod env;
 pub mod error;

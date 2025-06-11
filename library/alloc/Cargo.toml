@@ -11,6 +11,7 @@ autobenches = false
 edition = "2021"
 
 [dependencies]
+bdwgc = { path = "../bdwgc" }
 core = { path = "../core", public = true }
 compiler_builtins = { version = "=0.1.150", features = ['rustc-dep-of-std'] }
 
@@ -54,6 +55,7 @@ check-cfg = [
     'cfg(bootstrap)',
     'cfg(no_global_oom_handling)',
     'cfg(no_rc)',
+    'cfg(no_gc)',
     'cfg(no_sync)',
     'cfg(randomized_layouts)',
 ]

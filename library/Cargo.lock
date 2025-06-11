@@ -28,6 +28,7 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
+ "bdwgc",
  "compiler_builtins",
  "core",
  "rand",
@@ -359,7 +360,6 @@ version = "0.0.0"
 dependencies = [
  "addr2line",
  "alloc",
- "bdwgc",
  "cfg-if",
  "compiler_builtins",
  "core",
@@ -409,7 +409,6 @@ dependencies = [
 name = "sysroot"
 version = "0.0.0"
 dependencies = [
- "bdwgc",
  "proc_macro",
  "profiler_builtins",
  "std",

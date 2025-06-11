@@ -11,5 +11,6 @@ fn main() {
         .crate_type("rlib")
         .input(source_root().join("library/alloc/src/lib.rs"))
         .cfg("no_global_oom_handling")
+        .cfg("no_gc")
         .run();
 }

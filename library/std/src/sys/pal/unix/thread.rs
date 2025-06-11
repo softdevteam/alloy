@@ -87,7 +87,7 @@ impl Thread {
 
         let ret = crate::bdwgc::GC_pthread_create(
             &mut native,
-            attr.as_ptr() as *const bdwgc::pthread_attr_t,
+            attr.as_ptr() as *const crate::bdwgc::pthread_attr_t,
             Some(thread_start),
             p as *mut _,
         );
@@ -323,7 +323,7 @@ impl Thread {
 
     pub fn join(self) {
         let id = self.into_id();
-        let ret = unsafe { bdwgc::GC_pthread_join(id, ptr::null_mut()) };
+        let ret = unsafe { crate::bdwgc::GC_pthread_join(id, ptr::null_mut()) };
         assert!(ret == 0, "failed to join thread: {}", io::Error::from_raw_os_error(ret));
     }
 
@@ -338,7 +338,7 @@ impl Thread {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let ret = unsafe { bdwgc::GC_pthread_detach(self.id) };
+        let ret = unsafe { crate::bdwgc::GC_pthread_detach(self.id) };
         debug_assert_eq!(ret, 0);
     }
 }

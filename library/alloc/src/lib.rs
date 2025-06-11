@@ -254,6 +254,10 @@ pub mod __export {
     pub use core::hint::must_use;
 }
 
+#[cfg(not(no_gc))]
+#[unstable(feature = "gc", issue = "none")]
+pub use bdwgc;
+
 #[cfg(test)]
 #[allow(dead_code)] // Not used in all configurations
 pub(crate) mod test_helpers {
