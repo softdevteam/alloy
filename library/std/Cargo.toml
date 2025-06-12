@@ -103,7 +103,7 @@ llvm-libunwind = ["unwind/llvm-libunwind"]
 system-llvm-libunwind = ["unwind/system-llvm-libunwind"]
 
 # Alloy debug flags
-log-stats = ["alloc/log-stats"]
+gc-metrics = ["alloc/gc-metrics"]
 premature-finalizer-prevention = []
 premature-finalizer-prevention-optimize = []
 finalizer-elision = []

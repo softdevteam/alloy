@@ -29,11 +29,10 @@ use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::{borrow, fmt, hint};
 
-#[cfg(feature = "log-stats")]
-use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
 use crate::alloc::{AllocError, Allocator, Global, Layout};
+use crate::bdwgc::metrics::{self, Metric};
 use crate::borrow::{Cow, ToOwned};
 use crate::boxed::Box;
 use crate::rc::is_dangling;
@@ -388,11 +387,7 @@ impl<T> Arc<T> {
     pub fn new(data: T) -> Arc<T> {
         // Start the weak pointer count as 1 which is the weak pointer that's
         // held by all the strong pointers (kinda), see std/rc.rs for more info
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         let x: Box<_> = Box::new(ArcInner {
             strong: atomic::AtomicUsize::new(1),
             weak: atomic::AtomicUsize::new(1),
@@ -560,11 +555,7 @@ impl<T> Arc<T> {
     pub fn try_new(data: T) -> Result<Arc<T>, AllocError> {
         // Start the weak pointer count as 1 which is the weak pointer that's
         // held by all the strong pointers (kinda), see std/rc.rs for more info
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         let x: Box<_> = Box::try_new(ArcInner {
             strong: atomic::AtomicUsize::new(1),
             weak: atomic::AtomicUsize::new(1),
@@ -659,12 +650,7 @@ impl<T, A: Allocator> Arc<T, A> {
     pub fn new_in(data: T, alloc: A) -> Arc<T, A> {
         // Start the weak pointer count as 1 which is the weak pointer that's
         // held by all the strong pointers (kinda), see std/rc.rs for more info
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, Relaxed);
-            // Decrement because `Arc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         let x = Box::new_in(
             ArcInner {
                 strong: atomic::AtomicUsize::new(1),
@@ -704,11 +690,7 @@ impl<T, A: Allocator> Arc<T, A> {
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub fn new_uninit_in(alloc: A) -> Arc<mem::MaybeUninit<T>, A> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         unsafe {
             Arc::from_ptr_in(
                 Arc::allocate_for_layout(
@@ -795,11 +777,7 @@ impl<T, A: Allocator> Arc<T, A> {
     where
         F: FnOnce(&Weak<T, A>) -> T,
     {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         // Construct the inner in the "uninitialized" state with a single
         // weak reference.
         let (uninit_raw_ptr, alloc) = Box::into_raw_with_allocator(Box::new_in(
@@ -1975,11 +1953,7 @@ impl<T: ?Sized> Arc<T> {
         allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
         mem_to_arcinner: impl FnOnce(*mut u8) -> *mut ArcInner<T>,
     ) -> *mut ArcInner<T> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_arc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsArc);
         let layout = arcinner_layout_for_value_layout(value_layout);
 
         let ptr = allocate(layout).unwrap_or_else(|_| handle_alloc_error(layout));

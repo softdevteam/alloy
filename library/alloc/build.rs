@@ -21,7 +21,7 @@ fn main() {
     let status = Command::new(bindgen)
         .args(&[
             "--ctypes-prefix",
-            "libc",
+            "core::ffi",
             "--use-core",
             "-o",
             out.to_str().unwrap(),

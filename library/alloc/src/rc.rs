@@ -261,17 +261,14 @@ use core::pin::PinCoerceUnsized;
 use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
-#[cfg(feature = "log-stats")]
-use core::sync::atomic;
 use core::{borrow, fmt, hint};
 #[cfg(test)]
 use std::boxed::Box;
 
-#[cfg(feature = "log-stats")]
-use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::handle_alloc_error;
 use crate::alloc::{AllocError, Allocator, Global, Layout};
+use crate::bdwgc::metrics::{self, Metric};
 use crate::borrow::{Cow, ToOwned};
 #[cfg(not(test))]
 use crate::boxed::Box;
@@ -412,11 +409,7 @@ impl<T> Rc<T> {
     #[cfg(not(no_global_oom_handling))]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new(value: T) -> Rc<T> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         // There is an implicit weak pointer owned by all the strong
         // pointers, which ensures that the weak destructor never frees
         // the allocation while the strong destructor is running, even
@@ -511,12 +504,7 @@ impl<T> Rc<T> {
     #[stable(feature = "new_uninit", since = "1.82.0")]
     #[must_use]
     pub fn new_uninit() -> Rc<mem::MaybeUninit<T>> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         unsafe {
             Rc::from_ptr(Rc::allocate_for_layout(
                 Layout::new::<T>(),
@@ -576,12 +564,7 @@ impl<T> Rc<T> {
         // pointers, which ensures that the weak destructor never frees
         // the allocation while the strong destructor is running, even
         // if the weak pointer is stored inside the strong one.
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         unsafe {
             Ok(Self::from_inner(
                 Box::leak(Box::try_new(RcInner {
@@ -804,12 +787,7 @@ impl<T, A: Allocator> Rc<T, A> {
     where
         F: FnOnce(&Weak<T, A>) -> T,
     {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         // Construct the inner in the "uninitialized" state with a single
         // weak reference.
         let (uninit_raw_ptr, alloc) = Box::into_raw_with_allocator(Box::new_in(
@@ -877,12 +855,7 @@ impl<T, A: Allocator> Rc<T, A> {
             RcInner { strong: Cell::new(1), weak: Cell::new(1), value },
             alloc,
         )?);
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         Ok(unsafe { Self::from_inner_in(ptr.into(), alloc) })
     }
 
@@ -1107,12 +1080,7 @@ impl<T> Rc<[T]> {
     #[unstable(feature = "new_zeroed_alloc", issue = "129396")]
     #[must_use]
     pub fn new_zeroed_slice(len: usize) -> Rc<[mem::MaybeUninit<T>]> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         unsafe {
             Rc::from_ptr(Rc::allocate_for_layout(
                 Layout::array::<T>(len).unwrap(),
@@ -2093,12 +2061,7 @@ impl<T: ?Sized> Rc<T> {
         allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
         mem_to_rc_inner: impl FnOnce(*mut u8) -> *mut RcInner<T>,
     ) -> *mut RcInner<T> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         let layout = rc_inner_layout_for_value_layout(value_layout);
         unsafe {
             Rc::try_allocate_for_layout(value_layout, allocate, mem_to_rc_inner)
@@ -2393,12 +2356,7 @@ impl<T: Default> Default for Rc<T> {
     /// ```
     #[inline]
     fn default() -> Rc<T> {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         unsafe {
             Self::from_inner(
                 Box::leak(Box::write(
@@ -4040,12 +3998,7 @@ impl<T, A: Allocator> UniqueRc<T, A> {
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "unique_rc_arc", issue = "112566")]
     pub fn new_in(value: T, alloc: A) -> Self {
-        #[cfg(feature = "log-stats")]
-        {
-            GC_COUNTERS.allocated_rc.fetch_add(1, atomic::Ordering::Relaxed);
-            // Decrement because `Rc` uses the global allocator.
-            GC_COUNTERS.allocated_boxed.fetch_sub(1, atomic::Ordering::Relaxed);
-        }
+        metrics::increment(1, Metric::AllocationsRc);
         let (ptr, alloc) = Box::into_unique(Box::new_in(
             RcInner {
                 strong: Cell::new(0),

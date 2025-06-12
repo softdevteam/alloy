@@ -28,7 +28,6 @@ dependencies = [
 name = "alloc"
 version = "0.0.0"
 dependencies = [
- "bdwgc",
  "compiler_builtins",
  "core",
  "rand",
@@ -40,16 +39,6 @@ name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
-
-[[package]]
-name = "bdwgc"
-version = "0.1.0"
-dependencies = [
- "cmake",
- "compiler_builtins",
- "libc",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "cc"
@@ -68,15 +57,6 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
-]
-
-[[package]]
-name = "cmake"
-version = "0.1.54"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
-dependencies = [
- "cc",
 ]
 
 [[package]]
