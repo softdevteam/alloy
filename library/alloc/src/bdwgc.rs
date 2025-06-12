@@ -1,7 +1,14 @@
-#![no_std]
-#![allow(nonstandard_style)]
+#![allow(missing_docs)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+#[cfg(not(no_gc))]
+#[allow(nonstandard_style)]
+#[allow(missing_debug_implementations)]
+pub mod api {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+#[cfg(not(no_gc))]
+pub use api::*;
 
 pub mod metrics {
     #[derive(Copy, Clone, Debug)]
@@ -114,11 +121,11 @@ pub mod metrics {
     }
 
     #[cfg(not(feature = "gc-metrics"))]
-    mod noop {
+    pub mod noop {
         use super::MetricsImpl;
 
         #[derive(Debug, Default)]
-        pub(super) struct Metrics;
+        pub struct Metrics;
 
         impl Metrics {
             pub const fn new() -> Self {

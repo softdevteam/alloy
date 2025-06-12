@@ -254,9 +254,8 @@ pub mod __export {
     pub use core::hint::must_use;
 }
 
-#[cfg(not(no_gc))]
 #[unstable(feature = "gc", issue = "none")]
-pub use bdwgc;
+pub mod bdwgc;
 
 #[cfg(test)]
 #[allow(dead_code)] // Not used in all configurations
