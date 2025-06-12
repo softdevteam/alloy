@@ -81,14 +81,14 @@ impl Step for Bdwgc {
         let mut cfg = cmake::Config::new(builder.src.join("src/bdwgc"));
         llvm::configure_cmake(builder, target, &mut cfg, true, llvm::LdFlags::default(), &[]);
 
-        let profile = match (builder.config.bdwgc_debug, builder.config.bdwgc_assertions) {
+        let profile = match (builder.config.gc_debug, builder.config.gc_assertions) {
             (true, _) => "Debug",
             (false, false) => "Release",
             (false, true) => "RelWithDebInfo",
         };
         trace!(?profile);
 
-        let assertions = if builder.config.bdwgc_assertions { "ON" } else { "OFF" };
+        let assertions = if builder.config.gc_assertions { "ON" } else { "OFF" };
 
         cfg.out_dir(&out_dir)
             .pic(true)

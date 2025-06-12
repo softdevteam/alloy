@@ -156,15 +156,7 @@ impl GcAllocator {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub fn init() {
-    unsafe {
-        bdwgc::GC_set_finalize_on_demand(1);
-        bdwgc::GC_set_finalizer_notifier(Some(notify_finalizer_thread));
-        #[cfg(feature = "bdwgc-disable")]
-        bdwgc::GC_disable();
-        bdwgc::metrics::init();
-        // The final initialization must come last.
-        bdwgc::GC_init();
-    }
+    bdwgc::init(notify_finalizer_thread);
 }
 
 pub fn thread_registered() -> bool {

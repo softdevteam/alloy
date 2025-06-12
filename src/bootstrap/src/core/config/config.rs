@@ -351,9 +351,9 @@ pub struct Config {
     pub finalizer_safety_analysis: bool,
     pub premature_finalizer_prevention: bool,
     pub premature_finalizer_prevention_optimize: bool,
-    pub bdwgc_assertions: bool,
-    pub bdwgc_debug: bool,
-    pub bdwgc_disable: bool,
+    pub gc_assertions: bool,
+    pub gc_debug: bool,
+    pub gc_disable: bool,
 
     // misc
     pub low_priority: bool,
@@ -1237,9 +1237,9 @@ define_config! {
         finalizer_safety_analysis: Option<bool> = "finalizer-safety-analysis",
         premature_finalizer_prevention: Option<bool> = "premature-finalizer-prevention",
         premature_finalizer_prevention_optimize: Option<bool> = "premature-finalizer-prevention-optimize",
-        bdwgc_assertions: Option<bool> = "bdwgc-assertions",
-        bdwgc_debug: Option<bool> = "bdwgc-debug",
-        bdwgc_disable: Option<bool> = "bdwgc-disable",
+        gc_assertions: Option<bool> = "gc-assertions",
+        gc_debug: Option<bool> = "gc-debug",
+        gc_disable: Option<bool> = "gc-disable",
     }
 }
 
@@ -1328,9 +1328,9 @@ impl Config {
             finalizer_safety_analysis: true,
             premature_finalizer_prevention: true,
             premature_finalizer_prevention_optimize: true,
-            bdwgc_assertions: false,
-            bdwgc_debug: false,
-            bdwgc_disable: false,
+            gc_assertions: false,
+            gc_debug: false,
+            gc_disable: false,
 
             ..Default::default()
         }
@@ -2064,9 +2064,9 @@ impl Config {
                 finalizer_safety_analysis,
                 premature_finalizer_prevention,
                 premature_finalizer_prevention_optimize,
-                bdwgc_assertions,
-                bdwgc_debug,
-                bdwgc_disable,
+                gc_assertions,
+                gc_debug,
+                gc_disable,
             } = alloy;
 
             set(&mut config.gc_metrics, gc_metrics);
@@ -2077,9 +2077,9 @@ impl Config {
                 &mut config.premature_finalizer_prevention_optimize,
                 premature_finalizer_prevention_optimize,
             );
-            set(&mut config.bdwgc_assertions, bdwgc_assertions);
-            set(&mut config.bdwgc_debug, bdwgc_debug);
-            set(&mut config.bdwgc_disable, bdwgc_disable);
+            set(&mut config.gc_assertions, gc_assertions);
+            set(&mut config.gc_debug, gc_debug);
+            set(&mut config.gc_disable, gc_disable);
         }
 
         if let Some(llvm) = toml.llvm {

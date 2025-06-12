@@ -10,6 +10,18 @@ pub mod api {
 #[cfg(not(no_gc))]
 pub use api::*;
 
+pub fn init(finalizer_thread: extern "C" fn()) {
+    unsafe {
+        api::GC_set_finalize_on_demand(1);
+        api::GC_set_finalizer_notifier(Some(finalizer_thread));
+        #[cfg(feature = "gc-disable")]
+        api::GC_disable();
+        metrics::init();
+        // The final initialization must come last.
+        api::GC_init();
+    }
+}
+
 pub mod metrics {
     #[derive(Copy, Clone, Debug)]
     pub enum Metric {
