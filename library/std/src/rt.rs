@@ -135,51 +135,6 @@ pub(crate) fn thread_cleanup() {
     .unwrap_or_else(handle_rt_panic);
 }
 
-#[cfg(feature = "log-stats")]
-pub(crate) fn log_stats() {
-    if crate::env::var("ALLOY_LOG").is_err() {
-        return;
-    }
-
-    use crate::io::Write;
-    let mut filename = crate::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(true)
-        .open(crate::env::var("ALLOY_LOG").unwrap())
-        .unwrap();
-
-    let headers = "elision enabled,\
-        pfp enabled,\
-        premopt enabled,\
-        finalizers registered,\
-        finalizers completed,\
-        finalizers elidable,\
-        barriers visited,\
-        Gc allocated,\
-        Box allocated,\
-        Rc allocated,\
-        Arc allocated,\
-        num GCs";
-    let stats = crate::gc::stats();
-    let stats = format!(
-        "{},{},{},{},{},{},{},{},{},{},{},{}\n",
-        stats.elision_enabled,
-        stats.prem_enabled,
-        stats.premopt_enabled,
-        stats.finalizers_registered,
-        stats.finalizers_completed,
-        stats.finalizers_elidable,
-        stats.barriers_visited,
-        stats.allocated_gc,
-        stats.allocated_boxed,
-        stats.allocated_rc,
-        stats.allocated_arc,
-        stats.num_gcs
-    );
-    write!(filename, "{}", format!("{headers}\n{stats}")).unwrap();
-}
-
 // One-time runtime cleanup.
 // Runs after `main` or at program exit.
 // NOTE: this is not guaranteed to run, for example when the program aborts.
@@ -255,7 +210,6 @@ fn lang_start<T: crate::process::Termination + 'static>(
         argv,
         sigpipe,
     );
-    #[cfg(feature = "log-stats")]
-    crate::rt::log_stats();
+    crate::bdwgc::metrics::record_final();
     status
 }

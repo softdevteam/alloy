@@ -9,37 +9,6 @@ pub use core::alloc::*;
 use core::hint;
 #[cfg(not(test))]
 use core::ptr::{self, NonNull};
-#[cfg(feature = "log-stats")]
-use core::sync::atomic::AtomicU64;
-
-#[cfg(feature = "log-stats")]
-#[unstable(feature = "gc", issue = "none")]
-/// Global counters for various GC stats.
-pub static GC_COUNTERS: GcCounters = GcCounters {
-    finalizers_registered: AtomicU64::new(0),
-    finalizers_elidable: AtomicU64::new(0),
-    finalizers_completed: AtomicU64::new(0),
-    barriers_visited: AtomicU64::new(0),
-    allocated_gc: AtomicU64::new(0),
-    allocated_boxed: AtomicU64::new(0),
-    allocated_rc: AtomicU64::new(0),
-    allocated_arc: AtomicU64::new(0),
-};
-
-#[cfg(feature = "log-stats")]
-#[unstable(feature = "gc", issue = "none")]
-#[allow(missing_docs)]
-#[derive(Debug, Default)]
-pub struct GcCounters {
-    pub finalizers_registered: AtomicU64,
-    pub finalizers_elidable: AtomicU64,
-    pub finalizers_completed: AtomicU64,
-    pub barriers_visited: AtomicU64,
-    pub allocated_gc: AtomicU64,
-    pub allocated_boxed: AtomicU64,
-    pub allocated_rc: AtomicU64,
-    pub allocated_arc: AtomicU64,
-}
 
 unsafe extern "Rust" {
     // These are the magic symbols to call the global allocator. rustc generates

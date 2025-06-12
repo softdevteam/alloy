@@ -346,7 +346,7 @@ pub struct Config {
     pub backtrace: bool, // support for RUST_BACKTRACE
 
     // alloy debug features
-    pub log_stats: bool, // support for LOG_ALLOY_STATS
+    pub gc_metrics: bool,
     pub finalizer_elision: bool,
     pub finalizer_safety_analysis: bool,
     pub premature_finalizer_prevention: bool,
@@ -1232,7 +1232,7 @@ define_config! {
 define_config! {
     /// TOML representation of Alloy build configurations.
     struct Alloy {
-        log_stats: Option<bool> = "log-stats",
+        gc_metrics: Option<bool> = "gc-metrics",
         finalizer_elision: Option<bool> = "finalizer-elision",
         finalizer_safety_analysis: Option<bool> = "finalizer-safety-analysis",
         premature_finalizer_prevention: Option<bool> = "premature-finalizer-prevention",
@@ -1323,7 +1323,7 @@ impl Config {
             // `rust-objcopy` to workaround bad `strip`s on macOS.
             llvm_tools_enabled: true,
             // alloy opts
-            log_stats: false,
+            gc_metrics: false,
             finalizer_elision: true,
             finalizer_safety_analysis: true,
             premature_finalizer_prevention: true,
@@ -2059,7 +2059,7 @@ impl Config {
 
         if let Some(alloy) = toml.alloy {
             let Alloy {
-                log_stats,
+                gc_metrics,
                 finalizer_elision,
                 finalizer_safety_analysis,
                 premature_finalizer_prevention,
@@ -2069,7 +2069,7 @@ impl Config {
                 bdwgc_disable,
             } = alloy;
 
-            set(&mut config.log_stats, log_stats);
+            set(&mut config.gc_metrics, gc_metrics);
             set(&mut config.finalizer_elision, finalizer_elision);
             set(&mut config.finalizer_safety_analysis, finalizer_safety_analysis);
             set(&mut config.premature_finalizer_prevention, premature_finalizer_prevention);

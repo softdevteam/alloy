@@ -48,33 +48,13 @@ use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, LegacyReceiver};
 use core::ptr::{self, NonNull, drop_in_place};
 #[cfg(not(no_global_oom_handling))]
 use core::slice::from_raw_parts_mut;
-#[cfg(feature = "log-stats")]
-use core::sync::atomic;
 use core::{fmt, iter};
 
-#[cfg(feature = "log-stats")]
-use crate::alloc::GC_COUNTERS;
 #[cfg(not(no_global_oom_handling))]
 use crate::alloc::{Global, handle_alloc_error};
 use crate::bdwgc;
+use crate::bdwgc::metrics::Metric;
 use crate::sync::{Condvar, Mutex};
-
-#[cfg(feature = "log-stats")]
-#[derive(Debug, Copy, Clone)]
-pub struct GcStats {
-    pub elision_enabled: bool,
-    pub prem_enabled: bool,
-    pub premopt_enabled: bool,
-    pub finalizers_registered: u64,
-    pub finalizers_completed: u64,
-    pub finalizers_elidable: u64,
-    pub barriers_visited: u64,
-    pub allocated_gc: u64,
-    pub allocated_boxed: u64,
-    pub allocated_rc: u64,
-    pub allocated_arc: u64,
-    pub num_gcs: u64,
-}
 
 static FINALIZER_THREAD_EXISTS: Mutex<bool> = Mutex::new(false);
 
@@ -91,8 +71,7 @@ pub struct GcAllocator;
 unsafe impl GlobalAlloc for GcAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        #[cfg(feature = "log-stats")]
-        GC_COUNTERS.allocated_boxed.fetch_add(1, atomic::Ordering::Relaxed);
+        bdwgc::metrics::increment(1, Metric::AllocationsBox);
         unsafe { gc_malloc(layout) }
     }
 
@@ -152,8 +131,7 @@ unsafe fn gc_free(ptr: *mut u8, _: Layout) {
 unsafe impl Allocator for GcAllocator {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        #[cfg(feature = "log-stats")]
-        GC_COUNTERS.allocated_gc.fetch_add(1, atomic::Ordering::Relaxed);
+        bdwgc::metrics::increment(1, Metric::AllocationsGc);
         match layout.size() {
             0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
             size => unsafe {
@@ -176,45 +154,16 @@ impl GcAllocator {
 ////////////////////////////////////////////////////////////////////////////////
 // Free functions
 ////////////////////////////////////////////////////////////////////////////////
-#[cfg(feature = "log-stats")]
-pub fn stats() -> GcStats {
-    #[cfg(feature = "finalizer-elision")]
-    let elision_enabled = true;
-    #[cfg(not(feature = "finalizer-elision"))]
-    let elision_enabled = false;
-    #[cfg(feature = "premature-finalizer-prevention")]
-    let prem_enabled = true;
-    #[cfg(not(feature = "premature-finalizer-prevention"))]
-    let prem_enabled = false;
-    #[cfg(feature = "premature-finalizer-prevention-optimize")]
-    let premopt_enabled = true;
-    #[cfg(not(feature = "premature-finalizer-prevention-optimize"))]
-    let premopt_enabled = false;
-    GcStats {
-        elision_enabled,
-        prem_enabled,
-        premopt_enabled,
-        finalizers_registered: GC_COUNTERS.finalizers_registered.load(atomic::Ordering::Relaxed),
-        finalizers_completed: GC_COUNTERS.finalizers_completed.load(atomic::Ordering::Relaxed),
-        finalizers_elidable: GC_COUNTERS.finalizers_elidable.load(atomic::Ordering::Relaxed),
-        allocated_gc: GC_COUNTERS.allocated_gc.load(atomic::Ordering::Relaxed),
-        allocated_boxed: GC_COUNTERS.allocated_boxed.load(atomic::Ordering::Relaxed),
-        allocated_rc: GC_COUNTERS.allocated_rc.load(atomic::Ordering::Relaxed),
-        allocated_arc: GC_COUNTERS.allocated_arc.load(atomic::Ordering::Relaxed),
-        barriers_visited: GC_COUNTERS.barriers_visited.load(atomic::Ordering::Relaxed),
-        num_gcs: unsafe { bdwgc::GC_get_gc_no() },
-    }
-}
 
 pub fn init() {
     unsafe {
-        bdwgc::GC_init();
         bdwgc::GC_set_finalize_on_demand(1);
         bdwgc::GC_set_finalizer_notifier(Some(notify_finalizer_thread));
         #[cfg(feature = "bdwgc-disable")]
         bdwgc::GC_disable();
-        #[cfg(feature = "log-stats")]
-        bdwgc::GC_enable_benchmark_stats();
+        bdwgc::metrics::init();
+        // The final initialization must come last.
+        bdwgc::GC_init();
     }
 }
 
@@ -269,15 +218,8 @@ fn run_finalizers() {
         if unsafe { bdwgc::GC_should_invoke_finalizers() } == 0 {
             guard = cvar.wait(guard).unwrap();
         } else {
-            #[cfg(feature = "log-stats")]
-            {
-                let finalized = unsafe { bdwgc::GC_invoke_finalizers() };
-                GC_COUNTERS.finalizers_completed.fetch_add(finalized, atomic::Ordering::Relaxed);
-            }
-            #[cfg(not(feature = "log-stats"))]
-            unsafe {
-                bdwgc::GC_invoke_finalizers();
-            }
+            let finalized = unsafe { bdwgc::GC_invoke_finalizers() };
+            crate::bdwgc::metrics::increment(finalized.try_into().unwrap(), Metric::FinalizersRun);
         }
         drop(guard)
     }
@@ -360,8 +302,6 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
 #[cfg(all(not(bootstrap), not(test)))]
 impl<T: ?Sized> Drop for Gc<T> {
     fn drop(&mut self) {
-        #[cfg(feature = "log-stats")]
-        GC_COUNTERS.barriers_visited.fetch_add(1, atomic::Ordering::Relaxed);
         unsafe {
             // asm macros clobber by default, so this is enough to introduce a
             // barrier.
@@ -595,14 +535,7 @@ impl<T> Gc<T> {
             let needs_finalizer = crate::mem::needs_drop::<T>();
 
             if !needs_finalizer {
-                #[cfg(feature = "log-stats")]
-                {
-                    GC_COUNTERS.finalizers_elidable.fetch_add(
-                        crate::mem::needs_finalizer::<T>() as u64,
-                        atomic::Ordering::Relaxed,
-                    );
-                    GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
-                }
+                crate::bdwgc::metrics::increment(1, Metric::FinalizersElided);
                 return unsafe {
                     Self::from_inner(Box::leak(Box::new_in(GcBox { value }, GcAllocator)).into())
                 };
@@ -635,8 +568,7 @@ impl<T> Gc<T> {
                 ptr::null_mut(),
             );
         }
-        #[cfg(feature = "log-stats")]
-        GC_COUNTERS.finalizers_registered.fetch_add(1, atomic::Ordering::Relaxed);
+        crate::bdwgc::metrics::increment(1, Metric::FinalizersRegistered);
         unsafe { Self::from_inner(ptr.into()) }
     }
 }

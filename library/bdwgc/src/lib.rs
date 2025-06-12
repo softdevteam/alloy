@@ -1,35 +1,150 @@
 #![no_std]
-#![allow(non_camel_case_types)]
-#![allow(non_upper_case_globals)]
+#![allow(nonstandard_style)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-#[repr(C)]
-#[derive(Default)]
-pub struct ProfileStats {
-    /// Heap size in bytes (including area unmapped to OS).
-    pub heapsize_full: usize,
-    /// Total bytes contained in free and unmapped blocks.
-    pub free_bytes_full: usize,
-    /// Amount of memory unmapped to OS.
-    pub unmapped_bytes: usize,
-    /// Number of bytes allocated since the recent collection.
-    pub bytes_allocd_since_gc: usize,
-    /// Number of bytes allocated before the recent collection.
-    /// The value may wrap.
-    pub allocd_bytes_before_gc: usize,
-    /// Number of bytes not considered candidates for garbage collection.
-    pub non_gc_bytes: usize,
-    /// Garbage collection cycle number.
-    /// The value may wrap.
-    pub gc_no: usize,
-    /// Number of marker threads (excluding the initiating one).
-    pub markers_m1: usize,
-    /// Approximate number of reclaimed bytes after recent collection.
-    pub bytes_reclaimed_since_gc: usize,
-    /// Approximate number of bytes reclaimed before the recent collection.
-    /// The value may wrap.
-    pub reclaimed_bytes_before_gc: usize,
-    /// Number of bytes freed explicitly since the recent GC.
-    pub expl_freed_bytes_since_gc: usize,
+pub mod metrics {
+    #[derive(Copy, Clone, Debug)]
+    pub enum Metric {
+        AllocationsArc,
+        AllocationsGc,
+        AllocationsRc,
+        AllocationsBox,
+        FinalizersRun,
+        FinalizersElided,
+        FinalizersRegistered,
+    }
+
+    trait MetricsImpl {
+        fn init(&self) {}
+        fn increment(&self, _amount: u64, _metric: Metric) {}
+        fn capture(&self, _is_last: bool) {}
+    }
+
+    #[cfg(feature = "gc-metrics")]
+    mod active {
+        use core::sync::atomic::{AtomicU64, Ordering};
+
+        use super::{Metric, MetricsImpl};
+
+        pub(super) struct Metrics {
+            finalizers_registered: AtomicU64,
+            finalizers_elidable: AtomicU64,
+            finalizers_completed: AtomicU64,
+            barriers_visited: AtomicU64,
+            allocated_gc: AtomicU64,
+            allocated_arc: AtomicU64,
+            allocated_rc: AtomicU64,
+            allocated_boxed: AtomicU64,
+        }
+
+        impl Metrics {
+            pub const fn new() -> Self {
+                Self {
+                    finalizers_registered: AtomicU64::new(0),
+                    finalizers_elidable: AtomicU64::new(0),
+                    finalizers_completed: AtomicU64::new(0),
+                    barriers_visited: AtomicU64::new(0),
+                    allocated_gc: AtomicU64::new(0),
+                    allocated_arc: AtomicU64::new(0),
+                    allocated_rc: AtomicU64::new(0),
+                    allocated_boxed: AtomicU64::new(0),
+                }
+            }
+        }
+
+        pub extern "C" fn record_post_collection(event: crate::GC_EventType) {
+            if event == crate::GC_EventType_GC_EVENT_END {
+                super::METRICS.capture(false);
+            }
+        }
+
+        impl MetricsImpl for Metrics {
+            fn init(&self) {
+                unsafe {
+                    crate::GC_enable_benchmark_stats();
+                    crate::GC_set_on_collection_event(Some(record_post_collection));
+                }
+            }
+
+            fn increment(&self, amount: u64, metric: Metric) {
+                match metric {
+                    Metric::AllocationsArc => {
+                        self.allocated_boxed.fetch_sub(amount, Ordering::Relaxed);
+                        self.allocated_arc.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::AllocationsRc => {
+                        self.allocated_boxed.fetch_sub(amount, Ordering::Relaxed);
+                        self.allocated_rc.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::AllocationsBox => {
+                        self.allocated_boxed.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::AllocationsGc => {
+                        self.allocated_gc.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::FinalizersRun => {
+                        self.finalizers_completed.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::FinalizersElided => {
+                        self.finalizers_completed.fetch_add(amount, Ordering::Relaxed);
+                    }
+                    Metric::FinalizersRegistered => {
+                        self.finalizers_registered.fetch_add(amount, Ordering::Relaxed);
+                    }
+                }
+            }
+
+            fn capture(&self, is_last: bool) {
+                // Must preserve this ordering as it's hardcoded inside BDWGC.
+                // See src/bdwgc/misc.c:2812
+                unsafe {
+                    crate::GC_log_metrics(
+                        self.finalizers_completed.load(Ordering::Relaxed),
+                        self.finalizers_registered.load(Ordering::Relaxed),
+                        self.allocated_gc.load(Ordering::Relaxed),
+                        self.allocated_arc.load(Ordering::Relaxed),
+                        self.allocated_rc.load(Ordering::Relaxed),
+                        self.allocated_boxed.load(Ordering::Relaxed),
+                        is_last as i32,
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "gc-metrics"))]
+    mod noop {
+        use super::MetricsImpl;
+
+        #[derive(Debug, Default)]
+        pub(super) struct Metrics;
+
+        impl Metrics {
+            pub const fn new() -> Self {
+                Self
+            }
+        }
+
+        impl MetricsImpl for Metrics {}
+    }
+
+    #[cfg(feature = "gc-metrics")]
+    use active::Metrics;
+    #[cfg(not(feature = "gc-metrics"))]
+    use noop::Metrics;
+
+    static METRICS: Metrics = Metrics::new();
+
+    pub fn init() {
+        METRICS.init();
+    }
+
+    pub fn record_final() {
+        METRICS.capture(true);
+    }
+
+    pub fn increment(amount: u64, metric: Metric) {
+        METRICS.increment(amount, metric);
+    }
 }

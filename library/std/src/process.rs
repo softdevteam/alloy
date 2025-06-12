@@ -2039,8 +2039,7 @@ impl ExitCode {
     /// ```
     #[unstable(feature = "exitcode_exit_method", issue = "97100")]
     pub fn exit_process(self) -> ! {
-        #[cfg(feature = "log-stats")]
-        crate::rt::log_stats();
+        crate::bdwgc::metrics::record_final();
         exit(self.to_i32())
     }
 }
@@ -2317,8 +2316,7 @@ impl Child {
 #[cfg_attr(not(test), rustc_diagnostic_item = "process_exit")]
 pub fn exit(code: i32) -> ! {
     crate::rt::cleanup();
-    #[cfg(feature = "log-stats")]
-    crate::rt::log_stats();
+    crate::bdwgc::metrics::record_final();
     crate::sys::os::exit(code)
 }
 
