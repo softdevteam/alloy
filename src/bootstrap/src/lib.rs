@@ -692,8 +692,8 @@ impl Build {
         if self.config.premature_finalizer_prevention_optimize {
             features.insert("premature-finalizer-prevention-optimize");
         }
-        if self.config.bdwgc_disable {
-            features.insert("bdwgc-disable");
+        if self.config.gc_disable {
+            features.insert("gc-disable");
         }
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
