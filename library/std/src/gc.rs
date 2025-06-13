@@ -37,9 +37,10 @@
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
 
-use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use alloc::bdwgc::GcAllocator;
+use core::alloc::{AllocError, Allocator, Layout};
 use core::any::Any;
-use core::cmp::{self, Ordering};
+use core::cmp::Ordering;
 pub use core::gc::*;
 use core::hash::{Hash, Hasher};
 use core::marker::Unsize;
@@ -57,99 +58,6 @@ use crate::bdwgc::metrics::Metric;
 use crate::sync::{Condvar, Mutex};
 
 static FINALIZER_THREAD_EXISTS: Mutex<bool> = Mutex::new(false);
-
-////////////////////////////////////////////////////////////////////////////////
-// BDWGC Allocator
-////////////////////////////////////////////////////////////////////////////////
-
-// Fast-path for low alignment values
-pub const MIN_ALIGN: usize = 8;
-
-#[derive(Debug)]
-pub struct GcAllocator;
-
-unsafe impl GlobalAlloc for GcAllocator {
-    #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        bdwgc::metrics::increment(1, Metric::AllocationsBox);
-        unsafe { gc_malloc(layout) }
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { gc_free(ptr, layout) }
-    }
-
-    #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        unsafe { gc_realloc(ptr, layout, new_size) }
-    }
-}
-
-#[inline]
-unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
-    if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
-        unsafe { bdwgc::GC_malloc(layout.size()) as *mut u8 }
-    } else {
-        let mut out = ptr::null_mut();
-        // posix_memalign requires that the alignment be a multiple of `sizeof(void*)`.
-        // Since these are all powers of 2, we can just use max.
-        unsafe {
-            let align = layout.align().max(core::mem::size_of::<usize>());
-            let ret = bdwgc::GC_posix_memalign(&mut out, align, layout.size());
-            if ret != 0 { ptr::null_mut() } else { out as *mut u8 }
-        }
-    }
-}
-
-#[inline]
-unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-    if old_layout.align() <= MIN_ALIGN && old_layout.align() <= new_size {
-        unsafe { bdwgc::GC_realloc(ptr as *mut libc::c_void, new_size) as *mut u8 }
-    } else {
-        unsafe {
-            let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
-
-            let new_ptr = gc_malloc(new_layout);
-            if !new_ptr.is_null() {
-                let size = cmp::min(old_layout.size(), new_size);
-                ptr::copy_nonoverlapping(ptr, new_ptr, size);
-                gc_free(ptr, old_layout);
-            }
-            new_ptr
-        }
-    }
-}
-
-#[inline]
-unsafe fn gc_free(ptr: *mut u8, _: Layout) {
-    unsafe {
-        bdwgc::GC_free(ptr as *mut libc::c_void);
-    }
-}
-
-unsafe impl Allocator for GcAllocator {
-    #[inline]
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        bdwgc::metrics::increment(1, Metric::AllocationsGc);
-        match layout.size() {
-            0 => Ok(NonNull::slice_from_raw_parts(layout.dangling(), 0)),
-            size => unsafe {
-                let ptr = gc_malloc(layout);
-                let ptr = NonNull::new(ptr).ok_or(AllocError)?;
-                Ok(NonNull::slice_from_raw_parts(ptr, size))
-            },
-        }
-    }
-
-    unsafe fn deallocate(&self, _: NonNull<u8>, _: Layout) {}
-}
-
-impl GcAllocator {
-    pub fn force_gc() {
-        unsafe { bdwgc::GC_gcollect() }
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Free functions
