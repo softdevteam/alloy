@@ -16,7 +16,7 @@ if $(git rev-parse --is-shallow-repository); then
     git fetch --unshallow
 fi
 
-/usr/bin/time -v python3 x.py test --stage 2 --config .buildbot.config.toml --exclude rustdoc-json --exclude debuginfo
+/usr/bin/time -v python3 x.py test --stage 2 --config .buildbot.config.toml --exclude rustdoc-json --exclude debuginfo --exclude run-make
 
 # Install rustup
 

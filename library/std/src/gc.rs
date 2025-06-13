@@ -37,7 +37,7 @@
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 #![allow(missing_docs)]
 
-use alloc::bdwgc::GcAllocator;
+pub use alloc::bdwgc::GcAllocator;
 use core::alloc::{AllocError, Allocator, Layout};
 use core::any::Any;
 use core::cmp::Ordering;
