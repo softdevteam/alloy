@@ -240,6 +240,7 @@
 //! [fully qualified syntax]: https://doc.rust-lang.org/book/ch19-03-advanced-traits.html#fully-qualified-syntax-for-disambiguation-calling-methods-with-the-same-name
 
 #![stable(feature = "rust1", since = "1.0.0")]
+#![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
 
 use core::any::Any;
 use core::cell::Cell;
@@ -658,12 +659,14 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     /// use std::rc::Rc;
     /// use std::alloc::System;
     ///
     /// let five = Rc::new_in(5, System);
     /// ```
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[inline]
     pub fn new_in(value: T, alloc: A) -> Rc<T, A> {
@@ -682,6 +685,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// ```
     /// #![feature(get_mut_unchecked)]
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -699,6 +703,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub fn new_uninit_in(alloc: A) -> Rc<mem::MaybeUninit<T>, A> {
@@ -724,6 +729,7 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -736,6 +742,7 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
@@ -838,6 +845,7 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     /// use std::rc::Rc;
     /// use std::alloc::System;
     ///
@@ -845,6 +853,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// # Ok::<(), std::alloc::AllocError>(())
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub fn try_new_in(value: T, alloc: A) -> Result<Self, AllocError> {
         // There is an implicit weak pointer owned by all the strong
@@ -867,6 +876,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// ```
     /// #![feature(allocator_api)]
     /// #![feature(get_mut_unchecked)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -884,6 +894,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// # Ok::<(), std::alloc::AllocError>(())
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub fn try_new_uninit_in(alloc: A) -> Result<Rc<mem::MaybeUninit<T>, A>, AllocError> {
@@ -910,6 +921,7 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -923,6 +935,7 @@ impl<T, A: Allocator> Rc<T, A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     //#[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub fn try_new_zeroed_in(alloc: A) -> Result<Rc<mem::MaybeUninit<T>, A>, AllocError> {
@@ -941,6 +954,7 @@ impl<T, A: Allocator> Rc<T, A> {
     /// Constructs a new `Pin<Rc<T>>` in the provided allocator. If `T` does not implement `Unpin`, then
     /// `value` will be pinned in memory and unable to be moved.
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[inline]
     pub fn pin_in(value: T, alloc: A) -> Pin<Self>
@@ -1122,6 +1136,7 @@ impl<T, A: Allocator> Rc<[T], A> {
     /// ```
     /// #![feature(get_mut_unchecked)]
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1140,6 +1155,7 @@ impl<T, A: Allocator> Rc<[T], A> {
     /// assert_eq!(*values, [1, 2, 3])
     /// ```
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
@@ -1157,6 +1173,7 @@ impl<T, A: Allocator> Rc<[T], A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1169,6 +1186,7 @@ impl<T, A: Allocator> Rc<[T], A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
@@ -1447,6 +1465,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     /// use std::rc::Rc;
     /// use std::alloc::System;
     ///
@@ -1526,6 +1545,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1548,6 +1568,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1561,6 +1582,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// }
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     pub unsafe fn from_raw_in(ptr: *const T, alloc: A) -> Self {
         let offset = unsafe { data_offset(ptr) };
 
@@ -1644,6 +1666,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1662,6 +1685,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     pub unsafe fn increment_strong_count_in(ptr: *const T, alloc: A)
     where
         A: Clone,
@@ -1687,6 +1711,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::rc::Rc;
     /// use std::alloc::System;
@@ -1705,6 +1730,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// ```
     #[inline]
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     pub unsafe fn decrement_strong_count_in(ptr: *const T, alloc: A) {
         unsafe { drop(Rc::from_raw_in(ptr, alloc)) };
     }
@@ -2114,6 +2140,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     }
 
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     fn from_box_in(src: Box<T, A>) -> Rc<T, A> {
         unsafe {
             let value_size = size_of_val(&*src);
@@ -2215,6 +2242,7 @@ impl<T, A: Allocator> Rc<[T], A> {
     /// Allocates an `RcInner<[T]>` with the given length.
     #[inline]
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     unsafe fn allocate_for_slice_in(len: usize, alloc: &A) -> *mut RcInner<[T]> {
         unsafe {
             Rc::<[T]>::allocate_for_layout(
@@ -3221,6 +3249,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     /// use std::rc::{Rc, Weak};
     /// use std::alloc::System;
     ///

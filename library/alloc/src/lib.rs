@@ -89,6 +89,7 @@
 #![warn(rustdoc::unescaped_backticks)]
 #![deny(ffi_unwind_calls)]
 #![warn(unreachable_pub)]
+#![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
 //
 // Library features:
 // tidy-alphabetical-start

@@ -248,6 +248,7 @@
 #![warn(deprecated_in_future)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
+#![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
 #![allow(explicit_outlives_requirements)]
 #![allow(unused_lifetimes)]
 #![allow(internal_features)]

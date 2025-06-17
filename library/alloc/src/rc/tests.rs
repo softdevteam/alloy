@@ -1,3 +1,4 @@
+#![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
 use std::cell::RefCell;
 use std::clone::Clone;
 
