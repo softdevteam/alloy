@@ -1,0 +1,15 @@
+error: uses a non-Alloy allocator
+  --> $DIR/untracked_allocations.rs:11:14
+   |
+LL |     let rc = Rc::new_in(123, A);
+   |              ^^^^^^^^^^^^^^^^^^
+   |
+   = help: Disable this lint only if you are certain this not contain a pointer to a GC object
+note: the lint level is defined here
+  --> $DIR/untracked_allocations.rs:1:9
+   |
+LL | #![deny(untracked_heap_allocation)]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
+

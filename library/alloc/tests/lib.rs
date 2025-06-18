@@ -39,6 +39,7 @@
 #![feature(vec_deque_pop_if)]
 #![feature(unique_rc_arc)]
 #![feature(macro_metavar_expr_concat)]
+#![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
 #![allow(internal_features)]
 #![deny(fuzzy_provenance_casts)]
 #![deny(unsafe_op_in_unsafe_fn)]

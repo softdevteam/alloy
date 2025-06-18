@@ -1912,6 +1912,11 @@ impl<'a> LintDiagnostic<'a, ()> for MisalignedGcPointers<'_> {
 }
 
 #[derive(LintDiagnostic)]
+#[diag(lint_untracked_heap_allocation)]
+#[help]
+pub(crate) struct UntrackedHeapAllocation;
+
+#[derive(LintDiagnostic)]
 #[diag(lint_variant_size_differences)]
 pub(crate) struct VariantSizeDifferencesDiag {
     pub largest: u64,

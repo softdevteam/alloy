@@ -911,6 +911,10 @@ lint_unsafe_attr_outside_unsafe_suggestion = wrap the attribute in `unsafe(...)`
 
 lint_unsupported_group = `{$lint_group}` lint group is not supported with ´--force-warn´
 
+lint_untracked_heap_allocation = uses a non-Alloy allocator
+    .note = Alloy must be able to track all heap allocations in order to correctly trace GC objects
+    .help = Disable this lint only if you are certain this not contain a pointer to a GC object
+
 lint_untranslatable_diag = diagnostics should be created using translatable messages
 
 lint_unused_allocation = unnecessary allocation, use `&` instead

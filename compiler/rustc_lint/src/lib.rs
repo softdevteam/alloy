@@ -52,6 +52,7 @@ mod foreign_modules;
 pub mod hidden_unicode_codepoints;
 mod if_let_rescope;
 mod impl_trait_overcaptures;
+mod incompatible_gc_features;
 mod internal;
 mod invalid_from_utf8;
 mod late;
@@ -94,6 +95,7 @@ use for_loops_over_fallibles::*;
 use hidden_unicode_codepoints::*;
 use if_let_rescope::IfLetRescope;
 use impl_trait_overcaptures::ImplTraitOvercaptures;
+use incompatible_gc_features::*;
 use internal::*;
 use invalid_from_utf8::*;
 use let_underscore::*;
@@ -247,6 +249,7 @@ late_lint_methods!(
             StaticMutRefs: StaticMutRefs,
             UnqualifiedLocalImports: UnqualifiedLocalImports,
             MisalignedGcPointers: MisalignedGcPointers,
+            UntrackedHeapAllocation: UntrackedHeapAllocation,
         ]
     ]
 );
