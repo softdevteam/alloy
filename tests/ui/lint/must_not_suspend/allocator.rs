@@ -2,6 +2,7 @@
 
 #![feature(must_not_suspend, allocator_api)]
 #![deny(must_not_suspend)]
+#![allow(untracked_heap_allocation)]
 
 use std::alloc::*;
 use std::ptr::NonNull;
