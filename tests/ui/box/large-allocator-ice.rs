@@ -1,6 +1,7 @@
 //@ build-pass
 #![feature(allocator_api)]
 #![allow(unused_must_use)]
+#![allow(untracked_heap_allocation)]
 
 use std::alloc::Allocator;
 

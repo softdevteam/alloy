@@ -5,6 +5,7 @@
 //@ only-x86_64-unknown-linux-gnu
 
 #![feature(allocator_api)]
+#![allow(untracked_heap_allocation)]
 
 fn main() {
     let _ = Box::new_in(&[0, 1], &std::alloc::Global);

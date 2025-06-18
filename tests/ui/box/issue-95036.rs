@@ -2,6 +2,7 @@
 //@ build-pass
 
 #![feature(allocator_api)]
+#![allow(untracked_heap_allocation)]
 
 #[inline(never)]
 pub fn by_ref(node: &mut Box<[u8; 1], &std::alloc::Global>) {

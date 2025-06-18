@@ -3,6 +3,7 @@
 // fixes issue #94725
 
 #![feature(allocator_api)]
+#![allow(untracked_heap_allocation)]
 
 use std::alloc::{AllocError, Allocator, Layout};
 use std::ptr::NonNull;

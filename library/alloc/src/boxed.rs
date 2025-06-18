@@ -401,6 +401,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// # Examples
     ///
     /// ```
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     /// #![feature(allocator_api)]
     ///
     /// use std::alloc::System;
@@ -408,6 +409,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// let five = Box::new_in(5, System);
     /// ```
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[must_use]
     #[inline]
@@ -429,6 +431,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -436,6 +439,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// # Ok::<(), std::alloc::AllocError>(())
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub fn try_new_in(x: T, alloc: A) -> Result<Self, AllocError>
     where
@@ -452,6 +456,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -463,6 +468,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// assert_eq!(*five, 5)
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[cfg(not(no_global_oom_handling))]
     #[must_use]
     // #[unstable(feature = "new_uninit", issue = "63291")]
@@ -486,6 +492,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -499,6 +506,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     pub fn try_new_uninit_in(alloc: A) -> Result<Box<mem::MaybeUninit<T>, A>, AllocError>
     where
         A: Allocator,
@@ -522,6 +530,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -533,6 +542,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[cfg(not(no_global_oom_handling))]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[must_use]
@@ -560,6 +570,7 @@ impl<T, A: Allocator> Box<T, A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -573,6 +584,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     pub fn try_new_zeroed_in(alloc: A) -> Result<Box<mem::MaybeUninit<T>, A>, AllocError>
     where
         A: Allocator,
@@ -594,6 +606,7 @@ impl<T, A: Allocator> Box<T, A> {
     /// [`into_pin`](Box::into_pin) if you already have a `Box<T, A>`, or if you want to
     /// construct a (pinned) `Box` in a different way than with [`Box::new_in`].
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[must_use]
     #[inline(always)]
@@ -773,6 +786,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -786,6 +800,7 @@ impl<T, A: Allocator> Box<[T], A> {
     /// assert_eq!(*values, [1, 2, 3])
     /// ```
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[must_use]
@@ -803,6 +818,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -814,6 +830,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[cfg(not(no_global_oom_handling))]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "new_uninit", issue = "63291")]
     #[must_use]
@@ -828,6 +845,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -842,6 +860,7 @@ impl<T, A: Allocator> Box<[T], A> {
     /// # Ok::<(), std::alloc::AllocError>(())
     /// ```
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub fn try_new_uninit_slice_in(
         len: usize,
@@ -869,6 +888,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -881,6 +901,7 @@ impl<T, A: Allocator> Box<[T], A> {
     ///
     /// [zeroed]: mem::MaybeUninit::zeroed
     #[unstable(feature = "allocator_api", issue = "32838")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub fn try_new_zeroed_slice_in(
         len: usize,
@@ -1125,6 +1146,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// using [`Box::into_raw_with_allocator`]:
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -1135,6 +1157,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// Manually create a `Box` from scratch by using the system allocator:
     /// ```
     /// #![feature(allocator_api, slice_ptr_get)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::{Allocator, Layout, System};
     ///
@@ -1152,6 +1175,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// [memory layout]: self#memory-layout
     #[unstable(feature = "allocator_api", issue = "32838")]
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub const unsafe fn from_raw_in(raw: *mut T, alloc: A) -> Self {
         Box(unsafe { Unique::new_unchecked(raw) }, alloc)
@@ -1179,6 +1203,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// using [`Box::into_non_null_with_allocator`]:
     /// ```
     /// #![feature(allocator_api, box_vec_non_null)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -1189,6 +1214,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// Manually create a `Box` from scratch by using the system allocator:
     /// ```
     /// #![feature(allocator_api, box_vec_non_null, slice_ptr_get)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::{Allocator, Layout, System};
     ///
@@ -1206,6 +1232,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     #[unstable(feature = "allocator_api", issue = "32838")]
     // #[unstable(feature = "box_vec_non_null", reason = "new API", issue = "130364")]
     #[rustc_const_unstable(feature = "const_box", issue = "92521")]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[inline]
     pub const unsafe fn from_non_null_in(raw: NonNull<T>, alloc: A) -> Self {
         // SAFETY: guaranteed by the caller.
@@ -1348,6 +1375,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// for automatic cleanup:
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -1359,6 +1387,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// the memory:
     /// ```
     /// #![feature(allocator_api)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::{Allocator, Layout, System};
     /// use std::ptr::{self, NonNull};
@@ -1410,6 +1439,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// [`Box::from_non_null_in`] for automatic cleanup:
     /// ```
     /// #![feature(allocator_api, box_vec_non_null)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::System;
     ///
@@ -1421,6 +1451,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// the memory:
     /// ```
     /// #![feature(allocator_api, box_vec_non_null)]
+    /// #![cfg_attr(not(bootstrap), allow(untracked_heap_allocation))]
     ///
     /// use std::alloc::{Allocator, Layout, System};
     ///

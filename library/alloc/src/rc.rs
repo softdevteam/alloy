@@ -1476,6 +1476,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(&*x, "hello");
     /// ```
     #[must_use = "losing the pointer will leak memory"]
+    #[cfg_attr(not(bootstrap), rustc_alloc_in)]
     #[unstable(feature = "allocator_api", issue = "32838")]
     pub fn into_raw_with_allocator(this: Self) -> (*const T, A) {
         let this = mem::ManuallyDrop::new(this);
