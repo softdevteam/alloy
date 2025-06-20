@@ -262,6 +262,7 @@ impl Step for Cargotest {
             .args(builder.config.test_args())
             .env("RUSTC", builder.rustc(compiler))
             .env("RUSTDOC", builder.rustdoc(compiler))
+            .env("GC_DONT_GC", "true")
             .env("RUSTC_BINDGEN", &bindgen.tool_path);
         add_rustdoc_cargo_linker_args(
             &mut cmd,
@@ -849,7 +850,8 @@ impl Step for RustdocTheme {
             .env("RUSTDOC_LIBDIR", builder.sysroot_target_libdir(self.compiler, self.compiler.host))
             .env("CFG_RELEASE_CHANNEL", &builder.config.channel)
             .env("RUSTDOC_REAL", builder.rustdoc(self.compiler))
-            .env("RUSTC_BOOTSTRAP", "1");
+            .env("RUSTC_BOOTSTRAP", "1")
+            .env("GC_DONT_GC", "true");
         cmd.args(linker_args(builder, self.compiler.host, LldThreads::No, self.compiler.stage));
 
         cmd.delay_failure().run(builder);
@@ -880,6 +882,7 @@ impl Step for RustdocJSStd {
             builder.config.nodejs.as_ref().expect("need nodejs to run rustdoc-js-std tests");
         let mut command = command(nodejs);
         command
+            .env("GC_DONT_GC", "true")
             .arg(builder.src.join("src/tools/rustdoc-js/tester.js"))
             .arg("--crate-name")
             .arg("std")
@@ -1057,6 +1060,8 @@ impl Step for RustdocGUI {
         if let Some(ref npm) = builder.config.npm {
             cmd.arg("--npm").arg(npm);
         }
+
+        cmd.env("GC_DONT_GC", "true");
 
         let _time = helpers::timeit(builder);
         let _guard = builder.msg_sysroot_tool(
@@ -1646,6 +1651,7 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         }
 
         let mut cmd = builder.tool_cmd(Tool::Compiletest);
+        cmd.env("GC_DONT_GC", "true");
 
         if suite == "mir-opt" {
             builder.ensure(compile::Std::new(compiler, target).is_for_mir_opt_tests(true));
@@ -2517,6 +2523,7 @@ fn run_cargo_test<'a>(
 
     let bindgen = builder.ensure(Bindgen { target: compiler.host });
     cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
+    cargo.env("GC_DONT_GC", "true");
 
     #[cfg(feature = "build-metrics")]
     builder.metrics.begin_test_suite(
