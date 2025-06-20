@@ -354,6 +354,7 @@ pub struct Config {
     pub gc_assertions: bool,
     pub gc_debug: bool,
     pub gc_disable: bool,
+    pub gc_default_allocator: bool,
 
     // misc
     pub low_priority: bool,
@@ -1240,6 +1241,7 @@ define_config! {
         gc_assertions: Option<bool> = "gc-assertions",
         gc_debug: Option<bool> = "gc-debug",
         gc_disable: Option<bool> = "gc-disable",
+        gc_default_allocator: Option<bool> = "gc-default-allocator",
     }
 }
 
@@ -1331,6 +1333,7 @@ impl Config {
             gc_assertions: false,
             gc_debug: false,
             gc_disable: false,
+            gc_default_allocator: true,
 
             ..Default::default()
         }
@@ -2067,6 +2070,7 @@ impl Config {
                 gc_assertions,
                 gc_debug,
                 gc_disable,
+                gc_default_allocator,
             } = alloy;
 
             set(&mut config.gc_metrics, gc_metrics);
@@ -2080,6 +2084,7 @@ impl Config {
             set(&mut config.gc_assertions, gc_assertions);
             set(&mut config.gc_debug, gc_debug);
             set(&mut config.gc_disable, gc_disable);
+            set(&mut config.gc_default_allocator, gc_default_allocator);
         }
 
         if let Some(llvm) = toml.llvm {

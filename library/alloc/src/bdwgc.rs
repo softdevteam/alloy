@@ -19,8 +19,8 @@ use crate::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 pub fn init(finalizer_thread: extern "C" fn()) {
     unsafe {
         api::GC_set_finalize_on_demand(1);
+        api::GC_set_warn_proc(Some(api::GC_ignore_warn_proc));
         api::GC_set_finalizer_notifier(Some(finalizer_thread));
-        #[cfg(feature = "gc-disable")]
         api::GC_disable();
         metrics::init();
         // The final initialization must come last.
@@ -53,7 +53,7 @@ unsafe impl GlobalAlloc for GcAllocator {
 }
 
 #[inline]
-unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
+pub unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
     if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
         unsafe { api::GC_malloc(layout.size()) as *mut u8 }
     } else {
@@ -69,7 +69,7 @@ unsafe fn gc_malloc(layout: Layout) -> *mut u8 {
 }
 
 #[inline]
-unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
+pub unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
     if old_layout.align() <= MIN_ALIGN && old_layout.align() <= new_size {
         unsafe { api::GC_realloc(ptr as *mut c_void, new_size) as *mut u8 }
     } else {
@@ -88,7 +88,7 @@ unsafe fn gc_realloc(ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut 
 }
 
 #[inline]
-unsafe fn gc_free(ptr: *mut u8, _: Layout) {
+pub unsafe fn gc_free(ptr: *mut u8, _: Layout) {
     unsafe {
         api::GC_free(ptr as *mut c_void);
     }

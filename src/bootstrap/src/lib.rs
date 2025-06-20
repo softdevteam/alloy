@@ -695,6 +695,9 @@ impl Build {
         if self.config.gc_disable {
             features.insert("gc-disable");
         }
+        if self.config.gc_default_allocator {
+            features.insert("gc-default-allocator");
+        }
         features.into_iter().collect::<Vec<_>>().join(" ")
     }
 
