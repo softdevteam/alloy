@@ -589,6 +589,9 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
     // about libgc.
     cargo.rustflag("-L").rustflag(builder.bdwgc_out(target).join("lib").to_str().unwrap());
 
+    // Don't run the GC when we're building rustc.
+    cargo.env("GC_DONT_GC", "true");
+
     // Determine if we're going to compile in optimized C intrinsics to
     // the `compiler-builtins` crate. These intrinsics live in LLVM's
     // `compiler-rt` repository.
@@ -1233,6 +1236,9 @@ pub fn rustc_cargo(
 
     let bindgen = builder.ensure(Bindgen { target });
     cargo.env("RUSTC_BINDGEN", &bindgen.tool_path);
+
+    // Don't run the GC when we're building rustc.
+    cargo.env("GC_DONT_GC", "true");
 
     // Building with protected visibility reduces the number of dynamic relocations needed, giving
     // us a faster startup time. However GNU ld < 2.40 will error if we try to link a shared object

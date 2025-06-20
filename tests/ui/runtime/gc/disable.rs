@@ -7,6 +7,7 @@
 use std::gc::{disable, enable, is_enabled, try_enable};
 
 fn main() {
+    enable();
     assert!(is_enabled());
     disable();
     disable();
