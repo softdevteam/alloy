@@ -378,7 +378,9 @@ impl Step for Rustc {
         let compiler = self.compiler;
         let host = self.compiler.host;
 
-        let tarball = Tarball::new(builder, "rustc", &host.triple);
+        let mut tarball = Tarball::new(builder, "rustc", &host.triple);
+
+        tarball.permit_symlinks(true);
 
         // Prepare the rustc "image", what will actually end up getting installed
         prepare_image(builder, compiler, tarball.image_dir());
@@ -678,6 +680,7 @@ impl Step for Std {
 
         let mut tarball = Tarball::new(builder, "rust-std", &target.triple);
         tarball.include_target_in_component_name(true);
+        tarball.permit_symlinks(true);
 
         let compiler_to_use = builder.compiler_for(compiler.stage, compiler.host, target);
         let stamp = build_stamp::libstd_stamp(builder, compiler_to_use, target);
