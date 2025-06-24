@@ -427,6 +427,10 @@ impl<T> Gc<T> {
     #[inline(always)]
     #[cfg(not(no_global_oom_handling))]
     unsafe fn new_internal(value: T) -> Self {
+        if !is_enabled() {
+            enable();
+        }
+
         #[cfg(not(bootstrap))]
         {
             #[cfg(feature = "finalizer-elision")]
