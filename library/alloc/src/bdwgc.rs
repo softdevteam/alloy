@@ -43,6 +43,7 @@ unsafe impl GlobalAlloc for GcAllocator {
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        metrics::increment(1, metrics::Metric::ExplicitFree);
         unsafe { gc_free(ptr, layout) }
     }
 
@@ -121,12 +122,13 @@ pub mod metrics {
         FinalizersRun,
         FinalizersElided,
         FinalizersRegistered,
+        ExplicitFree,
     }
 
     trait MetricsImpl {
         fn init(&self) {}
         fn increment(&self, _amount: u64, _metric: Metric) {}
-        fn capture(&self, _is_last: bool) {}
+        fn capture(&self) {}
     }
 
     #[cfg(feature = "gc-metrics")]
@@ -140,26 +142,28 @@ pub mod metrics {
         #[derive(Debug)]
         pub struct Metrics {
             finalizers_registered: AtomicU64,
-            finalizers_elidable: AtomicU64,
+            finalizers_elided: AtomicU64,
             finalizers_completed: AtomicU64,
             barriers_visited: AtomicU64,
             allocated_gc: AtomicU64,
             allocated_arc: AtomicU64,
             allocated_rc: AtomicU64,
             allocated_boxed: AtomicU64,
+            explicit_free: AtomicU64,
         }
 
         impl Metrics {
             pub const fn new() -> Self {
                 Self {
                     finalizers_registered: AtomicU64::new(0),
-                    finalizers_elidable: AtomicU64::new(0),
+                    finalizers_elided: AtomicU64::new(0),
                     finalizers_completed: AtomicU64::new(0),
                     barriers_visited: AtomicU64::new(0),
                     allocated_gc: AtomicU64::new(0),
                     allocated_arc: AtomicU64::new(0),
                     allocated_rc: AtomicU64::new(0),
                     allocated_boxed: AtomicU64::new(0),
+                    explicit_free: AtomicU64::new(0),
                 }
             }
         }
@@ -167,7 +171,7 @@ pub mod metrics {
         #[no_mangle]
         pub extern "C" fn record_post_collection(event: api::GC_EventType) {
             if event == api::GC_EventType_GC_EVENT_END {
-                super::METRICS.capture(false);
+                super::METRICS.capture();
             }
         }
 
@@ -199,26 +203,30 @@ pub mod metrics {
                         self.finalizers_completed.fetch_add(amount, Ordering::Relaxed);
                     }
                     Metric::FinalizersElided => {
-                        self.finalizers_completed.fetch_add(amount, Ordering::Relaxed);
+                        self.finalizers_elided.fetch_add(amount, Ordering::Relaxed);
                     }
                     Metric::FinalizersRegistered => {
                         self.finalizers_registered.fetch_add(amount, Ordering::Relaxed);
                     }
+                    Metric::ExplicitFree => {
+                        self.explicit_free.fetch_add(amount, Ordering::Relaxed);
+                    }
                 }
             }
 
-            fn capture(&self, is_last: bool) {
+            fn capture(&self) {
                 // Must preserve this ordering as it's hardcoded inside BDWGC.
                 // See src/bdwgc/misc.c:2812
                 unsafe {
                     api::GC_log_metrics(
                         self.finalizers_completed.load(Ordering::Relaxed),
+                        self.finalizers_elided.load(Ordering::Relaxed),
                         self.finalizers_registered.load(Ordering::Relaxed),
                         self.allocated_gc.load(Ordering::Relaxed),
                         self.allocated_arc.load(Ordering::Relaxed),
                         self.allocated_rc.load(Ordering::Relaxed),
                         self.allocated_boxed.load(Ordering::Relaxed),
-                        is_last as i32,
+                        self.explicit_free.load(Ordering::Relaxed),
                     );
                 }
             }
@@ -253,7 +261,7 @@ pub mod metrics {
     }
 
     pub fn record_final() {
-        METRICS.capture(true);
+        METRICS.capture();
     }
 
     pub fn increment(amount: u64, metric: Metric) {
